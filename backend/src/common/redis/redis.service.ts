@@ -33,7 +33,7 @@ export class RedisService implements OnModuleDestroy {
     return this.client.ping();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  onModuleDestroy(): void {
     this.client.disconnect();
     this.logger.log('Redis connection closed');
   }

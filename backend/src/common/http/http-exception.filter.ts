@@ -18,12 +18,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
-    const status =
+    const status: number =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     const message = this.extractMessage(exception);
 
-    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+    if (status >= Number(HttpStatus.INTERNAL_SERVER_ERROR)) {
       this.logger.error(message, exception instanceof Error ? exception.stack : undefined);
     }
 

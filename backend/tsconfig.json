@@ -4,7 +4,6 @@
     "module": "commonjs",
     "target": "ES2022",
     "outDir": "./dist",
-    "rootDir": "./src",
     "baseUrl": "./",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,

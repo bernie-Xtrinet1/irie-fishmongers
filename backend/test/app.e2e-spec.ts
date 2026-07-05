@@ -1,3 +1,5 @@
+import type { Server } from 'http';
+
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
@@ -21,7 +23,7 @@ describe('Health (e2e)', () => {
   });
 
   it('/health (GET) reports postgres and redis connectivity', async () => {
-    const response = await request(app.getHttpServer()).get('/health');
+    const response = await request(app.getHttpServer() as Server).get('/health');
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({

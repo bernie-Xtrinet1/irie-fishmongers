@@ -19,9 +19,9 @@ export class EnvironmentVariables {
   @MinLength(1)
   API_PREFIX!: string;
 
-  @IsUrl({ protocols: ['postgresql', 'postgres'], require_tld: false })
+  @IsUrl({ protocols: ['postgresql', 'postgres'], require_tld: false, require_protocol: true })
   DATABASE_URL!: string;
 
-  @IsUrl({ protocols: ['redis', 'rediss'], require_tld: false })
+  @IsUrl({ protocols: ['redis', 'rediss'], require_tld: false, require_protocol: true })
   REDIS_URL!: string;
 }
