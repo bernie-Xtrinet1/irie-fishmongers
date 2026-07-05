@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# Env / secrets
+.env
+.env.*
+!.env.example.md
+
+# Prisma
+backend/prisma/migrations/dev/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Office lock files
+~$*
+
+# Claude local settings
+.claude/settings.local.json
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Misc project folders not part of the codebase
+Personal info/
+git-repository/

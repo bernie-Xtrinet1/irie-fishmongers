@@ -1,0 +1,10 @@
+Users
+Vendors
+Drivers
+Products
+Inventory
+Orders
+Payments
+Deliveries
+Reviews
+Notifications
