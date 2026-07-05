@@ -1,0 +1,44 @@
+import { validateEnv } from './env.validation';
+
+describe('validateEnv', () => {
+  const validConfig = {
+    NODE_ENV: 'test',
+    PORT: '3001',
+    API_PREFIX: 'api/v1',
+    DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+    REDIS_URL: 'redis://localhost:6379',
+  };
+
+  it('returns a validated, transformed config for valid input', () => {
+    const result = validateEnv(validConfig);
+
+    expect(result.NODE_ENV).toBe('test');
+    expect(result.PORT).toBe(3001);
+    expect(result.API_PREFIX).toBe('api/v1');
+    expect(result.DATABASE_URL).toBe(validConfig.DATABASE_URL);
+    expect(result.REDIS_URL).toBe(validConfig.REDIS_URL);
+  });
+
+  it('throws when NODE_ENV is not one of the allowed values', () => {
+    expect(() => validateEnv({ ...validConfig, NODE_ENV: 'staging' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
+
+  it('throws when PORT is out of range', () => {
+    expect(() => validateEnv({ ...validConfig, PORT: '70000' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
+
+  it('throws when DATABASE_URL is not a valid postgres URL', () => {
+    expect(() => validateEnv({ ...validConfig, DATABASE_URL: 'not-a-url' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
+
+  it('throws when a required variable is missing', () => {
+    const { REDIS_URL: _REDIS_URL, ...withoutRedis } = validConfig;
+    expect(() => validateEnv(withoutRedis)).toThrow(/Environment validation failed/);
+  });
+});
