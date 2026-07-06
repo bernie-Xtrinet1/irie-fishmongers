@@ -64,6 +64,11 @@ interface RefundData {
   status: string;
 }
 
+// Several tests chain multiple sequential requests, well beyond Jest's
+// default 5s per-test timeout once run alongside the rest of the e2e
+// suite's parallel workers.
+jest.setTimeout(20_000);
+
 describe('Payments (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;

@@ -6,7 +6,7 @@ import { PrismaService } from '../../../database/prisma.service';
 export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
 const cartWithItems = Prisma.validator<Prisma.CartDefaultArgs>()({
-  include: { items: { include: { product: true } } },
+  include: { items: { include: { product: { include: { lot: true } } } } },
 });
 
 export type CartWithItems = Prisma.CartGetPayload<typeof cartWithItems>;

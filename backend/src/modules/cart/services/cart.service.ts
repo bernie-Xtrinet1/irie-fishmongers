@@ -67,6 +67,11 @@ export class CartService {
     if (!product || !product.isActive) {
       throw new BadRequestException('Product is not available');
     }
+    if (product.lot && product.lot.foodSafetyStatus !== 'SAFE') {
+      throw new BadRequestException(
+        'This product is currently on hold pending a food-safety review and cannot be purchased',
+      );
+    }
 
     const vendor = await this.vendorsRepository.findById(product.vendorId);
     if (!vendor || vendor.status !== 'APPROVED') {

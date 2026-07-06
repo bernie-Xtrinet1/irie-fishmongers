@@ -1,13 +1,20 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { Prisma, Product, ProductUnit } from '@prisma/client';
+import { Prisma, ProductUnit } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
 export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
+const productWithLot = Prisma.validator<Prisma.ProductDefaultArgs>()({
+  include: { lot: true },
+});
+
+export type ProductWithLot = Prisma.ProductGetPayload<typeof productWithLot>;
+
 export interface CreateProductInput {
   vendorId: string;
   categoryId: string;
+  lotId?: string;
   name: string;
   description: string;
   unit: ProductUnit;
@@ -41,43 +48,64 @@ export interface Page {
 export class ProductsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(input: CreateProductInput): Promise<Product> {
-    return this.prisma.product.create({ data: input });
+  create(input: CreateProductInput): Promise<ProductWithLot> {
+    return this.prisma.product.create({ data: input, include: productWithLot.include });
   }
 
-  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<Product | null> {
-    return client.product.findUnique({ where: { id } });
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<ProductWithLot | null> {
+    return client.product.findUnique({ where: { id }, include: productWithLot.include });
   }
 
-  update(id: string, input: UpdateProductInput): Promise<Product> {
-    return this.prisma.product.update({ where: { id }, data: input });
+  update(id: string, input: UpdateProductInput): Promise<ProductWithLot> {
+    return this.prisma.product.update({
+      where: { id },
+      data: input,
+      include: productWithLot.include,
+    });
   }
 
-  setActive(id: string, isActive: boolean): Promise<Product> {
-    return this.prisma.product.update({ where: { id }, data: { isActive } });
+  setActive(id: string, isActive: boolean): Promise<ProductWithLot> {
+    return this.prisma.product.update({
+      where: { id },
+      data: { isActive },
+      include: productWithLot.include,
+    });
   }
 
   async findMany(
     filters: ProductSearchFilters,
     page: Page,
-  ): Promise<{ items: Product[]; total: number }> {
-    const where: Prisma.ProductWhereInput = {
-      ...(filters.activeOnly ? { isActive: true } : {}),
-      ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
-      ...(filters.vendorId ? { vendorId: filters.vendorId } : {}),
-      ...(filters.search
-        ? {
-            OR: [
-              { name: { contains: filters.search, mode: 'insensitive' } },
-              { description: { contains: filters.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+  ): Promise<{ items: ProductWithLot[]; total: number }> {
+    const conditions: Prisma.ProductWhereInput[] = [];
+
+    if (filters.activeOnly) {
+      conditions.push({ isActive: true });
+      // A product tied to a lot that has been placed on hold, quarantined,
+      // recalled, or rejected must not appear in customer-facing search,
+      // even though it is otherwise "active" from a plain inventory sense.
+      conditions.push({ OR: [{ lotId: null }, { lot: { foodSafetyStatus: 'SAFE' } }] });
+    }
+    if (filters.categoryId) {
+      conditions.push({ categoryId: filters.categoryId });
+    }
+    if (filters.vendorId) {
+      conditions.push({ vendorId: filters.vendorId });
+    }
+    if (filters.search) {
+      conditions.push({
+        OR: [
+          { name: { contains: filters.search, mode: 'insensitive' } },
+          { description: { contains: filters.search, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    const where: Prisma.ProductWhereInput = conditions.length > 0 ? { AND: conditions } : {};
 
     const [items, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
+        include: productWithLot.include,
         skip: page.skip,
         take: page.take,
         orderBy: [{ quantityAvailable: 'desc' }, { createdAt: 'desc' }],
@@ -98,7 +126,7 @@ export class ProductsRepository {
     id: string,
     delta: number,
     client: PrismaClientOrTx = this.prisma,
-  ): Promise<Product> {
+  ): Promise<ProductWithLot> {
     if (delta < 0) {
       const result = await client.product.updateMany({
         where: { id, quantityAvailable: { gte: -delta } },
@@ -114,6 +142,6 @@ export class ProductsRepository {
       });
     }
 
-    return client.product.findUniqueOrThrow({ where: { id } });
+    return client.product.findUniqueOrThrow({ where: { id }, include: productWithLot.include });
   }
 }

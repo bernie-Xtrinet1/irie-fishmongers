@@ -126,6 +126,48 @@ GET /vendor-settlements/commission-rate (admin only)
 
 POST /vendor-settlements/commission-rate (admin only - publish new commission rate)
 
+POST /seafood-lots (vendor only - register a new lot for the authenticated vendor)
+
+GET /seafood-lots/mine (vendor only)
+
+GET /seafood-lots (admin only)
+
+GET /seafood-lots/:id/public (public - customer-facing traceability view)
+
+GET /seafood-lots/:id (admin only)
+
+PATCH /seafood-lots/:id/status (admin only - place on hold/quarantine/reject, or clear)
+
+POST /temperature-readings (vendor or driver - record a cold-chain checkpoint reading)
+
+GET /temperature-readings/lot/:lotId (owning vendor or admin only)
+
+GET /temperature-alerts (admin only)
+
+PATCH /temperature-alerts/:id/resolve (admin only)
+
+POST /quality-inspections (admin only)
+
+GET /quality-inspections/lot/:lotId (owning vendor or admin only)
+
+POST /food-safety-incidents (owning vendor or admin only)
+
+GET /food-safety-incidents/lot/:lotId (owning vendor or admin only)
+
+GET /food-safety-incidents (admin only)
+
+PATCH /food-safety-incidents/:id/status (admin only - investigate / resolve / close)
+
+POST /recalls (admin only)
+
+GET /recalls (admin only)
+
+GET /recalls/:id (admin only)
+
+PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Resolved -> Closed)
+
+GET /recalls/:id/affected-orders (admin only)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

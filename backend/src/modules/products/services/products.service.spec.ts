@@ -1,9 +1,10 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Category, Product, Vendor } from '@prisma/client';
+import { Category, SeafoodLot, Vendor } from '@prisma/client';
 
+import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CategoriesRepository } from '../repositories/categories.repository';
-import { ProductsRepository } from '../repositories/products.repository';
+import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
 import { ProductAvailability } from '../entities/product-response.entity';
 import { ProductsService } from './products.service';
 
@@ -35,19 +36,43 @@ function buildCategory(overrides: Partial<Category> = {}): Category {
   };
 }
 
-function buildProduct(overrides: Partial<Product> = {}): Product {
+function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
   return {
     id: 'product-1',
     vendorId: 'vendor-1',
     categoryId: 'cat-1',
+    lotId: null,
+    lot: null,
     name: 'Fresh Snapper',
     description: 'Caught this morning off the north coast.',
     unit: 'PER_POUND',
-    price: { toString: () => '850' } as unknown as Product['price'],
+    price: { toString: () => '850' } as unknown as ProductWithLot['price'],
     currency: 'JMD',
     quantityAvailable: 10,
     imageUrl: 'https://cdn.example.com/snapper.jpg',
     isActive: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
+  return {
+    id: 'lot-1',
+    lotNumber: 'LOT-2026-000001',
+    vendorId: 'vendor-1',
+    species: 'Snapper',
+    storageType: 'FRESH',
+    catchDate: new Date(),
+    catchLocation: null,
+    landingSite: null,
+    weight: { toString: () => '20' } as unknown as SeafoodLot['weight'],
+    weightUnit: 'POUNDS',
+    freshnessGrade: null,
+    qualityScore: null,
+    foodSafetyStatus: 'SAFE',
+    statusNotes: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -60,6 +85,7 @@ describe('ProductsService', () => {
   >;
   let categoriesRepository: jest.Mocked<Pick<CategoriesRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let seafoodLotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -73,11 +99,13 @@ describe('ProductsService', () => {
     };
     categoriesRepository = { findById: jest.fn() };
     vendorsRepository = { findByUserId: jest.fn() };
+    seafoodLotsRepository = { findById: jest.fn() };
 
     service = new ProductsService(
       productsRepository as unknown as ProductsRepository,
       categoriesRepository as unknown as CategoriesRepository,
       vendorsRepository as unknown as VendorsRepository,
+      seafoodLotsRepository as unknown as SeafoodLotsRepository,
     );
   });
 
@@ -117,6 +145,37 @@ describe('ProductsService', () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       categoriesRepository.findById.mockResolvedValue(null);
       await expect(service.create('user-1', dto)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('creates a product linked to a SAFE lot owned by the same vendor', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+      seafoodLotsRepository.findById.mockResolvedValue(buildLot());
+      productsRepository.create.mockResolvedValue(buildProduct({ lotId: 'lot-1' }));
+
+      const result = await service.create('user-1', { ...dto, lotId: 'lot-1' });
+
+      expect(result.lotId).toBe('lot-1');
+    });
+
+    it('throws when the lot does not belong to the requesting vendor', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+      seafoodLotsRepository.findById.mockResolvedValue(buildLot({ vendorId: 'vendor-2' }));
+
+      await expect(service.create('user-1', { ...dto, lotId: 'lot-1' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('throws when the lot is not SAFE', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+      seafoodLotsRepository.findById.mockResolvedValue(buildLot({ foodSafetyStatus: 'QUARANTINED' }));
+
+      await expect(service.create('user-1', { ...dto, lotId: 'lot-1' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
   });
 
@@ -210,6 +269,17 @@ describe('ProductsService', () => {
         { categoryId: undefined, vendorId: undefined, search: undefined, activeOnly: true },
         { skip: 0, take: 20 },
       );
+    });
+
+    it('marks a product whose lot is not SAFE as ON_HOLD', async () => {
+      productsRepository.findMany.mockResolvedValue({
+        items: [buildProduct({ lotId: 'lot-1', lot: buildLot({ foodSafetyStatus: 'UNDER_REVIEW' }) })],
+        total: 1,
+      });
+
+      const result = await service.search({ page: 1, pageSize: 20 });
+
+      expect(result.items[0]?.availability).toBe(ProductAvailability.ON_HOLD);
     });
   });
 
