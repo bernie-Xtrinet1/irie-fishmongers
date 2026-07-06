@@ -24,4 +24,20 @@ export class EnvironmentVariables {
 
   @IsUrl({ protocols: ['redis', 'rediss'], require_tld: false, require_protocol: true })
   REDIS_URL!: string;
+
+  @IsString()
+  @MinLength(32)
+  JWT_ACCESS_SECRET!: string;
+
+  @IsString()
+  @MinLength(1)
+  JWT_ACCESS_EXPIRES_IN!: string;
+
+  @IsString()
+  @MinLength(32)
+  JWT_REFRESH_SECRET!: string;
+
+  @IsString()
+  @MinLength(1)
+  JWT_REFRESH_EXPIRES_IN!: string;
 }

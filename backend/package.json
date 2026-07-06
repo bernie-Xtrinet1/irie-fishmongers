@@ -14,18 +14,25 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "ts-node prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.27",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.1.27",
+    "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.1.27",
     "@nestjs/swagger": "^11.4.5",
     "@nestjs/throttler": "^6.5.0",
     "@prisma/client": "^6.19.3",
+    "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "cookie-parser": "^1.4.7",
     "helmet": "^8.2.0",
     "ioredis": "^5.4.2",
     "reflect-metadata": "^0.2.2",
@@ -35,6 +42,8 @@
     "@nestjs/cli": "^11.0.23",
     "@nestjs/schematics": "^11.1.0",
     "@nestjs/testing": "^11.1.27",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.5",
@@ -60,7 +69,14 @@
     },
     "collectCoverageFrom": ["**/*.(t|j)s"],
     "coverageDirectory": "../coverage",
-    "coveragePathIgnorePatterns": ["main.ts", "\\.module\\.ts$", "redis.constants.ts"],
+    "coveragePathIgnorePatterns": [
+      "main.ts",
+      "\\.module\\.ts$",
+      "redis.constants.ts",
+      "auth.constants.ts",
+      "roles.decorator.ts",
+      "current-user.decorator.ts"
+    ],
     "coverageThreshold": {
       "global": {
         "branches": 80,
