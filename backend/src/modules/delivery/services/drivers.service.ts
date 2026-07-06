@@ -30,6 +30,7 @@ export class DriversService {
       userId,
       licensePlate: dto.licensePlate,
       vehicleType: dto.vehicleType,
+      vehicleOwnership: dto.vehicleOwnership,
     });
   }
 

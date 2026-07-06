@@ -100,6 +100,18 @@ PATCH /delivery/:id/status (owning driver only - PICKED_UP / DELIVERED / FAILED)
 
 GET /delivery/track/:vendorOrderId (owning customer only)
 
+POST /driver-settlements/generate (admin only - generate a weekly settlement batch)
+
+GET /driver-settlements/mine (driver only)
+
+GET /driver-settlements (admin only)
+
+PATCH /driver-settlements/:id/status (admin only - approve / pay / fail / dispute)
+
+GET /driver-settlements/rate-config (admin only)
+
+POST /driver-settlements/rate-config (admin only - publish new compensation rates)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

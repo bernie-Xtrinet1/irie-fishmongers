@@ -20,5 +20,6 @@ import { DriversService } from './services/drivers.service';
     DriverLocationsRepository,
     DeliveriesRepository,
   ],
+  exports: [DriversRepository, DriverLocationsRepository],
 })
 export class DeliveryModule {}

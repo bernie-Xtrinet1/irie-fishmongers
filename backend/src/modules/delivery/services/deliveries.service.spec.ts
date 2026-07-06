@@ -19,6 +19,7 @@ function buildDriver(overrides: Partial<Driver> = {}): Driver {
     userId: 'driver-user-1',
     licensePlate: 'AB 1234',
     vehicleType: 'CAR',
+    vehicleOwnership: 'PERSONAL_VEHICLE',
     status: 'APPROVED',
     createdAt: new Date(),
     updatedAt: new Date(),

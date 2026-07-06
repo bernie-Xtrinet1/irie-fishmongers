@@ -11,6 +11,7 @@ function buildDriver(overrides: Partial<Driver> = {}): Driver {
     userId: 'user-1',
     licensePlate: 'AB 1234',
     vehicleType: 'CAR',
+    vehicleOwnership: 'PERSONAL_VEHICLE',
     status: 'PENDING',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -41,7 +42,11 @@ describe('DriversService', () => {
   });
 
   describe('register', () => {
-    const dto = { licensePlate: 'AB 1234', vehicleType: 'CAR' as const };
+    const dto = {
+      licensePlate: 'AB 1234',
+      vehicleType: 'CAR' as const,
+      vehicleOwnership: 'PERSONAL_VEHICLE' as const,
+    };
 
     it('creates a driver profile when none exists', async () => {
       driversRepository.findByUserId.mockResolvedValue(null);
@@ -54,6 +59,7 @@ describe('DriversService', () => {
         userId: 'user-1',
         licensePlate: 'AB 1234',
         vehicleType: 'CAR',
+        vehicleOwnership: 'PERSONAL_VEHICLE',
       });
     });
 
