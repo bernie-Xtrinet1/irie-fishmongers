@@ -3,6 +3,8 @@ import { Prisma, Product, ProductUnit } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
+export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
+
 export interface CreateProductInput {
   vendorId: string;
   categoryId: string;
@@ -43,8 +45,8 @@ export class ProductsRepository {
     return this.prisma.product.create({ data: input });
   }
 
-  findById(id: string): Promise<Product | null> {
-    return this.prisma.product.findUnique({ where: { id } });
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<Product | null> {
+    return client.product.findUnique({ where: { id } });
   }
 
   update(id: string, input: UpdateProductInput): Promise<Product> {
@@ -86,20 +88,32 @@ export class ProductsRepository {
     return { items, total };
   }
 
-  async adjustStock(id: string, delta: number): Promise<Product> {
-    // Read-then-write is acceptable while nothing else mutates stock concurrently
-    // (no Orders module yet). Revisit with an atomic guarded UPDATE once concurrent
-    // order placement can decrement stock at the same time.
-    const product = await this.prisma.product.findUniqueOrThrow({ where: { id } });
-    const nextQuantity = product.quantityAvailable + delta;
-
-    if (nextQuantity < 0) {
-      throw new ConflictException('Resulting stock quantity cannot be negative');
+  /**
+   * Atomically applies `delta` to quantityAvailable. The floor-at-zero guard is
+   * enforced by the database in the same UPDATE (via the WHERE clause), not by
+   * a prior read, so concurrent decrements (e.g. two checkouts racing for the
+   * last units) can't both succeed and drive stock negative.
+   */
+  async adjustStock(
+    id: string,
+    delta: number,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<Product> {
+    if (delta < 0) {
+      const result = await client.product.updateMany({
+        where: { id, quantityAvailable: { gte: -delta } },
+        data: { quantityAvailable: { increment: delta } },
+      });
+      if (result.count === 0) {
+        throw new ConflictException('Resulting stock quantity cannot be negative');
+      }
+    } else {
+      await client.product.update({
+        where: { id },
+        data: { quantityAvailable: { increment: delta } },
+      });
     }
 
-    return this.prisma.product.update({
-      where: { id },
-      data: { quantityAvailable: nextQuantity },
-    });
+    return client.product.findUniqueOrThrow({ where: { id } });
   }
 }

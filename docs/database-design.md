@@ -54,11 +54,12 @@ Notifications
     computed from isActive/quantityAvailable, not stored.
   - Only APPROVED vendors may create products; any vendor may edit only their
     own products regardless of status.
-  - Stock adjustment (`PATCH /products/:id/stock`) is a plain read-then-write
-    with an application-level floor-at-zero check, not yet atomic - acceptable
-    while nothing else mutates stock concurrently (no Orders module yet).
-    Revisit with an atomic guarded UPDATE once concurrent order placement can
-    decrement stock at the same time.
+  - Stock adjustment (`ProductsRepository.adjustStock`) is an atomic guarded
+    UPDATE (the floor-at-zero check runs in the same SQL statement as the
+    decrement via a WHERE clause, not a prior read), so concurrent checkouts
+    racing for the last units can't both succeed and drive stock negative.
+    Fixed as part of the Orders phase, which is the first thing that mutates
+    stock concurrently.
   - Search ranking currently only accounts for availability (in-stock first);
     the vendor rating / distance / freshness factors from business-rules1.md's
     Search Rules require Reviews and Delivery Zones, which don't exist yet.
@@ -95,3 +96,53 @@ Deliberately out of scope for this phase: identification/compliance document
 upload (no S3/file storage pipeline exists yet - that belongs with a future
 Food Safety/Compliance phase), and sales reporting (would be meaningless
 zeros with no Orders/Payments data yet - belongs with Orders + Reporting).
+
+---
+
+# Orders Tables (Order Management phase, per Startup instructions.md - built
+# ahead of the cross-vendor same-product Allocation Engine and Payments,
+# which are their own later phases)
+
+- `carts` / `cart_items` - one cart per customer (unique customerId),
+  `[cartId, productId]` unique so adding the same product again increments
+  quantity instead of duplicating a row. Cart contents are re-validated
+  (active product, approved vendor) both when adding items and again at
+  checkout, since a vendor/product could change status while sitting in cart.
+- `orders` - the customer-facing aggregate. customerId, a delivery address
+  snapshot (line1/line2/parish/phone - not a reusable saved address; that's a
+  later "Advanced Commerce" roadmap item). No top-level status: an order's
+  state is the union of its vendor orders' statuses (matches
+  docs/architecture.md's "Customer sees: 1 Order. Platform manages: N Vendor
+  Orders.").
+- `vendor_orders` - one per vendor represented in the order. status
+  (PENDING | ACCEPTED | PREPARING | READY_FOR_PICKUP | ASSIGNED_TO_DRIVER |
+  IN_TRANSIT | DELIVERED | REJECTED | CANCELLED) matches business-rules1.md's
+  documented workflow exactly, but only PENDING->ACCEPTED/REJECTED/CANCELLED,
+  ACCEPTED->PREPARING, and PREPARING->READY_FOR_PICKUP are reachable right
+  now (enforced by `VendorOrdersService`'s transition table) - the driver/
+  delivery states exist in the schema for forward compatibility but nothing
+  can transition into them until the Delivery phase exists.
+- `order_items` - a snapshot of productName/unitPrice/unit/quantity/subtotal
+  at order time, so historical orders stay accurate even if the vendor later
+  edits or reprices the product.
+
+Business rules encoded here:
+
+- Checkout is all-or-nothing: if any cart item is inactive, its vendor isn't
+  APPROVED, or stock is insufficient, nothing is created and nothing is
+  decremented (the whole thing runs in one `prisma.$transaction`).
+- A multi-vendor cart splits into one `vendor_orders` row per vendor
+  automatically - this is the simple "cart already references specific
+  vendor-owned products" split, not the fancier cross-vendor
+  same-product-demand allocation described in the multi-vendor fulfillment
+  rules doc (50lbs snapper split 20/15/15 across three vendors selling the
+  same species) - that's the explicitly separate, later Allocation Engine
+  phase per Startup instructions.md.
+- Cancellation (business-rules2.md): only while a vendor order is PENDING -
+  once ACCEPTED the seafood is considered reserved/perishable and cannot be
+  cancelled. Cancelling and rejecting both restore the reserved stock via the
+  same atomic `adjustStock`.
+- Payment is intentionally not wired in yet: business-rules1.md says payment
+  should be verified before order processing begins, but Payments doesn't
+  exist yet. Orders can currently be placed the way a Cash-on-Delivery order
+  would be; gating other payment methods is the Payments phase's job.

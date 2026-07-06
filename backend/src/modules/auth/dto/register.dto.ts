@@ -34,7 +34,7 @@ export class RegisterDto {
   @MinLength(1)
   lastName!: string;
 
-  @ApiProperty({ example: '+18761234567', required: false })
+  @ApiProperty({ example: '+18765551234', required: false })
   @IsOptional()
   @IsPhoneNumber()
   phone?: string;
