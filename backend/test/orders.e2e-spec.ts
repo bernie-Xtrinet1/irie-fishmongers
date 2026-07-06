@@ -200,6 +200,7 @@ describe('Orders (e2e)', () => {
     deliveryAddressLine1: '1 Ocean View Road',
     deliveryParish: 'KINGSTON' as const,
     deliveryPhone: '+18765551234',
+    paymentMethod: 'CASH_ON_DELIVERY' as const,
   };
 
   it('supports the full multi-vendor checkout -> accept -> preparing -> ready flow, and vendor rejection with stock restoration', async () => {

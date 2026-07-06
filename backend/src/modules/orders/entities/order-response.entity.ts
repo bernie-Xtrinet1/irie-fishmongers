@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Parish } from '@prisma/client';
 
+import { PaymentResponseEntity } from '../../payments/entities/payment-response.entity';
 import { VendorOrderResponseEntity } from './vendor-order-response.entity';
 
 export class OrderResponseEntity {
@@ -24,6 +25,15 @@ export class OrderResponseEntity {
 
   @ApiProperty({ type: VendorOrderResponseEntity, isArray: true })
   vendorOrders!: VendorOrderResponseEntity[];
+
+  @ApiProperty({ type: PaymentResponseEntity, required: false })
+  payment?: PaymentResponseEntity;
+
+  @ApiProperty({
+    required: false,
+    description: 'Hosted checkout URL to redirect the customer to for online providers',
+  })
+  paymentRedirectUrl?: string;
 
   @ApiProperty()
   createdAt!: Date;

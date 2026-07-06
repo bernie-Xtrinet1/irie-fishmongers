@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { VendorOrderStatus } from '@prisma/client';
 
+import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { VendorOrderResponseEntity } from '../entities/vendor-order-response.entity';
@@ -25,6 +26,7 @@ export class VendorOrdersService {
     private readonly vendorOrdersRepository: VendorOrdersRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly productsRepository: ProductsRepository,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   async getIncomingOrders(
@@ -49,7 +51,12 @@ export class VendorOrdersService {
   }
 
   async accept(userId: string, vendorOrderId: string): Promise<VendorOrderResponseEntity> {
-    return this.transition(userId, vendorOrderId, 'ACCEPTED');
+    const vendorOrder = await this.getOwnedVendorOrder(userId, vendorOrderId);
+    this.assertTransitionAllowed(vendorOrder.status, 'ACCEPTED');
+    await this.paymentsService.assertReadyForFulfillment(vendorOrder.orderId);
+
+    const updated = await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'ACCEPTED');
+    return VendorOrdersService.toResponse(updated);
   }
 
   async reject(userId: string, vendorOrderId: string): Promise<VendorOrderResponseEntity> {
@@ -61,6 +68,11 @@ export class VendorOrdersService {
     }
 
     const updated = await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'REJECTED');
+    await this.paymentsService.refundForOrder(
+      vendorOrder.orderId,
+      vendorOrder.subtotal.toNumber(),
+      'Vendor rejected order',
+    );
     return VendorOrdersService.toResponse(updated);
   }
 

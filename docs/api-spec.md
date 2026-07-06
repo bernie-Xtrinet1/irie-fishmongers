@@ -74,7 +74,11 @@ PATCH /vendor-orders/:id/preparing (owning vendor only)
 
 PATCH /vendor-orders/:id/ready (owning vendor only)
 
-POST /payments
+POST /payments/webhooks/wipay (public - HMAC-signed WiPay callback)
+
+PATCH /payments/:id/mark-paid (admin only - confirm cash-on-delivery collection)
+
+POST /payments/:id/refund (admin only - exceptional-circumstances refund)
 
 GET /deliveries
 

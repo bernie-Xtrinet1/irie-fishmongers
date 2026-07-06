@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { PrismaService } from '../../../database/prisma.service';
@@ -26,6 +27,7 @@ export class OrdersService {
     private readonly cartRepository: CartRepository,
     private readonly productsRepository: ProductsRepository,
     private readonly vendorsRepository: VendorsRepository,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
@@ -92,7 +94,22 @@ export class OrdersService {
       return created;
     });
 
-    return OrdersService.toResponse(order);
+    const total = order.vendorOrders.reduce(
+      (sum, vendorOrder) => sum + vendorOrder.subtotal.toNumber(),
+      0,
+    );
+    const { payment, redirectUrl } = await this.paymentsService.initiatePayment({
+      orderId: order.id,
+      amount: total,
+      currency: 'JMD',
+      provider: dto.paymentMethod,
+    });
+
+    return {
+      ...OrdersService.toResponse(order),
+      payment,
+      paymentRedirectUrl: redirectUrl,
+    };
   }
 
   async getCustomerOrders(
@@ -104,8 +121,10 @@ export class OrdersService {
       take: page.pageSize,
     });
 
+    const withPayments = await Promise.all(items.map((order) => this.toResponseWithPayment(order)));
+
     return {
-      items: items.map((order) => OrdersService.toResponse(order)),
+      items: withPayments,
       total,
       page: page.page,
       pageSize: page.pageSize,
@@ -114,7 +133,7 @@ export class OrdersService {
 
   async getCustomerOrderById(userId: string, orderId: string): Promise<OrderResponseEntity> {
     const order = await this.getOwnedOrder(userId, orderId);
-    return OrdersService.toResponse(order);
+    return this.toResponseWithPayment(order);
   }
 
   async cancelOrder(userId: string, orderId: string): Promise<OrderResponseEntity> {
@@ -136,7 +155,7 @@ export class OrdersService {
     });
 
     const updated = await this.getOwnedOrder(userId, orderId);
-    return OrdersService.toResponse(updated);
+    return this.toResponseWithPayment(updated);
   }
 
   async cancelVendorOrder(
@@ -160,7 +179,7 @@ export class OrdersService {
     });
 
     const updated = await this.getOwnedOrder(userId, orderId);
-    return OrdersService.toResponse(updated);
+    return this.toResponseWithPayment(updated);
   }
 
   private async restoreStockAndCancel(
@@ -179,6 +198,11 @@ export class OrdersService {
       throw new ForbiddenException('You do not have access to this order');
     }
     return order;
+  }
+
+  private async toResponseWithPayment(order: OrderWithDetails): Promise<OrderResponseEntity> {
+    const payment = await this.paymentsService.getByOrderId(order.id);
+    return { ...OrdersService.toResponse(order), payment: payment ?? undefined };
   }
 
   private static toResponse(order: OrderWithDetails): OrderResponseEntity {
