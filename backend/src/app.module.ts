@@ -10,6 +10,8 @@ import { ResponseInterceptor } from './common/http/response.interceptor';
 import { validateEnv } from './config/env.validation';
 import { PrismaModule } from './database/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { ProductsModule } from './modules/products/products.module';
+import { VendorsModule } from './modules/vendors/vendors.module';
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { AuthModule } from './modules/auth/auth.module';
     RedisModule,
     HealthModule,
     AuthModule,
+    VendorsModule,
+    ProductsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

@@ -39,6 +39,7 @@ model User {
 
   roles         UserRole[]
   refreshTokens RefreshToken[]
+  vendor        Vendor?
 
   @@map("users")
 }
@@ -78,4 +79,67 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("refresh_tokens")
+}
+
+enum VendorStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+  REJECTED
+}
+
+model Vendor {
+  id           String       @id @default(uuid())
+  userId       String       @unique
+  businessName String
+  status       VendorStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@map("vendors")
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@map("categories")
+}
+
+enum ProductUnit {
+  PER_POUND
+  PER_KILOGRAM
+  PER_PACKAGE
+  PER_ITEM
+}
+
+model Product {
+  id                String      @id @default(uuid())
+  vendorId          String
+  categoryId        String
+  name              String
+  description       String
+  unit              ProductUnit
+  price             Decimal     @db.Decimal(10, 2)
+  currency          String      @default("JMD")
+  quantityAvailable Int         @default(0)
+  imageUrl          String
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  vendor   Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId])
+  @@index([categoryId])
+  @@map("products")
 }
