@@ -22,7 +22,10 @@ const user = { id: 'user-1', email: 'vendor@example.com', roles: ['VENDOR' as co
 
 describe('ProductsController', () => {
   let productsService: jest.Mocked<
-    Pick<ProductsService, 'create' | 'update' | 'adjustStock' | 'setActive' | 'search' | 'findPublicById'>
+    Pick<
+      ProductsService,
+      'create' | 'update' | 'adjustStock' | 'setActive' | 'search' | 'findPublicById' | 'findOwnProducts'
+    >
   >;
   let controller: ProductsController;
 
@@ -34,6 +37,9 @@ describe('ProductsController', () => {
       setActive: jest.fn().mockResolvedValue(product),
       search: jest.fn().mockResolvedValue({ items: [product], total: 1, page: 1, pageSize: 20 }),
       findPublicById: jest.fn().mockResolvedValue(product),
+      findOwnProducts: jest
+        .fn()
+        .mockResolvedValue({ items: [product], total: 1, page: 1, pageSize: 20 }),
     };
     controller = new ProductsController(productsService as unknown as ProductsService);
   });
@@ -83,5 +89,14 @@ describe('ProductsController', () => {
 
   it('finds a product by id', async () => {
     await expect(controller.findById('product-1')).resolves.toEqual(product);
+  });
+
+  it("lists the authenticated vendor's own products", async () => {
+    const result = await controller.findOwnProducts(user, { page: 1, pageSize: 20 });
+    expect(result.total).toBe(1);
+    expect(productsService.findOwnProducts).toHaveBeenCalledWith('user-1', {
+      page: 1,
+      pageSize: 20,
+    });
   });
 });

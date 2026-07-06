@@ -38,9 +38,15 @@ describe('VendorsRepository', () => {
   });
 
   it('creates a vendor profile in PENDING status', async () => {
-    const vendor = await repository.create({ userId, businessName: "Vera's Catch" });
+    const vendor = await repository.create({
+      userId,
+      businessName: "Vera's Catch",
+      parish: 'KINGSTON',
+      termsAcceptedAt: new Date(),
+    });
     expect(vendor.status).toBe('PENDING');
     expect(vendor.userId).toBe(userId);
+    expect(vendor.parish).toBe('KINGSTON');
   });
 
   it('finds a vendor by id and by userId', async () => {
@@ -59,5 +65,28 @@ describe('VendorsRepository', () => {
     const vendor = await repository.findByUserId(userId);
     const updated = await repository.updateStatus(vendor!.id, 'APPROVED');
     expect(updated.status).toBe('APPROVED');
+  });
+
+  it('updates vendor profile fields', async () => {
+    const vendor = await repository.findByUserId(userId);
+    const updated = await repository.update(vendor!.id, {
+      businessName: 'Updated Name',
+      description: 'A longer description of the business.',
+    });
+    expect(updated.businessName).toBe('Updated Name');
+    expect(updated.description).toBe('A longer description of the business.');
+  });
+
+  describe('findMany', () => {
+    it('filters by status and paginates', async () => {
+      const { items, total } = await repository.findMany('APPROVED', { skip: 0, take: 20 });
+      expect(total).toBeGreaterThanOrEqual(1);
+      expect(items.every((item) => item.status === 'APPROVED')).toBe(true);
+    });
+
+    it('returns all vendors when no status filter is given', async () => {
+      const { items } = await repository.findMany(undefined, { skip: 0, take: 20 });
+      expect(items.length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

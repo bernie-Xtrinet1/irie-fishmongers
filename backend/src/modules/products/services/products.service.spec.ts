@@ -12,7 +12,12 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     id: 'vendor-1',
     userId: 'user-1',
     businessName: "Vera's Catch",
+    description: null,
+    phone: null,
+    parish: 'KINGSTON',
+    logoUrl: null,
     status: 'APPROVED',
+    termsAcceptedAt: new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -205,6 +210,32 @@ describe('ProductsService', () => {
         { categoryId: undefined, vendorId: undefined, search: undefined, activeOnly: true },
         { skip: 0, take: 20 },
       );
+    });
+  });
+
+  describe('findOwnProducts', () => {
+    it("returns the vendor's own products, including inactive ones", async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      productsRepository.findMany.mockResolvedValue({
+        items: [buildProduct({ isActive: false })],
+        total: 1,
+      });
+
+      const result = await service.findOwnProducts('user-1', { page: 1, pageSize: 20 });
+
+      expect(result.total).toBe(1);
+      expect(result.items[0]?.availability).toBe(ProductAvailability.INACTIVE);
+      expect(productsRepository.findMany).toHaveBeenCalledWith(
+        { vendorId: 'vendor-1', activeOnly: false },
+        { skip: 0, take: 20 },
+      );
+    });
+
+    it('throws when the user has no vendor profile', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(null);
+      await expect(
+        service.findOwnProducts('user-1', { page: 1, pageSize: 20 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

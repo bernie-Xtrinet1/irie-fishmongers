@@ -116,6 +116,14 @@ describe('Marketplace (e2e)', () => {
     return { email, accessToken: data<SessionData>(loginRes).accessToken };
   }
 
+  function vendorRegistrationPayload(businessName: string): {
+    businessName: string;
+    parish: 'KINGSTON';
+    acceptedTerms: true;
+  } {
+    return { businessName, parish: 'KINGSTON', acceptedTerms: true };
+  }
+
   async function getFishCategory(): Promise<CategoryData> {
     const res = await request(server()).get('/api/v1/categories');
     const categories = data<CategoryData[]>(res);
@@ -134,7 +142,7 @@ describe('Marketplace (e2e)', () => {
     const registerVendorRes = await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
-      .send({ businessName: "Vera's Fresh Catch" });
+      .send(vendorRegistrationPayload("Vera's Fresh Catch"));
     expect(registerVendorRes.status).toBe(201);
     const vendorProfile = data<VendorData>(registerVendorRes);
     expect(vendorProfile.status).toBe('PENDING');
@@ -223,13 +231,13 @@ describe('Marketplace (e2e)', () => {
     await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
-      .send({ businessName: 'First Business' })
+      .send(vendorRegistrationPayload('First Business'))
       .expect(201);
 
     const res = await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
-      .send({ businessName: 'Second Business' });
+      .send(vendorRegistrationPayload('Second Business'));
     expect(res.status).toBe(409);
   });
 
@@ -238,7 +246,7 @@ describe('Marketplace (e2e)', () => {
     const registerVendorRes = await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
-      .send({ businessName: 'Some Business' });
+      .send(vendorRegistrationPayload('Some Business'));
     const vendorProfile = data<VendorData>(registerVendorRes);
 
     const res = await request(server())
@@ -256,7 +264,7 @@ describe('Marketplace (e2e)', () => {
     const ownerProfileRes = await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${ownerVendor.accessToken}`)
-      .send({ businessName: "Owner's Shop" });
+      .send(vendorRegistrationPayload("Owner's Shop"));
     const ownerProfile = data<VendorData>(ownerProfileRes);
     await request(server())
       .patch(`/api/v1/vendors/${ownerProfile.id}/status`)
@@ -281,7 +289,7 @@ describe('Marketplace (e2e)', () => {
     await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${otherVendor.accessToken}`)
-      .send({ businessName: "Other Vendor's Shop" });
+      .send(vendorRegistrationPayload("Other Vendor's Shop"));
 
     const res = await request(server())
       .patch(`/api/v1/products/${product.id}`)
@@ -312,7 +320,7 @@ describe('Marketplace (e2e)', () => {
     const profileRes = await request(server())
       .post('/api/v1/vendors')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
-      .send({ businessName: 'No Category Shop' });
+      .send(vendorRegistrationPayload('No Category Shop'));
     const profile = data<VendorData>(profileRes);
     await request(server())
       .patch(`/api/v1/vendors/${profile.id}/status`)
