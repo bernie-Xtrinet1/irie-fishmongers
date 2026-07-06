@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, VendorOrderStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
+import { PrismaClientOrTx } from './orders.repository';
 
 const vendorOrderWithItems = Prisma.validator<Prisma.VendorOrderDefaultArgs>()({
   include: { items: true, order: true },
@@ -20,8 +21,12 @@ export class VendorOrdersRepository {
     });
   }
 
-  updateStatus(id: string, status: VendorOrderStatus): Promise<VendorOrderWithItems> {
-    return this.prisma.vendorOrder.update({
+  updateStatus(
+    id: string,
+    status: VendorOrderStatus,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<VendorOrderWithItems> {
+    return client.vendorOrder.update({
       where: { id },
       data: { status },
       include: vendorOrderWithItems.include,

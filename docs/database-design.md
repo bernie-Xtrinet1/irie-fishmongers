@@ -204,3 +204,79 @@ Business rules encoded here:
   integration pattern but has not been verified against a live WiPay merchant
   sandbox - field names and endpoint paths should be confirmed before
   production use.
+
+---
+
+# Delivery Tables (Delivery phase, per .claude/commands/build-delivery.md)
+
+- `drivers` - id, userId (unique, one profile per user), licensePlate,
+  vehicleType (MOTORCYCLE | CAR | VAN | TRUCK), status (PENDING | APPROVED |
+  SUSPENDED | REJECTED, default PENDING - mirrors the Vendor approval
+  workflow, since drivers handle cash-on-delivery collection and customer
+  delivery addresses/phone numbers). Only APPROVED drivers may browse
+  available deliveries, claim one, or report GPS location.
+- `deliveries` - one per `vendor_orders` row (`vendorOrderId` unique), not
+  one per customer `orders` row: each vendor portion of a multi-vendor order
+  is picked up and delivered independently, matching the existing
+  `vendor_orders` granularity already established in the Orders phase rather
+  than inventing a second, parallel status machine. driverId, assignedAt
+  (default now), pickedUpAt/deliveredAt/failedAt (nullable timestamps -
+  whichever is set determines the delivery's current stage), failureReason,
+  proofType (SIGNATURE | PHOTO), proofUrl.
+- `driver_locations` - append-only GPS ping history. driverId, latitude,
+  longitude, recordedAt. Never updated or deleted; tracking always reads the
+  most recent row for a driver.
+- `vendor_orders.status` gains a `DELIVERY_FAILED` value (business-rules2.md's
+  Failed Delivery Policy: a failed delivery is fulfilled-but-undelivered, not
+  refund-eligible like REJECTED/CANCELLED, so it needs its own terminal
+  state).
+
+Business rules encoded here:
+
+- Single authoritative status machine: `VendorOrder.status` remains the one
+  place delivery progress is recorded (no duplicate status field on
+  `deliveries`). `DeliveriesService` owns the driver-controlled slice of the
+  transition graph (READY_FOR_PICKUP -> ASSIGNED_TO_DRIVER -> IN_TRANSIT ->
+  DELIVERED/DELIVERY_FAILED) the same way `VendorOrdersService` already owns
+  the vendor-controlled slice (PENDING -> ACCEPTED -> PREPARING ->
+  READY_FOR_PICKUP) and `OrdersService` owns the customer-cancellation slice -
+  three services, one shared `VendorOrdersRepository.updateStatus`, no
+  duplicated transition logic.
+- Assignment is driver-initiated ("claim," not admin dispatch): any APPROVED
+  driver can claim any READY_FOR_PICKUP vendor order with no existing
+  delivery via `POST /delivery/assign`. A driver may only have one active
+  (not yet delivered or failed) delivery at a time - claiming a second one
+  while the first is still open is rejected, since there is no fleet/route
+  consolidation engine yet (deferred, see below).
+- Driver-facing "available" listings (`GET /delivery/available`) intentionally
+  omit the customer's delivery address/phone - business-rules1.md: "Drivers
+  may only access assigned deliveries" / "information required for delivery."
+  Full delivery-address details only appear once a driver has actually
+  claimed that vendor order.
+- Proof of delivery is required to mark a delivery DELIVERED (business-rules1.md:
+  "Proof of delivery is required"; driver-settlement-engine.md: "Driver
+  compensation may only be generated when ... Proof Of Delivery exists" - not
+  itself implemented yet, but the data model captures it now so settlement
+  doesn't need a schema change later).
+- Customer tracking (`GET /delivery/track/:vendorOrderId`) only exists once a
+  Delivery row exists (i.e., a driver has claimed that vendor order); earlier
+  stages (PENDING/ACCEPTED/PREPARING/READY_FOR_PICKUP) are already visible via
+  the existing `GET /orders/:id`. `DeliveryModule` deliberately has no reverse
+  dependency on `OrdersModule` beyond reusing `VendorOrdersRepository` (mirrors
+  the Payments-phase precedent of keeping module dependencies one-directional)
+  - delivery/tracking info is not embedded into `OrderResponseEntity`.
+
+Deliberately out of scope for this phase (tracked in the ADRs/engine docs but
+not yet built):
+
+- Delivery zones, fleet assets, and route consolidation
+  (docs/integrations/ADR-002-delivery-zones.md, fleet-management-engine.md) -
+  the "one truck per zone" fleet strategy and cross-vendor route planning are
+  a future logistics-scaling initiative, not needed while assignment is
+  driver-claim-based with no fleet to schedule.
+- Driver compensation/settlement calculations
+  (docs/integrations/driver-settlement-engine.md) - a separate later phase;
+  this phase only captures the data (proof of delivery, timestamps) that
+  settlement will eventually need.
+- Cold-chain temperature logging (docs/compliance/cold-chain-requirements.md) -
+  belongs to the Food Safety/Compliance phase.

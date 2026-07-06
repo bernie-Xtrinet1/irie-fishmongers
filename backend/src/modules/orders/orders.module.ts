@@ -21,5 +21,6 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     OrdersRepository,
     VendorOrdersRepository,
   ],
+  exports: [OrdersRepository, VendorOrdersRepository],
 })
 export class OrdersModule {}

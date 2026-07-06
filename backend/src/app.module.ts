@@ -11,6 +11,7 @@ import { validateEnv } from './config/env.validation';
 import { PrismaModule } from './database/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
+import { DeliveryModule } from './modules/delivery/delivery.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -37,6 +38,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     CartModule,
     OrdersModule,
     PaymentsModule,
+    DeliveryModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
