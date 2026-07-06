@@ -88,13 +88,35 @@ enum VendorStatus {
   REJECTED
 }
 
+enum Parish {
+  KINGSTON
+  ST_ANDREW
+  ST_CATHERINE
+  CLARENDON
+  MANCHESTER
+  ST_ELIZABETH
+  HANOVER
+  WESTMORELAND
+  ST_JAMES
+  TRELAWNY
+  ST_ANN
+  ST_MARY
+  PORTLAND
+  ST_THOMAS
+}
+
 model Vendor {
-  id           String       @id @default(uuid())
-  userId       String       @unique
-  businessName String
-  status       VendorStatus @default(PENDING)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id              String       @id @default(uuid())
+  userId          String       @unique
+  businessName    String
+  description     String?
+  phone           String?
+  parish          Parish
+  logoUrl         String?
+  status          VendorStatus @default(PENDING)
+  termsAcceptedAt DateTime
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   products Product[]

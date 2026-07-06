@@ -13,6 +13,7 @@ import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
 import { CreateProductDto } from '../dto/create-product.dto';
+import { PaginationDto } from '../dto/pagination.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
@@ -89,6 +90,19 @@ export class ProductsController {
     @Param('id') id: string,
   ): Promise<ProductResponseEntity> {
     return this.productsService.setActive(user.id, id, true);
+  }
+
+  @Get('mine')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List all of the authenticated vendor's own products (including inactive)" })
+  @ApiResponseDoc({ status: 200, type: PaginatedProductsEntity })
+  findOwnProducts(
+    @CurrentUser() user: RequestUser,
+    @Query() dto: PaginationDto,
+  ): Promise<PaginatedProductsEntity> {
+    return this.productsService.findOwnProducts(user.id, dto);
   }
 
   @Get()
