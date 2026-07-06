@@ -16,6 +16,7 @@ import { DriverSettlementsModule } from './modules/driver-settlements/driver-set
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
+import { VendorSettlementsModule } from './modules/vendor-settlements/vendor-settlements.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
 
 @Module({
@@ -41,6 +42,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     PaymentsModule,
     DeliveryModule,
     DriverSettlementsModule,
+    VendorSettlementsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

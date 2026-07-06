@@ -45,6 +45,13 @@ async function main(): Promise<void> {
       },
     });
   }
+
+  const existingCommissionConfig = await prisma.platformCommissionConfig.findFirst();
+  if (!existingCommissionConfig) {
+    await prisma.platformCommissionConfig.create({
+      data: { commissionRate: 0.1 },
+    });
+  }
 }
 
 main()
