@@ -280,3 +280,101 @@ not yet built):
   settlement will eventually need.
 - Cold-chain temperature logging (docs/compliance/cold-chain-requirements.md) -
   belongs to the Food Safety/Compliance phase.
+
+---
+
+# Driver Settlement Tables (Driver Settlements phase, per
+# docs/integrations/driver-settlement-engine.md)
+
+- `driver.vehicleOwnership` (new field, `VehicleOwnership` enum:
+  PERSONAL_VEHICLE | COMPANY_VEHICLE) - a driver's ownership model (who
+  absorbs fuel/maintenance/insurance), distinct from the existing
+  `vehicleType` (MOTORCYCLE | CAR | VAN | TRUCK, the physical vehicle body
+  type from the Delivery phase). Ownership model determines which
+  compensation formula applies. Required at driver registration going
+  forward; defaults to PERSONAL_VEHICLE for the column itself so the
+  migration applies cleanly.
+- `settlement_rate_configs` - append-only: publishing new rates creates a new
+  row rather than mutating one in place; "current" is always the most
+  recently created row (`findFirst({ orderBy: { createdAt: 'desc' } })`).
+  Past `driver_settlements` rows store their own computed dollar amounts, so
+  they're never retroactively affected by a later rate change. Seeded with
+  the driver-settlement-engine.md example figures (base fee JMD 150, distance
+  rate JMD 20/km, heavy-load threshold 50 lbs / bonus JMD 200, volume bonus
+  tiers 20/40/60 deliveries -> JMD 1,000/3,000/5,000). The peak bonus amount
+  (JMD 100) has no example figure in the source doc - it's a configurable
+  placeholder, adjustable via `POST /driver-settlements/rate-config` without
+  a schema change (satisfies the doc's "must support dynamic pricing...
+  without schema redesign" future requirement).
+- `driver_settlements` - one row per completed `Delivery` (`deliveryId`
+  unique, nullable), plus at most one extra row per driver per settlement
+  period with `deliveryId` null for that week's shared volume bonus (a bonus
+  isn't tied to any single delivery). Summing a driver's rows for a period
+  gives their total weekly payout while every row stays an individually
+  immutable, auditable unit - matches "never overwrite calculations, use
+  immutable records" without needing a separate "volume bonus" side-table.
+  `settlementPeriodStart`/`settlementPeriodEnd` replace the source doc's
+  single opaque `settlement_period` string with queryable DateTime bounds.
+  `vehicleOwnership` is snapshotted onto each row at generation time, so a
+  driver later changing ownership model doesn't retroactively alter historical
+  settlements.
+
+Business rules encoded here:
+
+- `DriverSettlementEngine` (backend/src/modules/driver-settlements/services/driver-settlement-engine.service.ts)
+  is the sole place compensation math happens, per the doc's Implementation
+  Directive ("Business services must use DriverSettlementEngine and shall not
+  implement compensation calculations directly"). It has no repository/DB
+  dependency - pure calculation given a delivery's data and the current rate
+  config. `DriverSettlementsService` is the orchestration layer: it finds
+  eligible deliveries, computes distance via GPS history, and persists what
+  the engine calculates.
+- Settlement grain is one row per completed `Delivery` (per-vendor-order),
+  not per customer `Order`, because that's the unit our system already
+  tracks a driver completing (see Delivery phase notes above: no route
+  consolidation exists yet, so "3 vendor pickups count as 1 completed
+  delivery" from the source doc's Multi-Order Optimization section doesn't
+  yet apply - every Delivery already is exactly one completed delivery in
+  this architecture).
+- Distance compensation is computed from real GPS history, not estimated:
+  `DriverLocationsRepository.findBetween(driverId, pickedUpAt ?? assignedAt, deliveredAt)`
+  fetches that delivery's location pings (safe to attribute to a single
+  delivery because a driver may only have one active delivery at a time -
+  a Delivery phase business rule), and the engine sums the haversine
+  distance between consecutive points. Distance compensation is 0 for
+  COMPANY_VEHICLE drivers (per the source doc's formula, which omits the
+  distance term entirely for company vehicles) and for PERSONAL_VEHICLE
+  drivers when `distanceCompensationEnabled` is off.
+- Heavy load bonus is evaluated from order-item weight: PER_POUND items
+  count directly, PER_KILOGRAM items convert (x 2.20462), and PER_PACKAGE /
+  PER_ITEM units contribute 0 lbs since they carry no defined physical
+  weight in the current Product schema - a genuine data gap (products don't
+  have a weight attribute), not a business decision. Revisit if a weight
+  field is ever added to Product.
+- Peak bonus is weekend-only (Jamaica-local Saturday/Sunday, computed via a
+  fixed UTC-5 offset - Jamaica does not observe DST). The source doc also
+  lists holidays, severe weather, and "high demand periods" as peak
+  triggers, but the platform has no holiday calendar, weather feed, or
+  demand-level signal to evaluate those against, so only the objectively
+  derivable weekend case is implemented; the other three are deferred until
+  a data source exists.
+- Weekly volume bonus is calculated once per driver per settlement period:
+  after generating that run's per-delivery rows, the total completed-delivery
+  count for the driver+period (across all generation runs, not just this
+  one) determines the tier, and a bonus row is created only if one doesn't
+  already exist for that driver+period. Re-running generation for an
+  already-bonused period will not top up the bonus even if the tier
+  increases from additional late-arriving deliveries - settlements are meant
+  to be generated once per week after the window closes (Wednesday payout
+  per the source doc), not repeatedly.
+- Settlement weeks are Jamaica-local (Monday 00:00 through Sunday 23:59,
+  stored as UTC `settlementPeriodStart`/`settlementPeriodEnd`). Generation
+  takes any date within the target week and normalizes it to that week's
+  Jamaica-local Monday - the input's calendar date is treated as the
+  intended Jamaica-local date directly (not reinterpreted through a UTC
+  timezone shift), since an admin typing a plain date means that Jamaica
+  calendar day.
+- Settlement status transitions (PENDING -> APPROVED -> PAID, or ->
+  FAILED/DISPUTED from PENDING or APPROVED) are admin-only via
+  `PATCH /driver-settlements/:id/status`, mirroring how Payments status
+  changes are all admin-gated. Marking PAID sets `payoutDate` automatically.

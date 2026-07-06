@@ -116,6 +116,7 @@ describe('DeliveriesRepository', () => {
       userId: driverUserId,
       licensePlate: 'AB 1234',
       vehicleType: 'CAR',
+      vehicleOwnership: 'PERSONAL_VEHICLE',
     });
     driverId = driver.id;
 

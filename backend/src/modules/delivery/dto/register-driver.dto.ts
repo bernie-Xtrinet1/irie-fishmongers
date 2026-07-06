@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { VehicleType } from '@prisma/client';
+import { VehicleOwnership, VehicleType } from '@prisma/client';
 import { IsEnum, IsString, MinLength } from 'class-validator';
 
 export class RegisterDriverDto {
@@ -11,4 +11,11 @@ export class RegisterDriverDto {
   @ApiProperty({ enum: VehicleType })
   @IsEnum(VehicleType)
   vehicleType!: VehicleType;
+
+  @ApiProperty({
+    enum: VehicleOwnership,
+    description: 'Whether the driver uses their own vehicle or a company-owned one; determines the settlement compensation formula.',
+  })
+  @IsEnum(VehicleOwnership)
+  vehicleOwnership!: VehicleOwnership;
 }

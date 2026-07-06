@@ -213,7 +213,7 @@ describe('Delivery (e2e)', () => {
     const registerRes = await request(server())
       .post('/api/v1/drivers')
       .set('Authorization', `Bearer ${accessToken}`)
-      .send({ licensePlate, vehicleType: 'CAR' });
+      .send({ licensePlate, vehicleType: 'CAR', vehicleOwnership: 'PERSONAL_VEHICLE' });
     const driverId = data<DriverData>(registerRes).id;
 
     await request(server())
@@ -524,7 +524,7 @@ describe('Delivery (e2e)', () => {
     await request(server())
       .post('/api/v1/drivers')
       .set('Authorization', `Bearer ${accessToken}`)
-      .send({ licensePlate: 'PP 0001', vehicleType: 'MOTORCYCLE' })
+      .send({ licensePlate: 'PP 0001', vehicleType: 'MOTORCYCLE', vehicleOwnership: 'PERSONAL_VEHICLE' })
       .expect(201);
 
     const availableRes = await request(server())

@@ -31,7 +31,11 @@ describe('DriversController', () => {
   });
 
   it('registers a driver profile', async () => {
-    const dto = { licensePlate: 'AB 1234', vehicleType: 'CAR' as const };
+    const dto = {
+      licensePlate: 'AB 1234',
+      vehicleType: 'CAR' as const,
+      vehicleOwnership: 'PERSONAL_VEHICLE' as const,
+    };
     await expect(controller.register(user, dto)).resolves.toEqual(driver);
     expect(driversService.register).toHaveBeenCalledWith('user-1', dto);
   });

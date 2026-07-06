@@ -17,4 +17,11 @@ export class DriverLocationsRepository {
       orderBy: { recordedAt: 'desc' },
     });
   }
+
+  findBetween(driverId: string, from: Date, to: Date): Promise<DriverLocation[]> {
+    return this.prisma.driverLocation.findMany({
+      where: { driverId, recordedAt: { gte: from, lte: to } },
+      orderBy: { recordedAt: 'asc' },
+    });
+  }
 }
