@@ -42,10 +42,12 @@ describe('DriversRepository', () => {
       userId,
       licensePlate: 'AB 1234',
       vehicleType: 'MOTORCYCLE',
+      vehicleOwnership: 'PERSONAL_VEHICLE',
     });
     expect(driver.status).toBe('PENDING');
     expect(driver.userId).toBe(userId);
     expect(driver.vehicleType).toBe('MOTORCYCLE');
+    expect(driver.vehicleOwnership).toBe('PERSONAL_VEHICLE');
   });
 
   it('finds a driver by id and by userId', async () => {

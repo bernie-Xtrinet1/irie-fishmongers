@@ -37,6 +37,7 @@ describe('DriverLocationsRepository', () => {
       userId,
       licensePlate: 'CD 5678',
       vehicleType: 'CAR',
+      vehicleOwnership: 'PERSONAL_VEHICLE',
     });
     driverId = driver.id;
   });

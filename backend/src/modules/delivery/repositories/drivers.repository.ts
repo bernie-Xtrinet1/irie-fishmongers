@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Driver, DriverStatus, Prisma, VehicleType } from '@prisma/client';
+import { Driver, DriverStatus, Prisma, VehicleOwnership, VehicleType } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -7,6 +7,7 @@ export interface CreateDriverInput {
   userId: string;
   licensePlate: string;
   vehicleType: VehicleType;
+  vehicleOwnership: VehicleOwnership;
 }
 
 export interface Page {

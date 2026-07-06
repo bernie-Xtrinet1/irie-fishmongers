@@ -25,6 +25,26 @@ async function main(): Promise<void> {
       create: category,
     });
   }
+
+  const existingRateConfig = await prisma.settlementRateConfig.findFirst();
+  if (!existingRateConfig) {
+    await prisma.settlementRateConfig.create({
+      data: {
+        baseFee: 150,
+        distanceCompensationEnabled: true,
+        distanceRatePerKm: 20,
+        heavyLoadThresholdLbs: 50,
+        heavyLoadBonus: 200,
+        peakBonus: 100,
+        volumeBonusTier1Threshold: 20,
+        volumeBonusTier1Amount: 1000,
+        volumeBonusTier2Threshold: 40,
+        volumeBonusTier2Amount: 3000,
+        volumeBonusTier3Threshold: 60,
+        volumeBonusTier3Amount: 5000,
+      },
+    });
+  }
 }
 
 main()

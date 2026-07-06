@@ -48,10 +48,10 @@ model User {
 }
 
 model Role {
-  id        String     @id @default(uuid())
-  name      RoleName   @unique
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id        String   @id @default(uuid())
+  name      RoleName @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   users UserRole[]
 
@@ -334,18 +334,25 @@ enum VehicleType {
   TRUCK
 }
 
-model Driver {
-  id           String       @id @default(uuid())
-  userId       String       @unique
-  licensePlate String
-  vehicleType  VehicleType
-  status       DriverStatus @default(PENDING)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+enum VehicleOwnership {
+  PERSONAL_VEHICLE
+  COMPANY_VEHICLE
+}
 
-  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries Delivery[]
-  locations  DriverLocation[]
+model Driver {
+  id               String           @id @default(uuid())
+  userId           String           @unique
+  licensePlate     String
+  vehicleType      VehicleType
+  vehicleOwnership VehicleOwnership @default(PERSONAL_VEHICLE)
+  status           DriverStatus     @default(PENDING)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries  Delivery[]
+  locations   DriverLocation[]
+  settlements DriverSettlement[]
 
   @@map("drivers")
 }
@@ -369,8 +376,9 @@ model Delivery {
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
 
-  vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
-  driver      Driver      @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder       @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  driver      Driver            @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  settlement  DriverSettlement?
 
   @@index([driverId])
   @@map("deliveries")
@@ -387,4 +395,69 @@ model DriverLocation {
 
   @@index([driverId, recordedAt])
   @@map("driver_locations")
+}
+
+// Append-only: adjusting rates creates a new row rather than mutating the
+// current one. "Current" is always the most recently created row. Past
+// DriverSettlement rows store their own computed amounts, so they are never
+// affected by later rate changes.
+model SettlementRateConfig {
+  id                          String   @id @default(uuid())
+  baseFee                     Decimal  @db.Decimal(10, 2)
+  distanceCompensationEnabled Boolean  @default(true)
+  distanceRatePerKm           Decimal  @db.Decimal(10, 2)
+  heavyLoadThresholdLbs       Decimal  @db.Decimal(10, 2)
+  heavyLoadBonus              Decimal  @db.Decimal(10, 2)
+  peakBonus                   Decimal  @db.Decimal(10, 2)
+  volumeBonusTier1Threshold   Int
+  volumeBonusTier1Amount      Decimal  @db.Decimal(10, 2)
+  volumeBonusTier2Threshold   Int
+  volumeBonusTier2Amount      Decimal  @db.Decimal(10, 2)
+  volumeBonusTier3Threshold   Int
+  volumeBonusTier3Amount      Decimal  @db.Decimal(10, 2)
+  createdAt                   DateTime @default(now())
+
+  @@map("settlement_rate_configs")
+}
+
+enum SettlementStatus {
+  PENDING
+  APPROVED
+  PAID
+  FAILED
+  DISPUTED
+}
+
+// One row per completed Delivery (deliveryId set), plus at most one extra
+// row per driver per settlement period for the shared weekly volume bonus
+// (deliveryId null - a bonus is not tied to any single delivery). Summing a
+// driver's rows for a period gives their total weekly payout while keeping
+// every row an immutable, individually-auditable unit (per Driver Settlement
+// Engine's "never overwrite calculations" requirement).
+model DriverSettlement {
+  id                    String           @id @default(uuid())
+  driverId              String
+  deliveryId            String?          @unique
+  vehicleOwnership      VehicleOwnership
+  baseFee               Decimal          @db.Decimal(10, 2)
+  distanceKm            Decimal          @db.Decimal(10, 2)
+  distanceFee           Decimal          @db.Decimal(10, 2)
+  heavyLoadBonus        Decimal          @db.Decimal(10, 2)
+  peakBonus             Decimal          @db.Decimal(10, 2)
+  volumeBonus           Decimal          @db.Decimal(10, 2)
+  totalPayout           Decimal          @db.Decimal(10, 2)
+  status                SettlementStatus @default(PENDING)
+  settlementPeriodStart DateTime
+  settlementPeriodEnd   DateTime
+  payoutDate            DateTime?
+  notes                 String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  driver   Driver    @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  delivery Delivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+  @@index([settlementPeriodStart, settlementPeriodEnd])
+  @@map("driver_settlements")
 }
