@@ -28,6 +28,8 @@ The platform must ensure:
 The platform must maintain an auditable chain of custody from catch
 to customer delivery.
 
+The platform must verify seafood quality from catch through delivery.
+
 ---
 
 # COMPLIANCE PRINCIPLES
