@@ -378,3 +378,76 @@ Business rules encoded here:
   FAILED/DISPUTED from PENDING or APPROVED) are admin-only via
   `PATCH /driver-settlements/:id/status`, mirroring how Payments status
   changes are all admin-gated. Marking PAID sets `payoutDate` automatically.
+
+---
+
+# Vendor Settlement Tables (Vendor Settlements phase, per
+# docs/integrations/settlement-engine.md)
+
+- `platform_commission_configs` - append-only, same pattern as
+  `settlement_rate_configs`: publishing a new commission rate creates a new
+  row rather than mutating one in place; "current" is the most recently
+  created row. Seeded at 10% (0.10) - the source doc never gives a concrete
+  commission percentage (unlike driver settlements, which had explicit
+  dollar figures for every component), so this is a configurable placeholder,
+  adjustable via `POST /vendor-settlements/commission-rate` without a schema
+  change.
+- `vendor_settlements` - one row per `VendorOrder` (`vendorOrderId` unique),
+  not per customer `Order` + separate vendor id pair as the source doc's
+  entity literally lists - a `VendorOrder` already uniquely identifies both,
+  so a compound key would be redundant (same adaptation as
+  `driver_settlements.deliveryId`). `grossAmount` is the vendor order's own
+  `subtotal` directly - no quantity-supplied ratio formula is needed because
+  our order model splits by vendor-owned distinct `vendor_orders` rows
+  (simple cart-based split established in the Orders phase), not the
+  cross-vendor same-product demand-splitting the source doc's Allocation
+  Formula example assumes (that scenario belongs to the still-unbuilt Order
+  Allocation Engine). `platformFee = grossAmount * commissionRate`,
+  `netAmount = grossAmount - platformFee`. Delivery fees are trivially
+  excluded from this calculation per the source doc, since the platform
+  doesn't charge a separate delivery fee anywhere yet - there's nothing to
+  exclude.
+- `vendor_settlement_adjustments` - immutable correction records for
+  settlement-engine.md's "If customer receives refund: Vendor settlements
+  must be recalculated." `amount` may be positive (top-up) or negative
+  (clawback); a settlement's original `grossAmount`/`platformFee`/
+  `netAmount` are never edited (per "never overwrite calculations, use
+  immutable records") - the true payout is `netAmount + sum(adjustments)`,
+  exposed as the response entity's computed `adjustedNetAmount` field.
+
+Business rules encoded here:
+
+- Settlement eligibility (`VendorSettlementsRepository.findEligibleVendorOrders`)
+  requires both `VendorOrder.status = DELIVERED` (matching the source doc's
+  "Order Status = DELIVERED AND Proof of Delivery exists" trigger - proof is
+  already guaranteed whenever a `Delivery` reaches DELIVERED, per the
+  Delivery phase) and the order's `Payment.status = PAID`. The payment check
+  isn't in the source doc's trigger list explicitly, but it's a necessary
+  precondition here: a cash-on-delivery order can be DELIVERED while its
+  payment is still PENDING (awaiting the admin's manual
+  `PATCH /payments/:id/mark-paid` collection confirmation), and a vendor
+  can't be settled for money the platform hasn't actually collected.
+- Generation (`POST /vendor-settlements/generate`) has no settlement-period/
+  week concept, unlike Driver Settlements - the source doc's Future Support
+  section asks for weekly/monthly/instant payout flexibility "without schema
+  changes," which this satisfies by not baking in a cadence at all: an admin
+  (or an external scheduler) decides when to call the endpoint, and it
+  simply settles every currently-eligible vendor order that doesn't already
+  have one. Safe to re-run at any cadence - already-settled vendor orders
+  are excluded by the `settlement: null` filter.
+- Refund-driven recalculation is a manual admin action
+  (`POST /vendor-settlements/:id/adjustments`), not automatic. A `Payment`/
+  `Refund` is scoped to the whole `Order`, not to a specific `VendorOrder`,
+  so for a multi-vendor order there's no reliable way to determine which
+  vendor's settlement an arbitrary admin-issued refund should be attributed
+  to without a human deciding - only the already-vendor-scoped rejection
+  refund (`VendorOrdersService.reject` -> `PaymentsService.refundForOrder`)
+  is unambiguous, and a REJECTED vendor order never reaches DELIVERED, so it
+  never becomes settlement-eligible in the first place. This is a genuine
+  scope boundary given the current data model, not a business decision to
+  skip automatic recalculation.
+- Settlement status transitions (PENDING -> APPROVED -> PAID, or -> FAILED
+  from PENDING or APPROVED - no DISPUTED status here, unlike Driver
+  Settlements, matching settlement-engine.md's exact status list) are
+  admin-only via `PATCH /vendor-settlements/:id/status`. Marking PAID sets
+  `paymentDate` automatically.

@@ -121,9 +121,10 @@ model Vendor {
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   products     Product[]
   vendorOrders VendorOrder[]
+  settlements  VendorSettlement[]
 
   @@map("vendors")
 }
@@ -239,10 +240,11 @@ model VendorOrder {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  order    Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  vendor   Vendor      @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  items    OrderItem[]
-  delivery Delivery?
+  order      Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendor     Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items      OrderItem[]
+  delivery   Delivery?
+  settlement VendorSettlement?
 
   @@index([vendorId])
   @@index([orderId])
@@ -460,4 +462,65 @@ model DriverSettlement {
   @@index([driverId])
   @@index([settlementPeriodStart, settlementPeriodEnd])
   @@map("driver_settlements")
+}
+
+// Append-only: adjusting the commission rate creates a new row rather than
+// mutating the current one, mirroring SettlementRateConfig. "Current" is
+// always the most recently created row.
+model PlatformCommissionConfig {
+  id             String   @id @default(uuid())
+  commissionRate Decimal  @db.Decimal(5, 4)
+  createdAt      DateTime @default(now())
+
+  @@map("platform_commission_configs")
+}
+
+enum VendorSettlementStatus {
+  PENDING
+  APPROVED
+  PAID
+  FAILED
+}
+
+// One row per DELIVERED-and-paid VendorOrder. Never mutated once created
+// (per "never overwrite calculations, use immutable records") - refund-driven
+// corrections are recorded as separate VendorSettlementAdjustment rows
+// instead of editing netAmount in place.
+model VendorSettlement {
+  id            String                 @id @default(uuid())
+  vendorId      String
+  vendorOrderId String                 @unique
+  grossAmount   Decimal                @db.Decimal(10, 2)
+  platformFee   Decimal                @db.Decimal(10, 2)
+  netAmount     Decimal                @db.Decimal(10, 2)
+  status        VendorSettlementStatus @default(PENDING)
+  paymentDate   DateTime?
+  notes         String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  vendor      Vendor                       @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder                  @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  adjustments VendorSettlementAdjustment[]
+
+  @@index([vendorId])
+  @@map("vendor_settlements")
+}
+
+// Immutable correction record for a settlement whose underlying payment was
+// later refunded (settlement-engine.md's "vendor settlements must be
+// recalculated"). amount may be negative (clawback) or positive (top-up);
+// the settlement's original grossAmount/platformFee/netAmount are never
+// edited - the adjusted total is netAmount + sum(adjustments).
+model VendorSettlementAdjustment {
+  id           String   @id @default(uuid())
+  settlementId String
+  amount       Decimal  @db.Decimal(10, 2)
+  reason       String
+  createdAt    DateTime @default(now())
+
+  settlement VendorSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+
+  @@index([settlementId])
+  @@map("vendor_settlement_adjustments")
 }

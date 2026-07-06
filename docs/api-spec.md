@@ -112,6 +112,20 @@ GET /driver-settlements/rate-config (admin only)
 
 POST /driver-settlements/rate-config (admin only - publish new compensation rates)
 
+POST /vendor-settlements/generate (admin only - settle all currently-eligible vendor orders)
+
+GET /vendor-settlements/mine (vendor only)
+
+GET /vendor-settlements (admin only)
+
+PATCH /vendor-settlements/:id/status (admin only - approve / pay / fail)
+
+POST /vendor-settlements/:id/adjustments (admin only - manual correction, e.g. after a refund)
+
+GET /vendor-settlements/commission-rate (admin only)
+
+POST /vendor-settlements/commission-rate (admin only - publish new commission rate)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.
