@@ -80,7 +80,25 @@ PATCH /payments/:id/mark-paid (admin only - confirm cash-on-delivery collection)
 
 POST /payments/:id/refund (admin only - exceptional-circumstances refund)
 
-GET /deliveries
+POST /drivers (driver only - self-register a driver profile)
+
+GET /drivers/me (driver only)
+
+POST /drivers/me/location (approved driver only - report GPS location)
+
+GET /drivers (admin only)
+
+PATCH /drivers/:id/status (admin only)
+
+GET /delivery/available (approved driver only)
+
+POST /delivery/assign (approved driver only - claim a ready-for-pickup vendor order)
+
+GET /delivery/mine (driver only)
+
+PATCH /delivery/:id/status (owning driver only - PICKED_UP / DELIVERED / FAILED)
+
+GET /delivery/track/:vendorOrderId (owning customer only)
 
 ---
 
