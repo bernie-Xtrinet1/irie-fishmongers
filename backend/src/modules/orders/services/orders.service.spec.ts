@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Prisma, Product, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
+import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { PrismaService } from '../../../database/prisma.service';
@@ -75,7 +76,30 @@ const checkoutDto = {
   deliveryAddressLine1: '1 Test Street',
   deliveryParish: 'KINGSTON' as const,
   deliveryPhone: '+18765551234',
+  paymentMethod: 'CASH_ON_DELIVERY' as const,
 };
+
+function buildPaymentResponse(): {
+  id: string;
+  orderId: string;
+  provider: 'CASH_ON_DELIVERY';
+  status: 'PENDING';
+  amount: string;
+  currency: string;
+  paidAt: Date | null;
+  createdAt: Date;
+} {
+  return {
+    id: 'payment-1',
+    orderId: 'order-1',
+    provider: 'CASH_ON_DELIVERY',
+    status: 'PENDING',
+    amount: '1000',
+    currency: 'JMD',
+    paidAt: null,
+    createdAt: new Date(),
+  };
+}
 
 describe('OrdersService', () => {
   let prisma: { $transaction: jest.Mock };
@@ -84,6 +108,7 @@ describe('OrdersService', () => {
   let cartRepository: jest.Mocked<Pick<CartRepository, 'findOrCreateByCustomerId' | 'clear'>>;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
+  let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
   let service: OrdersService;
 
   beforeEach(() => {
@@ -97,6 +122,10 @@ describe('OrdersService', () => {
     cartRepository = { findOrCreateByCustomerId: jest.fn(), clear: jest.fn() };
     productsRepository = { adjustStock: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
+    paymentsService = {
+      initiatePayment: jest.fn().mockResolvedValue({ payment: buildPaymentResponse(), redirectUrl: undefined }),
+      getByOrderId: jest.fn().mockResolvedValue(buildPaymentResponse()),
+    };
 
     service = new OrdersService(
       prisma as unknown as PrismaService,
@@ -105,6 +134,7 @@ describe('OrdersService', () => {
       cartRepository as unknown as CartRepository,
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
+      paymentsService as unknown as PaymentsService,
     );
   });
 

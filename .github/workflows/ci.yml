@@ -44,6 +44,10 @@ jobs:
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_SECRET: ci-test-refresh-secret-at-least-32-characters-long
       JWT_REFRESH_EXPIRES_IN: 7d
+      APP_BASE_URL: http://localhost:3001
+      WIPAY_API_URL: https://tx.wipayfinancial.com/plugins/payments
+      WIPAY_ACCOUNT_NUMBER: ci-test-account-number
+      WIPAY_API_KEY: ci-test-wipay-key
 
     steps:
       - uses: actions/checkout@v4

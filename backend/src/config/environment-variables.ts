@@ -40,4 +40,18 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   JWT_REFRESH_EXPIRES_IN!: string;
+
+  @IsUrl({ require_tld: false })
+  APP_BASE_URL!: string;
+
+  @IsUrl({ require_tld: false })
+  WIPAY_API_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  WIPAY_ACCOUNT_NUMBER!: string;
+
+  @IsString()
+  @MinLength(1)
+  WIPAY_API_KEY!: string;
 }

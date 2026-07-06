@@ -222,6 +222,7 @@ model Order {
 
   customer     User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   vendorOrders VendorOrder[]
+  payment      Payment?
 
   @@index([customerId])
   @@map("orders")
@@ -260,4 +261,58 @@ model OrderItem {
   product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@map("order_items")
+}
+
+enum PaymentProviderName {
+  WIPAY
+  CASH_ON_DELIVERY
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                String              @id @default(uuid())
+  orderId           String              @unique
+  provider          PaymentProviderName
+  status            PaymentStatus       @default(PENDING)
+  amount            Decimal             @db.Decimal(10, 2)
+  currency          String              @default("JMD")
+  providerReference String?
+  failureReason     String?
+  paidAt            DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refunds Refund[]
+
+  @@map("payments")
+}
+
+enum RefundStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model Refund {
+  id                String       @id @default(uuid())
+  paymentId         String
+  amount            Decimal      @db.Decimal(10, 2)
+  reason            String
+  status            RefundStatus @default(PENDING)
+  providerReference String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@map("refunds")
 }

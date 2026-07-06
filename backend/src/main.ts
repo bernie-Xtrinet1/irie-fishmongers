@@ -11,7 +11,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/http/http-exception.filter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const configService = app.get(ConfigService);
 
   const apiPrefix = configService.getOrThrow<string>('API_PREFIX');
