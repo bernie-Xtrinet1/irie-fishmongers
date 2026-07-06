@@ -37,12 +37,16 @@ model User {
   createdAt                       DateTime   @default(now())
   updatedAt                       DateTime   @updatedAt
 
-  roles         UserRole[]
-  refreshTokens RefreshToken[]
-  vendor        Vendor?
-  driver        Driver?
-  cart          Cart?
-  orders        Order[]
+  roles               UserRole[]
+  refreshTokens       RefreshToken[]
+  vendor              Vendor?
+  driver              Driver?
+  cart                Cart?
+  orders              Order[]
+  temperatureReadings TemperatureReading[]
+  qualityInspections  QualityInspection[]
+  reportedIncidents   FoodSafetyIncident[]
+  createdRecalls      Recall[]
 
   @@map("users")
 }
@@ -125,6 +129,7 @@ model Vendor {
   products     Product[]
   vendorOrders VendorOrder[]
   settlements  VendorSettlement[]
+  seafoodLots  SeafoodLot[]
 
   @@map("vendors")
 }
@@ -152,6 +157,7 @@ model Product {
   id                String      @id @default(uuid())
   vendorId          String
   categoryId        String
+  lotId             String?
   name              String
   description       String
   unit              ProductUnit
@@ -165,11 +171,13 @@ model Product {
 
   vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   category   Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  lot        SeafoodLot? @relation(fields: [lotId], references: [id], onDelete: Restrict)
   cartItems  CartItem[]
   orderItems OrderItem[]
 
   @@index([vendorId])
   @@index([categoryId])
+  @@index([lotId])
   @@map("products")
 }
 
@@ -523,4 +531,252 @@ model VendorSettlementAdjustment {
 
   @@index([settlementId])
   @@map("vendor_settlement_adjustments")
+}
+
+// ---------------------------------------------------------------------------
+// Food Safety / Compliance (per .claude/rules/seafood-compliance-rules.md and
+// the newer food-safety.md / cold-chain-requirements.md / traceability-
+// requirements.md / recall-management.md / vendor-compliance.md docs).
+//
+// Scope note: this is the traceability/cold-chain/recall CORE, anchored on
+// what the platform already models (Vendor, Product, VendorOrder, Delivery).
+// Deliberately deferred (see docs/database-design.md for the full rationale):
+// - Separate Fisherman/Vessel/Landing-Site registration entities - vendors
+//   register lots directly, since this platform has no independent
+//   fisherman-onboarding layer distinct from vendor onboarding.
+// - Real IoT sensor ingestion (no hardware exists to integrate with).
+// - A scheduled/random vendor-audit subsystem distinct from lot inspections.
+// - Actual notification delivery (email/SMS/push) - no Notifications module
+//   exists yet anywhere in this codebase.
+// ---------------------------------------------------------------------------
+
+enum SeafoodStorageType {
+  FRESH
+  FROZEN
+}
+
+enum WeightUnit {
+  POUNDS
+  KILOGRAMS
+}
+
+enum FoodSafetyStatus {
+  SAFE
+  UNDER_REVIEW
+  SAFETY_HOLD
+  QUARANTINED
+  RECALLED
+  REJECTED
+}
+
+enum FreshnessGrade {
+  GRADE_A
+  GRADE_B
+  GRADE_C
+  REJECTED
+}
+
+// The traceability anchor: every catch a vendor brings in is registered as a
+// lot before any product can reference it. lotNumber is the human-readable
+// identifier surfaced to customers (business-rules1.md's "BATCH-2027-000123"
+// example / seafood-compliance-rules.md's "LOT-2025-000001").
+model SeafoodLot {
+  id               String             @id @default(uuid())
+  lotNumber        String             @unique
+  vendorId         String
+  species          String
+  storageType      SeafoodStorageType
+  catchDate        DateTime
+  catchLocation    String?
+  landingSite      String?
+  weight           Decimal            @db.Decimal(10, 2)
+  weightUnit       WeightUnit
+  freshnessGrade   FreshnessGrade?
+  qualityScore     Int?
+  foodSafetyStatus FoodSafetyStatus   @default(SAFE)
+  statusNotes      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  vendor              Vendor               @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  products            Product[]
+  temperatureReadings TemperatureReading[]
+  temperatureAlerts   TemperatureAlert[]
+  inspections         QualityInspection[]
+  incidents           FoodSafetyIncident[]
+  recallLots          RecallLot[]
+
+  @@index([vendorId])
+  @@map("seafood_lots")
+}
+
+enum TemperatureCheckpoint {
+  VENDOR_STORAGE
+  PACKING
+  DISPATCH
+  DRIVER_PICKUP
+  IN_TRANSIT
+  DELIVERY
+}
+
+model TemperatureReading {
+  id           String                @id @default(uuid())
+  lotId        String
+  checkpoint   TemperatureCheckpoint
+  temperatureC Decimal               @db.Decimal(5, 2)
+  recordedById String
+  latitude     Float?
+  longitude    Float?
+  photoUrl     String?
+  recordedAt   DateTime              @default(now())
+
+  lot        SeafoodLot        @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  recordedBy User              @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  alert      TemperatureAlert?
+
+  @@index([lotId])
+  @@map("temperature_readings")
+}
+
+enum AlertSeverity {
+  WARNING
+  CRITICAL
+  EMERGENCY
+}
+
+// Auto-generated whenever a TemperatureReading falls outside the lot's
+// storageType band (Fresh 0-4C, Frozen <= -18C). Never overwritten - each
+// out-of-range reading gets its own alert row.
+model TemperatureAlert {
+  id         String        @id @default(uuid())
+  readingId  String        @unique
+  lotId      String
+  severity   AlertSeverity
+  actualC    Decimal       @db.Decimal(5, 2)
+  resolved   Boolean       @default(false)
+  resolvedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  reading TemperatureReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
+  lot     SeafoodLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@index([lotId])
+  @@map("temperature_alerts")
+}
+
+enum InspectionResult {
+  PASSED
+  CONDITIONAL
+  REJECTED
+  QUARANTINED
+}
+
+// Admin-conducted (no separate Inspector role exists in this platform's
+// RBAC - food safety authority sits with ADMINISTRATOR). Recording an
+// inspection updates the lot's freshnessGrade/qualityScore/foodSafetyStatus.
+model QualityInspection {
+  id             String           @id @default(uuid())
+  lotId          String
+  inspectorId    String
+  result         InspectionResult
+  freshnessGrade FreshnessGrade
+  qualityScore   Int
+  notes          String?
+  photoUrl       String?
+  inspectedAt    DateTime         @default(now())
+
+  lot       SeafoodLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  inspector User       @relation(fields: [inspectorId], references: [id], onDelete: Restrict)
+
+  @@index([lotId])
+  @@map("quality_inspections")
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+// Reportable by the owning vendor or an admin (contamination, spoilage,
+// packaging failure, improper handling). Temperature-specific problems are
+// already captured via TemperatureReading/TemperatureAlert; this covers
+// everything else in food-safety.md's Hazard Management section.
+model FoodSafetyIncident {
+  id               String           @id @default(uuid())
+  lotId            String
+  reportedById     String
+  severity         IncidentSeverity
+  status           IncidentStatus   @default(OPEN)
+  description      String
+  photoUrl         String?
+  correctiveAction String?
+  resolvedAt       DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  lot        SeafoodLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  reportedBy User       @relation(fields: [reportedById], references: [id], onDelete: Restrict)
+
+  @@index([lotId])
+  @@map("food_safety_incidents")
+}
+
+enum RecallSeverityClass {
+  CLASS_I
+  CLASS_II
+  CLASS_III
+}
+
+enum RecallStatus {
+  DRAFT
+  ACTIVE
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+// Admin-only. Activating a recall (DRAFT -> ACTIVE) cascades
+// foodSafetyStatus = RECALLED onto every linked lot. Per recall-
+// management.md, "No recalled product may re-enter the marketplace without
+// compliance approval" - resolving/closing a recall does NOT automatically
+// clear the lot back to SAFE; that requires a separate, deliberate admin
+// action on the lot itself.
+model Recall {
+  id              String              @id @default(uuid())
+  severityClass   RecallSeverityClass
+  status          RecallStatus        @default(DRAFT)
+  reason          String
+  rootCause       String?
+  resolutionNotes String?
+  createdById     String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  closedAt        DateTime?
+
+  createdBy User        @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  lots      RecallLot[]
+
+  @@map("recalls")
+}
+
+model RecallLot {
+  id       String @id @default(uuid())
+  recallId String
+  lotId    String
+
+  recall Recall     @relation(fields: [recallId], references: [id], onDelete: Cascade)
+  lot    SeafoodLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@unique([recallId, lotId])
+  @@index([lotId])
+  @@map("recall_lots")
 }

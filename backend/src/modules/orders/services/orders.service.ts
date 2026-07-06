@@ -40,6 +40,11 @@ export class OrdersService {
       if (!item.product.isActive) {
         throw new BadRequestException(`"${item.product.name}" is no longer available`);
       }
+      if (item.product.lot && item.product.lot.foodSafetyStatus !== 'SAFE') {
+        throw new BadRequestException(
+          `"${item.product.name}" is currently on hold pending a food-safety review`,
+        );
+      }
       const vendor = await this.vendorsRepository.findById(item.product.vendorId);
       if (!vendor || vendor.status !== 'APPROVED') {
         throw new BadRequestException(

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { SeafoodLotsModule } from '../food-safety/seafood-lots.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { CategoriesController } from './controllers/categories.controller';
 import { ProductsController } from './controllers/products.controller';
@@ -10,7 +11,7 @@ import { CategoriesService } from './services/categories.service';
 import { ProductsService } from './services/products.service';
 
 @Module({
-  imports: [AuthModule, VendorsModule],
+  imports: [AuthModule, VendorsModule, SeafoodLotsModule],
   controllers: [ProductsController, CategoriesController],
   providers: [ProductsService, CategoriesService, ProductsRepository, CategoriesRepository],
   exports: [ProductsRepository, CategoriesRepository],

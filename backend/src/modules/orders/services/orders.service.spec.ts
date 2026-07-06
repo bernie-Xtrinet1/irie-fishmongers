@@ -1,20 +1,22 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Prisma, Product, Vendor } from '@prisma/client';
+import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
-import { ProductsRepository } from '../../products/repositories/products.repository';
+import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdersRepository, OrderWithDetails } from '../repositories/orders.repository';
 import { VendorOrdersRepository } from '../repositories/vendor-orders.repository';
 import { OrdersService } from './orders.service';
 
-function buildProduct(overrides: Partial<Product> = {}): Product {
+function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
   return {
     id: 'product-1',
     vendorId: 'vendor-1',
     categoryId: 'cat-1',
+    lotId: null,
+    lot: null,
     name: 'Fresh Snapper',
     description: 'Caught this morning.',
     unit: 'PER_POUND',
@@ -23,6 +25,28 @@ function buildProduct(overrides: Partial<Product> = {}): Product {
     quantityAvailable: 20,
     imageUrl: 'https://cdn.example.com/snapper.jpg',
     isActive: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
+  return {
+    id: 'lot-1',
+    lotNumber: 'LOT-2026-000001',
+    vendorId: 'vendor-1',
+    species: 'Snapper',
+    storageType: 'FRESH',
+    catchDate: new Date(),
+    catchLocation: null,
+    landingSite: null,
+    weight: new Prisma.Decimal(20),
+    weightUnit: 'POUNDS',
+    freshnessGrade: null,
+    qualityScore: null,
+    foodSafetyStatus: 'SAFE',
+    statusNotes: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -158,6 +182,30 @@ describe('OrdersService', () => {
               createdAt: new Date(),
               updatedAt: new Date(),
               product: buildProduct({ isActive: false }),
+            },
+          ],
+        }),
+      );
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('rejects checkout when a cart item is linked to a lot that is not SAFE', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(
+        buildCart({
+          items: [
+            {
+              id: 'item-1',
+              cartId: 'cart-1',
+              productId: 'product-1',
+              quantity: 1,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              product: buildProduct({
+                lotId: 'lot-1',
+                lot: buildLot({ foodSafetyStatus: 'RECALLED' }),
+              }),
             },
           ],
         }),

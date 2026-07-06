@@ -1,11 +1,19 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { ProductUnit } from '@prisma/client';
-import { IsEnum, IsInt, IsNumber, IsString, IsUrl, IsUUID, Min, MinLength } from 'class-validator';
+import { IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUrl, IsUUID, Min, MinLength } from 'class-validator';
 
 export class CreateProductDto {
   @ApiProperty()
   @IsUUID()
   categoryId!: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Seafood lot this product traces back to; must belong to the same vendor and be SAFE',
+  })
+  @IsOptional()
+  @IsUUID()
+  lotId?: string;
 
   @ApiProperty({ example: 'Fresh Red Snapper' })
   @IsString()
