@@ -18,6 +18,12 @@ POST /vendors
 
 GET /vendors/me
 
+PATCH /vendors/me (owning vendor only)
+
+GET /vendors (admin only)
+
+GET /vendors/:id/public
+
 PATCH /vendors/:id/status (admin only)
 
 GET /categories
@@ -27,6 +33,8 @@ POST /categories (admin only)
 GET /products
 
 GET /products/:id
+
+GET /products/mine (vendor only)
 
 POST /products (approved vendor only)
 

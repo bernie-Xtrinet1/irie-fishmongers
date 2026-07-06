@@ -38,7 +38,12 @@ describe('ProductsRepository', () => {
       emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
     });
     userId = user.id;
-    vendor = await vendorsRepository.create({ userId, businessName: "Vera's Catch" });
+    vendor = await vendorsRepository.create({
+      userId,
+      businessName: "Vera's Catch",
+      parish: 'KINGSTON',
+      termsAcceptedAt: new Date(),
+    });
     category = await categoriesRepository.create({
       name: `Test Category ${randomUUID()}`,
       slug: `test-category-${randomUUID()}`,

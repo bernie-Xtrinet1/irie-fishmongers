@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { VendorStatus } from '@prisma/client';
+import { Parish, VendorStatus } from '@prisma/client';
 
 export class VendorResponseEntity {
   @ApiProperty()
@@ -11,8 +11,23 @@ export class VendorResponseEntity {
   @ApiProperty()
   businessName!: string;
 
+  @ApiProperty({ required: false, nullable: true })
+  description!: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  phone!: string | null;
+
+  @ApiProperty({ enum: Parish })
+  parish!: Parish;
+
+  @ApiProperty({ required: false, nullable: true })
+  logoUrl!: string | null;
+
   @ApiProperty({ enum: VendorStatus })
   status!: VendorStatus;
+
+  @ApiProperty()
+  termsAcceptedAt!: Date;
 
   @ApiProperty()
   createdAt!: Date;

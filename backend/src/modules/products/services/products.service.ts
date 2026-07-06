@@ -8,6 +8,7 @@ import { Product } from '@prisma/client';
 
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
+import { PaginationDto } from '../dto/pagination.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
@@ -95,6 +96,25 @@ export class ProductsService {
         search: dto.search,
         activeOnly: true,
       },
+      { skip: (dto.page - 1) * dto.pageSize, take: dto.pageSize },
+    );
+
+    return {
+      items: items.map((product) => ProductsService.toResponse(product)),
+      total,
+      page: dto.page,
+      pageSize: dto.pageSize,
+    };
+  }
+
+  async findOwnProducts(userId: string, dto: PaginationDto): Promise<PaginatedProductsEntity> {
+    const vendor = await this.vendorsRepository.findByUserId(userId);
+    if (!vendor) {
+      throw new NotFoundException('No vendor profile exists for this account');
+    }
+
+    const { items, total } = await this.productsRepository.findMany(
+      { vendorId: vendor.id, activeOnly: false },
       { skip: (dto.page - 1) * dto.pageSize, take: dto.pageSize },
     );
 
