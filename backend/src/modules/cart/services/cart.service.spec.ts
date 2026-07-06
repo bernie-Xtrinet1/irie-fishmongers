@@ -1,16 +1,18 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Prisma, Product, Vendor } from '@prisma/client';
+import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
-import { ProductsRepository } from '../../products/repositories/products.repository';
+import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository, CartWithItems } from '../repositories/cart.repository';
 import { CartService } from './cart.service';
 
-function buildProduct(overrides: Partial<Product> = {}): Product {
+function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
   return {
     id: 'product-1',
     vendorId: 'vendor-1',
     categoryId: 'cat-1',
+    lotId: null,
+    lot: null,
     name: 'Fresh Snapper',
     description: 'Caught this morning.',
     unit: 'PER_POUND',
@@ -19,6 +21,28 @@ function buildProduct(overrides: Partial<Product> = {}): Product {
     quantityAvailable: 20,
     imageUrl: 'https://cdn.example.com/snapper.jpg',
     isActive: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
+  return {
+    id: 'lot-1',
+    lotNumber: 'LOT-2026-000001',
+    vendorId: 'vendor-1',
+    species: 'Snapper',
+    storageType: 'FRESH',
+    catchDate: new Date(),
+    catchLocation: null,
+    landingSite: null,
+    weight: new Prisma.Decimal(20),
+    weightUnit: 'POUNDS',
+    freshnessGrade: null,
+    qualityScore: null,
+    foodSafetyStatus: 'SAFE',
+    statusNotes: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -147,6 +171,16 @@ describe('CartService', () => {
       await expect(
         service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects adding a product whose lot is not SAFE', async () => {
+      productsRepository.findById.mockResolvedValue(
+        buildProduct({ lotId: 'lot-1', lot: buildLot({ foodSafetyStatus: 'RECALLED' }) }),
+      );
+
+      await expect(
+        service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 

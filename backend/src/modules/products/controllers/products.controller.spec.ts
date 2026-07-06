@@ -6,6 +6,7 @@ const product: ProductResponseEntity = {
   id: 'product-1',
   vendorId: 'vendor-1',
   categoryId: 'cat-1',
+  lotId: null,
   name: 'Fresh Snapper',
   description: 'Caught this morning off the north coast.',
   unit: 'PER_POUND',

@@ -13,6 +13,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
+import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -43,6 +44,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     DeliveryModule,
     DriverSettlementsModule,
     VendorSettlementsModule,
+    FoodSafetyModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

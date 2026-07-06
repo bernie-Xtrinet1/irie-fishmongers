@@ -5,6 +5,7 @@ export enum ProductAvailability {
   ACTIVE = 'ACTIVE',
   OUT_OF_STOCK = 'OUT_OF_STOCK',
   INACTIVE = 'INACTIVE',
+  ON_HOLD = 'ON_HOLD',
 }
 
 export class ProductResponseEntity {
@@ -16,6 +17,9 @@ export class ProductResponseEntity {
 
   @ApiProperty()
   categoryId!: string;
+
+  @ApiProperty({ required: false, nullable: true })
+  lotId!: string | null;
 
   @ApiProperty()
   name!: string;

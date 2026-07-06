@@ -4,9 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Product } from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
@@ -14,7 +14,7 @@ import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { CategoriesRepository } from '../repositories/categories.repository';
-import { ProductsRepository } from '../repositories/products.repository';
+import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
 
 @Injectable()
 export class ProductsService {
@@ -22,6 +22,7 @@ export class ProductsService {
     private readonly productsRepository: ProductsRepository,
     private readonly categoriesRepository: CategoriesRepository,
     private readonly vendorsRepository: VendorsRepository,
+    private readonly seafoodLotsRepository: SeafoodLotsRepository,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -36,6 +37,18 @@ export class ProductsService {
     const category = await this.categoriesRepository.findById(dto.categoryId);
     if (!category) {
       throw new BadRequestException('Category does not exist');
+    }
+
+    if (dto.lotId) {
+      const lot = await this.seafoodLotsRepository.findById(dto.lotId);
+      if (!lot || lot.vendorId !== vendor.id) {
+        throw new BadRequestException('Seafood lot does not exist or does not belong to you');
+      }
+      if (lot.foodSafetyStatus !== 'SAFE') {
+        throw new BadRequestException(
+          'This seafood lot is not currently cleared for sale (must be SAFE)',
+        );
+      }
     }
 
     const product = await this.productsRepository.create({ ...dto, vendorId: vendor.id });
@@ -126,7 +139,7 @@ export class ProductsService {
     };
   }
 
-  private async getOwnedProduct(userId: string, productId: string): Promise<Product> {
+  private async getOwnedProduct(userId: string, productId: string): Promise<ProductWithLot> {
     const vendor = await this.vendorsRepository.findByUserId(userId);
     if (!vendor) {
       throw new NotFoundException('No vendor profile exists for this account');
@@ -143,10 +156,12 @@ export class ProductsService {
     return product;
   }
 
-  private static toResponse(product: Product): ProductResponseEntity {
+  private static toResponse(product: ProductWithLot): ProductResponseEntity {
     let availability: ProductAvailability;
     if (!product.isActive) {
       availability = ProductAvailability.INACTIVE;
+    } else if (product.lot && product.lot.foodSafetyStatus !== 'SAFE') {
+      availability = ProductAvailability.ON_HOLD;
     } else if (product.quantityAvailable === 0) {
       availability = ProductAvailability.OUT_OF_STOCK;
     } else {
@@ -157,6 +172,7 @@ export class ProductsService {
       id: product.id,
       vendorId: product.vendorId,
       categoryId: product.categoryId,
+      lotId: product.lotId,
       name: product.name,
       description: product.description,
       unit: product.unit,

@@ -451,3 +451,130 @@ Business rules encoded here:
   Settlements, matching settlement-engine.md's exact status list) are
   admin-only via `PATCH /vendor-settlements/:id/status`. Marking PAID sets
   `paymentDate` automatically.
+
+---
+
+# Food Safety / Compliance Tables (Food Safety/Compliance phase, per
+# docs/compliance/food-safety-compliance.md, docs/compliance/cold-chain-requirements.md,
+# .claude/rules/seafood-compliance-rules.md, food-safety.md, cold-chain-management.md)
+
+Scope note: this is the traceability/cold-chain/recall CORE, anchored on
+entities the platform already has (Vendor, Product, VendorOrder, Delivery),
+not the full literal scope of the source docs. Deliberately deferred:
+
+- Separate Fisherman/Vessel/Landing-Site registration entities - the source
+  docs describe an independent fisherman-onboarding layer with its own
+  identity verification, vessel records, and banking information distinct
+  from vendor onboarding. This platform has no such layer; vendors register
+  seafood lots directly under their existing approved vendor profile.
+  `catchLocation`/`landingSite` are captured as free-text fields on the lot
+  rather than as foreign keys to dedicated Fisherman/Vessel/LandingSite
+  tables.
+- Real IoT sensor ingestion (cold-chain-management.md's Bluetooth/cellular
+  telemetry) - no hardware exists to integrate with. Temperature readings are
+  point-in-time, manually/driver-recorded observations, not a continuous
+  stream.
+- A scheduled/random vendor-audit subsystem distinct from lot inspections -
+  the source docs describe periodic compliance audits of a vendor's
+  facility/operations as a whole; this phase only models per-lot quality
+  inspections (`QualityInspection`), not a separate audit-scheduling entity.
+- Actual notification delivery (email/SMS/push for recalls, incidents,
+  alerts) - no Notifications module exists yet anywhere in this codebase.
+  Alerts/incidents/recalls are recorded and queryable by admins; nothing is
+  auto-sent.
+- Mandatory `Product.lotId` - the source docs state "no seafood product may
+  be sold without traceability records," which would literally mean every
+  product requires a lot. `lotId` is optional instead: making it mandatory
+  would retroactively break every prior phase's e2e `createProduct()` helper
+  (7 existing suites), none of which pass a lot. When a product IS linked to
+  a lot, full enforcement applies (see below); this is a deliberate, revisit-
+  able scope decision, not an oversight.
+
+Tables:
+
+- `seafood_lots` - the traceability anchor. vendorId, species, storageType
+  (FRESH | FROZEN), catchDate, catchLocation (optional), landingSite
+  (optional), weight/weightUnit (POUNDS | KILOGRAMS), freshnessGrade (GRADE_A
+  | GRADE_B | GRADE_C | REJECTED, set by inspection), qualityScore (0-100, set
+  by inspection), foodSafetyStatus (SAFE | UNDER_REVIEW | SAFETY_HOLD |
+  QUARANTINED | RECALLED | REJECTED, default SAFE), statusNotes. `lotNumber`
+  (unique, `LOT-{year}-{6-digit sequence}`, e.g. `LOT-2026-000001`) is the
+  human-readable identifier surfaced to customers via the public traceability
+  endpoint, matching seafood-compliance-rules.md's example format.
+- `temperature_readings` - a point-in-time checkpoint reading. lotId,
+  checkpoint (VENDOR_STORAGE | PACKING | DISPATCH | DRIVER_PICKUP |
+  IN_TRANSIT | DELIVERY - covers cold-chain-management.md's five monitoring
+  points), temperatureC, recordedById (a vendor or an approved driver),
+  optional latitude/longitude/photoUrl, recordedAt. Append-only.
+- `temperature_alerts` - auto-generated whenever a reading falls outside the
+  lot's storageType safe band; never overwritten, one row per breaching
+  reading. severity (WARNING | CRITICAL | EMERGENCY), actualC, resolved/
+  resolvedAt (admin-clearable via `PATCH /temperature-alerts/:id/resolve`,
+  which only acknowledges the alert - it does not change the lot's status).
+- `quality_inspections` - admin-conducted (this platform's RBAC has no
+  separate Inspector role; food-safety authority sits with ADMINISTRATOR).
+  lotId, inspectorId, result (PASSED | CONDITIONAL | REJECTED | QUARANTINED),
+  freshnessGrade, qualityScore, notes, photoUrl. Recording an inspection
+  always updates the lot's freshnessGrade/qualityScore, and (unless the lot
+  is currently RECALLED - see below) also updates foodSafetyStatus via a
+  fixed result->status mapping (PASSED->SAFE, CONDITIONAL->UNDER_REVIEW,
+  REJECTED->REJECTED, QUARANTINED->QUARANTINED).
+- `food_safety_incidents` - reportable by the owning vendor or an admin;
+  covers non-temperature hazards (contamination, spoilage, packaging
+  failure - temperature-specific problems are already captured via
+  `temperature_alerts`). lotId, reportedById, severity (LOW | MEDIUM | HIGH |
+  CRITICAL), status (OPEN | INVESTIGATING | RESOLVED | CLOSED, default OPEN),
+  description, photoUrl, correctiveAction, resolvedAt.
+- `recalls` / `recall_lots` - admin-only. A `Recall` can span multiple lots
+  (`recall_lots` join table). severityClass (CLASS_I | CLASS_II | CLASS_III),
+  status (DRAFT | ACTIVE | INVESTIGATING | RESOLVED | CLOSED, default DRAFT),
+  reason, rootCause, resolutionNotes, createdById, closedAt.
+
+Business rules encoded here:
+
+- Temperature severity is magnitude-based, not duration-based: cold-chain-
+  requirements.md defines Warning/Critical by how long a breach persists (15
+  vs 30 minutes), which only makes sense for continuous IoT telemetry -
+  manual/discrete readings have no "duration." `TemperatureMonitoringService.
+  evaluateSeverity` instead derives severity from how far a reading is
+  outside the safe band (Fresh 0-4C, Frozen <= -18C). EMERGENCY has no
+  concrete numeric definition anywhere in the source docs, so it is never
+  auto-derived - it remains a valid status for a future continuous-monitoring
+  engine to set.
+- A CRITICAL reading downgrades its lot's foodSafetyStatus to UNDER_REVIEW,
+  but only if the lot is currently SAFE (an already-flagged or recalled lot
+  isn't overwritten by a routine subsequent breach).
+- RECALLED status is permanent until deliberately cleared: per recall-
+  management.md, "No recalled product may re-enter the marketplace without
+  compliance approval." Activating a Recall (DRAFT -> ACTIVE) cascades
+  foodSafetyStatus = RECALLED onto every linked lot; resolving/closing the
+  recall itself does NOT clear it back to SAFE, and a routine quality
+  inspection explicitly skips its normal status-update step whenever the
+  lot's current status is RECALLED (the inspection record itself is still
+  created for audit purposes). Clearing a recalled lot requires a separate,
+  deliberate `PATCH /seafood-lots/:id/status` admin action - which is why
+  RECALLED is deliberately excluded from that endpoint's assignable statuses
+  (it's a read-only side effect of the Recall workflow, never a direct
+  target).
+- Recall status transitions are strictly linear (DRAFT -> ACTIVE ->
+  INVESTIGATING -> RESOLVED -> CLOSED, enforced by
+  `RecallsService`'s transition table, same enum-transition-table pattern
+  as `VendorOrder`/`Settlement`/`Incident` status), matching recall-
+  management.md's workflow diagram exactly - no skipping stages.
+- Ownership checks are centralized: `SeafoodLotsService.
+  assertOwnedByRequester` (admin bypass, or the requester's own vendor
+  profile owns the lot) is the single method reused by Temperature
+  Monitoring, Quality Inspections, and Food Safety Incidents, instead of each
+  service duplicating the same admin-or-owner check.
+- Product/Cart/Orders enforcement: `Product.lotId` is optional, but when set,
+  is fully enforced end-to-end - creation requires the lot to belong to the
+  same vendor and be SAFE; `ProductsRepository.findMany`'s active-only search
+  excludes products whose lot isn't SAFE; `ProductAvailability.ON_HOLD` is
+  computed (not stored) whenever a linked lot isn't SAFE; `CartService.
+  assertProductIsPurchasable` and `OrdersService.checkout`'s re-validation
+  loop both reject a non-SAFE-lot product the same way they already reject an
+  inactive product or an unapproved vendor.
+- Recall impact lookup (`GET /recalls/:id/affected-orders`) joins
+  `OrderItem -> Product (lotId in the recall's lots)` to surface impacted
+  orders/customers for manual admin follow-up, since no automated
+  notification-sending exists yet.
