@@ -16,6 +16,7 @@ const ALLOWED_TRANSITIONS: Record<VendorOrderStatus, VendorOrderStatus[]> = {
   ASSIGNED_TO_DRIVER: [],
   IN_TRANSIT: [],
   DELIVERED: [],
+  DELIVERY_FAILED: [],
   REJECTED: [],
   CANCELLED: [],
 };
