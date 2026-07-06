@@ -14,7 +14,29 @@ POST /auth/verify-email
 
 GET /auth/me
 
+POST /vendors
+
+GET /vendors/me
+
+PATCH /vendors/:id/status (admin only)
+
+GET /categories
+
+POST /categories (admin only)
+
 GET /products
+
+GET /products/:id
+
+POST /products (approved vendor only)
+
+PATCH /products/:id (owning vendor only)
+
+PATCH /products/:id/stock (owning vendor only)
+
+PATCH /products/:id/deactivate (owning vendor only)
+
+PATCH /products/:id/reactivate (owning vendor only)
 
 POST /orders
 
