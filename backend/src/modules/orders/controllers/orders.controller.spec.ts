@@ -36,6 +36,7 @@ describe('OrdersController', () => {
     deliveryAddressLine1: '1 Test Street',
     deliveryParish: 'KINGSTON' as const,
     deliveryPhone: '+18765551234',
+    paymentMethod: 'CASH_ON_DELIVERY' as const,
   };
 
   it('checks out', async () => {

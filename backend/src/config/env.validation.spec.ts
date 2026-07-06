@@ -11,6 +11,10 @@ describe('validateEnv', () => {
     JWT_ACCESS_EXPIRES_IN: '15m',
     JWT_REFRESH_SECRET: 'b'.repeat(32),
     JWT_REFRESH_EXPIRES_IN: '7d',
+    APP_BASE_URL: 'http://localhost:3001',
+    WIPAY_API_URL: 'https://tx.wipayfinancial.com/plugins/payments',
+    WIPAY_ACCOUNT_NUMBER: 'test-account-number',
+    WIPAY_API_KEY: 'test-wipay-key',
   };
 
   it('returns a validated, transformed config for valid input', () => {

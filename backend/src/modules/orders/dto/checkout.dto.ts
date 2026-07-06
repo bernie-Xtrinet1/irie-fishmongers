@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Parish } from '@prisma/client';
+import { Parish, PaymentProviderName } from '@prisma/client';
 import { IsEnum, IsOptional, IsPhoneNumber, IsString, MinLength } from 'class-validator';
 
 export class CheckoutDto {
@@ -20,4 +20,8 @@ export class CheckoutDto {
   @ApiProperty({ example: '+18765551234' })
   @IsPhoneNumber()
   deliveryPhone!: string;
+
+  @ApiProperty({ enum: PaymentProviderName })
+  @IsEnum(PaymentProviderName)
+  paymentMethod!: PaymentProviderName;
 }

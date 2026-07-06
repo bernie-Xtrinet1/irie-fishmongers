@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CartModule } from '../cart/cart.module';
+import { PaymentsModule } from '../payments/payments.module';
 import { ProductsModule } from '../products/products.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { OrdersController } from './controllers/orders.controller';
@@ -12,7 +13,7 @@ import { OrdersService } from './services/orders.service';
 import { VendorOrdersService } from './services/vendor-orders.service';
 
 @Module({
-  imports: [AuthModule, CartModule, ProductsModule, VendorsModule],
+  imports: [AuthModule, CartModule, ProductsModule, VendorsModule, PaymentsModule],
   controllers: [OrdersController, VendorOrdersController],
   providers: [
     OrdersService,

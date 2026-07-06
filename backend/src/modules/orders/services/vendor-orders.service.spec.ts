@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { VendorOrderWithItems, VendorOrdersRepository } from '../repositories/vendor-orders.repository';
@@ -48,17 +49,23 @@ describe('VendorOrdersService', () => {
   >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
+  let paymentsService: jest.Mocked<Pick<PaymentsService, 'assertReadyForFulfillment' | 'refundForOrder'>>;
   let service: VendorOrdersService;
 
   beforeEach(() => {
     vendorOrdersRepository = { findById: jest.fn(), updateStatus: jest.fn(), findManyByVendor: jest.fn() };
     vendorsRepository = { findByUserId: jest.fn() };
     productsRepository = { adjustStock: jest.fn() };
+    paymentsService = {
+      assertReadyForFulfillment: jest.fn().mockResolvedValue(undefined),
+      refundForOrder: jest.fn().mockResolvedValue(null),
+    };
 
     service = new VendorOrdersService(
       vendorOrdersRepository as unknown as VendorOrdersRepository,
       vendorsRepository as unknown as VendorsRepository,
       productsRepository as unknown as ProductsRepository,
+      paymentsService as unknown as PaymentsService,
     );
   });
 
@@ -89,6 +96,17 @@ describe('VendorOrdersService', () => {
       const result = await service.accept('user-1', 'vo-1');
       expect(result.status).toBe('ACCEPTED');
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'ACCEPTED');
+      expect(paymentsService.assertReadyForFulfillment).toHaveBeenCalledWith('order-1');
+    });
+
+    it('blocks acceptance when payment is not yet completed', async () => {
+      mockOwnedVendorOrder();
+      paymentsService.assertReadyForFulfillment.mockRejectedValue(
+        new ForbiddenException('Payment must be completed before the vendor can accept this order'),
+      );
+
+      await expect(service.accept('user-1', 'vo-1')).rejects.toBeInstanceOf(ForbiddenException);
+      expect(vendorOrdersRepository.updateStatus).not.toHaveBeenCalled();
     });
 
     it('throws when the vendor does not own the order', async () => {
@@ -152,6 +170,11 @@ describe('VendorOrdersService', () => {
       expect(result.status).toBe('REJECTED');
       expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2);
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'REJECTED');
+      expect(paymentsService.refundForOrder).toHaveBeenCalledWith(
+        'order-1',
+        500,
+        'Vendor rejected order',
+      );
     });
 
     it('rejects rejecting an already-accepted order', async () => {

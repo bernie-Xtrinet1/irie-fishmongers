@@ -142,7 +142,65 @@ Business rules encoded here:
   once ACCEPTED the seafood is considered reserved/perishable and cannot be
   cancelled. Cancelling and rejecting both restore the reserved stock via the
   same atomic `adjustStock`.
-- Payment is intentionally not wired in yet: business-rules1.md says payment
-  should be verified before order processing begins, but Payments doesn't
-  exist yet. Orders can currently be placed the way a Cash-on-Delivery order
-  would be; gating other payment methods is the Payments phase's job.
+- Payment verification is now enforced (see Payments Tables below):
+  `CheckoutDto.paymentMethod` is required, and a vendor cannot accept an order
+  paid through an online provider until that payment is confirmed PAID.
+
+---
+
+# Payments Tables (Payments phase)
+
+- `payments` - one per order (`orderId` unique - `Order.payment` is a 1:1
+  back-relation). provider (WIPAY | CASH_ON_DELIVERY), status (PENDING | PAID |
+  FAILED | REFUNDED | PARTIALLY_REFUNDED, default PENDING), amount
+  (Decimal(10,2)), currency (default "JMD"), providerReference (the gateway's
+  transaction id, or a synthetic `cod-{orderId}` for cash-on-delivery),
+  failureReason, paidAt. Only transaction ids/authorization references and
+  status are ever stored - never card numbers or CVVs (security.md,
+  business-rules1.md Payment Rules).
+- `refunds` - one row per refund attempt against a `payments` row (a payment
+  can have several partial refunds). amount, reason, status (PENDING |
+  COMPLETED | FAILED), providerReference. A payment's refundable balance is
+  `amount - sum(refunds where status = COMPLETED)`; refunds are rejected if
+  they would exceed it.
+
+Business rules encoded here:
+
+- Provider abstraction (docs/integrations/ADR-001-payment-provider-selection.md):
+  `OrdersService`/`VendorOrdersService` never call a payment gateway directly -
+  only through `PaymentsService`, which delegates to whichever
+  `PaymentProviderAdapter` matches `Payment.provider`
+  (`backend/src/modules/payments/interfaces/payment-provider.interface.ts`).
+  Adding a new provider (Stripe, Lynk) means writing one adapter, not touching
+  Orders/Vendors.
+- Checkout (`OrdersService.checkout`) creates the `orders`/`vendor_orders`
+  rows in one DB transaction, then - once that transaction has committed -
+  calls `PaymentsService.initiatePayment` outside the transaction, since it
+  may involve an external HTTP call (WiPay's hosted-checkout `request`
+  endpoint) that shouldn't hold a DB transaction open.
+- Vendor acceptance gate: `VendorOrdersService.accept` calls
+  `PaymentsService.assertReadyForFulfillment(orderId)` before allowing
+  PENDING->ACCEPTED. Cash-on-delivery orders are never blocked (nothing to
+  verify yet); online-provider orders are blocked until their payment is PAID.
+- Vendor rejection refund: `VendorOrdersService.reject` restores stock as
+  before, then calls `PaymentsService.refundForOrder` with that single vendor
+  order's subtotal - a multi-vendor order where only one vendor rejects only
+  refunds that vendor's share, not the whole order (business-rules2.md:
+  "Vendor rejects order" is a full-refund-eligible reason, scoped here to the
+  rejected portion). A no-op if that order was never paid.
+- WiPay payment confirmation is webhook-driven, not polled:
+  `POST /payments/webhooks/wipay` verifies an HMAC-SHA256 signature (keyed
+  with `WIPAY_API_KEY`) over the exact raw request bytes (`main.ts` enables
+  `rawBody: true` so the raw buffer survives past body-parsing) before
+  trusting the payload.
+- Cash-on-delivery has no external gateway to poll or webhook from, so an
+  admin confirms collection manually via `PATCH /payments/:id/mark-paid`
+  (admin only, audit-logged like all admin actions per security.md).
+- `POST /payments/:id/refund` (admin only) covers business-rules2.md's
+  "Administrator-approved exceptional circumstances" partial-refund case,
+  independent of the automatic vendor-rejection refund above.
+- The WiPay adapter's request/response shape (`account_number` + `total` +
+  `currency`, HMAC-signed callbacks) follows WiPay's standard hosted-checkout
+  integration pattern but has not been verified against a live WiPay merchant
+  sandbox - field names and endpoint paths should be confirmed before
+  production use.
