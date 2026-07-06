@@ -7,13 +7,13 @@ import {
 } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
 
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
 import { CreateProductDto } from '../dto/create-product.dto';
-import { PaginationDto } from '../dto/pagination.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';

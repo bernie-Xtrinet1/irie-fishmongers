@@ -1,0 +1,224 @@
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+
+import { ProductsRepository } from '../../products/repositories/products.repository';
+import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { VendorOrderWithItems, VendorOrdersRepository } from '../repositories/vendor-orders.repository';
+import { VendorOrdersService } from './vendor-orders.service';
+
+function buildVendorOrder(overrides: Partial<VendorOrderWithItems> = {}): VendorOrderWithItems {
+  return {
+    id: 'vo-1',
+    orderId: 'order-1',
+    vendorId: 'vendor-1',
+    status: 'PENDING',
+    subtotal: new Prisma.Decimal(500),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    items: [
+      {
+        id: 'item-1',
+        vendorOrderId: 'vo-1',
+        productId: 'product-1',
+        productName: 'Fresh Snapper',
+        unitPrice: new Prisma.Decimal(500),
+        unit: 'PER_POUND',
+        quantity: 2,
+        subtotal: new Prisma.Decimal(1000),
+        createdAt: new Date(),
+      },
+    ],
+    order: {
+      id: 'order-1',
+      customerId: 'user-1',
+      deliveryAddressLine1: '1 Test Street',
+      deliveryAddressLine2: null,
+      deliveryParish: 'KINGSTON',
+      deliveryPhone: '+18765551234',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    ...overrides,
+  };
+}
+
+describe('VendorOrdersService', () => {
+  let vendorOrdersRepository: jest.Mocked<
+    Pick<VendorOrdersRepository, 'findById' | 'updateStatus' | 'findManyByVendor'>
+  >;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
+  let service: VendorOrdersService;
+
+  beforeEach(() => {
+    vendorOrdersRepository = { findById: jest.fn(), updateStatus: jest.fn(), findManyByVendor: jest.fn() };
+    vendorsRepository = { findByUserId: jest.fn() };
+    productsRepository = { adjustStock: jest.fn() };
+
+    service = new VendorOrdersService(
+      vendorOrdersRepository as unknown as VendorOrdersRepository,
+      vendorsRepository as unknown as VendorsRepository,
+      productsRepository as unknown as ProductsRepository,
+    );
+  });
+
+  function mockOwnedVendorOrder(vendorOrder = buildVendorOrder()): void {
+    vendorsRepository.findByUserId.mockResolvedValue({
+      id: vendorOrder.vendorId,
+      userId: 'user-1',
+      businessName: 'Test Vendor',
+      description: null,
+      phone: null,
+      parish: 'KINGSTON',
+      logoUrl: null,
+      status: 'APPROVED',
+      termsAcceptedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    vendorOrdersRepository.findById.mockResolvedValue(vendorOrder);
+  }
+
+  describe('accept', () => {
+    it('accepts a pending vendor order', async () => {
+      mockOwnedVendorOrder();
+      vendorOrdersRepository.updateStatus.mockResolvedValue(
+        buildVendorOrder({ status: 'ACCEPTED' }),
+      );
+
+      const result = await service.accept('user-1', 'vo-1');
+      expect(result.status).toBe('ACCEPTED');
+      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'ACCEPTED');
+    });
+
+    it('throws when the vendor does not own the order', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue({
+        id: 'someone-elses-vendor',
+        userId: 'user-1',
+        businessName: 'Test Vendor',
+        description: null,
+        phone: null,
+        parish: 'KINGSTON',
+        logoUrl: null,
+        status: 'APPROVED',
+        termsAcceptedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      vendorOrdersRepository.findById.mockResolvedValue(buildVendorOrder());
+
+      await expect(service.accept('user-1', 'vo-1')).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('throws when the vendor order does not exist', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue({
+        id: 'vendor-1',
+        userId: 'user-1',
+        businessName: 'Test Vendor',
+        description: null,
+        phone: null,
+        parish: 'KINGSTON',
+        logoUrl: null,
+        status: 'APPROVED',
+        termsAcceptedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      vendorOrdersRepository.findById.mockResolvedValue(null);
+
+      await expect(service.accept('user-1', 'missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('throws when the user has no vendor profile', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(null);
+      await expect(service.accept('user-1', 'vo-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects an illegal transition', async () => {
+      mockOwnedVendorOrder(buildVendorOrder({ status: 'DELIVERED' }));
+      await expect(service.accept('user-1', 'vo-1')).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('reject', () => {
+    it('rejects a pending vendor order and restores stock', async () => {
+      mockOwnedVendorOrder();
+      vendorOrdersRepository.updateStatus.mockResolvedValue(
+        buildVendorOrder({ status: 'REJECTED' }),
+      );
+
+      const result = await service.reject('user-1', 'vo-1');
+
+      expect(result.status).toBe('REJECTED');
+      expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2);
+      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'REJECTED');
+    });
+
+    it('rejects rejecting an already-accepted order', async () => {
+      mockOwnedVendorOrder(buildVendorOrder({ status: 'ACCEPTED' }));
+      await expect(service.reject('user-1', 'vo-1')).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('markPreparing / markReadyForPickup', () => {
+    it('moves an accepted order to preparing', async () => {
+      mockOwnedVendorOrder(buildVendorOrder({ status: 'ACCEPTED' }));
+      vendorOrdersRepository.updateStatus.mockResolvedValue(
+        buildVendorOrder({ status: 'PREPARING' }),
+      );
+
+      const result = await service.markPreparing('user-1', 'vo-1');
+      expect(result.status).toBe('PREPARING');
+    });
+
+    it('rejects moving a pending order straight to preparing', async () => {
+      mockOwnedVendorOrder(buildVendorOrder({ status: 'PENDING' }));
+      await expect(service.markPreparing('user-1', 'vo-1')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('moves a preparing order to ready for pickup', async () => {
+      mockOwnedVendorOrder(buildVendorOrder({ status: 'PREPARING' }));
+      vendorOrdersRepository.updateStatus.mockResolvedValue(
+        buildVendorOrder({ status: 'READY_FOR_PICKUP' }),
+      );
+
+      const result = await service.markReadyForPickup('user-1', 'vo-1');
+      expect(result.status).toBe('READY_FOR_PICKUP');
+    });
+  });
+
+  describe('getIncomingOrders', () => {
+    it('paginates a vendor incoming orders', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue({
+        id: 'vendor-1',
+        userId: 'user-1',
+        businessName: 'Test Vendor',
+        description: null,
+        phone: null,
+        parish: 'KINGSTON',
+        logoUrl: null,
+        status: 'APPROVED',
+        termsAcceptedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      vendorOrdersRepository.findManyByVendor.mockResolvedValue({
+        items: [buildVendorOrder()],
+        total: 1,
+      });
+
+      const result = await service.getIncomingOrders('user-1', undefined, {
+        page: 1,
+        pageSize: 20,
+      });
+
+      expect(result.total).toBe(1);
+      expect(vendorOrdersRepository.findManyByVendor).toHaveBeenCalledWith('vendor-1', undefined, {
+        skip: 0,
+        take: 20,
+      });
+    });
+  });
+});

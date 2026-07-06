@@ -46,7 +46,33 @@ PATCH /products/:id/deactivate (owning vendor only)
 
 PATCH /products/:id/reactivate (owning vendor only)
 
-POST /orders
+GET /cart (customer only)
+
+POST /cart/items (customer only)
+
+PATCH /cart/items/:itemId (customer only)
+
+DELETE /cart/items/:itemId (customer only)
+
+POST /orders/checkout (customer only)
+
+GET /orders (customer only)
+
+GET /orders/:id (customer only)
+
+POST /orders/:id/cancel (owning customer only)
+
+POST /orders/:id/vendor-orders/:vendorOrderId/cancel (owning customer only)
+
+GET /vendor-orders (vendor only)
+
+PATCH /vendor-orders/:id/accept (owning vendor only)
+
+PATCH /vendor-orders/:id/reject (owning vendor only)
+
+PATCH /vendor-orders/:id/preparing (owning vendor only)
+
+PATCH /vendor-orders/:id/ready (owning vendor only)
 
 POST /payments
 

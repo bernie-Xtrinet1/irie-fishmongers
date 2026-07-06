@@ -6,9 +6,9 @@ import {
 } from '@nestjs/common';
 import { Product } from '@prisma/client';
 
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
-import { PaginationDto } from '../dto/pagination.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
