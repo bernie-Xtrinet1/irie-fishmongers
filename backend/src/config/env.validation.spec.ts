@@ -7,6 +7,10 @@ describe('validateEnv', () => {
     API_PREFIX: 'api/v1',
     DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
     REDIS_URL: 'redis://localhost:6379',
+    JWT_ACCESS_SECRET: 'a'.repeat(32),
+    JWT_ACCESS_EXPIRES_IN: '15m',
+    JWT_REFRESH_SECRET: 'b'.repeat(32),
+    JWT_REFRESH_EXPIRES_IN: '7d',
   };
 
   it('returns a validated, transformed config for valid input', () => {
