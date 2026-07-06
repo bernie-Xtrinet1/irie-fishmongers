@@ -6,3 +6,76 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum RoleName {
+  CUSTOMER
+  VENDOR
+  DRIVER
+  ADMINISTRATOR
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model User {
+  id                              String     @id @default(uuid())
+  email                           String     @unique
+  passwordHash                    String
+  firstName                       String
+  lastName                        String
+  phone                           String?
+  status                          UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt                 DateTime?
+  emailVerificationTokenHash      String?
+  emailVerificationTokenExpiresAt DateTime?
+  passwordResetTokenHash          String?
+  passwordResetTokenExpiresAt     DateTime?
+  createdAt                       DateTime   @default(now())
+  updatedAt                       DateTime   @updatedAt
+
+  roles         UserRole[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model Role {
+  id        String     @id @default(uuid())
+  name      RoleName   @unique
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  users UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}

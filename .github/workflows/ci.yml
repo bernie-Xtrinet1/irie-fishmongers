@@ -36,10 +36,14 @@ jobs:
 
     env:
       NODE_ENV: test
+      PORT: 3001
+      API_PREFIX: api/v1
       DATABASE_URL: postgresql://iriefishmongers:iriefishmongers@localhost:5432/iriefishmongers?schema=public
       REDIS_URL: redis://localhost:6379
-      JWT_ACCESS_SECRET: ci-test-access-secret
-      JWT_REFRESH_SECRET: ci-test-refresh-secret
+      JWT_ACCESS_SECRET: ci-test-access-secret-at-least-32-characters-long
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-at-least-32-characters-long
+      JWT_REFRESH_EXPIRES_IN: 7d
 
     steps:
       - uses: actions/checkout@v4
@@ -61,5 +65,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+        working-directory: backend
+
+      - name: Seed reference data
+        run: npx prisma db seed
+        working-directory: backend
+
       - name: Test with coverage
         run: npm run test:cov
+
+      - name: Run e2e tests
+        run: npm run test:e2e -w backend
