@@ -845,3 +845,84 @@ Business rules encoded here:
   row, since computing it there would require `VendorsModule` to depend on
   `VendorTiersModule`, which already depends on `VendorsModule` for vendor
   lookups - a circular module dependency this avoids entirely.
+
+---
+
+# Marketplace Selection Engine Tables (Vendor Tier Marketplace Enhancement
+# phase, per .claude/marketplace/marketplace-modes.md, vendor-selection-
+# engine.md, fulfillment-strategy.md, and vendor-tier-rules.md's MARKETPLACE
+# VISIBILITY section)
+
+Scope note: implements the two purchasing modes marketplace-modes.md
+requires - Mode 1 "Customer Selected Vendor" (already fully supported by the
+pre-existing Product/Cart/Order flow, no schema change needed) and Mode 2
+"Marketplace Fulfillment"/"Best Available Vendor" (the platform auto-selects
+the fulfilling vendor via a configurable scoring engine) - plus the
+append-only audit trail vendor-selection-engine.md's Audit Requirements
+mandate.
+
+Deliberately deferred (same "neutral, not fabricated" treatment as
+`Vendor.complianceScore` above):
+
+- Vendor Rating: no `Review`/`Rating` model exists anywhere in this schema.
+  `VendorScore.ratingScore` is computed as a neutral mid-point value by the
+  selection engine (and given the lowest weight in the seeded default
+  distribution) rather than inventing a fake rating source.
+- True GPS distance: no geocoding/lat-lng infrastructure exists (`Vendor.
+  parish` is the only location data anywhere). `VendorScore.distanceScore`
+  uses a same-parish-first proxy - a real, functional heuristic, not
+  fabricated data - pending the `google-maps` integration `tech-stack.md`
+  already anticipates.
+- Delivery Capacity: no fleet/vehicle-capacity data model exists (Driver only
+  has a single `vehicleType`/`vehicleOwnership`, not a load-capacity number).
+  `VendorScore.deliveryCapacityScore` is a neutral value today, same
+  treatment as rating.
+
+Tables:
+
+- `marketplace_mode_configs` - append-only, mirrors `settlement_rate_configs`
+  /`platform_commission_configs`: toggling a mode creates a new row rather
+  than mutating the current one; "current" is always the most recently
+  created row. `customerSelectedEnabled`/`bestAvailableEnabled` gate the two
+  modes. Seeded default matches marketplace-modes.md's own Phase 1 rollout
+  table (Mode 1 enabled, Mode 2 disabled).
+- `vendor_selection_weight_configs` - append-only weighted-scoring
+  configuration (inventoryWeight/freshnessWeight/complianceWeight/
+  distanceWeight/ratingWeight/deliveryCapacityWeight, each `Decimal(5,4)`)
+  read by `VendorSelectionEngineService` - never a hardcoded weight, per
+  vendor-selection-engine.md's Claude Execution Rule. Seeded default follows
+  fulfillment-strategy.md's Selection Priority ordering (Inventory >
+  Compliance > Freshness > Distance > Delivery Capacity > Rating) and sums to
+  1.0000.
+- `fulfillment_decisions` - one row per "resolve best vendor" attempt
+  (fulfillment-strategy.md's "All fulfillment decisions must be auditable").
+  requestedProductId, quantity, deliveryParish, customerId, decidedAt. A
+  decision persists even when no vendor is eligible - a "no eligible vendor"
+  outcome is itself an auditable fact, not an error to discard.
+- `vendor_scores` - one row per vendor considered for a `FulfillmentDecision`
+  (the "Competing Vendors" + "Scores" audit fields) - includes ineligible
+  vendors with `eligible = false` and `ineligibilityReason`, not just the
+  winner, so the full comparison is reconstructable later.
+- `vendor_assignments` - the winning vendor+product for a
+  `FulfillmentDecision` (the "Winning Vendor" audit field), 1:1 via a unique
+  `fulfillmentDecisionId`. Absent entirely when no eligible vendor was found.
+  Kept as its own table rather than columns on `FulfillmentDecision` to avoid
+  a duplicate/nullable FK pair on the decision row itself.
+
+Business rules encoded here:
+
+- "Best Available Vendor" cross-vendor product matching (there is no
+  canonical species/product catalog independent of `Product.vendorId`) uses
+  case-insensitive `name` + `categoryId` equality - an honest, functional
+  heuristic, not a fabricated canonical-catalog join, flagged for revisiting
+  if/when a real species catalog is introduced.
+- The existing, fully-tested `POST /cart/items` (`AddCartItemDto {
+  productId, quantity }`) and checkout contracts are untouched. Best
+  Available Vendor is a new, additive resolution endpoint (`POST
+  /marketplace/best-vendor/resolve`) that returns a concrete winning
+  `productId`; the client then calls the existing, unmodified `POST
+  /cart/items` with it - zero changes to Cart/Orders contracts.
+- `POST /marketplace/best-vendor/resolve` returns `403` when
+  `MarketplaceModeConfig.bestAvailableEnabled` is `false`, rather than
+  silently proceeding - `MARKETPLACE MODE RULES`' "do not hardcode mode
+  behavior" enforced as a real runtime check, not just a doc convention.

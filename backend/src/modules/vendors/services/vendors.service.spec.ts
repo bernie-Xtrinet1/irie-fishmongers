@@ -125,6 +125,7 @@ describe('VendorsService', () => {
         parish: 'KINGSTON',
         logoUrl: null,
         tier: 'COMMUNITY_FISHER',
+        complianceScore: null,
       });
       expect(result).not.toHaveProperty('phone');
       expect(result).not.toHaveProperty('userId');

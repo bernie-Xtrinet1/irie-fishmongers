@@ -15,6 +15,7 @@ import { CartModule } from './modules/cart/cart.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
+import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -51,6 +52,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     VendorSettlementsModule,
     FoodSafetyModule,
     NotificationsModule,
+    MarketplaceModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

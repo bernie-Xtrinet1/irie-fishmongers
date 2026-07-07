@@ -37,22 +37,25 @@ model User {
   createdAt                       DateTime   @default(now())
   updatedAt                       DateTime   @updatedAt
 
-  roles                   UserRole[]
-  refreshTokens           RefreshToken[]
-  vendor                  Vendor?
-  driver                  Driver?
-  cart                    Cart?
-  orders                  Order[]
-  temperatureReadings     TemperatureReading[]
-  qualityInspections      QualityInspection[]
-  reportedIncidents       FoodSafetyIncident[]
-  createdRecalls          Recall[]
-  notifications           Notification[]
-  notificationPreference  NotificationPreference?
-  deviceTokens            DeviceToken[]
-  verifiedDocuments       VendorDocument[]        @relation("DocumentVerifiedBy")
-  reviewedUpgradeRequests VendorUpgradeRequest[]  @relation("UpgradeRequestReviewedBy")
-  triggeredDowngrades     VendorDowngradeEvent[]  @relation("DowngradeTriggeredBy")
+  roles                        UserRole[]
+  refreshTokens                RefreshToken[]
+  vendor                       Vendor?
+  driver                       Driver?
+  cart                         Cart?
+  orders                       Order[]
+  temperatureReadings          TemperatureReading[]
+  qualityInspections           QualityInspection[]
+  reportedIncidents            FoodSafetyIncident[]
+  createdRecalls               Recall[]
+  notifications                Notification[]
+  notificationPreference       NotificationPreference?
+  deviceTokens                 DeviceToken[]
+  verifiedDocuments            VendorDocument[]              @relation("DocumentVerifiedBy")
+  reviewedUpgradeRequests      VendorUpgradeRequest[]        @relation("UpgradeRequestReviewedBy")
+  triggeredDowngrades          VendorDowngradeEvent[]        @relation("DowngradeTriggeredBy")
+  marketplaceModeUpdates       MarketplaceModeConfig[]
+  vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
+  fulfillmentDecisions         FulfillmentDecision[]
 
   @@map("users")
 }
@@ -133,14 +136,16 @@ model Vendor {
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  products        Product[]
-  vendorOrders    VendorOrder[]
-  settlements     VendorSettlement[]
-  seafoodLots     SeafoodLot[]
-  documents       VendorDocument[]
-  upgradeRequests VendorUpgradeRequest[]
-  downgradeEvents VendorDowngradeEvent[]
+  user              User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products          Product[]
+  vendorOrders      VendorOrder[]
+  settlements       VendorSettlement[]
+  seafoodLots       SeafoodLot[]
+  documents         VendorDocument[]
+  upgradeRequests   VendorUpgradeRequest[]
+  downgradeEvents   VendorDowngradeEvent[]
+  vendorScores      VendorScore[]
+  vendorAssignments VendorAssignment[]
 
   @@map("vendors")
 }
@@ -180,11 +185,14 @@ model Product {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  category   Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  lot        SeafoodLot? @relation(fields: [lotId], references: [id], onDelete: Restrict)
-  cartItems  CartItem[]
-  orderItems OrderItem[]
+  vendor                          Vendor                @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  category                        Category              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  lot                             SeafoodLot?           @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  cartItems                       CartItem[]
+  orderItems                      OrderItem[]
+  requestedInFulfillmentDecisions FulfillmentDecision[]
+  vendorScores                    VendorScore[]
+  vendorAssignments               VendorAssignment[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -1161,4 +1169,134 @@ model VendorDowngradeEvent {
 
   @@index([vendorId])
   @@map("vendor_downgrade_events")
+}
+
+// -----------------------------------------------------------------------------
+// Marketplace Selection Engine (Vendor Tier Marketplace Enhancement, per
+// .claude/marketplace/marketplace-modes.md, vendor-selection-engine.md,
+// fulfillment-strategy.md, and vendor-tier-rules.md's MARKETPLACE VISIBILITY
+// section).
+//
+// Two purchasing modes: Mode 1 (customer explicitly picks a vendor - already
+// fully supported by the existing Product/Cart/Order flow, no schema change
+// needed) and Mode 2 (customer picks a product, the platform auto-selects the
+// fulfilling vendor - "Best Available Vendor"). MarketplaceModeConfig gates
+// which modes are active; vendor-selection-engine.md requires this to be
+// database-configurable, never hardcoded.
+//
+// Scope note: FulfillmentDecision/VendorScore/VendorAssignment are the
+// append-only audit trail vendor-selection-engine.md's Audit Requirements
+// mandate (decision time, decision factors, winning vendor, competing
+// vendors, scores). A decision persists even when no vendor is eligible
+// (VendorScore rows recorded with eligible=false + reason, no
+// VendorAssignment created) - a "no eligible vendor" outcome is itself an
+// auditable fact, not an error to discard.
+// -----------------------------------------------------------------------------
+
+// Append-only, mirrors SettlementRateConfig/PlatformCommissionConfig:
+// toggling a mode creates a new row rather than mutating the current one.
+// "Current" is always the most recently created row.
+model MarketplaceModeConfig {
+  id                      String   @id @default(uuid())
+  customerSelectedEnabled Boolean  @default(true)
+  bestAvailableEnabled    Boolean  @default(false)
+  updatedById             String?
+  createdAt               DateTime @default(now())
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("marketplace_mode_configs")
+}
+
+// Append-only weighted-scoring configuration for the vendor selection engine
+// (Inventory/Freshness/Compliance/Distance/Rating/Delivery Capacity, per
+// vendor-selection-engine.md's Scoring Model). Weights are fractional
+// (0.0000-1.0000) and are read by VendorSelectionEngineService - the engine
+// itself never hardcodes a weight value.
+model VendorSelectionWeightConfig {
+  id                     String   @id @default(uuid())
+  inventoryWeight        Decimal  @db.Decimal(5, 4)
+  freshnessWeight        Decimal  @db.Decimal(5, 4)
+  complianceWeight       Decimal  @db.Decimal(5, 4)
+  distanceWeight         Decimal  @db.Decimal(5, 4)
+  ratingWeight           Decimal  @db.Decimal(5, 4)
+  deliveryCapacityWeight Decimal  @db.Decimal(5, 4)
+  updatedById            String?
+  createdAt              DateTime @default(now())
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("vendor_selection_weight_configs")
+}
+
+// One row per "resolve best vendor" attempt (fulfillment-strategy.md's
+// CLAUDE EXECUTION RULE: "All fulfillment decisions must be auditable.
+// Selection reason must be recorded."). requestedProductId is the product the
+// customer viewed; the actual fulfilling product/vendor (if any) is recorded
+// via the related VendorAssignment, keeping the winner normalized in one
+// place instead of duplicated onto this row.
+model FulfillmentDecision {
+  id                 String   @id @default(uuid())
+  requestedProductId String
+  quantity           Int
+  deliveryParish     Parish
+  customerId         String
+  decidedAt          DateTime
+  createdAt          DateTime @default(now())
+
+  requestedProduct Product           @relation(fields: [requestedProductId], references: [id], onDelete: Restrict)
+  customer         User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  scores           VendorScore[]
+  assignment       VendorAssignment?
+
+  @@index([requestedProductId])
+  @@index([customerId])
+  @@map("fulfillment_decisions")
+}
+
+// One row per vendor considered for a FulfillmentDecision (the "Competing
+// Vendors" + "Scores" audit fields) - includes ineligible vendors with
+// eligible=false and a reason, not just the winner, so the full comparison
+// is reconstructable later.
+model VendorScore {
+  id                    String   @id @default(uuid())
+  fulfillmentDecisionId String
+  vendorId              String
+  productId             String
+  inventoryScore        Decimal  @db.Decimal(5, 2)
+  freshnessScore        Decimal  @db.Decimal(5, 2)
+  complianceScore       Decimal  @db.Decimal(5, 2)
+  distanceScore         Decimal  @db.Decimal(5, 2)
+  ratingScore           Decimal  @db.Decimal(5, 2)
+  deliveryCapacityScore Decimal  @db.Decimal(5, 2)
+  totalScore            Decimal  @db.Decimal(5, 2)
+  eligible              Boolean
+  ineligibilityReason   String?
+  createdAt             DateTime @default(now())
+
+  fulfillmentDecision FulfillmentDecision @relation(fields: [fulfillmentDecisionId], references: [id], onDelete: Cascade)
+  vendor              Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product             Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([fulfillmentDecisionId])
+  @@index([vendorId])
+  @@map("vendor_scores")
+}
+
+// The winning vendor+product for a FulfillmentDecision (the "Winning Vendor"
+// audit field). 1:1 with FulfillmentDecision - absent entirely when no
+// eligible vendor was found.
+model VendorAssignment {
+  id                    String   @id @default(uuid())
+  fulfillmentDecisionId String   @unique
+  vendorId              String
+  productId             String
+  createdAt             DateTime @default(now())
+
+  fulfillmentDecision FulfillmentDecision @relation(fields: [fulfillmentDecisionId], references: [id], onDelete: Cascade)
+  vendor              Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product             Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId])
+  @@map("vendor_assignments")
 }

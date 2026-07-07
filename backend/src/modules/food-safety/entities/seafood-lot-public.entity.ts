@@ -19,6 +19,9 @@ export class SeafoodLotPublicEntity {
   catchDate!: Date;
 
   @ApiProperty({ required: false, nullable: true })
+  catchLocation!: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
   landingSite!: string | null;
 
   @ApiProperty({ enum: FreshnessGrade, required: false, nullable: true })
