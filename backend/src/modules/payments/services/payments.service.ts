@@ -5,8 +5,11 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Payment, PaymentProviderName, Refund } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { PaymentProviderName, Refund } from '@prisma/client';
 
+import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
+import { RefundStatusChangedEvent } from '../../../common/events/refund-status-changed.event';
 import { PaymentInitiationResponseEntity } from '../entities/payment-initiation-response.entity';
 import { PaymentResponseEntity } from '../entities/payment-response.entity';
 import { RefundResponseEntity } from '../entities/refund-response.entity';
@@ -16,7 +19,7 @@ import {
 } from '../interfaces/payment-provider.interface';
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
-import { PaymentsRepository } from '../repositories/payments.repository';
+import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
 import { RefundsRepository } from '../repositories/refunds.repository';
 
 export interface WiPayWebhookPayload {
@@ -32,6 +35,7 @@ export class PaymentsService {
     private readonly refundsRepository: RefundsRepository,
     private readonly wiPayAdapter: WiPayAdapter,
     private readonly cashOnDeliveryAdapter: CashOnDeliveryAdapter,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async initiatePayment(
@@ -65,6 +69,10 @@ export class PaymentsService {
         ? await this.paymentsRepository.update(payment.id, { status: 'PAID', paidAt: new Date() })
         : payment;
 
+    if (isPaid) {
+      await this.emitPaymentConfirmed(finalPayment);
+    }
+
     return { payment: PaymentsService.toPaymentResponse(finalPayment), redirectUrl: result.redirectUrl };
   }
 
@@ -97,6 +105,7 @@ export class PaymentsService {
       status: 'PAID',
       paidAt: new Date(),
     });
+    await this.emitPaymentConfirmed(updated);
     return PaymentsService.toPaymentResponse(updated);
   }
 
@@ -112,7 +121,11 @@ export class PaymentsService {
     }
 
     if (payload.status === 'success') {
-      await this.paymentsRepository.update(payment.id, { status: 'PAID', paidAt: new Date() });
+      const updated = await this.paymentsRepository.update(payment.id, {
+        status: 'PAID',
+        paidAt: new Date(),
+      });
+      await this.emitPaymentConfirmed(updated);
     } else {
       await this.paymentsRepository.update(payment.id, {
         status: 'FAILED',
@@ -150,7 +163,7 @@ export class PaymentsService {
   }
 
   private async executeRefund(
-    payment: Payment,
+    payment: PaymentWithOrder,
     amount: number,
     reason: string,
   ): Promise<Refund | null> {
@@ -177,14 +190,31 @@ export class PaymentsService {
       await this.paymentsRepository.update(payment.id, { status: newStatus });
     }
 
+    await this.eventEmitter.emitAsync(
+      RefundStatusChangedEvent.eventName,
+      new RefundStatusChangedEvent(payment.order.customerId, refund.amount.toString(), refund.status),
+    );
+
     return refund;
+  }
+
+  private async emitPaymentConfirmed(payment: PaymentWithOrder): Promise<void> {
+    await this.eventEmitter.emitAsync(
+      PaymentConfirmedEvent.eventName,
+      new PaymentConfirmedEvent(
+        payment.order.customerId,
+        payment.orderId,
+        payment.amount.toString(),
+        payment.currency,
+      ),
+    );
   }
 
   private getAdapter(provider: PaymentProviderName): PaymentProviderAdapter {
     return provider === 'WIPAY' ? this.wiPayAdapter : this.cashOnDeliveryAdapter;
   }
 
-  private static toPaymentResponse(payment: Payment): PaymentResponseEntity {
+  private static toPaymentResponse(payment: PaymentWithOrder): PaymentResponseEntity {
     return {
       id: payment.id,
       orderId: payment.orderId,

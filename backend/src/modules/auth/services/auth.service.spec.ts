@@ -7,6 +7,7 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Role, RoleName, UserStatus } from '@prisma/client';
 
 import { RefreshTokensRepository } from '../repositories/refresh-tokens.repository';
@@ -65,6 +66,7 @@ describe('AuthService', () => {
       'generateAccessToken' | 'issueRefreshToken' | 'rotateRefreshToken' | 'revokeRefreshToken' | 'generateOpaqueToken'
     >
   >;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: AuthService;
 
   beforeEach(() => {
@@ -89,12 +91,14 @@ describe('AuthService', () => {
       revokeRefreshToken: jest.fn(),
       generateOpaqueToken: jest.fn().mockReturnValue({ raw: 'raw-token', hash: 'token-hash' }),
     };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new AuthService(
       usersRepository as unknown as UsersRepository,
       rolesRepository as unknown as RolesRepository,
       refreshTokensRepository as unknown as RefreshTokensRepository,
       tokenService as unknown as TokenService,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -122,6 +126,10 @@ describe('AuthService', () => {
       expect(result.user.email).toBe('jane@example.com');
       expect(usersRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ email: 'jane@example.com', roleId: 'role-1' }),
+      );
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'registration.confirmed',
+        expect.objectContaining({ userId: createdUser.id, firstName: 'Jane' }),
       );
     });
 

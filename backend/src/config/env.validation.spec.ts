@@ -15,6 +15,9 @@ describe('validateEnv', () => {
     WIPAY_API_URL: 'https://tx.wipayfinancial.com/plugins/payments',
     WIPAY_ACCOUNT_NUMBER: 'test-account-number',
     WIPAY_API_KEY: 'test-wipay-key',
+    SENDGRID_API_KEY: 'test-sendgrid-key',
+    SENDGRID_FROM_EMAIL: 'notifications@iriefishmongers.com',
+    FCM_SERVER_KEY: 'test-fcm-key',
   };
 
   it('returns a validated, transformed config for valid input', () => {

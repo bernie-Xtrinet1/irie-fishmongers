@@ -5,8 +5,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Driver, DriverLocation } from '@prisma/client';
 
+import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { AssignDeliveryDto } from '../dto/assign-delivery.dto';
@@ -35,6 +37,7 @@ export class DeliveriesService {
     private readonly vendorOrdersRepository: VendorOrdersRepository,
     private readonly driversRepository: DriversRepository,
     private readonly driverLocationsRepository: DriverLocationsRepository,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async getAvailable(
@@ -162,6 +165,15 @@ export class DeliveriesService {
       );
       return this.deliveriesRepository.markFailed(delivery.id, dto.failureReason, tx);
     });
+
+    await this.eventEmitter.emitAsync(
+      DeliveryStatusUpdatedEvent.eventName,
+      new DeliveryStatusUpdatedEvent(
+        updated.vendorOrder.order.customerId,
+        updated.vendorOrderId,
+        DeliveriesService.computeStage(updated),
+      ),
+    );
 
     return DeliveriesService.toDriverResponse(updated);
   }

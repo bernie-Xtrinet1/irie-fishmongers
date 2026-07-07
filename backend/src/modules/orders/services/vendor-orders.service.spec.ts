@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 
 import { PaymentsService } from '../../payments/services/payments.service';
@@ -47,25 +48,28 @@ describe('VendorOrdersService', () => {
   let vendorOrdersRepository: jest.Mocked<
     Pick<VendorOrdersRepository, 'findById' | 'updateStatus' | 'findManyByVendor'>
   >;
-  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
   let paymentsService: jest.Mocked<Pick<PaymentsService, 'assertReadyForFulfillment' | 'refundForOrder'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: VendorOrdersService;
 
   beforeEach(() => {
     vendorOrdersRepository = { findById: jest.fn(), updateStatus: jest.fn(), findManyByVendor: jest.fn() };
-    vendorsRepository = { findByUserId: jest.fn() };
+    vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     productsRepository = { adjustStock: jest.fn() };
     paymentsService = {
       assertReadyForFulfillment: jest.fn().mockResolvedValue(undefined),
       refundForOrder: jest.fn().mockResolvedValue(null),
     };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new VendorOrdersService(
       vendorOrdersRepository as unknown as VendorOrdersRepository,
       vendorsRepository as unknown as VendorsRepository,
       productsRepository as unknown as ProductsRepository,
       paymentsService as unknown as PaymentsService,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -92,11 +96,32 @@ describe('VendorOrdersService', () => {
       vendorOrdersRepository.updateStatus.mockResolvedValue(
         buildVendorOrder({ status: 'ACCEPTED' }),
       );
+      vendorsRepository.findById.mockResolvedValue({
+        id: 'vendor-1',
+        userId: 'vendor-user-1',
+        businessName: 'Test Vendor',
+        description: null,
+        phone: null,
+        parish: 'KINGSTON',
+        logoUrl: null,
+        status: 'APPROVED',
+        termsAcceptedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
 
       const result = await service.accept('user-1', 'vo-1');
       expect(result.status).toBe('ACCEPTED');
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'ACCEPTED');
       expect(paymentsService.assertReadyForFulfillment).toHaveBeenCalledWith('order-1');
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'order.accepted',
+        expect.objectContaining({
+          customerId: 'user-1',
+          orderId: 'order-1',
+          vendorBusinessName: 'Test Vendor',
+        }),
+      );
     });
 
     it('blocks acceptance when payment is not yet completed', async () => {

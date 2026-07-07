@@ -1,10 +1,12 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { CheckoutDto } from '../dto/checkout.dto';
 import { OrderResponseEntity } from '../entities/order-response.entity';
@@ -28,6 +30,7 @@ export class OrdersService {
     private readonly productsRepository: ProductsRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly paymentsService: PaymentsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
@@ -103,6 +106,15 @@ export class OrdersService {
       (sum, vendorOrder) => sum + vendorOrder.subtotal.toNumber(),
       0,
     );
+    const itemCount = order.vendorOrders.reduce(
+      (count, vendorOrder) => count + vendorOrder.items.length,
+      0,
+    );
+    await this.eventEmitter.emitAsync(
+      OrderPlacedEvent.eventName,
+      new OrderPlacedEvent(userId, order.id, total.toFixed(2), itemCount),
+    );
+
     const { payment, redirectUrl } = await this.paymentsService.initiatePayment({
       orderId: order.id,
       amount: total,
