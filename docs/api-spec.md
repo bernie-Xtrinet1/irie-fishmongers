@@ -216,6 +216,9 @@ GET /marketplace/weight-config (admin only)
 
 POST /marketplace/weight-config (admin only - publish a new selection weight configuration)
 
+POST /marketplace/best-vendor/resolve (customer only - Best Available Vendor; returns the winning
+productId to pass to the existing POST /cart/items unchanged)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

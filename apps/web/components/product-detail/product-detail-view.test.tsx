@@ -15,14 +15,17 @@ import type { ReactNode } from 'react';
 
 import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
+import { resolveBestVendor } from '@/lib/api/marketplace';
 import { fetchProductDetail } from '@/lib/api/products';
 import { ProductDetailView } from './product-detail-view';
 
 jest.mock('@/lib/api/products');
 jest.mock('@/lib/api/cart');
+jest.mock('@/lib/api/marketplace');
 
 const mockFetchProductDetail = fetchProductDetail as jest.MockedFunction<typeof fetchProductDetail>;
 const mockAddCartItem = addCartItem as jest.MockedFunction<typeof addCartItem>;
+const mockResolveBestVendor = resolveBestVendor as jest.MockedFunction<typeof resolveBestVendor>;
 
 const baseProduct: ProductDetail = {
   id: 'product-1',
@@ -153,7 +156,7 @@ describe('ProductDetailView', () => {
     expect(await screen.findByText('Please sign in to add items to your cart.')).toBeInTheDocument();
   });
 
-  it('disables purchase actions while Best Available Vendor is selected', async () => {
+  it('disables purchase actions until a delivery parish is chosen for Best Available Vendor', async () => {
     mockFetchProductDetail.mockResolvedValue({
       ...baseProduct,
       marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: true },
@@ -164,6 +167,63 @@ describe('ProductDetailView', () => {
     await userEvent.click(screen.getByRole('radio', { name: /Best Available Vendor/ }));
 
     expect(screen.getByRole('button', { name: 'Add To Cart' })).toBeDisabled();
-    expect(screen.getByText('Best Available Vendor checkout is coming soon.')).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByLabelText('Delivery Parish'), 'KINGSTON');
+
+    expect(screen.getByRole('button', { name: 'Add To Cart' })).toBeEnabled();
+  });
+
+  it('resolves the best vendor, adds it to the cart, and shows the assigned badge', async () => {
+    mockFetchProductDetail.mockResolvedValue({
+      ...baseProduct,
+      marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: true },
+    });
+    mockResolveBestVendor.mockResolvedValue({
+      productId: 'product-2',
+      vendorId: 'vendor-2',
+      badge: '✓ Verified Vendor',
+      totalScore: '88.00',
+      fulfillmentDecisionId: 'decision-1',
+    });
+    mockAddCartItem.mockResolvedValue({ id: 'item-1', cartId: 'cart-1', productId: 'product-2', quantity: 1 });
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    await screen.findByText('Fresh Snapper');
+    await userEvent.click(screen.getByRole('radio', { name: /Best Available Vendor/ }));
+    await userEvent.selectOptions(screen.getByLabelText('Delivery Parish'), 'KINGSTON');
+    await userEvent.click(screen.getByRole('button', { name: 'Add To Cart' }));
+
+    await waitFor(() => {
+      expect(mockResolveBestVendor).toHaveBeenCalledWith({
+        productId: 'product-1',
+        quantity: 1,
+        deliveryParish: 'KINGSTON',
+      });
+    });
+    await waitFor(() => {
+      expect(mockAddCartItem).toHaveBeenCalledWith({ productId: 'product-2', quantity: 1 });
+    });
+    expect(
+      await screen.findByText('Fulfilled by Irie Fishmongers (✓ Verified Vendor). Added to your cart.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows an honest message when no vendor can fulfill a Best Available Vendor request', async () => {
+    mockFetchProductDetail.mockResolvedValue({
+      ...baseProduct,
+      marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: true },
+    });
+    mockResolveBestVendor.mockRejectedValue(new ApiError('No eligible vendor', 404));
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    await screen.findByText('Fresh Snapper');
+    await userEvent.click(screen.getByRole('radio', { name: /Best Available Vendor/ }));
+    await userEvent.selectOptions(screen.getByLabelText('Delivery Parish'), 'KINGSTON');
+    await userEvent.click(screen.getByRole('button', { name: 'Add To Cart' }));
+
+    expect(
+      await screen.findByText('No vendor is currently able to fulfill this request.'),
+    ).toBeInTheDocument();
+    expect(mockAddCartItem).not.toHaveBeenCalled();
   });
 });

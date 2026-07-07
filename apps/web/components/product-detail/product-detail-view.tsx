@@ -1,6 +1,6 @@
 'use client';
 
-import { ProductAvailability, type ProductDetail } from '@iriefishmongers/types';
+import { Parish, ProductAvailability, type ProductDetail } from '@iriefishmongers/types';
 import { VendorTierBadge } from '@iriefishmongers/ui';
 import { useMutation } from '@tanstack/react-query';
 import Image from 'next/image';
@@ -9,22 +9,36 @@ import { useState } from 'react';
 
 import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
+import { resolveBestVendor } from '@/lib/api/marketplace';
 import { formatDate, formatEnumLabel } from '@/lib/format';
 import { useProductDetail } from '@/lib/hooks/use-product-detail';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 
 type PurchaseOption = 'CHOOSE_VENDOR' | 'BEST_AVAILABLE_VENDOR';
 
+interface PurchaseResult {
+  bestAvailable: boolean;
+  badge: string | null;
+}
+
 export function ProductDetailView({ productId }: { productId: string }): React.ReactElement {
   const { data, isPending, isError, error, refetch } = useProductDetail(productId);
   const [quantity, setQuantity] = useState(1);
   const [purchaseOption, setPurchaseOption] = useState<PurchaseOption>('CHOOSE_VENDOR');
+  const [deliveryParish, setDeliveryParish] = useState<Parish | ''>('');
 
-  const addToCart = useMutation({
-    mutationFn: () => addCartItem({ productId, quantity }),
+  const purchase = useMutation({
+    mutationFn: async (): Promise<PurchaseResult> => {
+      if (purchaseOption === 'BEST_AVAILABLE_VENDOR' && deliveryParish) {
+        const resolution = await resolveBestVendor({ productId, quantity, deliveryParish });
+        await addCartItem({ productId: resolution.productId, quantity });
+        return { bestAvailable: true, badge: resolution.badge };
+      }
+      await addCartItem({ productId, quantity });
+      return { bestAvailable: false, badge: null };
+    },
   });
 
   if (isPending) {
@@ -54,6 +68,7 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
   }
 
   const product = data;
+  const purchaseDisabled = purchaseOption === 'BEST_AVAILABLE_VENDOR' && !deliveryParish;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10">
@@ -91,25 +106,43 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
             marketplaceModes={product.marketplaceModes}
             selected={purchaseOption}
             onSelect={setPurchaseOption}
+            deliveryParish={deliveryParish}
+            onSelectParish={setDeliveryParish}
           />
 
-          <ActionButtons
-            purchaseOption={purchaseOption}
-            isSubmitting={addToCart.isPending}
-            onAddToCart={() => addToCart.mutate()}
-            onBuyNow={() => addToCart.mutate()}
-            vendorId={product.vendor.id}
-          />
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button
+              onClick={() => purchase.mutate()}
+              loading={purchase.isPending}
+              disabled={purchaseDisabled}
+            >
+              Add To Cart
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => purchase.mutate()}
+              loading={purchase.isPending}
+              disabled={purchaseDisabled}
+            >
+              Buy Now
+            </Button>
+            <Button variant="ghost" disabled title="Saved products are coming soon">
+              Save Product
+            </Button>
+            <Link href={`/vendors/${product.vendor.id}`}>
+              <Button variant="secondary">View Vendor Profile</Button>
+            </Link>
+          </div>
 
-          {addToCart.isSuccess ? (
-            <p className="mt-3 text-sm text-irie-green">Added to your cart.</p>
-          ) : null}
-          {addToCart.isError ? (
-            <p className="mt-3 text-sm text-irie-red">
-              {addToCart.error instanceof ApiError && addToCart.error.status === 401
-                ? 'Please sign in to add items to your cart.'
-                : 'Could not add this item to your cart. Please try again.'}
+          {purchase.isSuccess ? (
+            <p className="mt-3 text-sm text-irie-green">
+              {purchase.data.bestAvailable
+                ? `Fulfilled by Irie Fishmongers (${purchase.data.badge}). Added to your cart.`
+                : 'Added to your cart.'}
             </p>
+          ) : null}
+          {purchase.isError ? (
+            <p className="mt-3 text-sm text-irie-red">{purchaseErrorMessage(purchase.error)}</p>
           ) : null}
         </div>
       </div>
@@ -124,11 +157,7 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
   );
 }
 
-function ProductInformationCard({
-  product,
-}: {
-  product: ProductDetail;
-}): React.ReactElement {
+function ProductInformationCard({ product }: { product: ProductDetail }): React.ReactElement {
   return (
     <Card>
       <CardHeader>
@@ -152,11 +181,7 @@ function ProductInformationCard({
   );
 }
 
-function TraceabilityCard({
-  product,
-}: {
-  product: ProductDetail;
-}): React.ReactElement {
+function TraceabilityCard({ product }: { product: ProductDetail }): React.ReactElement {
   return (
     <Card>
       <CardHeader>
@@ -180,11 +205,7 @@ function TraceabilityCard({
   );
 }
 
-function FoodSafetyCard({
-  product,
-}: {
-  product: ProductDetail;
-}): React.ReactElement {
+function FoodSafetyCard({ product }: { product: ProductDetail }): React.ReactElement {
   const onHold = product.availability === ProductAvailability.ON_HOLD;
   return (
     <Card>
@@ -213,11 +234,7 @@ function FoodSafetyCard({
   );
 }
 
-function VendorInformationCard({
-  product,
-}: {
-  product: ProductDetail;
-}): React.ReactElement {
+function VendorInformationCard({ product }: { product: ProductDetail }): React.ReactElement {
   return (
     <Card>
       <CardHeader>
@@ -249,10 +266,14 @@ function PurchaseOptions({
   marketplaceModes,
   selected,
   onSelect,
+  deliveryParish,
+  onSelectParish,
 }: {
   marketplaceModes: { customerSelectedEnabled: boolean; bestAvailableEnabled: boolean };
   selected: PurchaseOption;
   onSelect: (option: PurchaseOption) => void;
+  deliveryParish: Parish | '';
+  onSelectParish: (parish: Parish | '') => void;
 }): React.ReactElement | null {
   if (!marketplaceModes.customerSelectedEnabled && !marketplaceModes.bestAvailableEnabled) {
     return null;
@@ -286,48 +307,45 @@ function PurchaseOptions({
           <p className="ml-6 mt-1 text-xs text-gray-500">
             Vendor selected based on availability, freshness, compliance, and delivery capacity.
           </p>
+          {selected === 'BEST_AVAILABLE_VENDOR' ? (
+            <div className="ml-6 mt-2">
+              <label htmlFor="delivery-parish" className="text-xs font-medium text-gray-700">
+                Delivery Parish
+              </label>
+              <select
+                id="delivery-parish"
+                value={deliveryParish}
+                onChange={(event) => onSelectParish(event.target.value as Parish | '')}
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+              >
+                <option value="">Select a parish</option>
+                {Object.values(Parish).map((parish) => (
+                  <option key={parish} value={parish}>
+                    {formatEnumLabel(parish)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </fieldset>
   );
 }
 
-function ActionButtons({
-  purchaseOption,
-  isSubmitting,
-  onAddToCart,
-  onBuyNow,
-  vendorId,
-}: {
-  purchaseOption: PurchaseOption;
-  isSubmitting: boolean;
-  onAddToCart: () => void;
-  onBuyNow: () => void;
-  vendorId: string;
-}): React.ReactElement {
-  const bestAvailableNotReady = purchaseOption === 'BEST_AVAILABLE_VENDOR';
-
-  return (
-    <div className="mt-6 flex flex-wrap gap-3">
-      <Button onClick={onAddToCart} loading={isSubmitting} disabled={bestAvailableNotReady}>
-        Add To Cart
-      </Button>
-      <Button variant="secondary" onClick={onBuyNow} loading={isSubmitting} disabled={bestAvailableNotReady}>
-        Buy Now
-      </Button>
-      <Button variant="ghost" disabled title="Saved products are coming soon">
-        Save Product
-      </Button>
-      <Link href={`/vendors/${vendorId}`} className="sr-only">
-        View Vendor Profile
-      </Link>
-      {bestAvailableNotReady ? (
-        <Badge variant="info" className="w-full">
-          Best Available Vendor checkout is coming soon.
-        </Badge>
-      ) : null}
-    </div>
-  );
+function purchaseErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return 'Please sign in to add items to your cart.';
+    }
+    if (error.status === 403) {
+      return 'Best Available Vendor is not currently available.';
+    }
+    if (error.status === 404) {
+      return 'No vendor is currently able to fulfill this request.';
+    }
+  }
+  return 'Something went wrong. Please try again.';
 }
 
 function DetailRow({ label, value }: { label: string; value: string }): React.ReactElement {
