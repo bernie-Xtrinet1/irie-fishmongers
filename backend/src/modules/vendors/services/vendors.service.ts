@@ -65,6 +65,7 @@ export class VendorsService {
       parish: vendor.parish,
       logoUrl: vendor.logoUrl,
       tier: vendor.tier,
+      complianceScore: vendor.complianceScore,
     };
   }
 

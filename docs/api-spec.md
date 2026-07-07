@@ -204,6 +204,14 @@ POST /vendors/:id/downgrade (admin only)
 
 GET /vendors/:id/downgrade-events (admin only)
 
+GET /marketplace/mode-config (admin only)
+
+POST /marketplace/mode-config (admin only - publish a new mode configuration)
+
+GET /marketplace/weight-config (admin only)
+
+POST /marketplace/weight-config (admin only - publish a new selection weight configuration)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

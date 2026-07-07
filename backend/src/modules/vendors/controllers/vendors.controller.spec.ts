@@ -27,6 +27,7 @@ const publicVendor: VendorPublicEntity = {
   parish: 'KINGSTON',
   logoUrl: null,
   tier: 'COMMUNITY_FISHER',
+  complianceScore: null,
 };
 
 const user = { id: 'user-1', email: 'a@b.com', roles: ['VENDOR' as const] };

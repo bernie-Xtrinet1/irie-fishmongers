@@ -22,4 +22,7 @@ export class VendorPublicEntity {
     description: 'Fetch GET /vendors/:id/permissions for the tier badge and full permission set',
   })
   tier!: VendorTier;
+
+  @ApiProperty({ required: false, nullable: true })
+  complianceScore!: number | null;
 }

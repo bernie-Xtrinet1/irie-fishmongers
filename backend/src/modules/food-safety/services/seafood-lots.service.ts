@@ -101,6 +101,7 @@ export class SeafoodLotsService {
       species: lot.species,
       storageType: lot.storageType,
       catchDate: lot.catchDate,
+      catchLocation: lot.catchLocation,
       landingSite: lot.landingSite,
       freshnessGrade: lot.freshnessGrade,
       vendorBusinessName: lot.vendor.businessName,

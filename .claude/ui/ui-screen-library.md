@@ -23,24 +23,11 @@ All screens must use the UI Design System.
 
 # BRANDING
 
-Use:
+Branding, color palette, and typography are defined authoritatively in
+`ui-design-system.md`. Use that document as the single source of truth for
+all colors, spacing, typography, and component styling.
 
-Irie Fishmongers Logo
-
-Primary Color:
-Ocean Blue
-
-Secondary Color:
-Seafoam Green
-
-Accent:
-Fresh Coral
-
-Background:
-White
-
-Typography:
-Modern Sans Serif
+Do not introduce colors or type styles that are not defined there.
 
 ---
 

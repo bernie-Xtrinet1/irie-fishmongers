@@ -29,6 +29,7 @@ const publicLot: SeafoodLotPublicEntity = {
   species: 'Snapper',
   storageType: 'FRESH',
   catchDate: new Date(),
+  catchLocation: 'North Coast',
   landingSite: 'Falmouth Landing Site',
   freshnessGrade: null,
   vendorBusinessName: "Vera's Catch",

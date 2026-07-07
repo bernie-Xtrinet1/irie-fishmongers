@@ -310,6 +310,34 @@ async function main(): Promise<void> {
       create: feature,
     });
   }
+
+  // marketplace-modes.md's own Phase 1 default: Customer Selected Vendor
+  // enabled, Marketplace Fulfillment (Best Available Vendor) disabled.
+  const existingModeConfig = await prisma.marketplaceModeConfig.findFirst();
+  if (!existingModeConfig) {
+    await prisma.marketplaceModeConfig.create({
+      data: { customerSelectedEnabled: true, bestAvailableEnabled: false },
+    });
+  }
+
+  // Default weight distribution follows fulfillment-strategy.md's Selection
+  // Priority ordering (Inventory > Compliance > Freshness > Distance >
+  // Delivery Capacity > Rating) and sums to 1.0000. Rating is weighted
+  // lowest because no Review/Rating model exists yet (see docs/database-
+  // design.md scoping notes) - it contributes a neutral score today.
+  const existingWeightConfig = await prisma.vendorSelectionWeightConfig.findFirst();
+  if (!existingWeightConfig) {
+    await prisma.vendorSelectionWeightConfig.create({
+      data: {
+        inventoryWeight: 0.3,
+        complianceWeight: 0.2,
+        freshnessWeight: 0.2,
+        distanceWeight: 0.15,
+        deliveryCapacityWeight: 0.1,
+        ratingWeight: 0.05,
+      },
+    });
+  }
 }
 
 main()

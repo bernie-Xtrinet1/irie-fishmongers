@@ -196,6 +196,7 @@ describe('SeafoodLotsService', () => {
 
       expect(result.temperatureVerified).toBe(true);
       expect(result.vendorBusinessName).toBe("Vera's Catch");
+      expect(result.catchLocation).toBe('North Coast');
     });
 
     it('returns temperatureVerified false when there are unresolved alerts', async () => {
