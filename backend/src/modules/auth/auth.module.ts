@@ -36,6 +36,6 @@ import { parseDurationToSeconds, TokenService } from './services/token.service';
     JwtAuthGuard,
     RolesGuard,
   ],
-  exports: [JwtModule, JwtAuthGuard, RolesGuard],
+  exports: [JwtModule, JwtAuthGuard, RolesGuard, UsersRepository],
 })
 export class AuthModule {}

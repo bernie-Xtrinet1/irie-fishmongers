@@ -1,4 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Vendor } from '@prisma/client';
 
 import { VendorsRepository } from '../repositories/vendors.repository';
@@ -25,6 +26,7 @@ describe('VendorsService', () => {
   let vendorsRepository: jest.Mocked<
     Pick<VendorsRepository, 'create' | 'findById' | 'findByUserId' | 'updateStatus' | 'update' | 'findMany'>
   >;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: VendorsService;
 
   beforeEach(() => {
@@ -36,7 +38,11 @@ describe('VendorsService', () => {
       update: jest.fn(),
       findMany: jest.fn(),
     };
-    service = new VendorsService(vendorsRepository as unknown as VendorsRepository);
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
+    service = new VendorsService(
+      vendorsRepository as unknown as VendorsRepository,
+      eventEmitter as unknown as EventEmitter2,
+    );
   });
 
   describe('register', () => {
@@ -141,6 +147,19 @@ describe('VendorsService', () => {
 
       expect(result.status).toBe('APPROVED');
       expect(vendorsRepository.updateStatus).toHaveBeenCalledWith('vendor-1', 'APPROVED');
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'vendor.approved',
+        expect.objectContaining({ userId: 'user-1', businessName: "Vera's Catch" }),
+      );
+    });
+
+    it('does not re-emit vendor.approved when the vendor was already approved', async () => {
+      vendorsRepository.findById.mockResolvedValue(buildVendor({ status: 'APPROVED' }));
+      vendorsRepository.updateStatus.mockResolvedValue(buildVendor({ status: 'APPROVED' }));
+
+      await service.updateStatus('vendor-1', 'APPROVED');
+
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
     });
 
     it('throws when the vendor does not exist', async () => {

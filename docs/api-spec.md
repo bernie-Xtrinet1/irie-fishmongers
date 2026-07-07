@@ -168,6 +168,18 @@ PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Reso
 
 GET /recalls/:id/affected-orders (admin only)
 
+GET /notifications/mine (authenticated user)
+
+PATCH /notifications/:id/read (owning user only)
+
+GET /notifications/preferences (authenticated user)
+
+PATCH /notifications/preferences (authenticated user)
+
+POST /notifications/device-tokens (authenticated user - register a push token)
+
+DELETE /notifications/device-tokens/:token (authenticated user)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

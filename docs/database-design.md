@@ -578,3 +578,121 @@ Business rules encoded here:
   `OrderItem -> Product (lotId in the recall's lots)` to surface impacted
   orders/customers for manual admin follow-up, since no automated
   notification-sending exists yet.
+
+---
+
+# Notification Tables (Notifications phase, per business-rules1.md's
+# Notification Rules and .claude/rules/notification-standards.md)
+
+Scope note: this is the event-driven notification CORE - a centralized
+module every other module publishes domain events into (per notification-
+standards.md's "Centralized Notification Service" principle: "No individual
+module may directly integrate with Email/SMS/Push providers"), rather than
+the full literal event list in notification-standards.md. Wired for the 7
+events business-rules1.md explicitly mandates: registration confirmation,
+vendor approval, order placement, order acceptance, payment confirmation,
+delivery updates, refund status changes. The event-bus architecture makes
+adding notification-standards.md's larger event list (vendor rejected/
+suspended, low stock, product deactivated, vendor order received/preparing/
+ready, vendor settlement completed, cold-chain temperature warnings, etc.)
+later a matter of one `eventEmitter.emitAsync()` call at the source plus one
+seeded `NotificationTemplate` row - not a rearchitecture.
+
+Deliberately deferred:
+
+- SMS channel - no SMS provider credential (e.g. Twilio) exists anywhere in
+  this codebase's `.env.example`, unlike SendGrid (email) and FCM (push),
+  which are both already anticipated there.
+- The scheduled retry ladder (Attempt 2 at 5 min, Attempt 3 at 30 min,
+  Attempt 4 at 2 hours) from notification-standards.md's Retry Policy - no
+  job queue/scheduler infrastructure exists yet (same class of gap as IoT
+  sensors in the Food Safety phase, or IoT-driven duration-based temperature
+  severity). Only one immediate, synchronous attempt is made per channel;
+  failures are recorded via `NotificationLog` for manual/future automated
+  follow-up rather than actually retried.
+- Marketing/promotional notifications and the `marketingEnabled` preference
+  - no promotions feature exists anywhere in this codebase to trigger them.
+- Admin-editable notification templates via API - `notification_templates`
+  is seeded by `backend/prisma/seed.ts`, not exposed through a CRUD endpoint,
+  since no admin template-editor screen exists yet (mirrors how
+  `settlement_rate_configs` started append-only-via-code before getting an
+  admin endpoint).
+
+Tables:
+
+- `notifications` - one row per (recipient, channel) delivery attempt, not
+  one row per event with a channel list - a single event fanning out to
+  Email + Push + In-App creates three independently retryable/markable rows.
+  category (ACCOUNT | VENDOR | ORDER | PAYMENT | DELIVERY), eventType (the
+  7 wired events), channel (EMAIL | PUSH | IN_APP), priority (LOW | NORMAL |
+  HIGH | CRITICAL), title, message, data (optional JSON payload), status
+  (PENDING | SENT | FAILED | READ), sentAt, readAt.
+- `notification_logs` - append-only delivery-attempt history. Since only one
+  immediate attempt is currently made (see scope note above), most
+  notifications have exactly one log row - the shape already supports a
+  future retry worker adding attemptNumber 2, 3, 4 without a schema change.
+- `notification_preferences` - one row per user (created lazily on first
+  update via upsert; no row means every default applies). Channel-level
+  (emailEnabled, pushEnabled) and category-level (accountEnabled,
+  vendorEnabled, orderUpdatesEnabled, paymentUpdatesEnabled,
+  deliveryUpdatesEnabled) opt-outs. In-app notifications have no opt-out -
+  `GET /notifications/mine` is the user's own record of what happened to
+  their account, not a promotional channel a user should be able to fully
+  silence.
+- `notification_templates` - `{{variable}}`-templated subject/body per
+  (eventType, channel) pair (`@@unique([eventType, channel])`), seeded with
+  exactly the 18 rows the 7 wired events need across their configured
+  channels. Which channels actually fire for an event is entirely data-
+  driven from this table (`NotificationTemplatesRepository.
+  findChannelsForEvent`), not hardcoded in the service layer.
+- `device_tokens` - push-notification registration, keyed by a unique token
+  string. No mobile app exists yet in this codebase to register real
+  tokens, but the registration endpoint and storage are real, forward-
+  compatible infrastructure that `PushChannelAdapter` actively reads today
+  for any token a client does register - not dead code.
+
+Business rules encoded here:
+
+- Provider abstraction mirrors the Payments phase precedent exactly:
+  `NotificationsService` never calls Email/SMS/Push providers directly -
+  only through a `NotificationChannelAdapter` interface, with
+  `EmailChannelAdapter` (SendGrid v3 mail-send API), `PushChannelAdapter`
+  (Firebase Cloud Messaging legacy HTTP API), and `InAppChannelAdapter` (no
+  external call - the `Notification` row itself is the in-app notification)
+  as the three implementations. Adding a channel means writing one adapter.
+- Event-driven, not directly coupled: `AuthService`, `VendorsService`,
+  `OrdersService`, `VendorOrdersService`, `PaymentsService`, and
+  `DeliveriesService` only emit a plain event class (defined in
+  `backend/src/common/events/`) via `EventEmitter2` - none of them import or
+  depend on `NotificationsModule`. `NotificationEventsListener` (inside
+  `NotificationsModule`) is the only place that translates an event into a
+  category/priority/template-variables call to `NotificationsService.notify`.
+- Emission is awaited (`eventEmitter.emitAsync`, not fire-and-forget
+  `emit`), matching the "only an immediate, synchronous first attempt is
+  made" scope decision above: the triggering request (registration,
+  checkout, vendor acceptance, payment confirmation, delivery status
+  update) genuinely waits for the notification attempt to complete before
+  responding, rather than racing it in the background. This was deliberately
+  chosen over fire-and-forget after discovering `emit()` created a benign
+  but real race (the HTTP response could return before the Notification row
+  existed) during this phase's own e2e testing.
+- Which channels fire for an event is looked up from
+  `NotificationTemplatesRepository.findChannelsForEvent(eventType)` (data-
+  driven from seeded templates), then filtered by the recipient's
+  `NotificationPreference` (a `null` preference row - the common case until
+  a user explicitly changes a setting - means every channel/category
+  defaults to allowed, i.e. opt-out rather than opt-in).
+- A failed channel adapter send (e.g. SendGrid/FCM rejecting placeholder
+  dev credentials, or a user with zero registered device tokens) does not
+  throw and does not block other channels for the same event: the
+  `Notification` row is still created and marked FAILED with a
+  `NotificationLog` entry recording why, while other channels for the same
+  event proceed independently.
+- Test-isolation note for anyone adding to `notification_templates` in a
+  future spec: never `deleteMany` by a bare `eventType`/`channel` filter in
+  a repository test - those are real Prisma enum values shared with
+  production seed rows, and a broad delete will silently wipe seeded
+  templates other code depends on. Scope test fixtures to specific created
+  IDs (see `notification-templates.repository.spec.ts`), the same pattern
+  `categories.repository.spec.ts` already established for other seeded,
+  non-per-test-scoped config tables.

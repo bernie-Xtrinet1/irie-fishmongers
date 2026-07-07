@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Driver, Order, OrderItem, User, Vendor, VendorOrder } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -157,6 +158,7 @@ describe('DeliveriesService', () => {
   let vendorOrdersRepository: jest.Mocked<Pick<VendorOrdersRepository, 'updateStatus'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'findByUserId'>>;
   let driverLocationsRepository: jest.Mocked<Pick<DriverLocationsRepository, 'findLatestByDriverId'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: DeliveriesService;
 
   beforeEach(() => {
@@ -180,6 +182,7 @@ describe('DeliveriesService', () => {
     vendorOrdersRepository = { updateStatus: jest.fn() };
     driversRepository = { findByUserId: jest.fn() };
     driverLocationsRepository = { findLatestByDriverId: jest.fn() };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new DeliveriesService(
       prisma as unknown as PrismaService,
@@ -187,6 +190,7 @@ describe('DeliveriesService', () => {
       vendorOrdersRepository as unknown as VendorOrdersRepository,
       driversRepository as unknown as DriversRepository,
       driverLocationsRepository as unknown as DriverLocationsRepository,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -325,6 +329,10 @@ describe('DeliveriesService', () => {
 
       expect(result.stage).toBe('PICKED_UP');
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'IN_TRANSIT', {});
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'delivery.status_updated',
+        expect.objectContaining({ vendorOrderId: 'vo-1', stage: 'PICKED_UP' }),
+      );
     });
 
     it('rejects marking picked up twice', async () => {
@@ -366,6 +374,10 @@ describe('DeliveriesService', () => {
         {},
       );
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'DELIVERED', {});
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'delivery.status_updated',
+        expect.objectContaining({ customerId: 'customer-1', vendorOrderId: 'vo-1', stage: 'DELIVERED' }),
+      );
     });
 
     it('rejects marking delivered before pickup', async () => {

@@ -1,6 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { VendorOrderStatus } from '@prisma/client';
 
+import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -28,6 +30,7 @@ export class VendorOrdersService {
     private readonly vendorsRepository: VendorsRepository,
     private readonly productsRepository: ProductsRepository,
     private readonly paymentsService: PaymentsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async getIncomingOrders(
@@ -57,6 +60,20 @@ export class VendorOrdersService {
     await this.paymentsService.assertReadyForFulfillment(vendorOrder.orderId);
 
     const updated = await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'ACCEPTED');
+
+    const vendor = await this.vendorsRepository.findById(vendorOrder.vendorId);
+    if (vendor) {
+      await this.eventEmitter.emitAsync(
+        OrderAcceptedEvent.eventName,
+        new OrderAcceptedEvent(
+          vendorOrder.order.customerId,
+          vendorOrder.orderId,
+          vendorOrder.id,
+          vendor.businessName,
+        ),
+      );
+    }
+
     return VendorOrdersService.toResponse(updated);
   }
 

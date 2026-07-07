@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Payment, PaymentProviderName, PaymentStatus } from '@prisma/client';
+import { PaymentProviderName, PaymentStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -11,24 +11,36 @@ export interface CreatePaymentInput {
   providerReference?: string;
 }
 
+const paymentWithOrder = Prisma.validator<Prisma.PaymentDefaultArgs>()({
+  include: { order: { select: { customerId: true } } },
+});
+
+export type PaymentWithOrder = Prisma.PaymentGetPayload<typeof paymentWithOrder>;
+
 @Injectable()
 export class PaymentsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(input: CreatePaymentInput): Promise<Payment> {
-    return this.prisma.payment.create({ data: input });
+  create(input: CreatePaymentInput): Promise<PaymentWithOrder> {
+    return this.prisma.payment.create({ data: input, include: paymentWithOrder.include });
   }
 
-  findById(id: string): Promise<Payment | null> {
-    return this.prisma.payment.findUnique({ where: { id } });
+  findById(id: string): Promise<PaymentWithOrder | null> {
+    return this.prisma.payment.findUnique({ where: { id }, include: paymentWithOrder.include });
   }
 
-  findByOrderId(orderId: string): Promise<Payment | null> {
-    return this.prisma.payment.findUnique({ where: { orderId } });
+  findByOrderId(orderId: string): Promise<PaymentWithOrder | null> {
+    return this.prisma.payment.findUnique({
+      where: { orderId },
+      include: paymentWithOrder.include,
+    });
   }
 
-  findByProviderReference(providerReference: string): Promise<Payment | null> {
-    return this.prisma.payment.findFirst({ where: { providerReference } });
+  findByProviderReference(providerReference: string): Promise<PaymentWithOrder | null> {
+    return this.prisma.payment.findFirst({
+      where: { providerReference },
+      include: paymentWithOrder.include,
+    });
   }
 
   update(
@@ -39,7 +51,11 @@ export class PaymentsRepository {
       failureReason: string;
       paidAt: Date;
     }>,
-  ): Promise<Payment> {
-    return this.prisma.payment.update({ where: { id }, data });
+  ): Promise<PaymentWithOrder> {
+    return this.prisma.payment.update({
+      where: { id },
+      data,
+      include: paymentWithOrder.include,
+    });
   }
 }
