@@ -2,6 +2,8 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Category, SeafoodLot, Vendor } from '@prisma/client';
 
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CategoriesRepository } from '../repositories/categories.repository';
@@ -87,9 +89,13 @@ describe('ProductsService', () => {
     Pick<ProductsRepository, 'create' | 'findById' | 'update' | 'setActive' | 'findMany' | 'adjustStock'>
   >;
   let categoriesRepository: jest.Mocked<Pick<CategoriesRepository, 'findById'>>;
-  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let seafoodLotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById'>>;
-  let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'assertListingLimitNotExceeded'>>;
+  let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'getPublicById'>>;
+  let vendorPermissionsService: jest.Mocked<
+    Pick<VendorPermissionsService, 'assertListingLimitNotExceeded' | 'getPermissions'>
+  >;
+  let marketplaceConfigService: jest.Mocked<Pick<MarketplaceConfigService, 'getCurrentModeConfig'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -102,18 +108,23 @@ describe('ProductsService', () => {
       adjustStock: jest.fn(),
     };
     categoriesRepository = { findById: jest.fn() };
-    vendorsRepository = { findByUserId: jest.fn() };
+    vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     seafoodLotsRepository = { findById: jest.fn() };
+    seafoodLotsService = { getPublicById: jest.fn() };
     vendorPermissionsService = {
       assertListingLimitNotExceeded: jest.fn().mockResolvedValue(undefined),
+      getPermissions: jest.fn(),
     };
+    marketplaceConfigService = { getCurrentModeConfig: jest.fn() };
 
     service = new ProductsService(
       productsRepository as unknown as ProductsRepository,
       categoriesRepository as unknown as CategoriesRepository,
       vendorsRepository as unknown as VendorsRepository,
       seafoodLotsRepository as unknown as SeafoodLotsRepository,
+      seafoodLotsService as unknown as SeafoodLotsService,
       vendorPermissionsService as unknown as VendorPermissionsService,
+      marketplaceConfigService as unknown as MarketplaceConfigService,
     );
   });
 
@@ -259,6 +270,80 @@ describe('ProductsService', () => {
     it('throws when the product does not exist', async () => {
       productsRepository.findById.mockResolvedValue(null);
       await expect(service.findPublicById('missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getPublicDetail', () => {
+    const permissions = {
+      tier: 'COMMUNITY_FISHER' as const,
+      badge: '🐟 Community Fisher',
+      dailySalesLimit: null,
+      monthlySalesLimit: null,
+      maxActiveListings: null,
+      canSellRetail: true,
+      canSellWholesale: false,
+      canAcceptHotelOrders: false,
+      canAcceptRestaurantOrders: false,
+      canAcceptGovernmentOrders: false,
+      canExportProducts: false,
+      canAccessAnalytics: false,
+      canAccessPromotions: false,
+      canUseApiAccess: false,
+      canOperateMultipleZones: false,
+    };
+    const modeConfig = {
+      id: 'mode-config-1',
+      customerSelectedEnabled: true,
+      bestAvailableEnabled: false,
+      createdAt: new Date(),
+    };
+
+    it('composes product, vendor, and marketplace mode data when there is no lot', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.getPermissions.mockResolvedValue(permissions);
+      marketplaceConfigService.getCurrentModeConfig.mockResolvedValue(modeConfig);
+
+      const result = await service.getPublicDetail('product-1');
+
+      expect(result.lot).toBeNull();
+      expect(result.vendor.badge).toBe('🐟 Community Fisher');
+      expect(result.marketplaceModes.bestAvailableEnabled).toBe(false);
+      expect(seafoodLotsService.getPublicById).not.toHaveBeenCalled();
+    });
+
+    it('includes traceability data when the product is linked to a lot', async () => {
+      const publicLot = {
+        lotNumber: 'LOT-2026-000001',
+        species: 'Snapper',
+        storageType: 'FRESH' as const,
+        catchDate: new Date(),
+        catchLocation: 'North Coast',
+        landingSite: 'Falmouth Landing Site',
+        freshnessGrade: null,
+        vendorBusinessName: "Vera's Catch",
+        temperatureVerified: true,
+      };
+      productsRepository.findById.mockResolvedValue(buildProduct({ lotId: 'lot-1' }));
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.getPermissions.mockResolvedValue(permissions);
+      marketplaceConfigService.getCurrentModeConfig.mockResolvedValue(modeConfig);
+      seafoodLotsService.getPublicById.mockResolvedValue(publicLot);
+
+      const result = await service.getPublicDetail('product-1');
+
+      expect(result.lot?.catchLocation).toBe('North Coast');
+      expect(seafoodLotsService.getPublicById).toHaveBeenCalledWith('lot-1');
+    });
+
+    it('throws for an inactive product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ isActive: false }));
+      await expect(service.getPublicDetail('product-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('throws when the product does not exist', async () => {
+      productsRepository.findById.mockResolvedValue(null);
+      await expect(service.getPublicDetail('missing')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

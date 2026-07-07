@@ -1,3 +1,5 @@
+import { VendorComplianceStatusLabel } from '../../vendor-tiers/entities/vendor-profile-response.entity';
+import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { ProductsService } from '../services/products.service';
 import { ProductsController } from './products.controller';
@@ -19,13 +21,36 @@ const product: ProductResponseEntity = {
   createdAt: new Date(),
 };
 
+const productDetail: ProductDetailEntity = {
+  ...product,
+  lot: null,
+  vendor: {
+    id: 'vendor-1',
+    businessName: "Vera's Catch",
+    tier: 'COMMUNITY_FISHER',
+    badge: '🐟 Community Fisher',
+    parish: 'KINGSTON',
+    complianceScore: null,
+    complianceStatus: VendorComplianceStatusLabel.NOT_YET_ASSESSED,
+    logoUrl: null,
+  },
+  marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: false },
+};
+
 const user = { id: 'user-1', email: 'vendor@example.com', roles: ['VENDOR' as const] };
 
 describe('ProductsController', () => {
   let productsService: jest.Mocked<
     Pick<
       ProductsService,
-      'create' | 'update' | 'adjustStock' | 'setActive' | 'search' | 'findPublicById' | 'findOwnProducts'
+      | 'create'
+      | 'update'
+      | 'adjustStock'
+      | 'setActive'
+      | 'search'
+      | 'findPublicById'
+      | 'findOwnProducts'
+      | 'getPublicDetail'
     >
   >;
   let controller: ProductsController;
@@ -41,6 +66,7 @@ describe('ProductsController', () => {
       findOwnProducts: jest
         .fn()
         .mockResolvedValue({ items: [product], total: 1, page: 1, pageSize: 20 }),
+      getPublicDetail: jest.fn().mockResolvedValue(productDetail),
     };
     controller = new ProductsController(productsService as unknown as ProductsService);
   });
@@ -90,6 +116,11 @@ describe('ProductsController', () => {
 
   it('finds a product by id', async () => {
     await expect(controller.findById('product-1')).resolves.toEqual(product);
+  });
+
+  it('gets the product detail view', async () => {
+    await expect(controller.getDetail('product-1')).resolves.toEqual(productDetail);
+    expect(productsService.getPublicDetail).toHaveBeenCalledWith('product-1');
   });
 
   it("lists the authenticated vendor's own products", async () => {

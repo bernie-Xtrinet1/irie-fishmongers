@@ -24,6 +24,8 @@ GET /vendors (admin only)
 
 GET /vendors/:id/public
 
+GET /vendors/:id/profile (Vendor Profile Page - tier badge, compliance status, orders completed)
+
 PATCH /vendors/:id/status (admin only)
 
 GET /categories
@@ -33,6 +35,8 @@ POST /categories (admin only)
 GET /products
 
 GET /products/:id
+
+GET /products/:id/detail (Product Detail Page - traceability, vendor tier/compliance, marketplace modes)
 
 GET /products/mine (vendor only)
 
