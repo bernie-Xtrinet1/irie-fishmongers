@@ -5,7 +5,10 @@ import { Prisma } from '@prisma/client';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
-import { VendorOrderWithItems, VendorOrdersRepository } from '../repositories/vendor-orders.repository';
+import {
+  VendorOrderWithItems,
+  VendorOrdersRepository,
+} from '../repositories/vendor-orders.repository';
 import { VendorOrdersService } from './vendor-orders.service';
 
 function buildVendorOrder(overrides: Partial<VendorOrderWithItems> = {}): VendorOrderWithItems {
@@ -50,12 +53,18 @@ describe('VendorOrdersService', () => {
   >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
-  let paymentsService: jest.Mocked<Pick<PaymentsService, 'assertReadyForFulfillment' | 'refundForOrder'>>;
+  let paymentsService: jest.Mocked<
+    Pick<PaymentsService, 'assertReadyForFulfillment' | 'refundForOrder'>
+  >;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: VendorOrdersService;
 
   beforeEach(() => {
-    vendorOrdersRepository = { findById: jest.fn(), updateStatus: jest.fn(), findManyByVendor: jest.fn() };
+    vendorOrdersRepository = {
+      findById: jest.fn(),
+      updateStatus: jest.fn(),
+      findManyByVendor: jest.fn(),
+    };
     vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     productsRepository = { adjustStock: jest.fn() };
     paymentsService = {
@@ -83,6 +92,8 @@ describe('VendorOrdersService', () => {
       parish: 'KINGSTON',
       logoUrl: null,
       status: 'APPROVED',
+      tier: 'COMMUNITY_FISHER',
+      complianceScore: null,
       termsAcceptedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -105,6 +116,8 @@ describe('VendorOrdersService', () => {
         parish: 'KINGSTON',
         logoUrl: null,
         status: 'APPROVED',
+        tier: 'COMMUNITY_FISHER',
+        complianceScore: null,
         termsAcceptedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -144,6 +157,8 @@ describe('VendorOrdersService', () => {
         parish: 'KINGSTON',
         logoUrl: null,
         status: 'APPROVED',
+        tier: 'COMMUNITY_FISHER',
+        complianceScore: null,
         termsAcceptedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -163,6 +178,8 @@ describe('VendorOrdersService', () => {
         parish: 'KINGSTON',
         logoUrl: null,
         status: 'APPROVED',
+        tier: 'COMMUNITY_FISHER',
+        complianceScore: null,
         termsAcceptedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -248,6 +265,8 @@ describe('VendorOrdersService', () => {
         parish: 'KINGSTON',
         logoUrl: null,
         status: 'APPROVED',
+        tier: 'COMMUNITY_FISHER',
+        complianceScore: null,
         termsAcceptedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),

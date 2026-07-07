@@ -64,6 +64,7 @@ export class VendorsService {
       description: vendor.description,
       parish: vendor.parish,
       logoUrl: vendor.logoUrl,
+      tier: vendor.tier,
     };
   }
 
@@ -85,10 +86,11 @@ export class VendorsService {
   }
 
   async list(dto: ListVendorsDto): Promise<PaginatedVendors> {
-    const { items, total } = await this.vendorsRepository.findMany(dto.status, {
-      skip: (dto.page - 1) * dto.pageSize,
-      take: dto.pageSize,
-    });
+    const { items, total } = await this.vendorsRepository.findMany(
+      dto.status,
+      { skip: (dto.page - 1) * dto.pageSize, take: dto.pageSize },
+      dto.tier,
+    );
 
     return { items, total, page: dto.page, pageSize: dto.pageSize };
   }

@@ -1,4 +1,11 @@
-import { NotificationChannel, NotificationEventType, PrismaClient, RoleName } from '@prisma/client';
+import {
+  NotificationChannel,
+  NotificationEventType,
+  PrismaClient,
+  RoleName,
+  VendorTier,
+  VendorTierFeatureFlag,
+} from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -7,6 +14,95 @@ const DEFAULT_CATEGORIES = [
   { name: 'Shellfish', slug: 'shellfish' },
   { name: 'Crustaceans', slug: 'crustaceans' },
   { name: 'Mollusks', slug: 'mollusks' },
+];
+
+// Figures taken directly from .claude/marketplace/vendor-tier-rules.md's
+// per-tier tables. null means "unlimited / not specified in the source doc",
+// never a magic sentinel number.
+const VENDOR_TIER_CONFIGS: {
+  tier: VendorTier;
+  dailySalesLimit: number | null;
+  monthlySalesLimit: number | null;
+  maxActiveListings: number | null;
+  badge: string;
+}[] = [
+  {
+    tier: 'COMMUNITY_FISHER',
+    dailySalesLimit: 50000,
+    monthlySalesLimit: 500000,
+    maxActiveListings: 50,
+    badge: '🐟 Community Fisher',
+  },
+  {
+    tier: 'VERIFIED_VENDOR',
+    dailySalesLimit: null,
+    monthlySalesLimit: null,
+    maxActiveListings: 500,
+    badge: '✓ Verified Vendor',
+  },
+  {
+    tier: 'COMMERCIAL_SUPPLIER',
+    dailySalesLimit: null,
+    monthlySalesLimit: null,
+    maxActiveListings: null,
+    badge: '✓ Commercial Supplier',
+  },
+  {
+    tier: 'ENTERPRISE_SUPPLIER',
+    dailySalesLimit: null,
+    monthlySalesLimit: null,
+    maxActiveListings: null,
+    badge: '✓ Enterprise Supplier',
+  },
+];
+
+// The Feature Flag Rules' "Required Functions" table, seeded true/false per
+// tier directly from vendor-tier-rules.md's per-tier Permissions sections.
+const VENDOR_TIER_FEATURES: { tier: VendorTier; feature: VendorTierFeatureFlag; enabled: boolean }[] = [
+  // COMMUNITY_FISHER
+  { tier: 'COMMUNITY_FISHER', feature: 'SELL_RETAIL', enabled: true },
+  { tier: 'COMMUNITY_FISHER', feature: 'SELL_WHOLESALE', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'ACCEPT_HOTEL_ORDERS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'ACCEPT_RESTAURANT_ORDERS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'ACCEPT_GOVERNMENT_ORDERS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'EXPORT_PRODUCTS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'ACCESS_ANALYTICS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'ACCESS_PROMOTIONS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'API_ACCESS', enabled: false },
+  { tier: 'COMMUNITY_FISHER', feature: 'MULTI_ZONE_OPERATIONS', enabled: false },
+  // VERIFIED_VENDOR
+  { tier: 'VERIFIED_VENDOR', feature: 'SELL_RETAIL', enabled: true },
+  { tier: 'VERIFIED_VENDOR', feature: 'SELL_WHOLESALE', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'ACCEPT_HOTEL_ORDERS', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'ACCEPT_RESTAURANT_ORDERS', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'ACCEPT_GOVERNMENT_ORDERS', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'EXPORT_PRODUCTS', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'ACCESS_ANALYTICS', enabled: true },
+  { tier: 'VERIFIED_VENDOR', feature: 'ACCESS_PROMOTIONS', enabled: true },
+  { tier: 'VERIFIED_VENDOR', feature: 'API_ACCESS', enabled: false },
+  { tier: 'VERIFIED_VENDOR', feature: 'MULTI_ZONE_OPERATIONS', enabled: false },
+  // COMMERCIAL_SUPPLIER
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'SELL_RETAIL', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'SELL_WHOLESALE', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'ACCEPT_HOTEL_ORDERS', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'ACCEPT_RESTAURANT_ORDERS', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'ACCEPT_GOVERNMENT_ORDERS', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'EXPORT_PRODUCTS', enabled: false },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'ACCESS_ANALYTICS', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'ACCESS_PROMOTIONS', enabled: true },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'API_ACCESS', enabled: false },
+  { tier: 'COMMERCIAL_SUPPLIER', feature: 'MULTI_ZONE_OPERATIONS', enabled: false },
+  // ENTERPRISE_SUPPLIER
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'SELL_RETAIL', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'SELL_WHOLESALE', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'ACCEPT_HOTEL_ORDERS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'ACCEPT_RESTAURANT_ORDERS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'ACCEPT_GOVERNMENT_ORDERS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'EXPORT_PRODUCTS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'ACCESS_ANALYTICS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'ACCESS_PROMOTIONS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'API_ACCESS', enabled: true },
+  { tier: 'ENTERPRISE_SUPPLIER', feature: 'MULTI_ZONE_OPERATIONS', enabled: true },
 ];
 
 // One row per (eventType, channel) actually wired by NotificationEventsListener
@@ -196,6 +292,22 @@ async function main(): Promise<void> {
       where: { eventType_channel: { eventType: template.eventType, channel: template.channel } },
       update: { subject: template.subject, body: template.body, variables: template.variables },
       create: template,
+    });
+  }
+
+  for (const config of VENDOR_TIER_CONFIGS) {
+    await prisma.vendorTierConfig.upsert({
+      where: { tier: config.tier },
+      update: config,
+      create: config,
+    });
+  }
+
+  for (const feature of VENDOR_TIER_FEATURES) {
+    await prisma.vendorTierFeature.upsert({
+      where: { tier_feature: { tier: feature.tier, feature: feature.feature } },
+      update: { enabled: feature.enabled },
+      create: feature,
     });
   }
 }

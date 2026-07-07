@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { CartModule } from '../cart/cart.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { ProductsModule } from '../products/products.module';
+import { VendorTiersModule } from '../vendor-tiers/vendor-tiers.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { OrdersController } from './controllers/orders.controller';
 import { VendorOrdersController } from './controllers/vendor-orders.controller';
@@ -13,7 +14,7 @@ import { OrdersService } from './services/orders.service';
 import { VendorOrdersService } from './services/vendor-orders.service';
 
 @Module({
-  imports: [AuthModule, CartModule, ProductsModule, VendorsModule, PaymentsModule],
+  imports: [AuthModule, CartModule, ProductsModule, VendorsModule, PaymentsModule, VendorTiersModule],
   controllers: [OrdersController, VendorOrdersController],
   providers: [
     OrdersService,

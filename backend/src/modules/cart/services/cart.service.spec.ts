@@ -59,6 +59,8 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     parish: 'KINGSTON',
     logoUrl: null,
     status: 'APPROVED',
+    tier: 'COMMUNITY_FISHER',
+    complianceScore: null,
     termsAcceptedAt: new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),

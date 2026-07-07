@@ -7,6 +7,7 @@ import {
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
@@ -23,6 +24,7 @@ export class ProductsService {
     private readonly categoriesRepository: CategoriesRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly seafoodLotsRepository: SeafoodLotsRepository,
+    private readonly vendorPermissionsService: VendorPermissionsService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -38,6 +40,8 @@ export class ProductsService {
     if (!category) {
       throw new BadRequestException('Category does not exist');
     }
+
+    await this.vendorPermissionsService.assertListingLimitNotExceeded(vendor.id, vendor.tier);
 
     if (dto.lotId) {
       const lot = await this.seafoodLotsRepository.findById(dto.lotId);

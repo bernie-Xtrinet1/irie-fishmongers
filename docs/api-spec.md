@@ -180,6 +180,30 @@ POST /notifications/device-tokens (authenticated user - register a push token)
 
 DELETE /notifications/device-tokens/:token (authenticated user)
 
+GET /vendors/me/permissions (vendor only)
+
+GET /vendors/:id/permissions (admin only)
+
+POST /vendor-documents (vendor only)
+
+GET /vendor-documents/mine (vendor only)
+
+DELETE /vendor-documents/:id (vendor only - only a non-approved document)
+
+GET /vendor-documents/vendor/:vendorId (admin only)
+
+PATCH /vendor-documents/:id/review (admin only - approve/reject)
+
+POST /vendors/me/tier-upgrade-requests (vendor only)
+
+GET /tier-upgrade-requests (admin only)
+
+PATCH /tier-upgrade-requests/:id/review (admin only)
+
+POST /vendors/:id/downgrade (admin only)
+
+GET /vendors/:id/downgrade-events (admin only)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.

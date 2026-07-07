@@ -15,6 +15,8 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     parish: 'KINGSTON',
     logoUrl: null,
     status: 'PENDING',
+    tier: 'COMMUNITY_FISHER',
+    complianceScore: null,
     termsAcceptedAt: new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -122,6 +124,7 @@ describe('VendorsService', () => {
         description: null,
         parish: 'KINGSTON',
         logoUrl: null,
+        tier: 'COMMUNITY_FISHER',
       });
       expect(result).not.toHaveProperty('phone');
       expect(result).not.toHaveProperty('userId');
@@ -177,7 +180,11 @@ describe('VendorsService', () => {
       const result = await service.list({ status: 'PENDING', page: 1, pageSize: 20 });
 
       expect(result.total).toBe(1);
-      expect(vendorsRepository.findMany).toHaveBeenCalledWith('PENDING', { skip: 0, take: 20 });
+      expect(vendorsRepository.findMany).toHaveBeenCalledWith(
+        'PENDING',
+        { skip: 0, take: 20 },
+        undefined,
+      );
     });
   });
 });

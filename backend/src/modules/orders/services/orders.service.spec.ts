@@ -5,6 +5,7 @@ import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
+import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdersRepository, OrderWithDetails } from '../repositories/orders.repository';
@@ -64,6 +65,8 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     parish: 'KINGSTON',
     logoUrl: null,
     status: 'APPROVED',
+    tier: 'COMMUNITY_FISHER',
+    complianceScore: null,
     termsAcceptedAt: new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -134,6 +137,7 @@ describe('OrdersService', () => {
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
+  let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'assertSalesLimitNotExceeded'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: OrdersService;
 
@@ -152,6 +156,7 @@ describe('OrdersService', () => {
       initiatePayment: jest.fn().mockResolvedValue({ payment: buildPaymentResponse(), redirectUrl: undefined }),
       getByOrderId: jest.fn().mockResolvedValue(buildPaymentResponse()),
     };
+    vendorPermissionsService = { assertSalesLimitNotExceeded: jest.fn().mockResolvedValue(undefined) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new OrdersService(
@@ -162,6 +167,7 @@ describe('OrdersService', () => {
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
       paymentsService as unknown as PaymentsService,
+      vendorPermissionsService as unknown as VendorPermissionsService,
       eventEmitter as unknown as EventEmitter2,
     );
   });
