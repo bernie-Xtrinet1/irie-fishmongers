@@ -12,6 +12,7 @@ describe('validateEnv', () => {
     JWT_REFRESH_SECRET: 'b'.repeat(32),
     JWT_REFRESH_EXPIRES_IN: '7d',
     APP_BASE_URL: 'http://localhost:3001',
+    CORS_ORIGIN: 'http://localhost:3000',
     WIPAY_API_URL: 'https://tx.wipayfinancial.com/plugins/payments',
     WIPAY_ACCOUNT_NUMBER: 'test-account-number',
     WIPAY_API_KEY: 'test-wipay-key',

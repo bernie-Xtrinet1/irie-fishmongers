@@ -44,6 +44,12 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false })
   APP_BASE_URL!: string;
 
+  // The customer-facing web app's origin (apps/web) - the only origin
+  // allowed to call this API cross-origin. Distinct from APP_BASE_URL,
+  // which is this backend's OWN base URL (used for webhook callback links).
+  @IsUrl({ require_tld: false, require_protocol: true })
+  CORS_ORIGIN!: string;
+
   @IsUrl({ require_tld: false })
   WIPAY_API_URL!: string;
 
