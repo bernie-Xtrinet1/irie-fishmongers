@@ -16,9 +16,11 @@ async function bootstrap(): Promise<void> {
 
   const apiPrefix = configService.getOrThrow<string>('API_PREFIX');
   const port = configService.getOrThrow<number>('PORT');
+  const corsOrigin = configService.getOrThrow<string>('CORS_ORIGIN');
 
   app.use(helmet());
   app.use(cookieParser());
+  app.enableCors({ origin: corsOrigin, credentials: true });
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(
     new ValidationPipe({
