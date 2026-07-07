@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
@@ -133,6 +134,7 @@ describe('OrdersService', () => {
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: OrdersService;
 
   beforeEach(() => {
@@ -150,6 +152,7 @@ describe('OrdersService', () => {
       initiatePayment: jest.fn().mockResolvedValue({ payment: buildPaymentResponse(), redirectUrl: undefined }),
       getByOrderId: jest.fn().mockResolvedValue(buildPaymentResponse()),
     };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new OrdersService(
       prisma as unknown as PrismaService,
@@ -159,6 +162,7 @@ describe('OrdersService', () => {
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
       paymentsService as unknown as PaymentsService,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -303,6 +307,10 @@ describe('OrdersService', () => {
       expect(cartRepository.clear).toHaveBeenCalledWith('cart-1', {});
       const createArg = ordersRepository.create.mock.calls[0]?.[0];
       expect(createArg?.vendorOrders).toHaveLength(2);
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'order.placed',
+        expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
+      );
     });
   });
 

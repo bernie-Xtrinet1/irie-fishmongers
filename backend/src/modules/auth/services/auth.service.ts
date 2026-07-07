@@ -8,8 +8,10 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { RoleName } from '@prisma/client';
 
+import { RegistrationConfirmedEvent } from '../../../common/events/registration-confirmed.event';
 import { ForgotPasswordDto } from '../dto/forgot-password.dto';
 import { LoginDto } from '../dto/login.dto';
 import { RegisterDto } from '../dto/register.dto';
@@ -38,6 +40,7 @@ export class AuthService {
     private readonly rolesRepository: RolesRepository,
     private readonly refreshTokensRepository: RefreshTokensRepository,
     private readonly tokenService: TokenService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async register(
@@ -68,6 +71,11 @@ export class AuthService {
       emailVerificationTokenHash,
       emailVerificationTokenExpiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
     });
+
+    await this.eventEmitter.emitAsync(
+      RegistrationConfirmedEvent.eventName,
+      new RegistrationConfirmedEvent(user.id, user.firstName, user.email),
+    );
 
     return { user: AuthService.toUserResponse(user), emailVerificationToken };
   }

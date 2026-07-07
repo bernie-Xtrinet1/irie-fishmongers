@@ -37,16 +37,19 @@ model User {
   createdAt                       DateTime   @default(now())
   updatedAt                       DateTime   @updatedAt
 
-  roles               UserRole[]
-  refreshTokens       RefreshToken[]
-  vendor              Vendor?
-  driver              Driver?
-  cart                Cart?
-  orders              Order[]
-  temperatureReadings TemperatureReading[]
-  qualityInspections  QualityInspection[]
-  reportedIncidents   FoodSafetyIncident[]
-  createdRecalls      Recall[]
+  roles                  UserRole[]
+  refreshTokens          RefreshToken[]
+  vendor                 Vendor?
+  driver                 Driver?
+  cart                   Cart?
+  orders                 Order[]
+  temperatureReadings    TemperatureReading[]
+  qualityInspections     QualityInspection[]
+  reportedIncidents      FoodSafetyIncident[]
+  createdRecalls         Recall[]
+  notifications          Notification[]
+  notificationPreference NotificationPreference?
+  deviceTokens           DeviceToken[]
 
   @@map("users")
 }
@@ -779,4 +782,180 @@ model RecallLot {
   @@unique([recallId, lotId])
   @@index([lotId])
   @@map("recall_lots")
+}
+
+// -----------------------------------------------------------------------------
+// Notifications (Notifications phase, per docs/reference (business-rules1.md's
+// Notification Rules) and .claude/rules/notification-standards.md)
+//
+// Scope note: this is the event-driven notification CORE - a centralized
+// module every other module publishes domain events into, rather than each
+// module directly calling an email/push provider. Wired for the 7 events
+// business-rules1.md explicitly mandates (registration confirmation, vendor
+// approval, order placement, order acceptance, payment confirmation, delivery
+// updates, refund status changes). The event-bus architecture makes adding
+// notification-standards.md's larger event list (vendor rejected/suspended,
+// low stock, vendor settlement completed, temperature warnings, etc.) later a
+// matter of one emit() call + one seeded template, not a rearchitecture - see
+// docs/database-design.md for the full deferred-events list.
+//
+// Deliberately deferred:
+// - SMS channel - no SMS provider credential (e.g. Twilio) exists anywhere in
+//   this codebase's config, unlike SendGrid (email) and FCM (push), which are
+//   both already anticipated in .env.example.
+// - Scheduled retry ladder (5 min / 30 min / 2 hour re-attempts per
+//   notification-standards.md's Retry Policy) - no job queue/scheduler
+//   infrastructure exists yet (same class of gap as IoT sensors in the Food
+//   Safety phase). Only an immediate, synchronous first attempt is made;
+//   failures are recorded via NotificationLog for manual/future automated
+//   follow-up.
+// - Marketing/promotional notifications - no promotions feature exists
+//   anywhere in this codebase to trigger them.
+// -----------------------------------------------------------------------------
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  IN_APP
+}
+
+enum NotificationCategory {
+  ACCOUNT
+  VENDOR
+  ORDER
+  PAYMENT
+  DELIVERY
+}
+
+// Fine-grained event identifying which template/recipient-rule applies -
+// intentionally only the 7 events currently wired (see scope note above).
+enum NotificationEventType {
+  REGISTRATION_CONFIRMED
+  VENDOR_APPROVED
+  ORDER_PLACED
+  ORDER_ACCEPTED
+  PAYMENT_CONFIRMED
+  DELIVERY_STATUS_UPDATED
+  REFUND_STATUS_CHANGED
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+}
+
+// One row per (recipient, channel) delivery attempt - a single event that
+// fans out to Email + Push + In-App creates three Notification rows, each
+// independently retryable/markable, rather than one row with a channel list.
+model Notification {
+  id        String                @id @default(uuid())
+  userId    String
+  category  NotificationCategory
+  eventType NotificationEventType
+  channel   NotificationChannel
+  priority  NotificationPriority  @default(NORMAL)
+  title     String
+  message   String
+  data      Json?
+  status    NotificationStatus    @default(PENDING)
+  sentAt    DateTime?
+  readAt    DateTime?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  user User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  logs NotificationLog[]
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+// Append-only delivery attempt history. Since only one immediate attempt is
+// currently made (see scope note above), most notifications will have
+// exactly one log row - the shape already supports a future retry worker
+// adding attemptNumber 2, 3, 4 without a schema change.
+model NotificationLog {
+  id              String   @id @default(uuid())
+  notificationId  String
+  attemptNumber   Int
+  success         Boolean
+  responseSummary String?
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("notification_logs")
+}
+
+// Channel-level (email/push) and category-level (which events) opt-outs.
+// In-app notifications have no opt-out - GET /notifications/mine is the
+// user's own record of what happened, not a promotional channel.
+model NotificationPreference {
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  emailEnabled           Boolean  @default(true)
+  pushEnabled            Boolean  @default(true)
+  accountEnabled         Boolean  @default(true)
+  vendorEnabled          Boolean  @default(true)
+  orderUpdatesEnabled    Boolean  @default(true)
+  paymentUpdatesEnabled  Boolean  @default(true)
+  deliveryUpdatesEnabled Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+// Templates are seeded (backend/prisma/seed.ts), not admin-editable via API
+// yet - no CMS/admin-template-editor screen exists, matching how
+// settlement_rate_configs started append-only-via-code before getting an
+// admin endpoint. {{variable}} placeholders are substituted by TemplateService.
+model NotificationTemplate {
+  id        String                @id @default(uuid())
+  eventType NotificationEventType
+  channel   NotificationChannel
+  subject   String?
+  body      String
+  variables String[]
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  @@unique([eventType, channel])
+  @@map("notification_templates")
+}
+
+// Registered by a mobile/web client so PushChannelAdapter has somewhere to
+// send FCM messages. No mobile app exists yet in this codebase, but the
+// registration endpoint and storage are real, forward-compatible
+// infrastructure (not dead code) - PushChannelAdapter actively reads this
+// table today for any token a client does register.
+model DeviceToken {
+  id        String         @id @default(uuid())
+  userId    String
+  token     String         @unique
+  platform  DevicePlatform
+  createdAt DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }

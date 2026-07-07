@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule } from '@nestjs/throttler';
 
 import { AppThrottlerGuard } from './common/guards/app-throttler.guard';
@@ -14,6 +15,7 @@ import { CartModule } from './modules/cart/cart.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -32,6 +34,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
         limit: 100,
       },
     ]),
+    EventEmitterModule.forRoot(),
     PrismaModule,
     RedisModule,
     HealthModule,
@@ -45,6 +48,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     DriverSettlementsModule,
     VendorSettlementsModule,
     FoodSafetyModule,
+    NotificationsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

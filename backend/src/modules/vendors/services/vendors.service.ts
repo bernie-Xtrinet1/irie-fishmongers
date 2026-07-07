@@ -1,6 +1,8 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Vendor, VendorStatus } from '@prisma/client';
 
+import { VendorApprovedEvent } from '../../../common/events/vendor-approved.event';
 import { ListVendorsDto } from '../dto/list-vendors.dto';
 import { RegisterVendorDto } from '../dto/register-vendor.dto';
 import { UpdateVendorProfileDto } from '../dto/update-vendor-profile.dto';
@@ -16,7 +18,10 @@ export interface PaginatedVendors {
 
 @Injectable()
 export class VendorsService {
-  constructor(private readonly vendorsRepository: VendorsRepository) {}
+  constructor(
+    private readonly vendorsRepository: VendorsRepository,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   async register(userId: string, dto: RegisterVendorDto): Promise<Vendor> {
     const existing = await this.vendorsRepository.findByUserId(userId);
@@ -67,7 +72,16 @@ export class VendorsService {
     if (!vendor) {
       throw new NotFoundException('Vendor not found');
     }
-    return this.vendorsRepository.updateStatus(vendorId, status);
+    const updated = await this.vendorsRepository.updateStatus(vendorId, status);
+
+    if (status === 'APPROVED' && vendor.status !== 'APPROVED') {
+      await this.eventEmitter.emitAsync(
+        VendorApprovedEvent.eventName,
+        new VendorApprovedEvent(updated.userId, updated.businessName),
+      );
+    }
+
+    return updated;
   }
 
   async list(dto: ListVendorsDto): Promise<PaginatedVendors> {

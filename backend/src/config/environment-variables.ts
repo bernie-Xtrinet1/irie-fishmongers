@@ -54,4 +54,16 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   WIPAY_API_KEY!: string;
+
+  @IsString()
+  @MinLength(1)
+  SENDGRID_API_KEY!: string;
+
+  @IsString()
+  @MinLength(1)
+  SENDGRID_FROM_EMAIL!: string;
+
+  @IsString()
+  @MinLength(1)
+  FCM_SERVER_KEY!: string;
 }

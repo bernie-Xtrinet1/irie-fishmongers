@@ -4,15 +4,16 @@ import {
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Payment, Prisma, Refund } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma, Refund } from '@prisma/client';
 
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
-import { PaymentsRepository } from '../repositories/payments.repository';
+import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
 import { RefundsRepository } from '../repositories/refunds.repository';
 import { PaymentsService } from './payments.service';
 
-function buildPayment(overrides: Partial<Payment> = {}): Payment {
+function buildPayment(overrides: Partial<PaymentWithOrder> = {}): PaymentWithOrder {
   return {
     id: 'payment-1',
     orderId: 'order-1',
@@ -25,6 +26,7 @@ function buildPayment(overrides: Partial<Payment> = {}): Payment {
     paidAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    order: { customerId: 'user-1' },
     ...overrides,
   };
 }
@@ -50,6 +52,7 @@ describe('PaymentsService', () => {
   let refundsRepository: jest.Mocked<Pick<RefundsRepository, 'sumCompletedByPaymentId' | 'create'>>;
   let wiPayAdapter: jest.Mocked<Pick<WiPayAdapter, 'createPayment' | 'refundPayment' | 'verifyWebhookSignature'>>;
   let cashOnDeliveryAdapter: jest.Mocked<Pick<CashOnDeliveryAdapter, 'createPayment' | 'refundPayment'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: PaymentsService;
 
   beforeEach(() => {
@@ -67,12 +70,14 @@ describe('PaymentsService', () => {
       verifyWebhookSignature: jest.fn(),
     };
     cashOnDeliveryAdapter = { createPayment: jest.fn(), refundPayment: jest.fn() };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new PaymentsService(
       paymentsRepository as unknown as PaymentsRepository,
       refundsRepository as unknown as RefundsRepository,
       wiPayAdapter as unknown as WiPayAdapter,
       cashOnDeliveryAdapter as unknown as CashOnDeliveryAdapter,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -158,6 +163,32 @@ describe('PaymentsService', () => {
         providerReference: 'cod-order-1',
       });
     });
+
+    it('emits payment.confirmed when the adapter reports the payment as already paid', async () => {
+      paymentsRepository.findByOrderId.mockResolvedValue(null);
+      cashOnDeliveryAdapter.createPayment.mockResolvedValue({
+        providerReference: 'cod-order-1',
+        status: 'PAID',
+      });
+      paymentsRepository.create.mockResolvedValue(
+        buildPayment({ providerReference: 'cod-order-1', status: 'PENDING' }),
+      );
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({ providerReference: 'cod-order-1', status: 'PAID' }),
+      );
+
+      await service.initiatePayment({
+        orderId: 'order-1',
+        amount: 1000,
+        currency: 'JMD',
+        provider: 'CASH_ON_DELIVERY',
+      });
+
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'payment.confirmed',
+        expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
+      );
+    });
   });
 
   describe('getByOrderId', () => {
@@ -210,6 +241,10 @@ describe('PaymentsService', () => {
 
       const result = await service.markCashOnDeliveryPaid('payment-1');
       expect(result.status).toBe('PAID');
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'payment.confirmed',
+        expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
+      );
     });
 
     it('throws when the payment does not exist', async () => {
@@ -238,6 +273,9 @@ describe('PaymentsService', () => {
     it('marks the payment paid on a successful webhook', async () => {
       wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
       paymentsRepository.findByProviderReference.mockResolvedValue(buildPayment({ provider: 'WIPAY' }));
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({ provider: 'WIPAY', status: 'PAID', paidAt: new Date() }),
+      );
 
       await service.handleWiPayWebhook(
         JSON.stringify({ transaction_id: 'txn-1', status: 'success' }),
@@ -248,6 +286,10 @@ describe('PaymentsService', () => {
         status: 'PAID',
         paidAt: expect.any(Date) as Date,
       });
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'payment.confirmed',
+        expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
+      );
     });
 
     it('marks the payment failed on a failed webhook', async () => {
@@ -304,6 +346,10 @@ describe('PaymentsService', () => {
       expect(paymentsRepository.update).toHaveBeenCalledWith('payment-1', {
         status: 'PARTIALLY_REFUNDED',
       });
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        'refund.status_changed',
+        expect.objectContaining({ customerId: 'user-1', status: 'COMPLETED' }),
+      );
     });
 
     it('marks the payment fully refunded once the whole amount is refunded', async () => {
