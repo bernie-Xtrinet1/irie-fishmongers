@@ -696,3 +696,152 @@ Business rules encoded here:
   IDs (see `notification-templates.repository.spec.ts`), the same pattern
   `categories.repository.spec.ts` already established for other seeded,
   non-per-test-scoped config tables.
+
+---
+
+# Vendor Tier Tables (Vendor Tier phase, per .claude/marketplace/vendor-tier-rules.md,
+# vendor-classification.md, vendor-onboarding.md, vendor-verification.md, and
+# CLAUDE.md's own "VENDOR TIER DIRECTIVE")
+
+Reconciliation note: `.claude/compliance/vendor Vvrification & compliance
+module.md` describes a different, inconsistent vendor-classification scheme
+(a 7-value `VendorType` enum - FISHERMAN, FISH_PEDDLER, SMALL_BUSINESS,
+SEAFOOD_RETAILER, WHOLESALER, IMPORTER, PROCESSOR - plus a 3-value
+`ComplianceLevel`, vs. this family's 4-tier COMMUNITY_FISHER..
+ENTERPRISE_SUPPLIER vocabulary). The 4-tier scheme is authoritative for this
+phase: CLAUDE.md's own Vendor Tier Directive uses this exact vocabulary
+verbatim ("Community Fisher vendors must not be blocked by enterprise
+compliance requirements"), giving it Highest-Authority backing the other
+draft lacks. The compliance draft's `VendorDocument` sub-schema (document
+type/expiry/verification-status shape) doesn't conflict with the tier
+vocabulary and is reused directly below.
+
+Scope note: this implements the real, enforceable core - tier assignment,
+document-gated tier upgrades, configuration-driven feature flags/limits
+(never a hardcoded `tier === 'X'` branch, per the Directive), listing-limit
+and sales-limit enforcement, and the upgrade/downgrade workflow with an
+audit trail.
+
+Deliberately deferred:
+
+- Of the 10 feature flags vendor-tier-rules.md requires (SELL_RETAIL,
+  SELL_WHOLESALE, ACCEPT_HOTEL_ORDERS, ACCEPT_RESTAURANT_ORDERS,
+  ACCEPT_GOVERNMENT_ORDERS, EXPORT_PRODUCTS, ACCESS_ANALYTICS,
+  ACCESS_PROMOTIONS, API_ACCESS, MULTI_ZONE_OPERATIONS), only SELL_RETAIL has
+  anything to gate today - the marketplace has no wholesale/hotel/
+  restaurant/government/export order-type distinction (every order is the
+  same generic customer-to-vendor retail order), no promotions system, no
+  API-key issuance system, no analytics module, and no delivery-zone module.
+  All 10 flags are genuinely computed from DB config (not dead code - they're
+  read by `VendorPermissionsService` and exposed via `GET /vendors/me/
+  permissions` today), but the other 9 have no real gate to attach to yet;
+  wiring them is a one-line permission check at the point each of those
+  future features is actually built, not a rearchitecture.
+- `canSell`/document-gating is NOT enforced on `ProductsService.create()`
+  itself, even though the compliance draft's Rule 4 literally says "a vendor
+  may not create products unless canSell === true." Making this a hard gate
+  on product creation would retroactively require every vendor onboarded
+  across all 8 prior phases (none of which upload any `VendorDocument`) to
+  suddenly need an approved GOVERNMENT_ID before creating another product -
+  the exact same class of backward-compatibility problem the Food Safety
+  phase hit with mandatory `Product.lotId`, resolved the same way: document-
+  gating is real and enforced (`VendorDocumentsService.computeCanSell`/
+  `assertCanSell`), but it currently only gates the one workflow introduced
+  in this same phase with nothing to break - tier upgrade approval
+  (`VendorTiersService.reviewUpgradeRequest` calls `computeCanSell` for the
+  REQUESTED tier and refuses to approve until it's satisfied). The existing
+  vendor-approval gate (`VendorStatus.PENDING -> APPROVED`) remains the
+  practical "may this vendor sell at all" checkpoint today.
+- Automatic tier downgrades: vendor-tier-rules.md's "Automatic review
+  triggered by: Expired Documents, Food Safety Violations, Repeated Delivery
+  Failures, Fraud Reports, Compliance Breaches" describes a review being
+  triggered, not literally an autonomous system decision about which tier to
+  drop to - no fraud-detection engine or delivery-failure-threshold engine
+  exists to make that call. Every downgrade in this phase is an explicit
+  admin action (`POST /vendors/:id/downgrade`) recording which of those
+  reasons applies; `VendorDowngradeEvent.triggeredById` stays nullable for a
+  future automated engine but is always set today.
+
+Tables:
+
+- `vendor_documents` - a vendor's compliance documents. vendorId,
+  documentType (GOVERNMENT_ID | BUSINESS_REGISTRATION |
+  TAX_COMPLIANCE_CERTIFICATE | INSURANCE_CERTIFICATE |
+  FOOD_SAFETY_DOCUMENTATION | REGULATORY_CERTIFICATION | OTHER), fileUrl,
+  documentNumber/issuedDate/expiryDate (all optional), status (PENDING |
+  APPROVED | REJECTED | EXPIRED, default PENDING), rejectionReason,
+  verifiedById/verifiedAt. Phone/address/fishing-area data (Community
+  Fisher's other "required" items) and the Food Safety Agreement are not
+  modeled as uploaded documents here - phone/address are already captured on
+  the Vendor/User profile, and the Food Safety Agreement is the existing
+  `Vendor.termsAcceptedAt` field captured at registration; duplicating that
+  data as document rows would be redundant, not additional enforcement.
+- `vendor_tier_configs` - one row per tier (`@unique`), seeded verbatim from
+  vendor-tier-rules.md's per-tier tables: dailySalesLimit/monthlySalesLimit/
+  maxActiveListings (null means unlimited/not specified in the source doc,
+  never a magic sentinel number), badge (the emoji/checkmark label shown on
+  the vendor's public profile).
+- `vendor_tier_features` - one row per (tier, feature) pair
+  (`@@unique([tier, feature])`), seeded true/false directly from vendor-
+  tier-rules.md's per-tier Permissions sections - the Feature Flag Rules'
+  explicit "Required Functions" list (SELL_RETAIL, SELL_WHOLESALE, ...
+  MULTI_ZONE_OPERATIONS).
+- `vendor_upgrade_requests` - one row per upgrade request. vendorId,
+  requestedTier, status (PENDING | APPROVED | REJECTED, default PENDING),
+  reason, reviewedById/reviewedAt/reviewNotes. A vendor may only have one
+  PENDING request at a time (enforced in `VendorTiersService`, not the
+  schema).
+- `vendor_downgrade_events` - append-only audit trail. vendorId, fromTier,
+  toTier, reason (EXPIRED_DOCUMENTS | FOOD_SAFETY_VIOLATION |
+  REPEATED_DELIVERY_FAILURES | FRAUD_REPORT | COMPLIANCE_BREACH |
+  ADMIN_MANUAL), triggeredById (nullable - see scope note above), notes.
+- `Vendor` gains `tier` (`VendorTier`, default COMMUNITY_FISHER) and
+  `complianceScore` (nullable Int, per vendor-verification.md's Compliance
+  Scoring section - captured as a field but not yet computed by any engine,
+  since no automated scoring inputs - document compliance, food safety
+  compliance, order fulfillment, customer ratings, cold chain compliance -
+  are wired together anywhere yet; this is a genuine forward-compatibility
+  placeholder, not a business decision to skip scoring).
+
+Business rules encoded here:
+
+- Feature-flag lookups are the ONLY place tier-derived capability decisions
+  are made (`VendorPermissionsService.getPermissions`), per vendor-tier-
+  rules.md's explicit "Never hardcode vendor tier checks... permissions =
+  getVendorTierPermissions()" - reads `vendor_tier_configs`/
+  `vendor_tier_features`, never a `tier === 'X'` branch anywhere else in the
+  codebase.
+- Listing-limit enforcement (`ProductsService.create` ->
+  `VendorPermissionsService.assertListingLimitNotExceeded`) counts the
+  vendor's current active (`isActive: true`) products against
+  `vendor_tier_configs.maxActiveListings` for their tier, throwing
+  `ForbiddenException` at the limit - a real, enforced restriction (unlike
+  the 9 deferred feature flags above).
+- Sales-limit enforcement (`OrdersService.checkout` ->
+  `VendorPermissionsService.assertSalesLimitNotExceeded`) sums each cart's
+  per-vendor subtotal against that vendor's trailing-24-hour and trailing-
+  30-day `VendorOrder` subtotals (excluding REJECTED/CANCELLED orders) before
+  the order is created, checking daily and monthly limits independently -
+  either one exceeded blocks that portion of checkout.
+- Document expiry detection is lazy, not a scheduled sweep (no job queue
+  exists in this codebase, same class of gap as the Notifications phase's
+  deferred retry ladder): `VendorDocumentsService`'s private
+  `syncExpiredStatuses` transitions any APPROVED-but-now-past-`expiryDate`
+  document to EXPIRED status the next time that vendor's documents are
+  actually read (`listMine`/`listForVendor`/`computeCanSell`), satisfying
+  "the system shall automatically detect expired documents" without
+  fabricating a scheduler.
+- Tier upgrade approval cascades a real `Vendor.tier` change:
+  `VendorTiersService.reviewUpgradeRequest` only calls
+  `vendorsRepository.updateTier` after confirming (via
+  `VendorDocumentsService.computeCanSell`) that every document type the
+  REQUESTED tier requires has an APPROVED row - rejecting the request itself
+  never touches the vendor's tier.
+- `VendorsService`/`VendorsRepository` gained a `tier` filter (`GET
+  /vendors?tier=...`) and `VendorPublicEntity.tier`, satisfying vendor-tier-
+  rules.md's Search/Filter Rules ("Filter By Vendor Tier", "Display Vendor
+  Badge") - the badge itself is fetched separately via `GET /vendors/:id/
+  permissions` (already built) rather than embedded in every vendor list
+  row, since computing it there would require `VendorsModule` to depend on
+  `VendorTiersModule`, which already depends on `VendorsModule` for vendor
+  lookups - a circular module dependency this avoids entirely.

@@ -33,6 +33,7 @@ interface VendorPublicData {
   id: string;
   businessName: string;
   parish: string;
+  tier: string;
 }
 
 interface PaginatedVendorsData {
@@ -249,6 +250,7 @@ describe('Vendor Management (e2e)', () => {
       description: null,
       parish: 'ST_MARY',
       logoUrl: null,
+      tier: 'COMMUNITY_FISHER',
     });
     expect(publicProfile).not.toHaveProperty('phone');
   });

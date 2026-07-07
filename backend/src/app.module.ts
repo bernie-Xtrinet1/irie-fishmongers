@@ -20,6 +20,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
 import { VendorSettlementsModule } from './modules/vendor-settlements/vendor-settlements.module';
+import { VendorTiersModule } from './modules/vendor-tiers/vendor-tiers.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
 
 @Module({
@@ -40,6 +41,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     HealthModule,
     AuthModule,
     VendorsModule,
+    VendorTiersModule,
     ProductsModule,
     CartModule,
     OrdersModule,

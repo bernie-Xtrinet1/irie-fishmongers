@@ -5,6 +5,7 @@ import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 import { CartRepository } from '../../cart/repositories/cart.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
+import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PrismaService } from '../../../database/prisma.service';
@@ -30,6 +31,7 @@ export class OrdersService {
     private readonly productsRepository: ProductsRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly paymentsService: PaymentsService,
+    private readonly vendorPermissionsService: VendorPermissionsService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -38,6 +40,8 @@ export class OrdersService {
     if (cart.items.length === 0) {
       throw new BadRequestException('Cart is empty');
     }
+
+    const additionalAmountByVendorId = new Map<string, number>();
 
     for (const item of cart.items) {
       if (!item.product.isActive) {
@@ -52,6 +56,23 @@ export class OrdersService {
       if (!vendor || vendor.status !== 'APPROVED') {
         throw new BadRequestException(
           `"${item.product.name}" is not currently sold by an approved vendor`,
+        );
+      }
+
+      const itemSubtotal = item.product.price.times(item.quantity).toNumber();
+      additionalAmountByVendorId.set(
+        vendor.id,
+        (additionalAmountByVendorId.get(vendor.id) ?? 0) + itemSubtotal,
+      );
+    }
+
+    for (const [vendorId, additionalAmount] of additionalAmountByVendorId) {
+      const vendor = await this.vendorsRepository.findById(vendorId);
+      if (vendor) {
+        await this.vendorPermissionsService.assertSalesLimitNotExceeded(
+          vendorId,
+          vendor.tier,
+          additionalAmount,
         );
       }
     }
