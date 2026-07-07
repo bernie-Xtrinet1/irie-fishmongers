@@ -654,3 +654,41 @@ Before creating a new screen:
 5. Ensure responsive design.
 6. Ensure food safety workflows remain visible.
 7. Ensure cold-chain status is visible where applicable.
+
+# COMPONENT
+
+Vendor Tier Badge
+
+Types
+
+- Community Fisher
+- Verified Vendor
+- Commercial Supplier
+- Enterprise Supplier
+
+Display:
+
+Badge
+Color
+Tooltip
+Compliance Status
+
+---
+
+# COMPONENT
+
+Vendor Selection Card
+
+Fields
+
+- Vendor Name
+- Tier Badge
+- Rating
+- Delivery ETA
+- Compliance Status
+- Price
+
+Actions
+
+- Select Vendor
+- View Profile
