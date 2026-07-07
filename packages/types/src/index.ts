@@ -118,6 +118,14 @@ export interface Paginated<T> {
   pageSize: number;
 }
 
+export interface BestVendorResolution {
+  productId: string;
+  vendorId: string;
+  badge: string;
+  totalScore: string;
+  fulfillmentDecisionId: string;
+}
+
 export interface VendorProfile {
   id: string;
   businessName: string;
