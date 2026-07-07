@@ -75,4 +75,8 @@ export class VendorsRepository {
 
     return { items, total };
   }
+
+  countDeliveredOrders(vendorId: string): Promise<number> {
+    return this.prisma.vendorOrder.count({ where: { vendorId, status: 'DELIVERED' } });
+  }
 }

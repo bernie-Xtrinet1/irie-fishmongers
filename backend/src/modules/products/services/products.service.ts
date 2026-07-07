@@ -7,12 +7,16 @@ import {
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { deriveVendorComplianceStatus } from '../../vendor-tiers/utils/vendor-compliance-status.util';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
+import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { CategoriesRepository } from '../repositories/categories.repository';
 import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
@@ -24,7 +28,9 @@ export class ProductsService {
     private readonly categoriesRepository: CategoriesRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly seafoodLotsRepository: SeafoodLotsRepository,
+    private readonly seafoodLotsService: SeafoodLotsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly marketplaceConfigService: MarketplaceConfigService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -103,6 +109,43 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
     return ProductsService.toResponse(product);
+  }
+
+  async getPublicDetail(id: string): Promise<ProductDetailEntity> {
+    const product = await this.productsRepository.findById(id);
+    if (!product || !product.isActive) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const vendor = await this.vendorsRepository.findById(product.vendorId);
+    if (!vendor) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const [lot, permissions, modeConfig] = await Promise.all([
+      product.lotId ? this.seafoodLotsService.getPublicById(product.lotId) : Promise.resolve(null),
+      this.vendorPermissionsService.getPermissions(vendor.tier),
+      this.marketplaceConfigService.getCurrentModeConfig(),
+    ]);
+
+    return {
+      ...ProductsService.toResponse(product),
+      lot,
+      vendor: {
+        id: vendor.id,
+        businessName: vendor.businessName,
+        tier: vendor.tier,
+        badge: permissions.badge,
+        parish: vendor.parish,
+        complianceScore: vendor.complianceScore,
+        complianceStatus: deriveVendorComplianceStatus(vendor.complianceScore),
+        logoUrl: vendor.logoUrl,
+      },
+      marketplaceModes: {
+        customerSelectedEnabled: modeConfig.customerSelectedEnabled,
+        bestAvailableEnabled: modeConfig.bestAvailableEnabled,
+      },
+    };
   }
 
   async search(dto: SearchProductsDto): Promise<PaginatedProductsEntity> {
