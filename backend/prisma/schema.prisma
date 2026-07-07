@@ -37,19 +37,22 @@ model User {
   createdAt                       DateTime   @default(now())
   updatedAt                       DateTime   @updatedAt
 
-  roles                  UserRole[]
-  refreshTokens          RefreshToken[]
-  vendor                 Vendor?
-  driver                 Driver?
-  cart                   Cart?
-  orders                 Order[]
-  temperatureReadings    TemperatureReading[]
-  qualityInspections     QualityInspection[]
-  reportedIncidents      FoodSafetyIncident[]
-  createdRecalls         Recall[]
-  notifications          Notification[]
-  notificationPreference NotificationPreference?
-  deviceTokens           DeviceToken[]
+  roles                   UserRole[]
+  refreshTokens           RefreshToken[]
+  vendor                  Vendor?
+  driver                  Driver?
+  cart                    Cart?
+  orders                  Order[]
+  temperatureReadings     TemperatureReading[]
+  qualityInspections      QualityInspection[]
+  reportedIncidents       FoodSafetyIncident[]
+  createdRecalls          Recall[]
+  notifications           Notification[]
+  notificationPreference  NotificationPreference?
+  deviceTokens            DeviceToken[]
+  verifiedDocuments       VendorDocument[]        @relation("DocumentVerifiedBy")
+  reviewedUpgradeRequests VendorUpgradeRequest[]  @relation("UpgradeRequestReviewedBy")
+  triggeredDowngrades     VendorDowngradeEvent[]  @relation("DowngradeTriggeredBy")
 
   @@map("users")
 }
@@ -124,15 +127,20 @@ model Vendor {
   parish          Parish
   logoUrl         String?
   status          VendorStatus @default(PENDING)
+  tier            VendorTier   @default(COMMUNITY_FISHER)
+  complianceScore Int?
   termsAcceptedAt DateTime
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  products     Product[]
-  vendorOrders VendorOrder[]
-  settlements  VendorSettlement[]
-  seafoodLots  SeafoodLot[]
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products        Product[]
+  vendorOrders    VendorOrder[]
+  settlements     VendorSettlement[]
+  seafoodLots     SeafoodLot[]
+  documents       VendorDocument[]
+  upgradeRequests VendorUpgradeRequest[]
+  downgradeEvents VendorDowngradeEvent[]
 
   @@map("vendors")
 }
@@ -958,4 +966,199 @@ model DeviceToken {
 
   @@index([userId])
   @@map("device_tokens")
+}
+
+// -----------------------------------------------------------------------------
+// Vendor Tiers (Vendor Tier phase, per .claude/marketplace/vendor-tier-rules.md,
+// vendor-classification.md, vendor-onboarding.md, vendor-verification.md)
+//
+// Reconciliation note: .claude/compliance/vendor Vvrification & compliance
+// module.md describes a DIFFERENT, inconsistent vendor-classification scheme
+// (a 7-value VendorType enum + 3-value ComplianceLevel, vs. this family's
+// 4-tier COMMUNITY_FISHER..ENTERPRISE_SUPPLIER vocabulary). The 4-tier scheme
+// is authoritative for this phase: it is the vocabulary CLAUDE.md's own
+// "VENDOR TIER DIRECTIVE" uses verbatim ("Community Fisher vendors must not
+// be blocked by enterprise compliance requirements"), giving it Highest-
+// Authority backing the other draft lacks. The compliance draft's
+// VendorDocument sub-schema (document type/expiry/verification-status shape)
+// doesn't conflict and is reused directly below.
+//
+// Scope note: implements the real, enforceable core - tier assignment,
+// document-gated canSell, configuration-driven feature flags/limits (never
+// hardcoded per-tier if/else, per the Directive), listing-limit and sales-
+// limit enforcement, and the upgrade/downgrade workflow with audit trail.
+//
+// Deliberately deferred: of the 10 feature flags vendor-tier-rules.md
+// requires (SELL_RETAIL, SELL_WHOLESALE, ACCEPT_HOTEL_ORDERS,
+// ACCEPT_RESTAURANT_ORDERS, ACCEPT_GOVERNMENT_ORDERS, EXPORT_PRODUCTS,
+// ACCESS_ANALYTICS, ACCESS_PROMOTIONS, API_ACCESS, MULTI_ZONE_OPERATIONS),
+// only SELL_RETAIL has anything to gate today - the marketplace has no
+// wholesale/hotel/restaurant/government/export order-type distinction (every
+// order is the same generic customer-to-vendor retail order), no promotions
+// system, no API-key issuance system, no analytics module, and no delivery-
+// zone module. All 10 flags are genuinely computed from DB config (not
+// dead code - they're read by VendorPermissionsService and exposed via
+// GET /vendors/me/permissions today), but the other 9 have no real gate to
+// attach to yet; wiring them is a one-line permission check at the point
+// each of those future features is actually built, not a rearchitecture.
+// -----------------------------------------------------------------------------
+
+enum VendorTier {
+  COMMUNITY_FISHER
+  VERIFIED_VENDOR
+  COMMERCIAL_SUPPLIER
+  ENTERPRISE_SUPPLIER
+}
+
+enum VendorDocumentType {
+  GOVERNMENT_ID
+  BUSINESS_REGISTRATION
+  TAX_COMPLIANCE_CERTIFICATE
+  INSURANCE_CERTIFICATE
+  FOOD_SAFETY_DOCUMENTATION
+  REGULATORY_CERTIFICATION
+  OTHER
+}
+
+enum DocumentReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum VendorTierFeatureFlag {
+  SELL_RETAIL
+  SELL_WHOLESALE
+  ACCEPT_HOTEL_ORDERS
+  ACCEPT_RESTAURANT_ORDERS
+  ACCEPT_GOVERNMENT_ORDERS
+  EXPORT_PRODUCTS
+  ACCESS_ANALYTICS
+  ACCESS_PROMOTIONS
+  API_ACCESS
+  MULTI_ZONE_OPERATIONS
+}
+
+enum TierRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DowngradeReason {
+  EXPIRED_DOCUMENTS
+  FOOD_SAFETY_VIOLATION
+  REPEATED_DELIVERY_FAILURES
+  FRAUD_REPORT
+  COMPLIANCE_BREACH
+  ADMIN_MANUAL
+}
+
+// A vendor's tier-required document types must all be APPROVED before
+// SeafoodLotsService/ProductsService allow them to sell (see Vendor.canSell
+// derivation in VendorDocumentsService) - the direct implementation of
+// vendor-tier-rules.md's Registration Rules ("Only request documents
+// required by tier") and the compliance draft's "vendor may not create
+// products unless canSell === true" rule.
+model VendorDocument {
+  id              String               @id @default(uuid())
+  vendorId        String
+  documentType    VendorDocumentType
+  fileUrl         String
+  documentNumber  String?
+  issuedDate      DateTime?
+  expiryDate      DateTime?
+  status          DocumentReviewStatus @default(PENDING)
+  rejectionReason String?
+  verifiedById    String?
+  verifiedAt      DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  vendor     Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  verifiedBy User?  @relation("DocumentVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  @@index([vendorId])
+  @@map("vendor_documents")
+}
+
+// Sales/listing limits per tier. One row per tier - seeded from
+// vendor-tier-rules.md's exact figures (Community Fisher: JMD 50,000/day,
+// JMD 500,000/month, 50 listings; Verified Vendor: 500 listings, no sales
+// limit specified in the source doc; Commercial/Enterprise: unlimited
+// listings, no sales limit). Null means unlimited/not configured for that
+// tier, never a magic sentinel number.
+model VendorTierConfig {
+  id                String     @id @default(uuid())
+  tier              VendorTier @unique
+  dailySalesLimit   Decimal?   @db.Decimal(12, 2)
+  monthlySalesLimit Decimal?   @db.Decimal(12, 2)
+  maxActiveListings Int?
+  badge             String
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@map("vendor_tier_configs")
+}
+
+// The feature-flag table vendor-tier-rules.md's Feature Flag Rules mandates
+// ("Never hardcode vendor tier checks... permissions = getVendorTierPermissions()").
+// One row per (tier, feature) - seeded true/false directly from the source
+// doc's per-tier permission tables.
+model VendorTierFeature {
+  id        String                @id @default(uuid())
+  tier      VendorTier
+  feature   VendorTierFeatureFlag
+  enabled   Boolean
+  createdAt DateTime              @default(now())
+
+  @@unique([tier, feature])
+  @@map("vendor_tier_features")
+}
+
+// vendor-classification.md's "Vendor may request upgrade... Admin approval
+// required." One open request per vendor at a time is enforced at the
+// service layer (see VendorTiersService), not the schema.
+model VendorUpgradeRequest {
+  id            String            @id @default(uuid())
+  vendorId      String
+  requestedTier VendorTier
+  status        TierRequestStatus @default(PENDING)
+  reason        String?
+  reviewedById  String?
+  reviewedAt    DateTime?
+  reviewNotes   String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  vendor     Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  reviewedBy User?  @relation("UpgradeRequestReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([vendorId])
+  @@map("vendor_upgrade_requests")
+}
+
+// Append-only audit trail for vendor-tier-rules.md's Downgrade Rules.
+// triggeredById is null for automatic system-detected downgrades (e.g. an
+// expired document) and set for a deliberate admin action - both paths are
+// real in this phase (expiry detection is a real, callable check; food-
+// safety-violation/fraud/delivery-failure triggers are recorded via this
+// same table when an admin acts on them, since no automated fraud-detection
+// or delivery-failure-threshold engine exists yet to trigger them itself).
+model VendorDowngradeEvent {
+  id            String          @id @default(uuid())
+  vendorId      String
+  fromTier      VendorTier
+  toTier        VendorTier
+  reason        DowngradeReason
+  triggeredById String?
+  notes         String?
+  createdAt     DateTime        @default(now())
+
+  vendor      Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  triggeredBy User?  @relation("DowngradeTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  @@index([vendorId])
+  @@map("vendor_downgrade_events")
 }

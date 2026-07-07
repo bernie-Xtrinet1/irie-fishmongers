@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Parish, Prisma, Vendor, VendorStatus } from '@prisma/client';
+import { Parish, Prisma, Vendor, VendorStatus, VendorTier } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -45,6 +45,10 @@ export class VendorsRepository {
     return this.prisma.vendor.update({ where: { id }, data: { status } });
   }
 
+  updateTier(id: string, tier: VendorTier): Promise<Vendor> {
+    return this.prisma.vendor.update({ where: { id }, data: { tier } });
+  }
+
   update(id: string, input: UpdateVendorInput): Promise<Vendor> {
     return this.prisma.vendor.update({ where: { id }, data: input });
   }
@@ -52,8 +56,12 @@ export class VendorsRepository {
   async findMany(
     status: VendorStatus | undefined,
     page: Page,
+    tier?: VendorTier,
   ): Promise<{ items: Vendor[]; total: number }> {
-    const where: Prisma.VendorWhereInput = status ? { status } : {};
+    const where: Prisma.VendorWhereInput = {
+      ...(status ? { status } : {}),
+      ...(tier ? { tier } : {}),
+    };
 
     const [items, total] = await Promise.all([
       this.prisma.vendor.findMany({

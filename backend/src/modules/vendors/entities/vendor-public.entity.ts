@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Parish } from '@prisma/client';
+import { Parish, VendorTier } from '@prisma/client';
 
 export class VendorPublicEntity {
   @ApiProperty()
@@ -16,4 +16,10 @@ export class VendorPublicEntity {
 
   @ApiProperty({ required: false, nullable: true })
   logoUrl!: string | null;
+
+  @ApiProperty({
+    enum: VendorTier,
+    description: 'Fetch GET /vendors/:id/permissions for the tier badge and full permission set',
+  })
+  tier!: VendorTier;
 }

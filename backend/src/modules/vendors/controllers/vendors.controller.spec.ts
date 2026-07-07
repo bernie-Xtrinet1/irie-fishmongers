@@ -13,6 +13,8 @@ const vendor: Vendor = {
   parish: 'KINGSTON',
   logoUrl: null,
   status: 'PENDING',
+  tier: 'COMMUNITY_FISHER',
+  complianceScore: null,
   termsAcceptedAt: new Date(),
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -24,6 +26,7 @@ const publicVendor: VendorPublicEntity = {
   description: null,
   parish: 'KINGSTON',
   logoUrl: null,
+  tier: 'COMMUNITY_FISHER',
 };
 
 const user = { id: 'user-1', email: 'a@b.com', roles: ['VENDOR' as const] };

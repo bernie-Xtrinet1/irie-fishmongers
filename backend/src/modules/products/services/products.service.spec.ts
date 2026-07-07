@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Category, SeafoodLot, Vendor } from '@prisma/client';
 
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CategoriesRepository } from '../repositories/categories.repository';
 import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
@@ -18,6 +19,8 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     parish: 'KINGSTON',
     logoUrl: null,
     status: 'APPROVED',
+    tier: 'COMMUNITY_FISHER',
+    complianceScore: null,
     termsAcceptedAt: new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -86,6 +89,7 @@ describe('ProductsService', () => {
   let categoriesRepository: jest.Mocked<Pick<CategoriesRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
   let seafoodLotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById'>>;
+  let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'assertListingLimitNotExceeded'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -100,12 +104,16 @@ describe('ProductsService', () => {
     categoriesRepository = { findById: jest.fn() };
     vendorsRepository = { findByUserId: jest.fn() };
     seafoodLotsRepository = { findById: jest.fn() };
+    vendorPermissionsService = {
+      assertListingLimitNotExceeded: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new ProductsService(
       productsRepository as unknown as ProductsRepository,
       categoriesRepository as unknown as CategoriesRepository,
       vendorsRepository as unknown as VendorsRepository,
       seafoodLotsRepository as unknown as SeafoodLotsRepository,
+      vendorPermissionsService as unknown as VendorPermissionsService,
     );
   });
 
