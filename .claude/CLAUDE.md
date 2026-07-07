@@ -385,3 +385,33 @@ A task is COMPLETE only when:
 Otherwise:
 
 TASK IS NOT COMPLETE
+
+
+# SCREEN IMPLEMENTATION DIRECTIVE
+
+Before creating any page:
+
+1. Read ui-screen-library.md
+2. Read ui-design-system.md
+3. Read role-specific screen file
+4. Analyze existing codebase
+5. Determine if page already exists
+6. Modify existing code where possible
+7. Reuse components
+8. Preserve business logic
+9. Preserve API contracts
+10. Generate tests for all changes
+
+Never create duplicate screens or duplicate functionality.
+
+# VENDOR TIER DIRECTIVE
+
+The platform supports multiple vendor classifications.
+
+Vendor requirements must be dynamically determined by vendor tier.
+
+Community Fisher vendors must not be blocked by enterprise compliance requirements.
+
+All registration forms, dashboards, permissions, compliance checks, workflows, and marketplace features must be tier-aware.
+
+Vendor tier logic must be configuration-driven and not hardcoded.
