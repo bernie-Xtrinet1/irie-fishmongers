@@ -235,6 +235,12 @@ describe('Delivery (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    await request(server())
+      .patch('/api/v1/drivers/me/availability')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ status: 'ONLINE' })
+      .expect(200);
+
     return { accessToken, driverId };
   }
 

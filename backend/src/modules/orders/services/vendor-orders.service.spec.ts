@@ -42,6 +42,7 @@ function buildVendorOrder(overrides: Partial<VendorOrderWithItems> = {}): Vendor
       deliveryAddressLine2: null,
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      deliveryZoneId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     },
@@ -107,6 +108,7 @@ describe('VendorOrdersService', () => {
       tier: 'COMMUNITY_FISHER',
       complianceScore: null,
       termsAcceptedAt: new Date(),
+      primaryZoneId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -131,6 +133,7 @@ describe('VendorOrdersService', () => {
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -172,6 +175,7 @@ describe('VendorOrdersService', () => {
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -193,6 +197,7 @@ describe('VendorOrdersService', () => {
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -290,6 +295,7 @@ describe('VendorOrdersService', () => {
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

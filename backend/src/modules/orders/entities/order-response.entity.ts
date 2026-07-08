@@ -23,6 +23,9 @@ export class OrderResponseEntity {
   @ApiProperty()
   deliveryPhone!: string;
 
+  @ApiProperty({ required: false, nullable: true })
+  deliveryZoneId!: string | null;
+
   @ApiProperty({ type: VendorOrderResponseEntity, isArray: true })
   vendorOrders!: VendorOrderResponseEntity[];
 

@@ -88,6 +88,7 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
         deliveryAddressLine2: null,
         deliveryParish: 'KINGSTON',
         deliveryPhone: '+18765551234',
+        deliveryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         customer: {

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { DriverStatus, VehicleType } from '@prisma/client';
+import { DriverAvailabilityStatus, DriverStatus, Prisma, VehicleType } from '@prisma/client';
 
 export class DriverResponseEntity {
   @ApiProperty()
@@ -16,6 +16,20 @@ export class DriverResponseEntity {
 
   @ApiProperty({ enum: DriverStatus })
   status!: DriverStatus;
+
+  @ApiProperty({ enum: DriverAvailabilityStatus })
+  availabilityStatus!: DriverAvailabilityStatus;
+
+  @ApiProperty({
+    type: String,
+    required: false,
+    nullable: true,
+    description: 'Maximum load capacity in pounds',
+  })
+  capacityLbs!: Prisma.Decimal | null;
+
+  @ApiProperty()
+  coldChainCapable!: boolean;
 
   @ApiProperty()
   createdAt!: Date;

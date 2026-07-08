@@ -57,6 +57,8 @@ model User {
   vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
   fulfillmentDecisions         FulfillmentDecision[]
   triggeredInventoryEvents     InventoryEvent[]
+  vendorConfirmedDeliveries    Delivery[]                    @relation("DeliveryVendorConfirmedBy")
+  resolvedDeliveryExceptions   DeliveryException[]           @relation("DeliveryExceptionResolvedBy")
 
   @@map("users")
 }
@@ -134,10 +136,13 @@ model Vendor {
   tier            VendorTier   @default(COMMUNITY_FISHER)
   complianceScore Int?
   termsAcceptedAt DateTime
+  primaryZoneId   String?
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
   user              User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  primaryZone       DeliveryZone?          @relation("VendorPrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  secondaryZones    VendorZone[]
   products          Product[]
   vendorOrders      VendorOrder[]
   settlements       VendorSettlement[]
@@ -249,10 +254,12 @@ model Order {
   deliveryAddressLine2 String?
   deliveryParish       Parish
   deliveryPhone        String
+  deliveryZoneId       String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   customer     User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  deliveryZone DeliveryZone? @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
   vendorOrders VendorOrder[]
   payment      Payment?
 
@@ -369,22 +376,39 @@ enum VehicleType {
 enum VehicleOwnership {
   PERSONAL_VEHICLE
   COMPANY_VEHICLE
+  RENTED_VEHICLE
+}
+
+enum DriverAvailabilityStatus {
+  ONLINE
+  OFFLINE
+  BUSY
 }
 
 model Driver {
-  id               String           @id @default(uuid())
-  userId           String           @unique
-  licensePlate     String
-  vehicleType      VehicleType
-  vehicleOwnership VehicleOwnership @default(PERSONAL_VEHICLE)
-  status           DriverStatus     @default(PENDING)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id                 String                   @id @default(uuid())
+  userId             String                   @unique
+  licensePlate       String
+  vehicleType        VehicleType
+  vehicleOwnership   VehicleOwnership         @default(PERSONAL_VEHICLE)
+  status             DriverStatus             @default(PENDING)
+  availabilityStatus DriverAvailabilityStatus @default(OFFLINE)
+  capacityLbs        Decimal?                 @db.Decimal(10, 2)
+  coldChainCapable   Boolean                  @default(false)
+  assignedZoneId     String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
 
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries  Delivery[]
-  locations   DriverLocation[]
-  settlements DriverSettlement[]
+  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedZone        DeliveryZone?      @relation("DriverPrimaryZone", fields: [assignedZoneId], references: [id], onDelete: SetNull)
+  zoneAssignments     DriverZone[]
+  deliveries          Delivery[]
+  locations           DriverLocation[]
+  settlements         DriverSettlement[]
+  operatedFleetAssets FleetAsset[]       @relation("FleetAssetCurrentDriver")
+  fleetTrips          FleetTrip[]
+  routeHistory        RouteHistory[]
+  deliveryRuns        DeliveryRun[]
 
   @@map("drivers")
 }
@@ -394,23 +418,43 @@ enum ProofOfDeliveryType {
   PHOTO
 }
 
-model Delivery {
-  id            String               @id @default(uuid())
-  vendorOrderId String               @unique
-  driverId      String
-  assignedAt    DateTime             @default(now())
-  pickedUpAt    DateTime?
-  deliveredAt   DateTime?
-  failedAt      DateTime?
-  failureReason String?
-  proofType     ProofOfDeliveryType?
-  proofUrl      String?
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+enum CustomerAcceptanceStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
 
-  vendorOrder VendorOrder       @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
-  driver      Driver            @relation(fields: [driverId], references: [id], onDelete: Restrict)
-  settlement  DriverSettlement?
+model Delivery {
+  id                          String                   @id @default(uuid())
+  vendorOrderId               String                   @unique
+  driverId                    String
+  assignedAt                  DateTime                 @default(now())
+  pickedUpAt                  DateTime?
+  deliveredAt                 DateTime?
+  failedAt                    DateTime?
+  failureReason               String?
+  proofType                   ProofOfDeliveryType?
+  proofUrl                    String?
+  scheduledPickupWindowStart  DateTime?
+  scheduledPickupWindowEnd    DateTime?
+  customerDeliveryWindowStart DateTime?
+  customerDeliveryWindowEnd   DateTime?
+  vendorConfirmedAt           DateTime?
+  vendorConfirmedById         String?
+  customerAcceptanceStatus    CustomerAcceptanceStatus @default(PENDING)
+  customerAcceptedAt          DateTime?
+  customerRejectedAt          DateTime?
+  rejectionReason             String?
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @updatedAt
+
+  vendorOrder       VendorOrder         @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  driver            Driver              @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vendorConfirmedBy User?               @relation("DeliveryVendorConfirmedBy", fields: [vendorConfirmedById], references: [id], onDelete: SetNull)
+  settlement        DriverSettlement?
+  exceptions        DeliveryException[]
+  runStop           DeliveryRunStop?
+  routeHistory      RouteHistory?
 
   @@index([driverId])
   @@map("deliveries")
@@ -639,6 +683,8 @@ enum TemperatureCheckpoint {
   DRIVER_PICKUP
   IN_TRANSIT
   DELIVERY
+  VEHICLE_LOADING
+  CUSTOMER_ACCEPTANCE
 }
 
 model TemperatureReading {
@@ -847,7 +893,11 @@ enum NotificationCategory {
 }
 
 // Fine-grained event identifying which template/recipient-rule applies -
-// intentionally only the 7 events currently wired (see scope note above).
+// intentionally only the events currently wired (see scope note above).
+// DRIVER_ASSIGNED/AWAITING_CUSTOMER_ACCEPTANCE are the two Phase 10 events
+// actually fired; DRIVER_NEARBY/PICKUP_DELAYED/DELIVERY_DELAYED remain
+// unwired TS event classes only (no geocoding/scheduler infra yet), so they
+// are deliberately not added here.
 enum NotificationEventType {
   REGISTRATION_CONFIRMED
   VENDOR_APPROVED
@@ -856,6 +906,8 @@ enum NotificationEventType {
   PAYMENT_CONFIRMED
   DELIVERY_STATUS_UPDATED
   REFUND_STATUS_CHANGED
+  DRIVER_ASSIGNED
+  AWAITING_CUSTOMER_ACCEPTANCE
 }
 
 enum NotificationPriority {
@@ -1343,4 +1395,269 @@ model InventoryEvent {
 
   @@index([productId])
   @@map("inventory_events")
+}
+
+// -----------------------------------------------------------------------------
+// Delivery Zones / Fleet / Logistics Tables (Delivery Zones phase, per
+// docs/integrations/ADR-002-delivery-zones.md, docs/reference/jamaica-delivery-zones.md,
+// docs/integrations/fleet-management-engine.md - deferred from the original
+// Delivery phase, now built. See docs/database-design.md's "Delivery Tables"
+// section for the original deferral note and this section's reconciliation.
+// -----------------------------------------------------------------------------
+
+model DeliveryZone {
+  id          String   @id @default(uuid())
+  name        String
+  code        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parishes              DeliveryZoneParish[]
+  vendorPrimary         Vendor[]               @relation("VendorPrimaryZone")
+  vendorSecondary       VendorZone[]
+  driverPrimary         Driver[]               @relation("DriverPrimaryZone")
+  driverAssignments     DriverZone[]
+  fleetAssets           FleetAsset[]
+  fleetTrips            FleetTrip[]
+  orders                Order[]
+  routeOptimizationRuns RouteOptimizationRun[]
+  deliveryRuns          DeliveryRun[]
+
+  @@map("delivery_zones")
+}
+
+// Every parish maps to exactly one zone. Seed-authored, not admin-editable
+// via API - the mapping is authoritative and stable (jamaica-delivery-zones.md).
+model DeliveryZoneParish {
+  id     String @id @default(uuid())
+  zoneId String
+  parish Parish @unique
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([zoneId])
+  @@map("delivery_zone_parishes")
+}
+
+model VendorZone {
+  id       String @id @default(uuid())
+  vendorId String
+  zoneId   String
+
+  vendor Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId, zoneId])
+  @@index([zoneId])
+  @@map("vendor_zones")
+}
+
+model DriverZone {
+  id       String @id @default(uuid())
+  driverId String
+  zoneId   String
+
+  driver Driver       @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, zoneId])
+  @@index([zoneId])
+  @@map("driver_zones")
+}
+
+enum FleetAssetType {
+  REFRIGERATED_TRUCK
+  TRUCK
+  VAN
+}
+
+enum FleetOwnership {
+  COMPANY_OWNED
+  RENTED
+}
+
+enum FleetAssetStatus {
+  ACTIVE
+  MAINTENANCE
+  RETIRED
+}
+
+model FleetAsset {
+  id               String           @id @default(uuid())
+  zoneId           String
+  assetType        FleetAssetType
+  ownership        FleetOwnership
+  licensePlate     String           @unique
+  capacityLbs      Decimal          @db.Decimal(10, 2)
+  coldChainCapable Boolean          @default(false)
+  status           FleetAssetStatus @default(ACTIVE)
+  currentDriverId  String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  zone          DeliveryZone       @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  currentDriver Driver?            @relation("FleetAssetCurrentDriver", fields: [currentDriverId], references: [id], onDelete: SetNull)
+  trips         FleetTrip[]
+  maintenance   FleetMaintenance[]
+  deliveryRuns  DeliveryRun[]
+
+  @@index([zoneId])
+  @@map("fleet_assets")
+}
+
+// fleet-management-engine.md's cost fields captured, not computed - same
+// "add real fields before the engine that consumes them" precedent as
+// Vendor.complianceScore. All cost fields nullable Decimal, no FleetCostEngine.
+model FleetTrip {
+  id                    String    @id @default(uuid())
+  fleetAssetId          String
+  driverId              String
+  zoneId                String
+  startedAt             DateTime
+  endedAt               DateTime?
+  fuelCost              Decimal?  @db.Decimal(10, 2)
+  driverWage            Decimal?  @db.Decimal(10, 2)
+  maintenanceAllocation Decimal?  @db.Decimal(10, 2)
+  insuranceAllocation   Decimal?  @db.Decimal(10, 2)
+  createdAt             DateTime  @default(now())
+
+  fleetAsset FleetAsset   @relation(fields: [fleetAssetId], references: [id], onDelete: Restrict)
+  driver     Driver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  zone       DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([fleetAssetId])
+  @@index([driverId])
+  @@map("fleet_trips")
+}
+
+enum FleetMaintenanceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  OVERDUE
+}
+
+model FleetMaintenance {
+  id             String                 @id @default(uuid())
+  fleetAssetId   String
+  serviceDate    DateTime
+  mileage        Int?
+  technician     String?
+  cost           Decimal?               @db.Decimal(10, 2)
+  nextServiceDue DateTime?
+  status         FleetMaintenanceStatus @default(SCHEDULED)
+  notes          String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  fleetAsset FleetAsset @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+
+  @@index([fleetAssetId])
+  @@map("fleet_maintenance_records")
+}
+
+enum DeliveryExceptionType {
+  CUSTOMER_UNAVAILABLE
+  ADDRESS_ISSUE
+  VEHICLE_BREAKDOWN
+  TRAFFIC_DELAY
+  WEATHER_DELAY
+  PRODUCT_DAMAGE
+  OTHER
+}
+
+model DeliveryException {
+  id           String                @id @default(uuid())
+  deliveryId   String
+  type         DeliveryExceptionType
+  reason       String
+  photos       String[]
+  notes        String?
+  resolved     Boolean               @default(false)
+  resolvedAt   DateTime?
+  resolvedById String?
+  createdAt    DateTime              @default(now())
+
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("DeliveryExceptionResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([deliveryId])
+  @@map("delivery_exceptions")
+}
+
+// Reuses DriverSettlementEngine.computeDistanceKm - does not reimplement GPS
+// distance math. Written once, when a delivery reaches DELIVERED/FAILED.
+model RouteHistory {
+  id              String   @id @default(uuid())
+  deliveryId      String   @unique
+  driverId        String
+  gpsSamples      Int
+  distanceKm      Decimal  @db.Decimal(8, 2)
+  durationMinutes Int
+  createdAt       DateTime @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  driver   Driver   @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@map("route_history")
+}
+
+// Audit trail for route-decision runs, matching FulfillmentDecision/VendorScore's
+// existing precedent - not a consolidation-grouping model (see DeliveryRun below).
+model RouteOptimizationRun {
+  id           String   @id @default(uuid())
+  zoneId       String
+  strategyName String
+  deliveryIds  String[]
+  decidedAt    DateTime @default(now())
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([zoneId])
+  @@map("route_optimization_runs")
+}
+
+enum DeliveryRunStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// The operational outcome a route-optimization run PRODUCES, split from
+// RouteOptimizationRun (the audit-trail-of-the-decision) the same way this
+// codebase already splits FulfillmentDecision (audit) from VendorAssignment
+// (operational outcome) in the Marketplace Intelligence module. Does not
+// change POST /delivery/assign's single-delivery-claim flow - a driver
+// working a run still claims/works each stop one at a time.
+model DeliveryRun {
+  id           String            @id @default(uuid())
+  zoneId       String
+  driverId     String?
+  fleetAssetId String?
+  status       DeliveryRunStatus @default(PLANNED)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  zone       DeliveryZone      @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  driver     Driver?           @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  fleetAsset FleetAsset?       @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  stops      DeliveryRunStop[]
+
+  @@map("delivery_runs")
+}
+
+model DeliveryRunStop {
+  id            String @id @default(uuid())
+  deliveryRunId String
+  deliveryId    String @unique
+  sequence      Int
+
+  deliveryRun DeliveryRun @relation(fields: [deliveryRunId], references: [id], onDelete: Cascade)
+  delivery    Delivery    @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryRunId, sequence])
+  @@map("delivery_run_stops")
 }

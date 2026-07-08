@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
+import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
+import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
@@ -99,6 +101,28 @@ export class NotificationEventsListener {
       eventType: 'REFUND_STATUS_CHANGED',
       priority: 'HIGH',
       variables: { amount: event.amount, status: event.status },
+    });
+  }
+
+  @OnEvent(DriverAssignedEvent.eventName)
+  async onDriverAssigned(event: DriverAssignedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'DELIVERY',
+      eventType: 'DRIVER_ASSIGNED',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: event.vendorOrderId, driverFirstName: event.driverFirstName },
+    });
+  }
+
+  @OnEvent(AwaitingCustomerAcceptanceEvent.eventName)
+  async onAwaitingCustomerAcceptance(event: AwaitingCustomerAcceptanceEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'DELIVERY',
+      eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: event.vendorOrderId },
     });
   }
 }

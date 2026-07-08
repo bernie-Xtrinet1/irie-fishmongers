@@ -70,6 +70,7 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
     termsAcceptedAt: new Date(),
+    primaryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -95,6 +96,7 @@ function buildOrder(overrides: Partial<OrderWithDetails> = {}): OrderWithDetails
     deliveryAddressLine2: null,
     deliveryParish: 'KINGSTON',
     deliveryPhone: '+18765551234',
+    deliveryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     vendorOrders: [],
@@ -132,7 +134,7 @@ function buildPaymentResponse(): {
 }
 
 describe('OrdersService', () => {
-  let prisma: { $transaction: jest.Mock };
+  let prisma: { $transaction: jest.Mock; deliveryZoneParish: { findUnique: jest.Mock } };
   let ordersRepository: jest.Mocked<Pick<OrdersRepository, 'create' | 'findById' | 'findManyByCustomer'>>;
   let vendorOrdersRepository: jest.Mocked<Pick<VendorOrdersRepository, 'updateStatus'>>;
   let cartRepository: jest.Mocked<Pick<CartRepository, 'findOrCreateByCustomerId' | 'clear'>>;
@@ -150,6 +152,7 @@ describe('OrdersService', () => {
       $transaction: jest.fn().mockImplementation((callback: (tx: unknown) => unknown) =>
         callback({}),
       ),
+      deliveryZoneParish: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     ordersRepository = { create: jest.fn(), findById: jest.fn(), findManyByCustomer: jest.fn() };
     vendorOrdersRepository = { updateStatus: jest.fn() };
@@ -447,6 +450,62 @@ describe('OrdersService', () => {
       await service.checkout('user-1', checkoutDto);
 
       expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
+    });
+
+    it('resolves deliveryZoneId from the parish->zone mapping and stores it on the order', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 1,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      prisma.deliveryZoneParish.findUnique.mockResolvedValue({ zoneId: 'zone-1' });
+      ordersRepository.create.mockResolvedValue(buildOrder({ deliveryZoneId: 'zone-1' }));
+
+      await service.checkout('user-1', checkoutDto);
+
+      expect(prisma.deliveryZoneParish.findUnique).toHaveBeenCalledWith({
+        where: { parish: 'KINGSTON' },
+        select: { zoneId: true },
+      });
+      const createArg = ordersRepository.create.mock.calls[0]?.[0];
+      expect(createArg?.deliveryZoneId).toBe('zone-1');
+    });
+
+    it('stores a null deliveryZoneId when the parish has no zone mapping', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 1,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      prisma.deliveryZoneParish.findUnique.mockResolvedValue(null);
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      await service.checkout('user-1', checkoutDto);
+
+      const createArg = ordersRepository.create.mock.calls[0]?.[0];
+      expect(createArg?.deliveryZoneId).toBeNull();
     });
   });
 

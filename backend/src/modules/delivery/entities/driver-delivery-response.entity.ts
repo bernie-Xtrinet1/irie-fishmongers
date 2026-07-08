@@ -1,7 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Parish, ProofOfDeliveryType } from '@prisma/client';
+import { CustomerAcceptanceStatus, Parish, ProofOfDeliveryType } from '@prisma/client';
 
+import { DeliveryExceptionResponseEntity } from './delivery-exception-response.entity';
 import { DeliveryItemSummaryEntity } from './delivery-item-summary.entity';
+import { RouteHistoryResponseEntity } from './route-history-response.entity';
 
 export const DELIVERY_STAGES = ['ASSIGNED', 'PICKED_UP', 'DELIVERED', 'FAILED'] as const;
 export type DeliveryStage = (typeof DELIVERY_STAGES)[number];
@@ -40,6 +42,36 @@ export class DriverDeliveryResponseEntity {
   @ApiProperty()
   deliveryPhone!: string;
 
+  @ApiProperty({ required: false, nullable: true })
+  scheduledPickupWindowStart!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  scheduledPickupWindowEnd!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  customerDeliveryWindowStart!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  customerDeliveryWindowEnd!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  vendorConfirmedAt!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  vendorConfirmedById!: string | null;
+
+  @ApiProperty({ enum: CustomerAcceptanceStatus })
+  customerAcceptanceStatus!: CustomerAcceptanceStatus;
+
+  @ApiProperty({ required: false, nullable: true })
+  customerAcceptedAt!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  customerRejectedAt!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  rejectionReason!: string | null;
+
   @ApiProperty()
   assignedAt!: Date;
 
@@ -60,4 +92,10 @@ export class DriverDeliveryResponseEntity {
 
   @ApiProperty({ required: false, nullable: true })
   proofUrl!: string | null;
+
+  @ApiProperty({ type: DeliveryExceptionResponseEntity, isArray: true })
+  exceptions!: DeliveryExceptionResponseEntity[];
+
+  @ApiProperty({ type: RouteHistoryResponseEntity, required: false, nullable: true })
+  routeHistory!: RouteHistoryResponseEntity | null;
 }

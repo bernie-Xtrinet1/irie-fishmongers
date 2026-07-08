@@ -16,7 +16,7 @@ import {
   ApiResponse as ApiResponseDoc,
   ApiTags,
 } from '@nestjs/swagger';
-import { RoleName } from '@prisma/client';
+import { Driver, RoleName } from '@prisma/client';
 
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -25,7 +25,10 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { ListDriversDto } from '../dto/list-drivers.dto';
 import { RecordLocationDto } from '../dto/record-location.dto';
 import { RegisterDriverDto } from '../dto/register-driver.dto';
+import { UpdateDriverAvailabilityDto } from '../dto/update-driver-availability.dto';
+import { UpdateDriverProfileDto } from '../dto/update-driver-profile.dto';
 import { UpdateDriverStatusDto } from '../dto/update-driver-status.dto';
+import { DriverPerformanceMetricsEntity } from '../entities/driver-performance-metrics.entity';
 import { DriverResponseEntity } from '../entities/driver-response.entity';
 import { PaginatedDriversEntity } from '../entities/paginated-drivers.entity';
 import { DriversService } from '../services/drivers.service';
@@ -72,6 +75,44 @@ export class DriversController {
     await this.driversService.recordLocation(user.id, dto.latitude, dto.longitude);
   }
 
+  @Patch('me/availability')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.DRIVER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Go online or offline for delivery assignment' })
+  @ApiResponseDoc({ status: 200, type: DriverResponseEntity })
+  updateAvailability(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: UpdateDriverAvailabilityDto,
+  ): Promise<Driver> {
+    return this.driversService.updateAvailability(user.id, dto.status);
+  }
+
+  @Patch('me/profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.DRIVER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update vehicle capacity and cold-chain capability for the authenticated driver' })
+  @ApiResponseDoc({ status: 200, type: DriverResponseEntity })
+  updateProfile(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: UpdateDriverProfileDto,
+  ): Promise<Driver> {
+    return this.driversService.updateProfile(user.id, dto);
+  }
+
+  @Get('me/performance')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.DRIVER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get the authenticated driver's computed performance metrics" })
+  @ApiResponseDoc({ status: 200, type: DriverPerformanceMetricsEntity })
+  getOwnPerformanceMetrics(
+    @CurrentUser() user: RequestUser,
+  ): Promise<DriverPerformanceMetricsEntity> {
+    return this.driversService.getOwnPerformanceMetrics(user.id);
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
@@ -93,5 +134,15 @@ export class DriversController {
     @Body() dto: UpdateDriverStatusDto,
   ): Promise<DriverResponseEntity> {
     return this.driversService.updateStatus(id, dto.status);
+  }
+
+  @Get(':id/performance')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get a driver's computed performance metrics (admin only)" })
+  @ApiResponseDoc({ status: 200, type: DriverPerformanceMetricsEntity })
+  getPerformanceMetrics(@Param('id') id: string): Promise<DriverPerformanceMetricsEntity> {
+    return this.driversService.getPerformanceMetrics(id);
   }
 }

@@ -14,6 +14,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
+import { FleetModule } from './modules/fleet/fleet.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
@@ -53,6 +54,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     DriverSettlementsModule,
     VendorSettlementsModule,
     FoodSafetyModule,
+    FleetModule,
     NotificationsModule,
     MarketplaceModule,
   ],

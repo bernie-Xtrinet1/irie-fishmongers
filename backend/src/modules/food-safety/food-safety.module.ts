@@ -12,6 +12,7 @@ import { QualityInspectionsRepository } from './repositories/quality-inspections
 import { RecallsRepository } from './repositories/recalls.repository';
 import { TemperatureReadingsRepository } from './repositories/temperature-readings.repository';
 import { SeafoodLotsModule } from './seafood-lots.module';
+import { FoodSafetyEventsListener } from './services/food-safety-events.listener';
 import { FoodSafetyIncidentsService } from './services/food-safety-incidents.service';
 import { QualityInspectionsService } from './services/quality-inspections.service';
 import { RecallsService } from './services/recalls.service';
@@ -30,6 +31,7 @@ import { TemperatureMonitoringService } from './services/temperature-monitoring.
     QualityInspectionsService,
     FoodSafetyIncidentsService,
     RecallsService,
+    FoodSafetyEventsListener,
     TemperatureReadingsRepository,
     QualityInspectionsRepository,
     FoodSafetyIncidentsRepository,

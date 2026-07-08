@@ -81,6 +81,16 @@ export class OrdersService {
       }
     }
 
+    // Resolved directly from the global PrismaService, not a DeliveryModule
+    // import: DeliveryModule already imports OrdersModule, so importing it
+    // back here would create a circular dependency. See ZoneResolutionService
+    // for the equivalent lookup used within DeliveryModule itself.
+    const zoneMapping = await this.prisma.deliveryZoneParish.findUnique({
+      where: { parish: dto.deliveryParish },
+      select: { zoneId: true },
+    });
+    const deliveryZoneId = zoneMapping?.zoneId ?? null;
+
     const order = await this.prisma.$transaction(async (tx) => {
       const vendorGroups = new Map<string, VendorOrderInput>();
 
@@ -117,6 +127,7 @@ export class OrdersService {
           deliveryAddressLine2: dto.deliveryAddressLine2,
           deliveryParish: dto.deliveryParish,
           deliveryPhone: dto.deliveryPhone,
+          deliveryZoneId,
           vendorOrders: Array.from(vendorGroups.values()),
         },
         tx,
@@ -286,6 +297,7 @@ export class OrdersService {
       deliveryAddressLine2: order.deliveryAddressLine2,
       deliveryParish: order.deliveryParish,
       deliveryPhone: order.deliveryPhone,
+      deliveryZoneId: order.deliveryZoneId,
       createdAt: order.createdAt,
       vendorOrders: order.vendorOrders.map((vendorOrder) => ({
         id: vendorOrder.id,

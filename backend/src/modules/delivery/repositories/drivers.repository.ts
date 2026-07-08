@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { Driver, DriverStatus, Prisma, VehicleOwnership, VehicleType } from '@prisma/client';
+import { Driver, DriverAvailabilityStatus, DriverStatus, Prisma, VehicleOwnership, VehicleType } from '@prisma/client';
 
+import { PrismaClientOrTx } from '../../orders/repositories/orders.repository';
 import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreateDriverInput {
@@ -8,6 +9,11 @@ export interface CreateDriverInput {
   licensePlate: string;
   vehicleType: VehicleType;
   vehicleOwnership: VehicleOwnership;
+}
+
+export interface UpdateDriverProfileInput {
+  capacityLbs?: number;
+  coldChainCapable?: boolean;
 }
 
 export interface Page {
@@ -33,6 +39,18 @@ export class DriversRepository {
 
   updateStatus(id: string, status: DriverStatus): Promise<Driver> {
     return this.prisma.driver.update({ where: { id }, data: { status } });
+  }
+
+  updateAvailabilityStatus(
+    id: string,
+    availabilityStatus: DriverAvailabilityStatus,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<Driver> {
+    return client.driver.update({ where: { id }, data: { availabilityStatus } });
+  }
+
+  updateProfile(id: string, input: UpdateDriverProfileInput): Promise<Driver> {
+    return this.prisma.driver.update({ where: { id }, data: input });
   }
 
   async findMany(

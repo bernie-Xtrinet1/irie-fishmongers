@@ -9,6 +9,7 @@ const order: OrderResponseEntity = {
   deliveryAddressLine2: null,
   deliveryParish: 'KINGSTON',
   deliveryPhone: '+18765551234',
+  deliveryZoneId: null,
   vendorOrders: [],
   createdAt: new Date(),
 };

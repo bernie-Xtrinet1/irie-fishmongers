@@ -67,6 +67,7 @@ function buildCandidate(overrides: Partial<ProductCandidate> = {}): ProductCandi
       tier: 'COMMUNITY_FISHER',
       complianceScore: null,
       termsAcceptedAt: new Date(),
+      primaryZoneId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     },

@@ -21,6 +21,7 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
     termsAcceptedAt: new Date(),
+    primaryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

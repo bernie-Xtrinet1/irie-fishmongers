@@ -1,6 +1,7 @@
 import {
   NotificationChannel,
   NotificationEventType,
+  Parish,
   PrismaClient,
   RoleName,
   VendorTier,
@@ -14,6 +15,36 @@ const DEFAULT_CATEGORIES = [
   { name: 'Shellfish', slug: 'shellfish' },
   { name: 'Crustaceans', slug: 'crustaceans' },
   { name: 'Mollusks', slug: 'mollusks' },
+];
+
+// docs/reference/jamaica-delivery-zones.md - the authoritative parish/zone
+// mapping (also cited in ADR-002-delivery-zones.md's "Initial target: Zone
+// 1, Zone 2, Zone 3").
+const DELIVERY_ZONES: { code: string; name: string; parishes: Parish[] }[] = [
+  {
+    code: 'ZONE_1',
+    name: 'Zone 1',
+    parishes: ['KINGSTON', 'ST_ANDREW', 'ST_CATHERINE'],
+  },
+  {
+    code: 'ZONE_2',
+    name: 'Zone 2',
+    parishes: ['CLARENDON', 'MANCHESTER', 'ST_ELIZABETH'],
+  },
+  {
+    code: 'ZONE_3',
+    name: 'Zone 3',
+    parishes: [
+      'HANOVER',
+      'WESTMORELAND',
+      'ST_JAMES',
+      'TRELAWNY',
+      'ST_ANN',
+      'ST_MARY',
+      'PORTLAND',
+      'ST_THOMAS',
+    ],
+  },
 ];
 
 // Figures taken directly from .claude/marketplace/vendor-tier-rules.md's
@@ -241,6 +272,48 @@ const NOTIFICATION_TEMPLATES: {
     body: 'Your refund of {{amount}} is now {{status}}.',
     variables: ['amount', 'status'],
   },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'EMAIL',
+    subject: 'A driver has been assigned to your order',
+    body: '{{driverFirstName}} has been assigned to deliver your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'PUSH',
+    subject: 'Driver assigned',
+    body: '{{driverFirstName}} is bringing your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'IN_APP',
+    subject: 'Driver assigned',
+    body: '{{driverFirstName}} has been assigned to deliver your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'EMAIL',
+    subject: 'Please confirm your delivery',
+    body: 'Your order {{vendorOrderId}} has been delivered. Please review it and confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'PUSH',
+    subject: 'Confirm your delivery',
+    body: 'Your order {{vendorOrderId}} arrived. Tap to confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'IN_APP',
+    subject: 'Confirm your delivery',
+    body: 'Your order {{vendorOrderId}} has been delivered. Please review it and confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
 ];
 
 async function main(): Promise<void> {
@@ -337,6 +410,22 @@ async function main(): Promise<void> {
         ratingWeight: 0.05,
       },
     });
+  }
+
+  for (const zone of DELIVERY_ZONES) {
+    const upsertedZone = await prisma.deliveryZone.upsert({
+      where: { code: zone.code },
+      update: { name: zone.name },
+      create: { code: zone.code, name: zone.name },
+    });
+
+    for (const parish of zone.parishes) {
+      await prisma.deliveryZoneParish.upsert({
+        where: { parish },
+        update: { zoneId: upsertedZone.id },
+        create: { parish, zoneId: upsertedZone.id },
+      });
+    }
   }
 }
 

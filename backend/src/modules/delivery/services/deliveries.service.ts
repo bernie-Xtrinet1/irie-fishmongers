@@ -6,12 +6,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Driver, DriverLocation } from '@prisma/client';
+import { Driver, DriverLocation, Prisma } from '@prisma/client';
 
+import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
+import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
+import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
+import { DriverSettlementEngine } from '../../driver-settlements/services/driver-settlement-engine.service';
 import { AssignDeliveryDto } from '../dto/assign-delivery.dto';
+import { CustomerAcceptanceDto } from '../dto/customer-acceptance.dto';
+import { UpdateDeliveryScheduleDto } from '../dto/update-delivery-schedule.dto';
 import { UpdateDeliveryStatusDto } from '../dto/update-delivery-status.dto';
 import { AvailableDeliveryEntity } from '../entities/available-delivery.entity';
 import { DeliveryTrackingEntity } from '../entities/delivery-tracking.entity';
@@ -23,10 +29,12 @@ import { PaginatedAvailableDeliveriesEntity } from '../entities/paginated-availa
 import { PaginatedDriverDeliveriesEntity } from '../entities/paginated-driver-deliveries.entity';
 import { DriverLocationsRepository } from '../repositories/driver-locations.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
+import { RouteHistoryRepository } from '../repositories/route-history.repository';
 import {
   AvailableVendorOrder,
   DeliveriesRepository,
   DeliveryWithDetails,
+  UpdateDeliveryScheduleInput,
 } from '../repositories/deliveries.repository';
 
 @Injectable()
@@ -37,6 +45,8 @@ export class DeliveriesService {
     private readonly vendorOrdersRepository: VendorOrdersRepository,
     private readonly driversRepository: DriversRepository,
     private readonly driverLocationsRepository: DriverLocationsRepository,
+    private readonly routeHistoryRepository: RouteHistoryRepository,
+    private readonly settlementEngine: DriverSettlementEngine,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -44,7 +54,7 @@ export class DeliveriesService {
     userId: string,
     page: { page: number; pageSize: number },
   ): Promise<PaginatedAvailableDeliveriesEntity> {
-    await this.getApprovedDriver(userId);
+    await this.getOnlineApprovedDriver(userId);
 
     const { items, total } = await this.deliveriesRepository.findAvailableForPickup({
       skip: (page.page - 1) * page.pageSize,
@@ -60,7 +70,7 @@ export class DeliveriesService {
   }
 
   async assign(userId: string, dto: AssignDeliveryDto): Promise<DriverDeliveryResponseEntity> {
-    const driver = await this.getApprovedDriver(userId);
+    const driver = await this.getOnlineApprovedDriver(userId);
 
     const activeCount = await this.deliveriesRepository.countActiveByDriverId(driver.id);
     if (activeCount > 0) {
@@ -79,6 +89,15 @@ export class DeliveriesService {
       throw new BadRequestException('This vendor order is not ready for pickup');
     }
 
+    const requiresColdChain = await this.deliveriesRepository.vendorOrderRequiresColdChain(
+      dto.vendorOrderId,
+    );
+    if (requiresColdChain && !driver.coldChainCapable) {
+      throw new ForbiddenException(
+        'This delivery contains cold-chain-sensitive seafood and requires a cold-chain-capable driver',
+      );
+    }
+
     const existingDelivery = await this.deliveriesRepository.findByVendorOrderId(
       dto.vendorOrderId,
     );
@@ -92,8 +111,18 @@ export class DeliveriesService {
         tx,
       );
       await this.vendorOrdersRepository.updateStatus(dto.vendorOrderId, 'ASSIGNED_TO_DRIVER', tx);
+      await this.driversRepository.updateAvailabilityStatus(driver.id, 'BUSY', tx);
       return created;
     });
+
+    await this.eventEmitter.emitAsync(
+      DriverAssignedEvent.eventName,
+      new DriverAssignedEvent(
+        delivery.vendorOrder.order.customerId,
+        delivery.vendorOrderId,
+        delivery.driver.user.firstName,
+      ),
+    );
 
     return DeliveriesService.toDriverResponse(delivery);
   }
@@ -146,12 +175,19 @@ export class DeliveriesService {
           throw new BadRequestException('Proof of delivery (type and url) is required');
         }
         await this.vendorOrdersRepository.updateStatus(delivery.vendorOrderId, 'DELIVERED', tx);
-        return this.deliveriesRepository.markDelivered(
+        await this.driversRepository.updateAvailabilityStatus(driver.id, 'ONLINE', tx);
+        const delivered = await this.deliveriesRepository.markDelivered(
           delivery.id,
           dto.proofType,
           dto.proofUrl,
           tx,
         );
+        const routeHistory = await this.recordRouteHistory(
+          delivery,
+          delivered.deliveredAt as Date,
+          tx,
+        );
+        return { ...delivered, routeHistory };
       }
 
       this.assertOpenForTransition(delivery);
@@ -163,7 +199,10 @@ export class DeliveriesService {
         'DELIVERY_FAILED',
         tx,
       );
-      return this.deliveriesRepository.markFailed(delivery.id, dto.failureReason, tx);
+      await this.driversRepository.updateAvailabilityStatus(driver.id, 'ONLINE', tx);
+      const failed = await this.deliveriesRepository.markFailed(delivery.id, dto.failureReason, tx);
+      const routeHistory = await this.recordRouteHistory(delivery, failed.failedAt as Date, tx);
+      return { ...failed, routeHistory };
     });
 
     await this.eventEmitter.emitAsync(
@@ -174,6 +213,109 @@ export class DeliveriesService {
         DeliveriesService.computeStage(updated),
       ),
     );
+
+    if (dto.action === 'DELIVERED') {
+      await this.eventEmitter.emitAsync(
+        AwaitingCustomerAcceptanceEvent.eventName,
+        new AwaitingCustomerAcceptanceEvent(
+          updated.vendorOrder.order.customerId,
+          updated.vendorOrderId,
+        ),
+      );
+    }
+
+    return DeliveriesService.toDriverResponse(updated);
+  }
+
+  async updateSchedule(
+    userId: string,
+    deliveryId: string,
+    dto: UpdateDeliveryScheduleDto,
+  ): Promise<DriverDeliveryResponseEntity> {
+    const driver = await this.getApprovedDriver(userId);
+    const delivery = await this.getOwnedDelivery(driver.id, deliveryId);
+    this.assertOpenForTransition(delivery);
+
+    const input: UpdateDeliveryScheduleInput = {
+      scheduledPickupWindowStart: dto.scheduledPickupWindowStart
+        ? new Date(dto.scheduledPickupWindowStart)
+        : undefined,
+      scheduledPickupWindowEnd: dto.scheduledPickupWindowEnd
+        ? new Date(dto.scheduledPickupWindowEnd)
+        : undefined,
+      customerDeliveryWindowStart: dto.customerDeliveryWindowStart
+        ? new Date(dto.customerDeliveryWindowStart)
+        : undefined,
+      customerDeliveryWindowEnd: dto.customerDeliveryWindowEnd
+        ? new Date(dto.customerDeliveryWindowEnd)
+        : undefined,
+    };
+
+    const pickupStart = input.scheduledPickupWindowStart ?? delivery.scheduledPickupWindowStart;
+    const pickupEnd = input.scheduledPickupWindowEnd ?? delivery.scheduledPickupWindowEnd;
+    if (pickupStart && pickupEnd && pickupEnd <= pickupStart) {
+      throw new BadRequestException('Pickup window end must be after the window start');
+    }
+
+    const deliveryStart = input.customerDeliveryWindowStart ?? delivery.customerDeliveryWindowStart;
+    const deliveryEnd = input.customerDeliveryWindowEnd ?? delivery.customerDeliveryWindowEnd;
+    if (deliveryStart && deliveryEnd && deliveryEnd <= deliveryStart) {
+      throw new BadRequestException('Delivery window end must be after the window start');
+    }
+
+    const updated = await this.deliveriesRepository.updateSchedule(delivery.id, input);
+    return DeliveriesService.toDriverResponse(updated);
+  }
+
+  async confirmVendorPickup(userId: string, deliveryId: string): Promise<DriverDeliveryResponseEntity> {
+    const delivery = await this.deliveriesRepository.findById(deliveryId);
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+    if (delivery.vendorOrder.vendor.userId !== userId) {
+      throw new ForbiddenException('You do not own this delivery');
+    }
+    this.assertOpenForTransition(delivery);
+
+    const updated = await this.deliveriesRepository.confirmVendorPickup(delivery.id, userId);
+    return DeliveriesService.toDriverResponse(updated);
+  }
+
+  async recordCustomerAcceptance(
+    userId: string,
+    deliveryId: string,
+    dto: CustomerAcceptanceDto,
+  ): Promise<DriverDeliveryResponseEntity> {
+    const delivery = await this.deliveriesRepository.findById(deliveryId);
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+    if (delivery.vendorOrder.order.customerId !== userId) {
+      throw new ForbiddenException('You do not have access to this delivery');
+    }
+    if (!delivery.deliveredAt) {
+      throw new BadRequestException('This delivery has not been marked delivered yet');
+    }
+    if (delivery.customerAcceptanceStatus !== 'PENDING') {
+      throw new BadRequestException('This delivery has already been accepted or rejected');
+    }
+    if (dto.decision === 'REJECTED' && !dto.reason) {
+      throw new BadRequestException('A reason is required when rejecting a delivery');
+    }
+
+    const updated = await this.deliveriesRepository.recordCustomerAcceptance(delivery.id, {
+      customerAcceptanceStatus: dto.decision,
+      customerAcceptedAt: dto.decision === 'ACCEPTED' ? new Date() : undefined,
+      customerRejectedAt: dto.decision === 'REJECTED' ? new Date() : undefined,
+      rejectionReason: dto.decision === 'REJECTED' ? dto.reason : undefined,
+    });
+
+    if (dto.decision === 'REJECTED') {
+      await this.eventEmitter.emitAsync(
+        DeliveryRejectedEvent.eventName,
+        new DeliveryRejectedEvent(userId, delivery.vendorOrderId, dto.reason as string),
+      );
+    }
 
     return DeliveriesService.toDriverResponse(updated);
   }
@@ -200,6 +342,32 @@ export class DeliveriesService {
     }
   }
 
+  private async recordRouteHistory(
+    delivery: DeliveryWithDetails,
+    terminalAt: Date,
+    tx: Prisma.TransactionClient,
+  ) {
+    const startAt = delivery.pickedUpAt ?? delivery.assignedAt;
+    const locations = await this.driverLocationsRepository.findBetween(
+      delivery.driverId,
+      startAt,
+      terminalAt,
+    );
+    const distanceKm = this.settlementEngine.computeDistanceKm(locations);
+    const durationMinutes = Math.round((terminalAt.getTime() - startAt.getTime()) / 60_000);
+
+    return this.routeHistoryRepository.create(
+      {
+        deliveryId: delivery.id,
+        driverId: delivery.driverId,
+        gpsSamples: locations.length,
+        distanceKm,
+        durationMinutes,
+      },
+      tx,
+    );
+  }
+
   private async getOwnedDelivery(driverId: string, deliveryId: string): Promise<DeliveryWithDetails> {
     const delivery = await this.deliveriesRepository.findById(deliveryId);
     if (!delivery) {
@@ -215,6 +383,14 @@ export class DeliveriesService {
     const driver = await this.getOwnDriver(userId);
     if (driver.status !== 'APPROVED') {
       throw new ForbiddenException('Only approved drivers can perform this action');
+    }
+    return driver;
+  }
+
+  private async getOnlineApprovedDriver(userId: string): Promise<Driver> {
+    const driver = await this.getApprovedDriver(userId);
+    if (driver.availabilityStatus !== 'ONLINE') {
+      throw new ForbiddenException('You must be online to do this - update your availability first');
     }
     return driver;
   }
@@ -269,6 +445,16 @@ export class DeliveriesService {
       deliveryAddressLine2: delivery.vendorOrder.order.deliveryAddressLine2,
       deliveryParish: delivery.vendorOrder.order.deliveryParish,
       deliveryPhone: delivery.vendorOrder.order.deliveryPhone,
+      scheduledPickupWindowStart: delivery.scheduledPickupWindowStart,
+      scheduledPickupWindowEnd: delivery.scheduledPickupWindowEnd,
+      customerDeliveryWindowStart: delivery.customerDeliveryWindowStart,
+      customerDeliveryWindowEnd: delivery.customerDeliveryWindowEnd,
+      vendorConfirmedAt: delivery.vendorConfirmedAt,
+      vendorConfirmedById: delivery.vendorConfirmedById,
+      customerAcceptanceStatus: delivery.customerAcceptanceStatus,
+      customerAcceptedAt: delivery.customerAcceptedAt,
+      customerRejectedAt: delivery.customerRejectedAt,
+      rejectionReason: delivery.rejectionReason,
       assignedAt: delivery.assignedAt,
       pickedUpAt: delivery.pickedUpAt,
       deliveredAt: delivery.deliveredAt,
@@ -276,6 +462,29 @@ export class DeliveriesService {
       failureReason: delivery.failureReason,
       proofType: delivery.proofType,
       proofUrl: delivery.proofUrl,
+      exceptions: delivery.exceptions.map((exception) => ({
+        id: exception.id,
+        deliveryId: exception.deliveryId,
+        type: exception.type,
+        reason: exception.reason,
+        photos: exception.photos,
+        notes: exception.notes,
+        resolved: exception.resolved,
+        resolvedAt: exception.resolvedAt,
+        resolvedById: exception.resolvedById,
+        createdAt: exception.createdAt,
+      })),
+      routeHistory: delivery.routeHistory
+        ? {
+            id: delivery.routeHistory.id,
+            deliveryId: delivery.routeHistory.deliveryId,
+            driverId: delivery.routeHistory.driverId,
+            gpsSamples: delivery.routeHistory.gpsSamples,
+            distanceKm: delivery.routeHistory.distanceKm,
+            durationMinutes: delivery.routeHistory.durationMinutes,
+            createdAt: delivery.routeHistory.createdAt,
+          }
+        : null,
     };
   }
 
@@ -297,6 +506,8 @@ export class DeliveriesService {
             recordedAt: latestLocation.recordedAt,
           }
         : null,
+      customerDeliveryWindowStart: delivery.customerDeliveryWindowStart,
+      customerDeliveryWindowEnd: delivery.customerDeliveryWindowEnd,
       assignedAt: delivery.assignedAt,
       pickedUpAt: delivery.pickedUpAt,
       deliveredAt: delivery.deliveredAt,

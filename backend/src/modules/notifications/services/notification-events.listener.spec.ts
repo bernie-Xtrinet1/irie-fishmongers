@@ -1,4 +1,6 @@
+import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
+import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
@@ -131,6 +133,34 @@ describe('NotificationEventsListener', () => {
       eventType: 'REFUND_STATUS_CHANGED',
       priority: 'HIGH',
       variables: { amount: '2500.00', status: 'COMPLETED' },
+    });
+  });
+
+  it('maps DriverAssignedEvent to a DELIVERY/DRIVER_ASSIGNED/NORMAL notify call', async () => {
+    const event = new DriverAssignedEvent('customer-1', 'vo-1', 'Dana');
+
+    await listener.onDriverAssigned(event);
+
+    expect(notificationsService.notify).toHaveBeenCalledWith({
+      userId: 'customer-1',
+      category: 'DELIVERY',
+      eventType: 'DRIVER_ASSIGNED',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: 'vo-1', driverFirstName: 'Dana' },
+    });
+  });
+
+  it('maps AwaitingCustomerAcceptanceEvent to a DELIVERY/AWAITING_CUSTOMER_ACCEPTANCE/NORMAL notify call', async () => {
+    const event = new AwaitingCustomerAcceptanceEvent('customer-1', 'vo-1');
+
+    await listener.onAwaitingCustomerAcceptance(event);
+
+    expect(notificationsService.notify).toHaveBeenCalledWith({
+      userId: 'customer-1',
+      category: 'DELIVERY',
+      eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: 'vo-1' },
     });
   });
 });

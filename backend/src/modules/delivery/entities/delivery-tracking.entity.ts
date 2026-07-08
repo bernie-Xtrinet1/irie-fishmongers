@@ -36,6 +36,12 @@ export class DeliveryTrackingEntity {
   @ApiProperty({ type: DriverLocationEntity, required: false, nullable: true })
   latestLocation!: DriverLocationEntity | null;
 
+  @ApiProperty({ required: false, nullable: true })
+  customerDeliveryWindowStart!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  customerDeliveryWindowEnd!: Date | null;
+
   @ApiProperty()
   assignedAt!: Date;
 

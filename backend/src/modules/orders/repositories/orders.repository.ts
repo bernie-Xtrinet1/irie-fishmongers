@@ -30,6 +30,7 @@ export interface CreateOrderInput {
   deliveryAddressLine2?: string;
   deliveryParish: Parish;
   deliveryPhone: string;
+  deliveryZoneId?: string | null;
   vendorOrders: VendorOrderInput[];
 }
 
@@ -45,6 +46,7 @@ export class OrdersRepository {
         deliveryAddressLine2: input.deliveryAddressLine2,
         deliveryParish: input.deliveryParish,
         deliveryPhone: input.deliveryPhone,
+        deliveryZoneId: input.deliveryZoneId,
         vendorOrders: {
           create: input.vendorOrders.map((vendorOrder) => ({
             vendorId: vendorOrder.vendorId,
