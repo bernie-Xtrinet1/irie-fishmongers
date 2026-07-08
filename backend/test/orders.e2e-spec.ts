@@ -45,7 +45,13 @@ interface VendorOrderData {
 interface OrderData {
   id: string;
   customerId: string;
+  deliveryZoneId: string | null;
   vendorOrders: VendorOrderData[];
+}
+
+interface DeliveryZoneData {
+  id: string;
+  code: string;
 }
 
 interface CartData {
@@ -316,6 +322,37 @@ describe('Orders (e2e)', () => {
       .post(`/api/v1/orders/${order.id}/cancel`)
       .set('Authorization', `Bearer ${customerToken}`);
     expect(cancelWholeOrderRes.status).toBe(400);
+  });
+
+  it('resolves and stores the delivery zone matching the checkout parish', async () => {
+    const customerToken = await createCustomerAndLogin();
+    const adminToken = await createAdminAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Zone Checkout Vendor');
+    const category = await getFishCategory();
+    const product = await createProduct(vendor.accessToken, category.id, {
+      name: 'Zone Checkout Snapper',
+      price: 500,
+      quantityAvailable: 5,
+    });
+
+    const zonesRes = await request(server())
+      .get('/api/v1/delivery-zones')
+      .set('Authorization', `Bearer ${customerToken}`);
+    expect(zonesRes.status).toBe(200);
+    const zone1 = data<DeliveryZoneData[]>(zonesRes).find((zone) => zone.code === 'ZONE_1')!;
+
+    await request(server())
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ productId: product.id, quantity: 1 })
+      .expect(201);
+
+    const checkoutRes = await request(server())
+      .post('/api/v1/orders/checkout')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send(deliveryInfo);
+    expect(checkoutRes.status).toBe(201);
+    expect(data<OrderData>(checkoutRes).deliveryZoneId).toBe(zone1.id);
   });
 
   it('allows a customer to cancel a still-pending order and restores stock', async () => {
