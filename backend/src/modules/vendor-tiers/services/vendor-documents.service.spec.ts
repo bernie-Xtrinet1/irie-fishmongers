@@ -364,6 +364,55 @@ describe('VendorDocumentsService', () => {
     });
   });
 
+  describe('getComplianceStatus', () => {
+    it('reports MISSING and canSell false when no documents have been uploaded', async () => {
+      documentsRepository.findApprovedButExpired.mockResolvedValue([]);
+      documentsRepository.findByVendorId.mockResolvedValue([]);
+
+      const result = await service.getComplianceStatus('vendor-1', 'COMMUNITY_FISHER');
+
+      expect(result).toEqual({
+        tier: 'COMMUNITY_FISHER',
+        canSell: false,
+        requiredDocuments: [{ type: 'GOVERNMENT_ID', status: 'MISSING' }],
+      });
+    });
+
+    it('reports the real status of an uploaded-but-not-yet-approved document', async () => {
+      documentsRepository.findApprovedButExpired.mockResolvedValue([]);
+      documentsRepository.findByVendorId.mockResolvedValue([
+        buildDocument({ documentType: 'GOVERNMENT_ID', status: 'PENDING' }),
+      ]);
+
+      const result = await service.getComplianceStatus('vendor-1', 'COMMUNITY_FISHER');
+
+      expect(result).toEqual({
+        tier: 'COMMUNITY_FISHER',
+        canSell: false,
+        requiredDocuments: [{ type: 'GOVERNMENT_ID', status: 'PENDING' }],
+      });
+    });
+
+    it('reports canSell true once every required document type is APPROVED', async () => {
+      documentsRepository.findApprovedButExpired.mockResolvedValue([]);
+      documentsRepository.findByVendorId.mockResolvedValue([
+        buildDocument({ id: 'd1', documentType: 'GOVERNMENT_ID', status: 'APPROVED' }),
+        buildDocument({ id: 'd2', documentType: 'BUSINESS_REGISTRATION', status: 'APPROVED' }),
+      ]);
+
+      const result = await service.getComplianceStatus('vendor-1', 'VERIFIED_VENDOR');
+
+      expect(result).toEqual({
+        tier: 'VERIFIED_VENDOR',
+        canSell: true,
+        requiredDocuments: [
+          { type: 'GOVERNMENT_ID', status: 'APPROVED' },
+          { type: 'BUSINESS_REGISTRATION', status: 'APPROVED' },
+        ],
+      });
+    });
+  });
+
   describe('assertCanSell', () => {
     it('does not throw when computeCanSell resolves true', async () => {
       documentsRepository.findApprovedButExpired.mockResolvedValue([]);

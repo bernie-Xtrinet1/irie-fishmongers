@@ -12,6 +12,7 @@ import { InventoryEventsRepository } from '../../inventory/repositories/inventor
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
 import { deriveVendorComplianceStatus } from '../../vendor-tiers/utils/vendor-compliance-status.util';
+import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
@@ -33,6 +34,7 @@ export class ProductsService {
     private readonly seafoodLotsRepository: SeafoodLotsRepository,
     private readonly seafoodLotsService: SeafoodLotsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly vendorDocumentsService: VendorDocumentsService,
     private readonly marketplaceConfigService: MarketplaceConfigService,
     private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly inventoryReservations: InventoryReservationsService,
@@ -46,6 +48,7 @@ export class ProductsService {
     if (vendor.status !== 'APPROVED') {
       throw new ForbiddenException('Only approved vendors may list products');
     }
+    await this.vendorDocumentsService.assertCanSell(vendor.id, vendor.tier);
 
     const category = await this.categoriesRepository.findById(dto.categoryId);
     if (!category) {

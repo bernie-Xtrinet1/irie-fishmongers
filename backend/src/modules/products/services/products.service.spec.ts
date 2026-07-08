@@ -6,6 +6,7 @@ import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.serv
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CategoriesRepository } from '../repositories/categories.repository';
@@ -97,6 +98,7 @@ describe('ProductsService', () => {
   let vendorPermissionsService: jest.Mocked<
     Pick<VendorPermissionsService, 'assertListingLimitNotExceeded' | 'getPermissions'>
   >;
+  let vendorDocumentsService: jest.Mocked<Pick<VendorDocumentsService, 'assertCanSell'>>;
   let marketplaceConfigService: jest.Mocked<Pick<MarketplaceConfigService, 'getCurrentModeConfig'>>;
   let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
   let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'getAvailableToPurchase'>>;
@@ -119,6 +121,7 @@ describe('ProductsService', () => {
       assertListingLimitNotExceeded: jest.fn().mockResolvedValue(undefined),
       getPermissions: jest.fn(),
     };
+    vendorDocumentsService = { assertCanSell: jest.fn().mockResolvedValue(undefined) };
     marketplaceConfigService = { getCurrentModeConfig: jest.fn() };
     inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
     inventoryReservations = { getAvailableToPurchase: jest.fn().mockResolvedValue(10) };
@@ -130,6 +133,7 @@ describe('ProductsService', () => {
       seafoodLotsRepository as unknown as SeafoodLotsRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
       vendorPermissionsService as unknown as VendorPermissionsService,
+      vendorDocumentsService as unknown as VendorDocumentsService,
       marketplaceConfigService as unknown as MarketplaceConfigService,
       inventoryEventsRepository as unknown as InventoryEventsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
@@ -172,6 +176,22 @@ describe('ProductsService', () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       categoriesRepository.findById.mockResolvedValue(null);
       await expect(service.create('user-1', dto)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('throws when the vendor is missing required compliance documents', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      vendorDocumentsService.assertCanSell.mockRejectedValue(
+        new ForbiddenException(
+          'This vendor is missing required, approved compliance documents for their tier',
+        ),
+      );
+
+      await expect(service.create('user-1', dto)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(vendorDocumentsService.assertCanSell).toHaveBeenCalledWith(
+        'vendor-1',
+        'COMMUNITY_FISHER',
+      );
+      expect(categoriesRepository.findById).not.toHaveBeenCalled();
     });
 
     it('creates a product linked to a SAFE lot owned by the same vendor', async () => {

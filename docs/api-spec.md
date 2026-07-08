@@ -40,7 +40,9 @@ GET /products/:id/detail (Product Detail Page - traceability, vendor tier/compli
 
 GET /products/mine (vendor only)
 
-POST /products (approved vendor only)
+POST /products (approved vendor only - 403 if the vendor is missing a
+required, approved compliance document for their tier; see GET
+/vendors/me/compliance-status)
 
 PATCH /products/:id (owning vendor only)
 
@@ -189,6 +191,11 @@ POST /notifications/device-tokens (authenticated user - register a push token)
 DELETE /notifications/device-tokens/:token (authenticated user)
 
 GET /vendors/me/permissions (vendor only)
+
+GET /vendors/me/compliance-status (vendor only - per-document-type
+compliance checklist backing the POST /products 403 gate: { tier, canSell,
+requiredDocuments: [{ type, status }] }, status is PENDING/APPROVED/
+REJECTED/EXPIRED or the synthetic MISSING)
 
 GET /vendors/:id/permissions (admin only)
 

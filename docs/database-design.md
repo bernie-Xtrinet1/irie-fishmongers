@@ -737,21 +737,28 @@ Deliberately deferred:
   permissions` today), but the other 9 have no real gate to attach to yet;
   wiring them is a one-line permission check at the point each of those
   future features is actually built, not a rearchitecture.
-- `canSell`/document-gating is NOT enforced on `ProductsService.create()`
-  itself, even though the compliance draft's Rule 4 literally says "a vendor
-  may not create products unless canSell === true." Making this a hard gate
-  on product creation would retroactively require every vendor onboarded
-  across all 8 prior phases (none of which upload any `VendorDocument`) to
-  suddenly need an approved GOVERNMENT_ID before creating another product -
-  the exact same class of backward-compatibility problem the Food Safety
-  phase hit with mandatory `Product.lotId`, resolved the same way: document-
-  gating is real and enforced (`VendorDocumentsService.computeCanSell`/
-  `assertCanSell`), but it currently only gates the one workflow introduced
-  in this same phase with nothing to break - tier upgrade approval
-  (`VendorTiersService.reviewUpgradeRequest` calls `computeCanSell` for the
-  REQUESTED tier and refuses to approve until it's satisfied). The existing
-  vendor-approval gate (`VendorStatus.PENDING -> APPROVED`) remains the
-  practical "may this vendor sell at all" checkpoint today.
+- **Update (Phase 8 gap-closure pass)**: `canSell`/document-gating is now
+  also enforced on `ProductsService.create()`, closing the exact gap this
+  note used to describe - the compliance draft's Rule 4 ("a vendor may not
+  create products unless canSell === true") is now a real runtime check, not
+  just the tier-upgrade-approval-only gate it originally shipped as.
+  `VendorDocumentsService.assertCanSell(vendor.id, vendor.tier)` runs
+  immediately after the existing `vendor.status !== 'APPROVED'` check, before
+  the category lookup, throwing `403 Forbidden` (same exception the
+  tier-upgrade path already used). Every e2e vendor fixture across the
+  backend test suite was updated to upload + get an admin-approved
+  `GOVERNMENT_ID` as part of vendor setup, since even COMMUNITY_FISHER (the
+  default tier) requires one. Tier upgrade approval
+  (`VendorTiersService.reviewUpgradeRequest`) still separately calls
+  `computeCanSell` for the REQUESTED tier before allowing the upgrade.
+- `GET /vendors/me/compliance-status` (vendor only) surfaces the
+  per-document-type breakdown behind `assertCanSell` -
+  `VendorDocumentsService.getComplianceStatus()` returns `{ tier, canSell,
+  requiredDocuments: [{ type, status }] }` where `status` is the real
+  `DocumentReviewStatus` (PENDING/APPROVED/REJECTED/EXPIRED) or the
+  synthetic `MISSING` value for a required type with no uploaded document at
+  all - built for the future vendor dashboard to render a compliance
+  checklist instead of just surfacing a bare 403 on product creation.
 - Automatic tier downgrades: vendor-tier-rules.md's "Automatic review
   triggered by: Expired Documents, Food Safety Violations, Repeated Delivery
   Failures, Fraud Reports, Compliance Breaches" describes a review being

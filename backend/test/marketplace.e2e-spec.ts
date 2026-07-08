@@ -176,6 +176,17 @@ describe('Marketplace (e2e)', () => {
     expect(approveRes.status).toBe(200);
     expect(data<VendorData>(approveRes).status).toBe('APPROVED');
 
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
     const createRes = await request(server())
       .post('/api/v1/products')
       .set('Authorization', `Bearer ${vendor.accessToken}`)
@@ -279,6 +290,17 @@ describe('Marketplace (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const ownerUploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${ownerVendor.accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(ownerUploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
     const createRes = await request(server())
       .post('/api/v1/products')
       .set('Authorization', `Bearer ${ownerVendor.accessToken}`)
@@ -334,6 +356,17 @@ describe('Marketplace (e2e)', () => {
       .patch(`/api/v1/vendors/${profile.id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
+
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const noCategoryUploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(noCategoryUploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
 
     const res = await request(server())
       .post('/api/v1/products')
