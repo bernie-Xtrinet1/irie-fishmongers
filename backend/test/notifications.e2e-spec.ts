@@ -93,6 +93,9 @@ describe('Notifications (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {

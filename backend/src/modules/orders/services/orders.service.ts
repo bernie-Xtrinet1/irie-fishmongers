@@ -3,6 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -32,6 +34,8 @@ export class OrdersService {
     private readonly vendorsRepository: VendorsRepository,
     private readonly paymentsService: PaymentsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
+    private readonly inventoryReservations: InventoryReservationsService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -118,10 +122,32 @@ export class OrdersService {
         tx,
       );
 
+      for (const vendorOrder of created.vendorOrders) {
+        for (const item of vendorOrder.items) {
+          await this.inventoryEventsRepository.create(
+            {
+              productId: item.productId,
+              eventType: 'DECREMENTED',
+              quantityDelta: -item.quantity,
+              vendorOrderId: vendorOrder.id,
+            },
+            tx,
+          );
+        }
+      }
+
       await this.cartRepository.clear(cart.id, tx);
 
       return created;
     });
+
+    // No longer "reserved", it's actually decremented now - release the
+    // soft holds for exactly the products just purchased so they stop
+    // counting against other shoppers' availability.
+    const purchasedProductIds = new Set(cart.items.map((item) => item.productId));
+    for (const productId of purchasedProductIds) {
+      await this.inventoryReservations.release(productId, cart.id);
+    }
 
     const total = order.vendorOrders.reduce(
       (sum, vendorOrder) => sum + vendorOrder.subtotal.toNumber(),
@@ -226,6 +252,15 @@ export class OrdersService {
   ): Promise<void> {
     for (const item of vendorOrder.items) {
       await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
+      await this.inventoryEventsRepository.create(
+        {
+          productId: item.productId,
+          eventType: 'RESTOCKED',
+          quantityDelta: item.quantity,
+          vendorOrderId: vendorOrder.id,
+        },
+        tx,
+      );
     }
     await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'CANCELLED');
   }

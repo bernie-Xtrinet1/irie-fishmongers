@@ -3,6 +3,8 @@ import { Category, SeafoodLot, Vendor } from '@prisma/client';
 
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -96,6 +98,8 @@ describe('ProductsService', () => {
     Pick<VendorPermissionsService, 'assertListingLimitNotExceeded' | 'getPermissions'>
   >;
   let marketplaceConfigService: jest.Mocked<Pick<MarketplaceConfigService, 'getCurrentModeConfig'>>;
+  let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
+  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'getAvailableToPurchase'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -116,6 +120,8 @@ describe('ProductsService', () => {
       getPermissions: jest.fn(),
     };
     marketplaceConfigService = { getCurrentModeConfig: jest.fn() };
+    inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
+    inventoryReservations = { getAvailableToPurchase: jest.fn().mockResolvedValue(10) };
 
     service = new ProductsService(
       productsRepository as unknown as ProductsRepository,
@@ -125,6 +131,8 @@ describe('ProductsService', () => {
       seafoodLotsService as unknown as SeafoodLotsService,
       vendorPermissionsService as unknown as VendorPermissionsService,
       marketplaceConfigService as unknown as MarketplaceConfigService,
+      inventoryEventsRepository as unknown as InventoryEventsRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
     );
   });
 
@@ -236,13 +244,19 @@ describe('ProductsService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('adjusts stock for an owned product', async () => {
+    it('adjusts stock for an owned product and writes a MANUAL_ADJUSTMENT inventory event', async () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       productsRepository.findById.mockResolvedValue(buildProduct());
       productsRepository.adjustStock.mockResolvedValue(buildProduct({ quantityAvailable: 7 }));
 
       const result = await service.adjustStock('user-1', 'product-1', -3);
       expect(result.quantityAvailable).toBe(7);
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith({
+        productId: 'product-1',
+        eventType: 'MANUAL_ADJUSTMENT',
+        quantityDelta: -3,
+        triggeredById: 'user-1',
+      });
     });
 
     it('deactivates and reactivates an owned product', async () => {
@@ -399,6 +413,39 @@ describe('ProductsService', () => {
       await expect(
         service.findOwnProducts('user-1', { page: 1, pageSize: 20 }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getAvailability', () => {
+    it('returns quantity, reserved, and availableToPurchase for an active product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ quantityAvailable: 10 }));
+      inventoryReservations.getAvailableToPurchase.mockResolvedValue(6);
+
+      const result = await service.getAvailability('product-1');
+
+      expect(result).toEqual({
+        productId: 'product-1',
+        quantityAvailable: 10,
+        reserved: 4,
+        availableToPurchase: 6,
+      });
+      expect(inventoryReservations.getAvailableToPurchase).toHaveBeenCalledWith(
+        'product-1',
+        10,
+        '',
+      );
+    });
+
+    it('throws for an inactive product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ isActive: false }));
+      await expect(service.getAvailability('product-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('throws when the product does not exist', async () => {
+      productsRepository.findById.mockResolvedValue(null);
+      await expect(service.getAvailability('missing')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

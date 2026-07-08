@@ -66,6 +66,9 @@ describe('Marketplace (e2e)', () => {
 
   afterAll(async () => {
     if (createdEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: createdEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: createdEmails } } });
     }
     await app.close();

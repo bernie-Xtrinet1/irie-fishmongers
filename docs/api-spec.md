@@ -50,11 +50,15 @@ PATCH /products/:id/deactivate (owning vendor only)
 
 PATCH /products/:id/reactivate (owning vendor only)
 
+GET /products/:id/availability (live stock net of other customers' active
+cart holds - quantityAvailable, reserved, availableToPurchase)
+
 GET /cart (customer only)
 
-POST /cart/items (customer only)
+POST /cart/items (customer only - 409 if the requested quantity exceeds
+stock net of other customers' active reservations)
 
-PATCH /cart/items/:itemId (customer only)
+PATCH /cart/items/:itemId (customer only - same 409 availability check)
 
 DELETE /cart/items/:itemId (customer only)
 
@@ -218,6 +222,12 @@ POST /marketplace/weight-config (admin only - publish a new selection weight con
 
 POST /marketplace/best-vendor/resolve (customer only - Best Available Vendor; returns the winning
 productId to pass to the existing POST /cart/items unchanged)
+
+GET /inventory/:productId/events (admin only - paginated durable inventory
+audit trail: DECREMENTED / RESTOCKED / MANUAL_ADJUSTMENT)
+
+POST /inventory/reconcile (admin only - optional productId filter; cross-checks
+Redis reservations against live cart items and releases orphaned holds)
 
 ---
 

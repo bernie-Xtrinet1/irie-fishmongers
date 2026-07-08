@@ -3,6 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -138,6 +140,8 @@ describe('OrdersService', () => {
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
   let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'assertSalesLimitNotExceeded'>>;
+  let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
+  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'release'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: OrdersService;
 
@@ -157,6 +161,8 @@ describe('OrdersService', () => {
       getByOrderId: jest.fn().mockResolvedValue(buildPaymentResponse()),
     };
     vendorPermissionsService = { assertSalesLimitNotExceeded: jest.fn().mockResolvedValue(undefined) };
+    inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
+    inventoryReservations = { release: jest.fn().mockResolvedValue(undefined) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new OrdersService(
@@ -168,6 +174,8 @@ describe('OrdersService', () => {
       vendorsRepository as unknown as VendorsRepository,
       paymentsService as unknown as PaymentsService,
       vendorPermissionsService as unknown as VendorPermissionsService,
+      inventoryEventsRepository as unknown as InventoryEventsRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
       eventEmitter as unknown as EventEmitter2,
     );
   });
@@ -289,7 +297,19 @@ describe('OrdersService', () => {
               subtotal: new Prisma.Decimal(1000),
               createdAt: new Date(),
               updatedAt: new Date(),
-              items: [],
+              items: [
+                {
+                  id: 'oi-1',
+                  vendorOrderId: 'vo-1',
+                  productId: 'product-1',
+                  productName: 'Fresh Snapper',
+                  unitPrice: new Prisma.Decimal(500),
+                  unit: 'PER_POUND',
+                  quantity: 2,
+                  subtotal: new Prisma.Decimal(1000),
+                  createdAt: new Date(),
+                },
+              ],
             },
             {
               id: 'vo-2',
@@ -299,7 +319,19 @@ describe('OrdersService', () => {
               subtotal: new Prisma.Decimal(800),
               createdAt: new Date(),
               updatedAt: new Date(),
-              items: [],
+              items: [
+                {
+                  id: 'oi-2',
+                  vendorOrderId: 'vo-2',
+                  productId: 'product-2',
+                  productName: 'Fresh Snapper',
+                  unitPrice: new Prisma.Decimal(800),
+                  unit: 'PER_POUND',
+                  quantity: 1,
+                  subtotal: new Prisma.Decimal(800),
+                  createdAt: new Date(),
+                },
+              ],
             },
           ],
         }),
@@ -317,6 +349,104 @@ describe('OrdersService', () => {
         'order.placed',
         expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
       );
+    });
+
+    it('writes a DECREMENTED inventory event per order item during checkout', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 2,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(
+        buildOrder({
+          vendorOrders: [
+            {
+              id: 'vo-1',
+              orderId: 'order-1',
+              vendorId: 'vendor-1',
+              status: 'PENDING',
+              subtotal: new Prisma.Decimal(1000),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              items: [
+                {
+                  id: 'oi-1',
+                  vendorOrderId: 'vo-1',
+                  productId: 'product-1',
+                  productName: 'Fresh Snapper',
+                  unitPrice: new Prisma.Decimal(500),
+                  unit: 'PER_POUND',
+                  quantity: 2,
+                  subtotal: new Prisma.Decimal(1000),
+                  createdAt: new Date(),
+                },
+              ],
+            },
+          ],
+        }),
+      );
+
+      await service.checkout('user-1', checkoutDto);
+
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
+        {
+          productId: 'product-1',
+          eventType: 'DECREMENTED',
+          quantityDelta: -2,
+          vendorOrderId: 'vo-1',
+        },
+        {},
+      );
+    });
+
+    it('releases the reservation for each purchased product after a successful checkout', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 2,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(
+        buildOrder({
+          vendorOrders: [
+            {
+              id: 'vo-1',
+              orderId: 'order-1',
+              vendorId: 'vendor-1',
+              status: 'PENDING',
+              subtotal: new Prisma.Decimal(1000),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              items: [],
+            },
+          ],
+        }),
+      );
+
+      await service.checkout('user-1', checkoutDto);
+
+      expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
     });
   });
 
@@ -389,6 +519,15 @@ describe('OrdersService', () => {
       expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2, {});
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED');
       expect(vendorOrdersRepository.updateStatus).not.toHaveBeenCalledWith('vo-2', 'CANCELLED');
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
+        {
+          productId: 'product-1',
+          eventType: 'RESTOCKED',
+          quantityDelta: 2,
+          vendorOrderId: 'vo-1',
+        },
+        {},
+      );
     });
 
     it('throws when nothing in the order is still pending', async () => {
@@ -416,7 +555,7 @@ describe('OrdersService', () => {
   });
 
   describe('cancelVendorOrder', () => {
-    it('cancels a single pending vendor order', async () => {
+    it('cancels a single pending vendor order and writes a RESTOCKED inventory event', async () => {
       const vendorOrder = {
         id: 'vo-1',
         orderId: 'order-1',
@@ -425,13 +564,34 @@ describe('OrdersService', () => {
         subtotal: new Prisma.Decimal(500),
         createdAt: new Date(),
         updatedAt: new Date(),
-        items: [],
+        items: [
+          {
+            id: 'item-1',
+            vendorOrderId: 'vo-1',
+            productId: 'product-1',
+            productName: 'Fresh Snapper',
+            unitPrice: new Prisma.Decimal(500),
+            unit: 'PER_POUND' as const,
+            quantity: 1,
+            subtotal: new Prisma.Decimal(500),
+            createdAt: new Date(),
+          },
+        ],
       };
       ordersRepository.findById.mockResolvedValue(buildOrder({ vendorOrders: [vendorOrder] }));
 
       await service.cancelVendorOrder('user-1', 'order-1', 'vo-1');
 
       expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED');
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
+        {
+          productId: 'product-1',
+          eventType: 'RESTOCKED',
+          quantityDelta: 1,
+          vendorOrderId: 'vo-1',
+        },
+        {},
+      );
     });
 
     it('throws when the vendor order is not found within the order', async () => {

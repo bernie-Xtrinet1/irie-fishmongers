@@ -3,7 +3,12 @@ import { Redis } from 'ioredis';
 import { RedisService } from './redis.service';
 
 describe('RedisService', () => {
-  let client: jest.Mocked<Pick<Redis, 'set' | 'get' | 'del' | 'ping' | 'disconnect'>>;
+  let client: jest.Mocked<
+    Pick<
+      Redis,
+      'set' | 'get' | 'del' | 'ping' | 'disconnect' | 'expire' | 'hset' | 'hget' | 'hgetall' | 'hdel'
+    >
+  >;
   let service: RedisService;
 
   beforeEach(() => {
@@ -13,6 +18,11 @@ describe('RedisService', () => {
       del: jest.fn(),
       ping: jest.fn(),
       disconnect: jest.fn(),
+      expire: jest.fn(),
+      hset: jest.fn(),
+      hget: jest.fn(),
+      hgetall: jest.fn(),
+      hdel: jest.fn(),
     };
     service = new RedisService(client as unknown as Redis);
   });
@@ -46,6 +56,33 @@ describe('RedisService', () => {
   it('pings the server', async () => {
     client.ping.mockResolvedValue('PONG');
     await expect(service.ping()).resolves.toBe('PONG');
+  });
+
+  it('sets an expiry on a key', async () => {
+    await service.expire('key', 60);
+    expect(client.expire).toHaveBeenCalledWith('key', 60);
+  });
+
+  it('sets a hash field', async () => {
+    await service.hset('hash-key', 'field', 'value');
+    expect(client.hset).toHaveBeenCalledWith('hash-key', 'field', 'value');
+  });
+
+  it('gets a hash field', async () => {
+    client.hget.mockResolvedValue('value');
+    await expect(service.hget('hash-key', 'field')).resolves.toBe('value');
+    expect(client.hget).toHaveBeenCalledWith('hash-key', 'field');
+  });
+
+  it('gets all hash fields', async () => {
+    client.hgetall.mockResolvedValue({ field: 'value' });
+    await expect(service.hgetall('hash-key')).resolves.toEqual({ field: 'value' });
+    expect(client.hgetall).toHaveBeenCalledWith('hash-key');
+  });
+
+  it('deletes a hash field', async () => {
+    await service.hdel('hash-key', 'field');
+    expect(client.hdel).toHaveBeenCalledWith('hash-key', 'field');
   });
 
   it('disconnects on module destroy', () => {

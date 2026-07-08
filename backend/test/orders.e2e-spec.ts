@@ -89,6 +89,12 @@ describe('Orders (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      // InventoryEvent.product is onDelete: Restrict, so the checkout/
+      // cancellation/rejection events these tests create must be cleared
+      // before the vendors' products can cascade-delete with the users.
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {
@@ -179,6 +185,13 @@ describe('Orders (e2e)', () => {
     const res = await request(server()).get('/api/v1/categories');
     const categories = data<CategoryData[]>(res);
     return categories.find((category) => category.slug === 'fish')!;
+  }
+
+  async function getSoleCartItemId(customerToken: string): Promise<string> {
+    const res = await request(server())
+      .get('/api/v1/cart')
+      .set('Authorization', `Bearer ${customerToken}`);
+    return data<CartData>(res).items[0]!.id;
   }
 
   async function createProduct(
@@ -327,7 +340,7 @@ describe('Orders (e2e)', () => {
     expect(data<ProductData>(productAfterCancel).quantityAvailable).toBe(10);
   });
 
-  it('rejects checkout when requested quantity exceeds available stock', async () => {
+  it('rejects adding to cart when requested quantity exceeds available stock', async () => {
     const adminToken = await createAdminAndLogin();
     const customerToken = await createCustomerAndLogin();
     const vendor = await createApprovedVendorAndLogin(adminToken, 'Oversell Test Vendor');
@@ -338,17 +351,53 @@ describe('Orders (e2e)', () => {
       quantityAvailable: 2,
     });
 
-    await request(server())
+    const addRes = await request(server())
       .post('/api/v1/cart/items')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ productId: product.id, quantity: 5 })
+      .send({ productId: product.id, quantity: 5 });
+    expect(addRes.status).toBe(409);
+  });
+
+  it('rejects a second customer from adding the last reserved unit to their cart', async () => {
+    const adminToken = await createAdminAndLogin();
+    const firstCustomerToken = await createCustomerAndLogin();
+    const secondCustomerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Concurrent Cart Test Vendor');
+    const category = await getFishCategory();
+    const product = await createProduct(vendor.accessToken, category.id, {
+      name: 'Concurrent Cart Test Snapper',
+      price: 500,
+      quantityAvailable: 1,
+    });
+
+    await request(server())
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${firstCustomerToken}`)
+      .send({ productId: product.id, quantity: 1 })
       .expect(201);
 
-    const checkoutRes = await request(server())
-      .post('/api/v1/orders/checkout')
-      .set('Authorization', `Bearer ${customerToken}`)
-      .send(deliveryInfo);
-    expect(checkoutRes.status).toBe(409);
+    const secondAddRes = await request(server())
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${secondCustomerToken}`)
+      .send({ productId: product.id, quantity: 1 });
+    expect(secondAddRes.status).toBe(409);
+
+    const availabilityRes = await request(server()).get(
+      `/api/v1/products/${product.id}/availability`,
+    );
+    expect(data<{ availableToPurchase: number }>(availabilityRes).availableToPurchase).toBe(0);
+
+    const firstCartItemId = await getSoleCartItemId(firstCustomerToken);
+    await request(server())
+      .delete(`/api/v1/cart/items/${firstCartItemId}`)
+      .set('Authorization', `Bearer ${firstCustomerToken}`)
+      .expect(200);
+
+    const secondAddAfterReleaseRes = await request(server())
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${secondCustomerToken}`)
+      .send({ productId: product.id, quantity: 1 });
+    expect(secondAddAfterReleaseRes.status).toBe(201);
   });
 
   it('rejects checkout with an empty cart', async () => {

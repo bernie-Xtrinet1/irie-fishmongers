@@ -56,6 +56,7 @@ model User {
   marketplaceModeUpdates       MarketplaceModeConfig[]
   vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
   fulfillmentDecisions         FulfillmentDecision[]
+  triggeredInventoryEvents     InventoryEvent[]
 
   @@map("users")
 }
@@ -193,6 +194,7 @@ model Product {
   requestedInFulfillmentDecisions FulfillmentDecision[]
   vendorScores                    VendorScore[]
   vendorAssignments               VendorAssignment[]
+  inventoryEvents                 InventoryEvent[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -267,11 +269,12 @@ model VendorOrder {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  order      Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  vendor     Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  items      OrderItem[]
-  delivery   Delivery?
-  settlement VendorSettlement?
+  order           Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendor          Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items           OrderItem[]
+  delivery        Delivery?
+  settlement      VendorSettlement?
+  inventoryEvents InventoryEvent[]
 
   @@index([vendorId])
   @@index([orderId])
@@ -1299,4 +1302,45 @@ model VendorAssignment {
 
   @@index([vendorId])
   @@map("vendor_assignments")
+}
+
+// -----------------------------------------------------------------------------
+// Inventory Management (Phase 7, per .claude/roadmap.md - "Prevent
+// overselling"). ProductsRepository.adjustStock already makes the checkout
+// decrement atomic via a floor-at-zero WHERE guard; the gap this phase closes
+// is upstream of that - Cart previously accepted any quantity with no stock
+// check, so a customer could carry an unfulfillable quantity all the way to
+// the final checkout step before finding out.
+//
+// Deliberately two data stores, not one: live reservation state (which cart
+// is currently holding how much of which product, with a 15-minute soft-hold
+// expiry) lives entirely in Redis - high-churn, ephemeral, self-expiring, and
+// never written here. This table is the durable ledger of real
+// quantityAvailable movements only (checkout decrement, cancellation/
+// rejection restock, manual vendor adjustment), satisfying "Inventory Events"
+// and "Inventory Audit" as one mechanism rather than two.
+// -----------------------------------------------------------------------------
+
+enum InventoryEventType {
+  DECREMENTED
+  RESTOCKED
+  MANUAL_ADJUSTMENT
+}
+
+model InventoryEvent {
+  id            String             @id @default(uuid())
+  productId     String
+  eventType     InventoryEventType
+  quantityDelta Int
+  vendorOrderId String?
+  triggeredById String?
+  notes         String?
+  createdAt     DateTime           @default(now())
+
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder? @relation(fields: [vendorOrderId], references: [id], onDelete: SetNull)
+  triggeredBy User?        @relation(fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@map("inventory_events")
 }
