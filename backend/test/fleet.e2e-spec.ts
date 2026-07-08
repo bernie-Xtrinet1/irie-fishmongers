@@ -76,6 +76,11 @@ describe('Fleet (e2e)', () => {
 
   afterAll(async () => {
     if (licensePlates.length > 0) {
+      // FleetTrip.fleetAssetId is Restrict; trips must be cleared first.
+      // FleetMaintenance.fleetAssetId cascades, so no explicit cleanup needed.
+      await prisma.fleetTrip.deleteMany({
+        where: { fleetAsset: { licensePlate: { in: licensePlates } } },
+      });
       await prisma.fleetAsset.deleteMany({ where: { licensePlate: { in: licensePlates } } });
     }
     if (driverUserEmails.length > 0) {
