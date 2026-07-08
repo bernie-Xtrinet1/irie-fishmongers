@@ -1,7 +1,14 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import { ProductsRepository } from '../../products/repositories/products.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { AddCartItemDto } from '../dto/add-cart-item.dto';
 import { UpdateCartItemDto } from '../dto/update-cart-item.dto';
@@ -14,6 +21,7 @@ export class CartService {
     private readonly cartRepository: CartRepository,
     private readonly productsRepository: ProductsRepository,
     private readonly vendorsRepository: VendorsRepository,
+    private readonly inventoryReservations: InventoryReservationsService,
   ) {}
 
   async getCart(userId: string): Promise<CartResponseEntity> {
@@ -22,10 +30,17 @@ export class CartService {
   }
 
   async addItem(userId: string, dto: AddCartItemDto): Promise<CartResponseEntity> {
-    await this.assertProductIsPurchasable(dto.productId);
-
     const cart = await this.cartRepository.findOrCreateByCustomerId(userId);
+    const product = await this.assertProductIsPurchasable(dto.productId);
+
+    const existingQuantity =
+      cart.items.find((item) => item.productId === dto.productId)?.quantity ?? 0;
+    const newTotalQuantity = existingQuantity + dto.quantity;
+
+    await this.assertQuantityAvailable(product, cart.id, newTotalQuantity);
+
     await this.cartRepository.addOrIncrementItem(cart.id, dto.productId, dto.quantity);
+    await this.inventoryReservations.reserve(dto.productId, cart.id, newTotalQuantity);
 
     const updated = await this.cartRepository.findOrCreateByCustomerId(userId);
     return CartService.toResponse(updated);
@@ -42,8 +57,11 @@ export class CartService {
       throw new NotFoundException('Cart item not found');
     }
 
-    await this.assertProductIsPurchasable(item.productId);
+    const product = await this.assertProductIsPurchasable(item.productId);
+    await this.assertQuantityAvailable(product, cart.id, dto.quantity);
+
     await this.cartRepository.updateItemQuantity(itemId, dto.quantity);
+    await this.inventoryReservations.reserve(item.productId, cart.id, dto.quantity);
 
     const updated = await this.cartRepository.findOrCreateByCustomerId(userId);
     return CartService.toResponse(updated);
@@ -57,12 +75,13 @@ export class CartService {
     }
 
     await this.cartRepository.removeItem(itemId);
+    await this.inventoryReservations.release(item.productId, cart.id);
 
     const updated = await this.cartRepository.findOrCreateByCustomerId(userId);
     return CartService.toResponse(updated);
   }
 
-  private async assertProductIsPurchasable(productId: string): Promise<void> {
+  private async assertProductIsPurchasable(productId: string): Promise<ProductWithLot> {
     const product = await this.productsRepository.findById(productId);
     if (!product || !product.isActive) {
       throw new BadRequestException('Product is not available');
@@ -76,6 +95,25 @@ export class CartService {
     const vendor = await this.vendorsRepository.findById(product.vendorId);
     if (!vendor || vendor.status !== 'APPROVED') {
       throw new ForbiddenException('This product is not currently sold by an approved vendor');
+    }
+
+    return product;
+  }
+
+  private async assertQuantityAvailable(
+    product: ProductWithLot,
+    cartId: string,
+    requestedTotal: number,
+  ): Promise<void> {
+    const availableToPurchase = await this.inventoryReservations.getAvailableToPurchase(
+      product.id,
+      product.quantityAvailable,
+      cartId,
+    );
+    if (requestedTotal > availableToPurchase) {
+      throw new ConflictException(
+        `Only ${availableToPurchase} unit(s) of this product are currently available`,
+      );
     }
   }
 

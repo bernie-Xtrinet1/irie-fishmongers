@@ -17,6 +17,7 @@ import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
+import { ProductAvailabilityEntity } from '../entities/product-availability.entity';
 import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductResponseEntity } from '../entities/product-response.entity';
 import { ProductsService } from '../services/products.service';
@@ -128,5 +129,14 @@ export class ProductsController {
   @ApiResponseDoc({ status: 200, type: ProductDetailEntity })
   getDetail(@Param('id') id: string): Promise<ProductDetailEntity> {
     return this.productsService.getPublicDetail(id);
+  }
+
+  @Get(':id/availability')
+  @ApiOperation({
+    summary: 'Get live stock availability for a product, net of other customers\' active cart holds',
+  })
+  @ApiResponseDoc({ status: 200, type: ProductAvailabilityEntity })
+  getAvailability(@Param('id') id: string): Promise<ProductAvailabilityEntity> {
+    return this.productsService.getAvailability(id);
   }
 }

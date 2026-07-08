@@ -1,4 +1,5 @@
 import { VendorComplianceStatusLabel } from '../../vendor-tiers/entities/vendor-profile-response.entity';
+import { ProductAvailabilityEntity } from '../entities/product-availability.entity';
 import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { ProductsService } from '../services/products.service';
@@ -37,6 +38,13 @@ const productDetail: ProductDetailEntity = {
   marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: false },
 };
 
+const availability: ProductAvailabilityEntity = {
+  productId: 'product-1',
+  quantityAvailable: 10,
+  reserved: 4,
+  availableToPurchase: 6,
+};
+
 const user = { id: 'user-1', email: 'vendor@example.com', roles: ['VENDOR' as const] };
 
 describe('ProductsController', () => {
@@ -51,6 +59,7 @@ describe('ProductsController', () => {
       | 'findPublicById'
       | 'findOwnProducts'
       | 'getPublicDetail'
+      | 'getAvailability'
     >
   >;
   let controller: ProductsController;
@@ -67,6 +76,7 @@ describe('ProductsController', () => {
         .fn()
         .mockResolvedValue({ items: [product], total: 1, page: 1, pageSize: 20 }),
       getPublicDetail: jest.fn().mockResolvedValue(productDetail),
+      getAvailability: jest.fn().mockResolvedValue(availability),
     };
     controller = new ProductsController(productsService as unknown as ProductsService);
   });
@@ -121,6 +131,11 @@ describe('ProductsController', () => {
   it('gets the product detail view', async () => {
     await expect(controller.getDetail('product-1')).resolves.toEqual(productDetail);
     expect(productsService.getPublicDetail).toHaveBeenCalledWith('product-1');
+  });
+
+  it('gets product availability', async () => {
+    await expect(controller.getAvailability('product-1')).resolves.toEqual(availability);
+    expect(productsService.getAvailability).toHaveBeenCalledWith('product-1');
   });
 
   it("lists the authenticated vendor's own products", async () => {

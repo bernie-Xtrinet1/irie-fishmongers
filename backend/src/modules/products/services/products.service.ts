@@ -8,6 +8,8 @@ import {
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
 import { deriveVendorComplianceStatus } from '../../vendor-tiers/utils/vendor-compliance-status.util';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -15,6 +17,7 @@ import { VendorsRepository } from '../../vendors/repositories/vendors.repository
 import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
+import { ProductAvailabilityEntity } from '../entities/product-availability.entity';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
 import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
@@ -31,6 +34,8 @@ export class ProductsService {
     private readonly seafoodLotsService: SeafoodLotsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
     private readonly marketplaceConfigService: MarketplaceConfigService,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
+    private readonly inventoryReservations: InventoryReservationsService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -90,7 +95,34 @@ export class ProductsService {
   ): Promise<ProductResponseEntity> {
     const product = await this.getOwnedProduct(userId, productId);
     const updated = await this.productsRepository.adjustStock(product.id, delta);
+    await this.inventoryEventsRepository.create({
+      productId: product.id,
+      eventType: 'MANUAL_ADJUSTMENT',
+      quantityDelta: delta,
+      triggeredById: userId,
+    });
     return ProductsService.toResponse(updated);
+  }
+
+  async getAvailability(productId: string): Promise<ProductAvailabilityEntity> {
+    const product = await this.productsRepository.findById(productId);
+    if (!product || !product.isActive) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const availableToPurchase = await this.inventoryReservations.getAvailableToPurchase(
+      product.id,
+      product.quantityAvailable,
+      '',
+    );
+    const reserved = product.quantityAvailable - availableToPurchase;
+
+    return {
+      productId: product.id,
+      quantityAvailable: product.quantityAvailable,
+      reserved,
+      availableToPurchase,
+    };
   }
 
   async setActive(

@@ -1,6 +1,7 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository, CartWithItems } from '../repositories/cart.repository';
@@ -88,6 +89,9 @@ describe('CartService', () => {
   >;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
+  let inventoryReservations: jest.Mocked<
+    Pick<InventoryReservationsService, 'getAvailableToPurchase' | 'reserve' | 'release'>
+  >;
   let service: CartService;
 
   beforeEach(() => {
@@ -100,11 +104,17 @@ describe('CartService', () => {
     };
     productsRepository = { findById: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
+    inventoryReservations = {
+      getAvailableToPurchase: jest.fn().mockResolvedValue(999),
+      reserve: jest.fn(),
+      release: jest.fn(),
+    };
 
     service = new CartService(
       cartRepository as unknown as CartRepository,
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
     );
   });
 
@@ -184,6 +194,58 @@ describe('CartService', () => {
         service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('reserves the new total quantity in Redis after a successful add', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+
+      expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 2);
+    });
+
+    it('adds the existing cart quantity to the new request before checking availability', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(
+        buildCart({
+          items: [
+            {
+              id: 'item-1',
+              cartId: 'cart-1',
+              productId: 'product-1',
+              quantity: 3,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              product: buildProduct(),
+            },
+          ],
+        }),
+      );
+
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+
+      expect(inventoryReservations.getAvailableToPurchase).toHaveBeenCalledWith(
+        'product-1',
+        20,
+        'cart-1',
+      );
+      expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 5);
+    });
+
+    it('rejects adding more than is currently available to purchase', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      inventoryReservations.getAvailableToPurchase.mockResolvedValue(1);
+
+      await expect(
+        service.addItem('user-1', { productId: 'product-1', quantity: 2 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(cartRepository.addOrIncrementItem).not.toHaveBeenCalled();
+      expect(inventoryReservations.reserve).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateItemQuantity', () => {
@@ -214,6 +276,44 @@ describe('CartService', () => {
         service.updateItemQuantity('user-1', 'item-1', { quantity: 5 }),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
+
+    it('reserves the new quantity after a successful update', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.findItemById.mockResolvedValue({
+        id: 'item-1',
+        cartId: 'cart-1',
+        productId: 'product-1',
+        quantity: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+
+      await service.updateItemQuantity('user-1', 'item-1', { quantity: 5 });
+
+      expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 5);
+    });
+
+    it('rejects updating to a quantity above what is currently available', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.findItemById.mockResolvedValue({
+        id: 'item-1',
+        cartId: 'cart-1',
+        productId: 'product-1',
+        quantity: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      inventoryReservations.getAvailableToPurchase.mockResolvedValue(2);
+
+      await expect(
+        service.updateItemQuantity('user-1', 'item-1', { quantity: 5 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(cartRepository.updateItemQuantity).not.toHaveBeenCalled();
+    });
   });
 
   describe('removeItem', () => {
@@ -230,6 +330,7 @@ describe('CartService', () => {
 
       await service.removeItem('user-1', 'item-1');
       expect(cartRepository.removeItem).toHaveBeenCalledWith('item-1');
+      expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
     });
 
     it('throws when the item does not belong to the cart', async () => {

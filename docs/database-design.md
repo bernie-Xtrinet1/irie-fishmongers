@@ -926,3 +926,86 @@ Business rules encoded here:
   `MarketplaceModeConfig.bestAvailableEnabled` is `false`, rather than
   silently proceeding - `MARKETPLACE MODE RULES`' "do not hardcode mode
   behavior" enforced as a real runtime check, not just a doc convention.
+
+---
+
+# Inventory Management Tables (Phase 7, per .claude/roadmap.md's "Prevent
+# overselling" purpose, dependencies Redis/Orders/Products)
+
+Two deliberately separate sources of truth, matching the roadmap's own split
+between "Inventory Events"/"Inventory Audit" (durable) and "Stock
+Reservation"/"Reservation Expiration" (ephemeral):
+
+- **Redis** holds live, short-lived soft holds on stock - one hash per
+  product, `inv:reserved:{productId}`, field = `cartId`, value = JSON
+  `{ quantity, expiresAt }`. A 15-minute TTL (`RESERVATION_TTL_SECONDS`,
+  `backend/src/modules/inventory/constants/inventory.constants.ts`) is
+  created/refreshed on every `POST /cart/items` or `PATCH
+  /cart/items/:itemId`, and cleared on `DELETE /cart/items/:itemId` or a
+  successful checkout. Expiry is enforced by comparing `expiresAt` to the
+  current time on every read (lazy expiry), not by relying on Redis's own
+  per-key TTL for correctness - a defensive outer `EXPIRE` on the hash key
+  (2x the reservation TTL) exists only so Redis reclaims memory for
+  abandoned/discontinued products.
+- **Postgres** holds a durable, append-only audit trail of real stock
+  movements only - not reservation churn:
+
+  ```prisma
+  enum InventoryEventType {
+    DECREMENTED        // checkout
+    RESTOCKED          // order cancellation or vendor rejection
+    MANUAL_ADJUSTMENT  // vendor-initiated stock edit
+  }
+  ```
+
+  - `inventory_events` - id, productId, eventType, quantityDelta (signed),
+    vendorOrderId (optional, set for DECREMENTED/RESTOCKED), triggeredById
+    (optional, set to the vendor's user id for MANUAL_ADJUSTMENT),
+    notes (optional), createdAt. `product` is `onDelete: Restrict` (a
+    product cannot be deleted while its audit history still references it,
+    same append-only-audit pattern used throughout this codebase, e.g.
+    `FulfillmentDecision`/`VendorDowngradeEvent`); `vendorOrder`/
+    `triggeredBy` are `onDelete: SetNull` so the audit row survives order
+    deletion or user removal.
+
+Business rules encoded here:
+
+- `ProductsRepository.adjustStock()`'s existing atomic `updateMany` +
+  `WHERE quantityAvailable >= -delta` guard (unchanged by this phase)
+  already makes the checkout-time decrement race-safe. The real gap this
+  phase closes is upstream: cart writes previously did zero stock checks,
+  so a customer could add more of a product to their cart than exists, or
+  two customers could both believe they were about to buy the last unit.
+  `POST /cart/items` / `PATCH /cart/items/:itemId` now compute
+  `availableToPurchase = quantityAvailable - reservedByOthers` via
+  `InventoryReservationsService.getAvailableToPurchase()` and reject with
+  `409 Conflict` if the requested quantity would exceed it.
+- `InventoryModule` never imports `ProductsModule`, `CartModule`, or
+  `OrdersModule` - those three import `InventoryModule` instead.
+  `InventoryReservationsService` takes `productId`/`quantityAvailable` as
+  plain parameters rather than fetching the product itself (every caller
+  has already loaded it), and `InventoryReconciliationService` reads
+  `prisma.cartItem` directly (via the `@Global()` `PrismaModule`) instead
+  of importing `CartModule`, keeping the dependency graph one-directional.
+- `POST /orders/checkout` writes one `DECREMENTED` `InventoryEvent` per
+  order item inside the same transaction that creates the `VendorOrder`/
+  `OrderItem` rows, then releases the Redis holds for the purchased
+  products after the transaction commits (they're no longer "reserved",
+  they're actually decremented). Order/vendor-order cancellation and
+  vendor rejection write matching `RESTOCKED` events alongside their
+  existing `adjustStock` restock calls, in the same transaction - this
+  also fixed a pre-existing atomicity bug where `VendorOrdersService`'s
+  rejection path called `adjustStock` without a transaction at all.
+- `PATCH /products/:id/stock` (manual vendor stock edits) writes a
+  `MANUAL_ADJUSTMENT` `InventoryEvent` with `triggeredById` set to the
+  requesting vendor's user id. Manual adjustments are not blocked by
+  outstanding customer reservations - a vendor can still mark down stock
+  for spoilage/recount even if it drops below what shoppers currently have
+  reserved; those reservations simply may fail at final checkout with the
+  same `409 Conflict` already in place, rather than adding new invasive
+  business logic the roadmap doesn't ask for.
+- `POST /inventory/reconcile` (admin only, optional `productId` filter) is
+  an on-demand endpoint, not a scheduled job - no job-queue/scheduler
+  infrastructure exists anywhere in this codebase yet. It cross-checks
+  each product's Redis reservations against live `CartItem` rows and
+  releases any orphaned or quantity-mismatched holds.

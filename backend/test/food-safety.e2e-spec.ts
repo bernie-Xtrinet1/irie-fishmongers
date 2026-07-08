@@ -118,6 +118,10 @@ describe('Food Safety / Compliance (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      // Frees Product -> InventoryEvent's Restrict constraint.
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       // Frees Product -> SeafoodLot's Restrict constraint.
       await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
     }
