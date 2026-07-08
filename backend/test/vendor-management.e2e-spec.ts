@@ -251,6 +251,7 @@ describe('Vendor Management (e2e)', () => {
       parish: 'ST_MARY',
       logoUrl: null,
       tier: 'COMMUNITY_FISHER',
+      complianceScore: null,
     });
     expect(publicProfile).not.toHaveProperty('phone');
   });

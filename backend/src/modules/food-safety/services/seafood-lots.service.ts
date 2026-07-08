@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { FoodSafetyStatus, RoleName, SeafoodLot } from '@prisma/client';
+import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -28,20 +28,44 @@ export class SeafoodLotsService {
       throw new ForbiddenException('Only approved vendors can register seafood lots');
     }
 
-    const lotNumber = await this.generateLotNumber();
-    const lot = await this.lotsRepository.create({
-      lotNumber,
-      vendorId: vendor.id,
-      species: dto.species,
-      storageType: dto.storageType,
-      catchDate: new Date(dto.catchDate),
-      catchLocation: dto.catchLocation,
-      landingSite: dto.landingSite,
-      weight: dto.weight,
-      weightUnit: dto.weightUnit,
-    });
-
+    const lot = await this.createLotWithUniqueLotNumber(vendor.id, dto);
     return SeafoodLotsService.toResponse(lot);
+  }
+
+  // generateLotNumber() reads a count then increments it, which is not
+  // atomic under concurrent registrations - retry on a lotNumber unique
+  // violation (re-reading the count each time) rather than serializing
+  // every lot registration behind a lock for what is a rare collision.
+  private async createLotWithUniqueLotNumber(
+    vendorId: string,
+    dto: CreateSeafoodLotDto,
+  ): Promise<SeafoodLot> {
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const lotNumber = await this.generateLotNumber();
+      try {
+        return await this.lotsRepository.create({
+          lotNumber,
+          vendorId,
+          species: dto.species,
+          storageType: dto.storageType,
+          catchDate: new Date(dto.catchDate),
+          catchLocation: dto.catchLocation,
+          landingSite: dto.landingSite,
+          weight: dto.weight,
+          weightUnit: dto.weightUnit,
+        });
+      } catch (error) {
+        const isLotNumberCollision =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002' &&
+          (error.meta?.target as string[] | undefined)?.includes('lotNumber');
+        if (!isLotNumberCollision || attempt === MAX_ATTEMPTS) {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Failed to generate a unique lot number');
   }
 
   async getMine(
