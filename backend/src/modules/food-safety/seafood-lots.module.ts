@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { CatchesModule } from '../catches/catches.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { SeafoodLotsController } from './controllers/seafood-lots.controller';
 import { SeafoodLotsRepository } from './repositories/seafood-lots.repository';
@@ -14,7 +15,7 @@ import { SeafoodLotsService } from './services/seafood-lots.service';
  * circular module dependency.
  */
 @Module({
-  imports: [AuthModule, VendorsModule],
+  imports: [AuthModule, VendorsModule, CatchesModule],
   controllers: [SeafoodLotsController],
   providers: [SeafoodLotsService, SeafoodLotsRepository, TemperatureAlertsRepository],
   exports: [SeafoodLotsService, SeafoodLotsRepository, TemperatureAlertsRepository],

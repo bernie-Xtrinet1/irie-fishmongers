@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -86,7 +87,10 @@ export class CartService {
     if (!product || !product.isActive) {
       throw new BadRequestException('Product is not available');
     }
-    if (product.lot && product.lot.foodSafetyStatus !== 'SAFE') {
+    if (
+      product.lot &&
+      (product.lot.foodSafetyStatus !== 'SAFE' || !SeafoodLotsService.isGradingSellable(product.lot))
+    ) {
       throw new BadRequestException(
         'This product is currently on hold pending a food-safety review and cannot be purchased',
       );

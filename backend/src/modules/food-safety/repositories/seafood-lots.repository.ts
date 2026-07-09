@@ -13,7 +13,9 @@ import { PrismaService } from '../../../database/prisma.service';
 export interface CreateLotInput {
   lotNumber: string;
   vendorId: string;
+  catchId?: string;
   species: string;
+  speciesId?: string;
   storageType: SeafoodStorageType;
   catchDate: Date;
   catchLocation?: string;

@@ -12,6 +12,7 @@ import { validateEnv } from './config/env.validation';
 import { PrismaModule } from './database/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
+import { CatchesModule } from './modules/catches/catches.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
 import { FleetModule } from './modules/fleet/fleet.module';
@@ -48,6 +49,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     InventoryModule,
     ProductsModule,
     CartModule,
+    CatchesModule,
     OrdersModule,
     PaymentsModule,
     DeliveryModule,

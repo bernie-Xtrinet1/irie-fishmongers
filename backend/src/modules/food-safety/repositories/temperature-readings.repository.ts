@@ -5,6 +5,7 @@ import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreateReadingInput {
   lotId: string;
+  deviceId?: string;
   checkpoint: TemperatureCheckpoint;
   temperatureC: number;
   recordedById: string;

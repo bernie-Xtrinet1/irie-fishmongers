@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { PaymentsService } from '../../payments/services/payments.service';
@@ -51,7 +52,11 @@ export class OrdersService {
       if (!item.product.isActive) {
         throw new BadRequestException(`"${item.product.name}" is no longer available`);
       }
-      if (item.product.lot && item.product.lot.foodSafetyStatus !== 'SAFE') {
+      if (
+        item.product.lot &&
+        (item.product.lot.foodSafetyStatus !== 'SAFE' ||
+          !SeafoodLotsService.isGradingSellable(item.product.lot))
+      ) {
         throw new BadRequestException(
           `"${item.product.name}" is currently on hold pending a food-safety review`,
         );

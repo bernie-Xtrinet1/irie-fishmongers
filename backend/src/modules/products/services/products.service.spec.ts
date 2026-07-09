@@ -71,7 +71,9 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
     vendorId: 'vendor-1',
+    catchId: null,
     species: 'Snapper',
+    speciesId: null,
     storageType: 'FRESH',
     catchDate: new Date(),
     catchLocation: null,
@@ -95,7 +97,7 @@ describe('ProductsService', () => {
   let categoriesRepository: jest.Mocked<Pick<CategoriesRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let seafoodLotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById'>>;
-  let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'getPublicById'>>;
+  let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'getPublicById' | 'assertSellable'>>;
   let vendorPermissionsService: jest.Mocked<
     Pick<VendorPermissionsService, 'assertListingLimitNotExceeded' | 'getPermissions'>
   >;
@@ -117,7 +119,7 @@ describe('ProductsService', () => {
     categoriesRepository = { findById: jest.fn() };
     vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     seafoodLotsRepository = { findById: jest.fn() };
-    seafoodLotsService = { getPublicById: jest.fn() };
+    seafoodLotsService = { getPublicById: jest.fn(), assertSellable: jest.fn() };
     vendorPermissionsService = {
       assertListingLimitNotExceeded: jest.fn().mockResolvedValue(undefined),
       getPermissions: jest.fn(),

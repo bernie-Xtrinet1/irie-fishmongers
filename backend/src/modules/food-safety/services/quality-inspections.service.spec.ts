@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { QualityInspection, SeafoodLot } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
@@ -13,7 +13,9 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
     vendorId: 'vendor-1',
+    catchId: null,
     species: 'Snapper',
+    speciesId: null,
     storageType: 'FRESH',
     catchDate: new Date(),
     catchLocation: null,
@@ -79,19 +81,19 @@ describe('QualityInspectionsService', () => {
     });
 
     it.each([
-      ['PASSED', 'SAFE'],
-      ['CONDITIONAL', 'UNDER_REVIEW'],
-      ['REJECTED', 'REJECTED'],
-      ['QUARANTINED', 'QUARANTINED'],
+      ['PASSED', 'SAFE', 'GRADE_A', 95],
+      ['CONDITIONAL', 'UNDER_REVIEW', 'GRADE_B', 75],
+      ['REJECTED', 'REJECTED', 'REJECTED', 50],
+      ['QUARANTINED', 'QUARANTINED', 'REJECTED', 40],
     ] as const)(
       'creates an inspection with result %s and updates the lot status to %s',
-      async (result, expectedStatus) => {
+      async (result, expectedStatus, freshnessGrade, qualityScore) => {
         lotsRepository.findById.mockResolvedValue(buildLot({ foodSafetyStatus: 'SAFE' }));
         inspectionsRepository.create.mockResolvedValue(buildInspection({ result }));
         lotsRepository.updateGrading.mockResolvedValue(buildLot());
         lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: expectedStatus }));
 
-        const result_ = await service.inspect('admin-1', { ...dto, result });
+        const result_ = await service.inspect('admin-1', { ...dto, result, freshnessGrade, qualityScore });
 
         expect(result_.result).toBe(result);
         expect(lotsRepository.updateStatus).toHaveBeenCalledWith(
@@ -114,6 +116,40 @@ describe('QualityInspectionsService', () => {
         freshnessGrade: 'GRADE_A',
         qualityScore: 95,
       });
+    });
+
+    it('rejects a PASSED result paired with a Grade C or Rejected grade', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, result: 'PASSED', freshnessGrade: 'GRADE_C' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(inspectionsRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a REJECTED result paired with a non-Rejected grade', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, result: 'REJECTED', freshnessGrade: 'GRADE_B' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a Grade A score below the Premium/Excellent band', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, freshnessGrade: 'GRADE_A', qualityScore: 50 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a Rejected grade with a score of 60 or above', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', {
+          ...dto,
+          result: 'REJECTED',
+          freshnessGrade: 'REJECTED',
+          qualityScore: 65,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('skips the status update but still creates the inspection when the lot is RECALLED', async () => {

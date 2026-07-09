@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AlertSeverity, SeafoodStorageType } from '@prisma/client';
+import { AlertSeverity, SeafoodStorageType, TemperatureThreshold } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
@@ -13,22 +13,10 @@ import { TemperatureAlertResponseEntity } from '../entities/temperature-alert-re
 import { TemperatureReadingResponseEntity } from '../entities/temperature-reading-response.entity';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
+import { TemperatureDevicesRepository } from '../repositories/temperature-devices.repository';
 import { TemperatureReadingsRepository } from '../repositories/temperature-readings.repository';
+import { TemperatureThresholdsRepository } from '../repositories/temperature-thresholds.repository';
 import { SeafoodLotsService } from './seafood-lots.service';
-
-// Point-in-time reading thresholds. The source docs (cold-chain-requirements.md)
-// define Warning/Critical by how long a breach persists (15 vs 30 minutes),
-// which only makes sense for continuous IoT telemetry - manual/discrete
-// readings have no "duration," so severity here is derived from how far the
-// reading is outside the safe band instead. EMERGENCY has no concrete
-// numeric definition anywhere in the source docs, so it is never
-// auto-derived; it remains a valid status for a future continuous-monitoring
-// engine to use.
-const FRESH_MAX_C = 4;
-const FRESH_MIN_C = 0;
-const FRESH_WARNING_MAX_C = 7;
-const FROZEN_MAX_C = -18;
-const FROZEN_WARNING_MAX_C = -15;
 
 @Injectable()
 export class TemperatureMonitoringService {
@@ -39,6 +27,8 @@ export class TemperatureMonitoringService {
     private readonly vendorsRepository: VendorsRepository,
     private readonly driversRepository: DriversRepository,
     private readonly seafoodLotsService: SeafoodLotsService,
+    private readonly thresholdsRepository: TemperatureThresholdsRepository,
+    private readonly devicesRepository: TemperatureDevicesRepository,
   ) {}
 
   async recordReading(
@@ -54,6 +44,7 @@ export class TemperatureMonitoringService {
 
     const reading = await this.readingsRepository.create({
       lotId: dto.lotId,
+      deviceId: dto.deviceId,
       checkpoint: dto.checkpoint,
       temperatureC: dto.temperatureC,
       recordedById: userId,
@@ -62,7 +53,14 @@ export class TemperatureMonitoringService {
       photoUrl: dto.photoUrl,
     });
 
-    const severity = TemperatureMonitoringService.evaluateSeverity(lot.storageType, dto.temperatureC);
+    if (dto.deviceId) {
+      await this.devicesRepository.touchLastSeen(dto.deviceId);
+    }
+
+    const threshold = await this.resolveThreshold(dto.deviceId, lot.storageType);
+    const severity = threshold
+      ? TemperatureMonitoringService.evaluateSeverity(threshold, dto.temperatureC)
+      : null;
     if (!severity) {
       return { reading: TemperatureMonitoringService.toReadingResponse(reading) };
     }
@@ -79,6 +77,22 @@ export class TemperatureMonitoringService {
         lot.id,
         'UNDER_REVIEW',
         `Automatically flagged for review after a critical temperature reading of ${dto.temperatureC}C at ${dto.checkpoint}`,
+      );
+    }
+
+    // EMERGENCY quarantines the lot outright, per cold-chain-management.md's
+    // automated-actions table. Never overrides RECALLED/QUARANTINED - same
+    // "no silent auto-clear of a compliance hold" discipline already applied
+    // to quality inspections never lifting a RECALLED status.
+    if (
+      severity === 'EMERGENCY' &&
+      lot.foodSafetyStatus !== 'RECALLED' &&
+      lot.foodSafetyStatus !== 'QUARANTINED'
+    ) {
+      await this.lotsRepository.updateStatus(
+        lot.id,
+        'QUARANTINED',
+        `Automatically quarantined after an emergency temperature reading of ${dto.temperatureC}C at ${dto.checkpoint}`,
       );
     }
 
@@ -151,26 +165,64 @@ export class TemperatureMonitoringService {
     throw new ForbiddenException('Only vendors or drivers can record temperature readings');
   }
 
-  private static evaluateSeverity(
+  // Device-specific threshold first, else the storage-type platform
+  // default (seeded once per SeafoodStorageType) - replaces the previous
+  // hardcoded FRESH_MAX_C/FROZEN_MAX_C constants with real, admin-editable
+  // data (cold-chain-management.md's "configurable thresholds" ask).
+  private async resolveThreshold(
+    deviceId: string | undefined,
     storageType: SeafoodStorageType,
+  ): Promise<TemperatureThreshold | null> {
+    if (deviceId) {
+      const deviceThreshold = await this.thresholdsRepository.findByDeviceAndStorageType(
+        deviceId,
+        storageType,
+      );
+      if (deviceThreshold) {
+        return deviceThreshold;
+      }
+    }
+    return this.thresholdsRepository.findPlatformDefault(storageType);
+  }
+
+  // A reading colder than minC is only ever a WARNING (matches the
+  // pre-threshold-model behaviour: under-chilling fresh product is a minor
+  // flag, not a spoilage risk) - deliberately not escalated further. A
+  // reading warmer than maxC escalates WARNING -> CRITICAL -> EMERGENCY as
+  // it moves further past maxC, in increments of warningBandC. EMERGENCY
+  // has no concrete numeric definition in the source docs (they define it
+  // by sustained duration, which needs a scheduler this codebase doesn't
+  // have) - 2x the warning band past maxC is this service's own defensible
+  // definition of "severely out of band."
+  private static evaluateSeverity(
+    threshold: TemperatureThreshold,
     temperatureC: number,
   ): AlertSeverity | null {
-    if (storageType === 'FRESH') {
-      if (temperatureC < FRESH_MIN_C) return 'WARNING';
-      if (temperatureC > FRESH_WARNING_MAX_C) return 'CRITICAL';
-      if (temperatureC > FRESH_MAX_C) return 'WARNING';
+    const minC = threshold.minC.toNumber();
+    const maxC = threshold.maxC.toNumber();
+    const warningBandC = threshold.warningBandC.toNumber();
+
+    if (temperatureC < minC) {
+      return 'WARNING';
+    }
+    if (temperatureC <= maxC) {
       return null;
     }
 
-    if (temperatureC > FROZEN_MAX_C) {
-      return temperatureC > FROZEN_WARNING_MAX_C ? 'CRITICAL' : 'WARNING';
+    const excess = temperatureC - maxC;
+    if (excess > warningBandC * 2) {
+      return 'EMERGENCY';
     }
-    return null;
+    if (excess > warningBandC) {
+      return 'CRITICAL';
+    }
+    return 'WARNING';
   }
 
   private static toReadingResponse(reading: {
     id: string;
     lotId: string;
+    deviceId: string | null;
     checkpoint: string;
     temperatureC: { toString(): string };
     latitude: number | null;
@@ -181,6 +233,7 @@ export class TemperatureMonitoringService {
     return {
       id: reading.id,
       lotId: reading.lotId,
+      deviceId: reading.deviceId,
       checkpoint: reading.checkpoint as TemperatureReadingResponseEntity['checkpoint'],
       temperatureC: reading.temperatureC.toString(),
       latitude: reading.latitude,

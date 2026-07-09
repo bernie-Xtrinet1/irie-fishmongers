@@ -1,5 +1,13 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Driver, SeafoodLot, TemperatureAlert, TemperatureReading, Vendor } from '@prisma/client';
+import {
+  Driver,
+  SeafoodLot,
+  TemperatureAlert,
+  TemperatureDevice,
+  TemperatureReading,
+  TemperatureThreshold,
+  Vendor,
+} from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
@@ -7,7 +15,9 @@ import { VendorsRepository } from '../../vendors/repositories/vendors.repository
 import { CreateTemperatureReadingDto } from '../dto/create-temperature-reading.dto';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
+import { TemperatureDevicesRepository } from '../repositories/temperature-devices.repository';
 import { TemperatureReadingsRepository } from '../repositories/temperature-readings.repository';
+import { TemperatureThresholdsRepository } from '../repositories/temperature-thresholds.repository';
 import { SeafoodLotsService } from './seafood-lots.service';
 import { TemperatureMonitoringService } from './temperature-monitoring.service';
 
@@ -54,7 +64,9 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
     vendorId: 'vendor-1',
+    catchId: null,
     species: 'Snapper',
+    speciesId: null,
     storageType: 'FRESH',
     catchDate: new Date(),
     catchLocation: null,
@@ -75,6 +87,7 @@ function buildReading(overrides: Partial<TemperatureReading> = {}): TemperatureR
   return {
     id: 'reading-1',
     lotId: 'lot-1',
+    deviceId: null,
     checkpoint: 'VENDOR_STORAGE',
     temperatureC: { toString: () => '2.5' } as unknown as TemperatureReading['temperatureC'],
     recordedById: 'vendor-user-1',
@@ -100,6 +113,43 @@ function buildAlert(overrides: Partial<TemperatureAlert> = {}): TemperatureAlert
   };
 }
 
+function buildThreshold(overrides: Partial<TemperatureThreshold> = {}): TemperatureThreshold {
+  return {
+    id: 'threshold-fresh',
+    deviceId: null,
+    storageType: 'FRESH',
+    minC: { toNumber: () => 0 } as unknown as TemperatureThreshold['minC'],
+    maxC: { toNumber: () => 4 } as unknown as TemperatureThreshold['maxC'],
+    warningBandC: { toNumber: () => 3 } as unknown as TemperatureThreshold['warningBandC'],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function buildFrozenThreshold(overrides: Partial<TemperatureThreshold> = {}): TemperatureThreshold {
+  return buildThreshold({
+    id: 'threshold-frozen',
+    storageType: 'FROZEN',
+    minC: { toNumber: () => -100 } as unknown as TemperatureThreshold['minC'],
+    maxC: { toNumber: () => -18 } as unknown as TemperatureThreshold['maxC'],
+    ...overrides,
+  });
+}
+
+function buildDevice(overrides: Partial<TemperatureDevice> = {}): TemperatureDevice {
+  return {
+    id: 'device-1',
+    vendorId: 'vendor-1',
+    deviceCode: 'DEV-001',
+    status: 'ACTIVE',
+    lastSeenAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
 describe('TemperatureMonitoringService', () => {
   let readingsRepository: jest.Mocked<Pick<TemperatureReadingsRepository, 'create' | 'findByLotId'>>;
   let alertsRepository: jest.Mocked<
@@ -109,6 +159,10 @@ describe('TemperatureMonitoringService', () => {
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'findByUserId'>>;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
+  let thresholdsRepository: jest.Mocked<
+    Pick<TemperatureThresholdsRepository, 'findByDeviceAndStorageType' | 'findPlatformDefault'>
+  >;
+  let devicesRepository: jest.Mocked<Pick<TemperatureDevicesRepository, 'touchLastSeen'>>;
   let service: TemperatureMonitoringService;
 
   beforeEach(() => {
@@ -123,6 +177,11 @@ describe('TemperatureMonitoringService', () => {
     vendorsRepository = { findByUserId: jest.fn() };
     driversRepository = { findByUserId: jest.fn() };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
+    thresholdsRepository = {
+      findByDeviceAndStorageType: jest.fn(),
+      findPlatformDefault: jest.fn().mockResolvedValue(buildThreshold()),
+    };
+    devicesRepository = { touchLastSeen: jest.fn().mockResolvedValue(buildDevice()) };
 
     service = new TemperatureMonitoringService(
       readingsRepository as unknown as TemperatureReadingsRepository,
@@ -131,6 +190,8 @@ describe('TemperatureMonitoringService', () => {
       vendorsRepository as unknown as VendorsRepository,
       driversRepository as unknown as DriversRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
+      thresholdsRepository as unknown as TemperatureThresholdsRepository,
+      devicesRepository as unknown as TemperatureDevicesRepository,
     );
   });
 
@@ -253,6 +314,10 @@ describe('TemperatureMonitoringService', () => {
     });
 
     describe('severity thresholds for FROZEN storage (safe band <= -18C)', () => {
+      beforeEach(() => {
+        thresholdsRepository.findPlatformDefault.mockResolvedValue(buildFrozenThreshold());
+      });
+
       it('does not raise an alert at or below -18C', async () => {
         lotsRepository.findById.mockResolvedValue(buildLot({ storageType: 'FROZEN' }));
         vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
@@ -294,6 +359,86 @@ describe('TemperatureMonitoringService', () => {
 
       expect(result.alert?.severity).toBe('CRITICAL');
       expect(lotsRepository.updateStatus).not.toHaveBeenCalled();
+    });
+
+    it('raises an EMERGENCY and quarantines the lot when far outside the safe band', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot({ storageType: 'FRESH', foodSafetyStatus: 'SAFE' }));
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading());
+      alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'EMERGENCY' }));
+      lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: 'QUARANTINED' }));
+
+      const result = await service.recordReading('vendor-user-1', { ...dto, temperatureC: 11 });
+
+      expect(result.alert?.severity).toBe('EMERGENCY');
+      expect(lotsRepository.updateStatus).toHaveBeenCalledWith(
+        'lot-1',
+        'QUARANTINED',
+        expect.stringContaining('emergency temperature reading'),
+      );
+    });
+
+    it('does not re-quarantine a lot that is already RECALLED on an EMERGENCY reading', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot({ storageType: 'FRESH', foodSafetyStatus: 'RECALLED' }));
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading());
+      alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'EMERGENCY' }));
+
+      const result = await service.recordReading('vendor-user-1', { ...dto, temperatureC: 11 });
+
+      expect(result.alert?.severity).toBe('EMERGENCY');
+      expect(lotsRepository.updateStatus).not.toHaveBeenCalled();
+    });
+
+    it('touches the device lastSeenAt when a deviceId is supplied', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading({ deviceId: 'device-1' }));
+
+      await service.recordReading('vendor-user-1', { ...dto, deviceId: 'device-1' });
+
+      expect(devicesRepository.touchLastSeen).toHaveBeenCalledWith('device-1');
+    });
+
+    it('does not touch any device when no deviceId is supplied', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading());
+
+      await service.recordReading('vendor-user-1', dto);
+
+      expect(devicesRepository.touchLastSeen).not.toHaveBeenCalled();
+    });
+
+    it('prefers a device-specific threshold over the platform default', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading({ deviceId: 'device-1' }));
+      thresholdsRepository.findByDeviceAndStorageType.mockResolvedValue(
+        buildThreshold({ id: 'threshold-device', deviceId: 'device-1', maxC: { toNumber: () => 10 } as unknown as TemperatureThreshold['maxC'] }),
+      );
+
+      const result = await service.recordReading('vendor-user-1', {
+        ...dto,
+        deviceId: 'device-1',
+        temperatureC: 6,
+      });
+
+      expect(thresholdsRepository.findByDeviceAndStorageType).toHaveBeenCalledWith('device-1', 'FRESH');
+      expect(thresholdsRepository.findPlatformDefault).not.toHaveBeenCalled();
+      expect(result.alert).toBeUndefined();
+    });
+
+    it('raises no alert when no threshold is configured for the storage type', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading());
+      thresholdsRepository.findPlatformDefault.mockResolvedValue(null);
+
+      const result = await service.recordReading('vendor-user-1', { ...dto, temperatureC: 100 });
+
+      expect(result.alert).toBeUndefined();
+      expect(alertsRepository.create).not.toHaveBeenCalled();
     });
   });
 

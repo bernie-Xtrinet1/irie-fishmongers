@@ -7,6 +7,11 @@ export class CreateTemperatureReadingDto {
   @IsUUID()
   lotId!: string;
 
+  @ApiProperty({ required: false, description: 'The device that captured this reading, if any' })
+  @IsOptional()
+  @IsString()
+  deviceId?: string;
+
   @ApiProperty({ enum: TemperatureCheckpoint })
   @IsEnum(TemperatureCheckpoint)
   checkpoint!: TemperatureCheckpoint;

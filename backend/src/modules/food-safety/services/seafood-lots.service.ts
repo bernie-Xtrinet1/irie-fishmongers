@@ -1,7 +1,11 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot } from '@prisma/client';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot, WeightUnit } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
+import { CatchesRepository } from '../../catches/repositories/catches.repository';
+import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
+import { SpeciesRepository } from '../../catches/repositories/species.repository';
+import { assertSpeciesInSeason, assertSpeciesSellable } from '../../catches/utils/species-validation.util';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateSeafoodLotDto } from '../dto/create-seafood-lot.dto';
 import { ListSeafoodLotsDto } from '../dto/list-seafood-lots.dto';
@@ -11,12 +15,26 @@ import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entit
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 
+interface ResolvedLotSourceFields {
+  catchId?: string;
+  speciesId?: string;
+  species: string;
+  catchDate: Date;
+  weight: number;
+  weightUnit: WeightUnit;
+  catchLocation?: string;
+  landingSite?: string;
+}
+
 @Injectable()
 export class SeafoodLotsService {
   constructor(
     private readonly lotsRepository: SeafoodLotsRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly alertsRepository: TemperatureAlertsRepository,
+    private readonly catchesRepository: CatchesRepository,
+    private readonly speciesRepository: SpeciesRepository,
+    private readonly landingSitesRepository: LandingSitesRepository,
   ) {}
 
   async register(userId: string, dto: CreateSeafoodLotDto): Promise<SeafoodLotResponseEntity> {
@@ -28,8 +46,81 @@ export class SeafoodLotsService {
       throw new ForbiddenException('Only approved vendors can register seafood lots');
     }
 
-    const lot = await this.createLotWithUniqueLotNumber(vendor.id, dto);
+    const source = await this.resolveLotSourceFields(dto);
+    const lot = await this.createLotWithUniqueLotNumber(vendor.id, dto, source);
     return SeafoodLotsService.toResponse(lot);
+  }
+
+  // A lot may be sourced three ways, in priority order: (1) linked to a
+  // registered Catch - full traceability, every field derived from the
+  // catch/species/landing-site chain; (2) linked to a Species only -
+  // regulatory/seasonal rules enforced, everything else from the DTO;
+  // (3) the original direct-entry path with no linkage at all, unchanged
+  // for backward compatibility with vendors/tests that predate this chain.
+  private async resolveLotSourceFields(dto: CreateSeafoodLotDto): Promise<ResolvedLotSourceFields> {
+    if (dto.catchId) {
+      const catchRecord = await this.catchesRepository.findById(dto.catchId);
+      if (!catchRecord) {
+        throw new NotFoundException('Catch not found');
+      }
+
+      const [species, landingSite] = await Promise.all([
+        this.speciesRepository.findById(catchRecord.speciesId),
+        this.landingSitesRepository.findById(catchRecord.landingSiteId),
+      ]);
+
+      return {
+        catchId: catchRecord.id,
+        speciesId: catchRecord.speciesId,
+        species: species?.commercialName ?? dto.species ?? 'Unknown species',
+        catchDate: catchRecord.catchDate,
+        weight: catchRecord.weight.toNumber(),
+        weightUnit: catchRecord.weightUnit,
+        catchLocation: dto.catchLocation ?? catchRecord.fishingArea ?? undefined,
+        landingSite: landingSite?.name,
+      };
+    }
+
+    if (dto.speciesId) {
+      const species = await this.speciesRepository.findById(dto.speciesId);
+      if (!species) {
+        throw new NotFoundException('Species not found');
+      }
+      if (!dto.catchDate) {
+        throw new BadRequestException('catchDate is required');
+      }
+      assertSpeciesSellable(species);
+      assertSpeciesInSeason(species, new Date(dto.catchDate));
+
+      if (dto.weight === undefined || !dto.weightUnit) {
+        throw new BadRequestException('weight and weightUnit are required');
+      }
+
+      return {
+        speciesId: species.id,
+        species: species.commercialName,
+        catchDate: new Date(dto.catchDate),
+        weight: dto.weight,
+        weightUnit: dto.weightUnit,
+        catchLocation: dto.catchLocation,
+        landingSite: dto.landingSite,
+      };
+    }
+
+    if (!dto.species || !dto.catchDate || dto.weight === undefined || !dto.weightUnit) {
+      throw new BadRequestException(
+        'species, catchDate, weight, and weightUnit are required unless catchId or speciesId is provided',
+      );
+    }
+
+    return {
+      species: dto.species,
+      catchDate: new Date(dto.catchDate),
+      weight: dto.weight,
+      weightUnit: dto.weightUnit,
+      catchLocation: dto.catchLocation,
+      landingSite: dto.landingSite,
+    };
   }
 
   // generateLotNumber() reads a count then increments it, which is not
@@ -39,6 +130,7 @@ export class SeafoodLotsService {
   private async createLotWithUniqueLotNumber(
     vendorId: string,
     dto: CreateSeafoodLotDto,
+    source: ResolvedLotSourceFields,
   ): Promise<SeafoodLot> {
     const MAX_ATTEMPTS = 5;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -47,13 +139,15 @@ export class SeafoodLotsService {
         return await this.lotsRepository.create({
           lotNumber,
           vendorId,
-          species: dto.species,
+          catchId: source.catchId,
+          species: source.species,
+          speciesId: source.speciesId,
           storageType: dto.storageType,
-          catchDate: new Date(dto.catchDate),
-          catchLocation: dto.catchLocation,
-          landingSite: dto.landingSite,
-          weight: dto.weight,
-          weightUnit: dto.weightUnit,
+          catchDate: source.catchDate,
+          catchLocation: source.catchLocation,
+          landingSite: source.landingSite,
+          weight: source.weight,
+          weightUnit: source.weightUnit,
         });
       } catch (error) {
         const isLotNumberCollision =
@@ -161,6 +255,36 @@ export class SeafoodLotsService {
       throw new ForbiddenException('You do not have access to this lot');
     }
     return lot;
+  }
+
+  // seafood-compliance-rules.md's "Only Grade A and B may be sold" / "score
+  // below 60 rejected" gate, shared by Products/Cart/Orders alongside the
+  // existing foodSafetyStatus !== SAFE check.
+  assertSellable(lot: {
+    freshnessGrade: SeafoodLot['freshnessGrade'];
+    qualityScore: SeafoodLot['qualityScore'];
+  }): void {
+    if (!SeafoodLotsService.isGradingSellable(lot)) {
+      if (lot.freshnessGrade === 'GRADE_C' || lot.freshnessGrade === 'REJECTED') {
+        throw new BadRequestException(
+          'This seafood lot did not pass freshness grading (Grade A or B required)',
+        );
+      }
+      throw new BadRequestException('This seafood lot did not pass the minimum quality score');
+    }
+  }
+
+  // Non-throwing counterpart of assertSellable(), for display-only contexts
+  // (e.g. deriving a product's listing availability) that need a boolean
+  // rather than a rejection.
+  static isGradingSellable(lot: {
+    freshnessGrade: SeafoodLot['freshnessGrade'];
+    qualityScore: SeafoodLot['qualityScore'];
+  }): boolean {
+    if (lot.freshnessGrade === 'GRADE_C' || lot.freshnessGrade === 'REJECTED') {
+      return false;
+    }
+    return lot.qualityScore === null || lot.qualityScore >= 60;
   }
 
   private async generateLotNumber(): Promise<string> {

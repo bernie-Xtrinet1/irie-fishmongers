@@ -67,6 +67,7 @@ export class ProductsService {
           'This seafood lot is not currently cleared for sale (must be SAFE)',
         );
       }
+      this.seafoodLotsService.assertSellable(lot);
     }
 
     const product = await this.productsRepository.create({ ...dto, vendorId: vendor.id });
@@ -242,7 +243,10 @@ export class ProductsService {
     let availability: ProductAvailability;
     if (!product.isActive) {
       availability = ProductAvailability.INACTIVE;
-    } else if (product.lot && product.lot.foodSafetyStatus !== 'SAFE') {
+    } else if (
+      product.lot &&
+      (product.lot.foodSafetyStatus !== 'SAFE' || !SeafoodLotsService.isGradingSellable(product.lot))
+    ) {
       availability = ProductAvailability.ON_HOLD;
     } else if (product.quantityAvailable === 0) {
       availability = ProductAvailability.OUT_OF_STOCK;

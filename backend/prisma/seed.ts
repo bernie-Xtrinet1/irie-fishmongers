@@ -3,7 +3,9 @@ import {
   NotificationEventType,
   Parish,
   PrismaClient,
+  RegulatoryStatus,
   RoleName,
+  SeafoodStorageType,
   VendorTier,
   VendorTierFeatureFlag,
 } from '@prisma/client';
@@ -314,6 +316,49 @@ const NOTIFICATION_TEMPLATES: {
     body: 'Your order {{vendorOrderId}} has been delivered. Please review it and confirm you accept it.',
     variables: ['vendorOrderId'],
   },
+  {
+    eventType: 'COLD_CHAIN_ALERT_RAISED',
+    channel: 'EMAIL',
+    subject: 'Cold-chain temperature alert',
+    body: 'Lot {{lotNumber}} recorded a {{severity}} temperature reading. Please review immediately.',
+    variables: ['lotNumber', 'severity'],
+  },
+  {
+    eventType: 'COLD_CHAIN_ALERT_RAISED',
+    channel: 'IN_APP',
+    subject: 'Cold-chain temperature alert',
+    body: 'Lot {{lotNumber}} recorded a {{severity}} temperature reading. Please review immediately.',
+    variables: ['lotNumber', 'severity'],
+  },
+];
+
+// seafood-compliance-rules.md's own species examples; Conch is seeded
+// RESTRICTED per the same doc's regulatory-status example.
+const SPECIES: {
+  scientificName: string;
+  commercialName: string;
+  regulatoryStatus: RegulatoryStatus;
+}[] = [
+  { scientificName: 'Lutjanus analis', commercialName: 'Snapper', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Scomberomorus cavalla', commercialName: 'King Fish', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Scomber scombrus', commercialName: 'Mackerel', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Panulirus argus', commercialName: 'Lobster', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Penaeus spp.', commercialName: 'Shrimp', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Lobatus gigas', commercialName: 'Conch', regulatoryStatus: 'RESTRICTED' },
+];
+
+// Platform-wide default thresholds (deviceId: null) - replaces the
+// previously-hardcoded FRESH_MAX_C/FROZEN_MAX_C constants with real,
+// admin-editable data. warningBandC is how far past min/max a reading must
+// be to escalate WARNING -> CRITICAL; EMERGENCY is 2x warningBandC further.
+const TEMPERATURE_THRESHOLDS: {
+  storageType: SeafoodStorageType;
+  minC: number;
+  maxC: number;
+  warningBandC: number;
+}[] = [
+  { storageType: 'FRESH', minC: 0, maxC: 4, warningBandC: 3 },
+  { storageType: 'FROZEN', minC: -100, maxC: -18, warningBandC: 3 },
 ];
 
 async function main(): Promise<void> {
@@ -425,6 +470,23 @@ async function main(): Promise<void> {
         update: { zoneId: upsertedZone.id },
         create: { parish, zoneId: upsertedZone.id },
       });
+    }
+  }
+
+  for (const species of SPECIES) {
+    await prisma.species.upsert({
+      where: { scientificName: species.scientificName },
+      update: { commercialName: species.commercialName, regulatoryStatus: species.regulatoryStatus },
+      create: species,
+    });
+  }
+
+  for (const threshold of TEMPERATURE_THRESHOLDS) {
+    const existing = await prisma.temperatureThreshold.findFirst({
+      where: { deviceId: null, storageType: threshold.storageType },
+    });
+    if (!existing) {
+      await prisma.temperatureThreshold.create({ data: threshold });
     }
   }
 }
