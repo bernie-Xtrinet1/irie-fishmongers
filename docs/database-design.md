@@ -273,13 +273,18 @@ not yet built):
   (docs/integrations/ADR-002-delivery-zones.md, fleet-management-engine.md) -
   the "one truck per zone" fleet strategy and cross-vendor route planning are
   a future logistics-scaling initiative, not needed while assignment is
-  driver-claim-based with no fleet to schedule.
+  driver-claim-based with no fleet to schedule. **Built in the Phase 10
+  zones/fleet/logistics pass below** - see "Delivery Zones, Fleet & Logistics
+  Tables" further down this file.
 - Driver compensation/settlement calculations
   (docs/integrations/driver-settlement-engine.md) - a separate later phase;
   this phase only captures the data (proof of delivery, timestamps) that
-  settlement will eventually need.
+  settlement will eventually need. **Built in the Driver Settlement Tables
+  section immediately below.**
 - Cold-chain temperature logging (docs/compliance/cold-chain-requirements.md) -
-  belongs to the Food Safety/Compliance phase.
+  belongs to the Food Safety/Compliance phase. **Built in the Food Safety /
+  Compliance Tables section below; extended with two more checkpoints in the
+  Phase 10 pass.**
 
 ---
 
@@ -1016,3 +1021,143 @@ Business rules encoded here:
   infrastructure exists anywhere in this codebase yet. It cross-checks
   each product's Redis reservations against live `CartItem` rows and
   releases any orphaned or quantity-mismatched holds.
+
+---
+
+# Delivery Zones, Fleet & Logistics Tables (Phase 10, per
+# docs/integrations/ADR-002-delivery-zones.md, fleet-management-engine.md,
+# docs/reference/jamaica-delivery-zones.md)
+
+Closes the "delivery zones, fleet assets, and route consolidation" gap the
+original Delivery phase deliberately deferred, plus a second round of
+operational deliverables added after review: vendor pickup confirmation,
+customer acceptance, delivery exceptions, fleet maintenance, driver
+performance metrics, a vendor pickup queue, notification event placeholders,
+route history, and multi-stop scaffolding.
+
+- `delivery_zones` - id, name, code (unique), description, active (default
+  true - deactivated, never deleted, matching `Vendor.status`/
+  `Product.isActive`'s soft-disable convention). Seeded with the three
+  ADR-002 zones from jamaica-delivery-zones.md.
+- `delivery_zone_parishes` - one row per `Parish` (unique), mapping it to
+  exactly one zone. A join table rather than a `Parish[]` scalar array so the
+  one-parish-one-zone rule is a real DB constraint; seed-authored only, no
+  admin-editable endpoint (the mapping is authoritative and stable).
+- `vendors.primaryZoneId` (nullable, `SetNull`) + `vendor_zones` join table -
+  one fast-path FK for the common case, a join table for the full
+  one-or-more-zones case ADR-002 describes; same shape as the existing
+  `Product.lotId` (fast FK) vs. `VendorTierFeature` (join table) split.
+- `drivers.availabilityStatus` (`ONLINE | OFFLINE | BUSY`, default `OFFLINE`),
+  `capacityLbs`, `coldChainCapable`, `assignedZoneId` (nullable, `SetNull`) +
+  `driver_zones` join table (same fast-FK/join-table split as vendors).
+  `ONLINE`/`OFFLINE` are the only manually settable states (`PATCH
+  /drivers/me/availability`, rejected while an active delivery exists);
+  `BUSY` is set automatically inside `POST /delivery/assign`'s transaction
+  and cleared automatically back to `ONLINE` when a delivery reaches
+  `DELIVERED`/`FAILED`. `GET /delivery/available` and `POST /delivery/assign`
+  both now additionally require `availabilityStatus === 'ONLINE'`.
+- `orders.deliveryZoneId` (nullable, `SetNull`) - resolved server-side from
+  `dto.deliveryParish` at checkout via a direct `DeliveryZoneParish` read
+  (never client-supplied). `OrdersService` reads this directly through the
+  global `PrismaService` rather than importing `DeliveryModule`, since
+  `DeliveryModule` already imports `OrdersModule`.
+- `deliveries` gains: `scheduledPickupWindowStart/End`,
+  `customerDeliveryWindowStart/End` (all nullable - populated by the new
+  `PATCH /delivery/:id/schedule`, opt-in enrichment on an already-claimed
+  delivery, not a prerequisite for claiming); `vendorConfirmedAt` +
+  `vendorConfirmedById` (set by `PATCH /delivery/:id/vendor-confirm`, an
+  audit fact only - it does not gate the driver's own pickup transition);
+  `customerAcceptanceStatus` (`PENDING | ACCEPTED | REJECTED`, default
+  `PENDING`) + `customerAcceptedAt`/`customerRejectedAt`/`rejectionReason`,
+  set by `PATCH /delivery/:id/customer-acceptance` once `deliveredAt` is set.
+- Cold-chain claim gating: `POST /delivery/assign` now rejects a
+  cold-chain-capable-required delivery (any linked `SeafoodLot`) for a
+  driver whose `coldChainCapable` is false.
+- `delivery_exceptions` - id, deliveryId (`Cascade`), type (enum:
+  `CUSTOMER_UNAVAILABLE | ADDRESS_ISSUE | VEHICLE_BREAKDOWN | TRAFFIC_DELAY |
+  WEATHER_DELAY | PRODUCT_DAMAGE | OTHER`), reason, photos (`String[]`,
+  plain URLs, no referential integrity needed), notes, resolved (default
+  false) + resolvedAt/resolvedById. `POST /delivery/:id/exceptions` (driver),
+  `PATCH /delivery/exceptions/:id/resolve` (admin).
+- `route_history` - one row per delivery (`deliveryId` unique, `Cascade`),
+  written once when a delivery reaches `DELIVERED`/`FAILED`: gpsSamples,
+  distanceKm, durationMinutes. Distance is computed by reusing the existing,
+  already-shipped `DriverSettlementEngine.computeDistanceKm()` (registered as
+  a `DeliveryModule` provider via direct class import, not a module import,
+  to avoid a `DriverSettlementsModule -> DeliveryModule -> DriverSettlementsModule`
+  cycle) rather than reimplementing GPS distance math.
+- `route_optimization_runs` (audit: zoneId, strategyName, `deliveryIds`
+  snapshot array, decidedAt) + `delivery_runs`/`delivery_run_stops`
+  (operational outcome: zone, optional driver/fleetAsset, status, ordered
+  stops) - the same audit-vs-outcome split already used for
+  `FulfillmentDecision`/`VendorAssignment`. `POST
+  /delivery/zones/:zoneId/optimize-route` (admin, read-only planning) calls
+  an injectable `RouteOptimizationStrategy` (DI token
+  `ROUTE_OPTIMIZATION_STRATEGY`, default `SingleStopRouteOptimizationStrategy`
+  is an honest no-op) and persists both an audit row and a `DeliveryRun`.
+  Does **not** change `POST /delivery/assign` or the one-active-delivery
+  invariant - a driver working a run still claims/picks-up/delivers each
+  stop through the existing per-delivery flow.
+- `fleet_assets` (zoneId `Restrict`, assetType, ownership, licensePlate
+  unique, capacityLbs, coldChainCapable, status `ACTIVE|MAINTENANCE|RETIRED`,
+  currentDriverId nullable `SetNull`) + `fleet_trips` (all three FKs
+  `Restrict` - a financial record analogous to `DriverSettlement`; four
+  nullable cost fields captured but not computed, no cost-engine) +
+  `fleet_maintenance_records` (fleetAssetId `Cascade`, status
+  `SCHEDULED|IN_PROGRESS|COMPLETED|OVERDUE`). New `FleetModule`
+  (`backend/src/modules/fleet/`) with full CRUD for all three, admin-only:
+  `POST/GET/PATCH /fleet-assets`, `POST/GET /fleet-assets/:id/maintenance`,
+  `POST/GET/PATCH /fleet-trips`, `PATCH /fleet-maintenance/:id`. Creating or
+  updating a maintenance record with `status: IN_PROGRESS` also sets the
+  parent asset's `status` to `MAINTENANCE` in that same explicit service
+  call - a traceable state change, not an implicit trigger. `FleetModule`
+  imports only `AuthModule`; it validates `Driver`/`DeliveryZone` existence
+  via the global `PrismaService`, not by importing `DeliveryModule`.
+- `temperature_readings.checkpoint` gains two additive enum values,
+  `VEHICLE_LOADING` and `CUSTOMER_ACCEPTANCE` (the existing 6 stay
+  unchanged) - no new endpoint needed, the existing `POST
+  /temperature-readings` flow (Food Safety phase) already accepts any
+  checkpoint value. Gives an end-to-end cold-chain record: vendor
+  release/`DISPATCH` -> `DRIVER_PICKUP` -> `VEHICLE_LOADING` -> `IN_TRANSIT`
+  -> arrival/`DELIVERY` -> `CUSTOMER_ACCEPTANCE` (still driver-submitted -
+  this platform has no model for customers operating measurement equipment).
+- `notification_event_types` (Prisma enum) gains `DRIVER_ASSIGNED` and
+  `AWAITING_CUSTOMER_ACCEPTANCE` - both wired end-to-end (event class ->
+  `NotificationEventsListener` case -> seeded `NotificationTemplate` rows).
+  Three more event classes (`DriverNearbyEvent`, `PickupDelayedEvent`,
+  `DeliveryDelayedEvent`) exist as real, typed contracts in
+  `backend/src/common/events/` but are deliberately never emitted yet -
+  "nearby" needs delivery-address geocoding (this platform only has
+  free-text address + parish) and "delayed" needs a job-queue/scheduler
+  (none exists anywhere in this codebase), so no `NotificationEventType`
+  enum value was added for them either.
+- Driver performance metrics (`GET /drivers/me/performance`, `GET
+  /drivers/:id/performance`) and the vendor pickup queue (`GET
+  /vendors/me/pickup-queue`) are both **computed-on-read**, not
+  materialized - matches the existing `getComplianceStatus`/rating-summary
+  precedent over a cached/stored aggregate table. No new schema; both derive
+  entirely from data introduced above (deliveries, route_history,
+  temperature_readings/alerts, delivery_run_stops).
+
+Rejected deliveries and food-safety incidents: `PATCH
+/delivery/:id/customer-acceptance` with `decision: 'REJECTED'` emits a
+`DeliveryRejectedEvent`, consumed by a new `FoodSafetyEventsListener`
+(`backend/src/modules/food-safety/`) that creates one `FoodSafetyIncident`
+per distinct `SeafoodLot` among the rejected vendor order's items, with
+`reportedById` set to the customer's own user id. This calls
+`FoodSafetyIncidentsRepository.create()` directly rather than the
+ownership-gated `FoodSafetyIncidentsService.report()`, since the trigger is
+a legitimate system/customer-initiated report, not vendor self-report
+impersonation. Refund/compensation implications of a post-delivery
+rejection are explicitly not resolved here - `business-rules2.md`'s Failed
+Delivery Policy covers driver-side failure, not customer rejection of a
+successfully delivered package, and that is flagged as an unresolved
+business-policy question, not a schema gap.
+
+Explicitly still out of scope after this pass: real route-optimization math
+(the DI hook exists, the default strategy is a no-op), fleet-trip cost
+*computation* (fields are captured, admin-populated only), vehicle-capacity
+*enforcement* against real order weight (blocked on `Product`/`OrderItem`
+having no weight field), and `DeliveryRun` as an active dispatch/claiming
+mechanism (it's a planning/grouping layer - drivers still claim deliveries
+one at a time via the existing `assign()` flow).

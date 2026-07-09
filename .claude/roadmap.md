@@ -366,6 +366,20 @@ Acceptance
 
 Orders reach customers through complete logistics workflow.
 
+IMPLEMENTATION NOTE (shipped)
+
+Built: Delivery Zones (DeliveryZone/DeliveryZoneParish, seeded from
+jamaica-delivery-zones.md, resolved server-side at checkout), Driver
+Assignment (claim-based, gated on ONLINE availability + cold-chain
+capability), Pickup/Delivery Workflow (scheduling windows, vendor pickup
+confirmation, customer accept/reject with a FoodSafetyIncident raised on
+rejection, delivery exceptions), Driver Settlement and GPS Tracking
+(pre-existing, unchanged) plus new Route History reusing
+DriverSettlementEngine.computeDistanceKm(). This pass also delivered a
+meaningful slice of 10A/10C/10D/10E below - see each phase's own note.
+Not built: Driver Mobile App (no React Native/Expo app exists for any
+role yet; out of scope for this backend-only pass).
+
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -390,6 +404,18 @@ Deliverables
 Acceptance
 
 Every delivery run can be assigned to a valid driver/vehicle combination using configured rules.
+
+IMPLEMENTATION NOTE (partially shipped, in Phase 10's pass)
+
+Built: Driver shift/availability checks (ONLINE/OFFLINE/BUSY state
+machine), zone-aware data model (DeliveryZone, Driver.assignedZoneId),
+capacity checks (Driver.capacityLbs captured, not yet enforced against
+real order weight - no weight field on Product/OrderItem), cold-chain
+eligibility checks (enforced at POST /delivery/assign), fleet assets exist
+(FleetAsset CRUD). Not built: an actual automatic dispatch algorithm that
+picks the "best" driver/asset - assignment is still driver-initiated
+claim, not admin/system dispatch; fleet assets are not yet linked to
+individual deliveries.
 
 Dependencies
 
@@ -423,6 +449,15 @@ Acceptance
 
 Operations staff can monitor, intervene, and resolve delivery issues from one place.
 
+IMPLEMENTATION NOTE (backend data/endpoints partially shipped, no UI)
+
+Built: pickup queue (GET /vendors/me/pickup-queue), exception queue
+(GET /delivery/exceptions), driver online/busy/offline visibility
+(Driver.availabilityStatus, admin-visible). Not built: any dispatcher
+UI/dashboard (no admin frontend exists for delivery ops), live/real-time
+queue updates (no websocket layer), vehicle maintenance alerts (records
+exist via FleetMaintenance but nothing pushes an alert).
+
 Dependencies
 
 - Phase 10A
@@ -452,6 +487,17 @@ Deliverables
 Acceptance
 
 The system can generate and store route plans without breaking the existing claim-based delivery flow.
+
+IMPLEMENTATION NOTE (mostly shipped, in Phase 10's pass)
+
+Built: route planning hooks (injectable RouteOptimizationStrategy DI
+token), route history (one row per delivery, real GPS-distance
+computation reused from DriverSettlementEngine), route optimization runs
+(audit table), multi-stop scaffolding (DeliveryRun/DeliveryRunStop),
+zone-based route planning (POST /delivery/zones/:zoneId/optimize-route).
+Not built: a real optimization algorithm - the only registered strategy
+is an honest no-op (single-stop passthrough); actual multi-stop
+sequencing logic is future work behind the same DI seam.
 
 Dependencies
 
@@ -484,6 +530,16 @@ Acceptance
 
 The platform can report delivery performance by driver, vehicle, and zone.
 
+IMPLEMENTATION NOTE (partially shipped, in Phase 10's pass)
+
+Built: on-time delivery rate, driver performance metrics (pickup delay,
+customer acceptance rate, failed delivery rate, temperature compliance
+rate, average delivery duration) via GET /drivers/me|:id/performance,
+computed on read from data this phase introduced. Not built: SLA breach
+tracking (no job-queue/scheduler exists to detect a missed window after
+the fact), fleet utilization metrics, zone performance metrics (rollups
+across drivers/zones, not per-driver).
+
 Dependencies
 
 - Phase 10B
@@ -515,6 +571,18 @@ Deliverables
 Acceptance
 
 Seafood deliveries remain auditable across transport, sanitation, and temperature checkpoints.
+
+IMPLEMENTATION NOTE (partially shipped, in Phase 10's pass)
+
+Built: extended temperature checkpoints (VEHICLE_LOADING,
+CUSTOMER_ACCEPTANCE added to the existing 6), fleet maintenance records
+(FleetMaintenance, admin CRUD, IN_PROGRESS auto-flips the parent asset to
+MAINTENANCE), food-safety event integration for the customer-rejection
+path (DeliveryRejectedEvent -> one FoodSafetyIncident per distinct lot).
+Not built: cold-chain telemetry hooks (no IoT/device integration exists),
+vehicle sanitation records (no schema for this), driver cold-chain
+certification tracking (no schema for this), spoilage/contamination
+alerts beyond the existing TemperatureAlert mechanism.
 
 Dependencies
 

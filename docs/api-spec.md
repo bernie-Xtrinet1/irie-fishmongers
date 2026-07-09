@@ -236,6 +236,71 @@ audit trail: DECREMENTED / RESTOCKED / MANUAL_ADJUSTMENT)
 POST /inventory/reconcile (admin only - optional productId filter; cross-checks
 Redis reservations against live cart items and releases orphaned holds)
 
+GET /delivery-zones (authenticated user - zone list for registration-form pickers)
+
+GET /delivery-zones/resolve?parish=X (authenticated user - which zone a parish maps to)
+
+POST /delivery-zones (admin only)
+
+PATCH /delivery-zones/:id (admin only)
+
+PATCH /drivers/me/availability (approved driver only - ONLINE/OFFLINE;
+rejected while an active delivery is in progress; BUSY is set/cleared
+automatically by assign()/updateStatus())
+
+PATCH /drivers/me/profile (driver only - capacityLbs, coldChainCapable)
+
+GET /drivers/me/performance (driver only - on-time delivery rate, average
+pickup delay, customer acceptance rate, failed delivery rate, temperature
+compliance rate, average delivery duration; computed on read)
+
+GET /drivers/:id/performance (admin only)
+
+PATCH /delivery/:id/schedule (owning driver only - pickup/delivery windows)
+
+PATCH /delivery/:id/vendor-confirm (owning vendor only - audit fact, does
+not gate driver pickup)
+
+PATCH /delivery/:id/customer-acceptance (owning customer only - ACCEPTED or
+REJECTED once deliveredAt is set; REJECTED raises a FoodSafetyIncident per
+distinct lot in the vendor order)
+
+POST /delivery/:id/exceptions (owning driver only)
+
+GET /delivery/exceptions (admin only - optional resolved filter)
+
+PATCH /delivery/exceptions/:id/resolve (admin only)
+
+POST /delivery/zones/:zoneId/optimize-route (admin only - read-only route
+plan; persists an audit RouteOptimizationRun + an operational DeliveryRun,
+does not reassign drivers)
+
+GET /vendors/me/pickup-queue (vendor only - ready-for-pickup and
+assigned-to-driver orders with driver name, scheduled window, pickup order)
+
+POST /fleet-assets (admin only)
+
+GET /fleet-assets (admin only - optional zoneId/status filters)
+
+GET /fleet-assets/:id (admin only)
+
+PATCH /fleet-assets/:id (admin only - status, currentDriverId, coldChainCapable)
+
+POST /fleet-assets/:id/maintenance (admin only - creating with status
+IN_PROGRESS also flips the asset to MAINTENANCE)
+
+GET /fleet-assets/:id/maintenance (admin only)
+
+PATCH /fleet-maintenance/:id (admin only)
+
+POST /fleet-trips (admin only)
+
+GET /fleet-trips (admin only - optional fleetAssetId/driverId filters)
+
+GET /fleet-trips/:id (admin only)
+
+PATCH /fleet-trips/:id (admin only - endedAt, cost fields)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.
