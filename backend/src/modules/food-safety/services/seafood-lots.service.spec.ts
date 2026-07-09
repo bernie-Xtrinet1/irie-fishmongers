@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Catch, RoleName, SeafoodLot, Species, Vendor } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
-import { CatchesRepository } from '../../catches/repositories/catches.repository';
+import { CatchItemWithCatch, CatchItemsRepository } from '../../catches/repositories/catch-items.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { SpeciesRepository } from '../../catches/repositories/species.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -35,8 +35,9 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
   return {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
+    publicTraceToken: 'trace-token-1',
     vendorId: 'vendor-1',
-    catchId: null,
+    catchItemId: null,
     species: 'Snapper',
     speciesId: null,
     storageType: 'FRESH',
@@ -83,18 +84,30 @@ function buildCatch(overrides: Partial<Catch> = {}): Catch {
     id: 'catch-1',
     catchNumber: 'CATCH-2026-000001',
     fishermanId: 'fisherman-1',
+    vesselId: null,
     landingSiteId: 'site-1',
-    speciesId: 'species-1',
-    weight: { toNumber: () => 15 } as unknown as Catch['weight'],
-    weightUnit: 'POUNDS',
     catchDate: new Date('2026-01-15'),
     latitude: null,
     longitude: null,
     fishingArea: 'North Coast',
     photos: [],
-    estimatedFreshness: null,
     createdAt: new Date(),
     ...overrides,
+  };
+}
+
+function buildCatchItem(overrides: Partial<CatchItemWithCatch> = {}): CatchItemWithCatch {
+  const { catch: catchOverrides, ...itemOverrides } = overrides;
+  return {
+    id: 'catch-item-1',
+    catchId: 'catch-1',
+    speciesId: 'species-1',
+    weight: { toNumber: () => 15 } as unknown as CatchItemWithCatch['weight'],
+    weightUnit: 'POUNDS',
+    estimatedFreshness: null,
+    createdAt: new Date(),
+    catch: buildCatch(catchOverrides),
+    ...itemOverrides,
   };
 }
 
@@ -113,7 +126,7 @@ describe('SeafoodLotsService', () => {
   >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
   let alertsRepository: jest.Mocked<Pick<TemperatureAlertsRepository, 'countUnresolvedByLotId'>>;
-  let catchesRepository: jest.Mocked<Pick<CatchesRepository, 'findById'>>;
+  let catchItemsRepository: jest.Mocked<Pick<CatchItemsRepository, 'findById'>>;
   let speciesRepository: jest.Mocked<Pick<SpeciesRepository, 'findById'>>;
   let landingSitesRepository: jest.Mocked<Pick<LandingSitesRepository, 'findById'>>;
   let service: SeafoodLotsService;
@@ -130,7 +143,7 @@ describe('SeafoodLotsService', () => {
     };
     vendorsRepository = { findByUserId: jest.fn() };
     alertsRepository = { countUnresolvedByLotId: jest.fn() };
-    catchesRepository = { findById: jest.fn() };
+    catchItemsRepository = { findById: jest.fn() };
     speciesRepository = { findById: jest.fn() };
     landingSitesRepository = { findById: jest.fn() };
 
@@ -138,7 +151,7 @@ describe('SeafoodLotsService', () => {
       lotsRepository as unknown as SeafoodLotsRepository,
       vendorsRepository as unknown as VendorsRepository,
       alertsRepository as unknown as TemperatureAlertsRepository,
-      catchesRepository as unknown as CatchesRepository,
+      catchItemsRepository as unknown as CatchItemsRepository,
       speciesRepository as unknown as SpeciesRepository,
       landingSitesRepository as unknown as LandingSitesRepository,
     );
@@ -184,7 +197,7 @@ describe('SeafoodLotsService', () => {
       await expect(service.register('vendor-user-1', dto)).rejects.toBeInstanceOf(ForbiddenException);
     });
 
-    it('rejects when no catchId/speciesId and a legacy-path field is missing', async () => {
+    it('rejects when no catchItemId/speciesId and a legacy-path field is missing', async () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       const incomplete: CreateSeafoodLotDto = { storageType: 'FRESH' };
       await expect(service.register('vendor-user-1', incomplete)).rejects.toBeInstanceOf(
@@ -193,12 +206,12 @@ describe('SeafoodLotsService', () => {
       expect(lotsRepository.create).not.toHaveBeenCalled();
     });
 
-    describe('with a catchId', () => {
-      const catchDto: CreateSeafoodLotDto = { catchId: 'catch-1', storageType: 'FRESH' };
+    describe('with a catchItemId', () => {
+      const catchItemDto: CreateSeafoodLotDto = { catchItemId: 'catch-item-1', storageType: 'FRESH' };
 
-      it('derives species/catchDate/weight/weightUnit/landingSite from the linked catch', async () => {
+      it('derives species/catchDate/weight/weightUnit/landingSite from the linked catch item', async () => {
         vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
-        catchesRepository.findById.mockResolvedValue(buildCatch());
+        catchItemsRepository.findById.mockResolvedValue(buildCatchItem());
         speciesRepository.findById.mockResolvedValue(buildSpecies());
         landingSitesRepository.findById.mockResolvedValue({
           id: 'site-1',
@@ -214,11 +227,11 @@ describe('SeafoodLotsService', () => {
         lotsRepository.countCreatedThisYear.mockResolvedValue(0);
         lotsRepository.create.mockResolvedValue(buildLot());
 
-        await service.register('vendor-user-1', catchDto);
+        await service.register('vendor-user-1', catchItemDto);
 
         expect(lotsRepository.create).toHaveBeenCalledWith(
           expect.objectContaining({
-            catchId: 'catch-1',
+            catchItemId: 'catch-item-1',
             speciesId: 'species-1',
             species: 'Snapper',
             weight: 15,
@@ -228,10 +241,10 @@ describe('SeafoodLotsService', () => {
         );
       });
 
-      it('throws when the catch does not exist', async () => {
+      it('throws when the catch item does not exist', async () => {
         vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
-        catchesRepository.findById.mockResolvedValue(null);
-        await expect(service.register('vendor-user-1', catchDto)).rejects.toBeInstanceOf(
+        catchItemsRepository.findById.mockResolvedValue(null);
+        await expect(service.register('vendor-user-1', catchItemDto)).rejects.toBeInstanceOf(
           NotFoundException,
         );
       });

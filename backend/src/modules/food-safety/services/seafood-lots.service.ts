@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot, WeightUnit } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
-import { CatchesRepository } from '../../catches/repositories/catches.repository';
+import { CatchItemsRepository } from '../../catches/repositories/catch-items.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { SpeciesRepository } from '../../catches/repositories/species.repository';
 import { assertSpeciesInSeason, assertSpeciesSellable } from '../../catches/utils/species-validation.util';
@@ -16,7 +16,7 @@ import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lo
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 
 interface ResolvedLotSourceFields {
-  catchId?: string;
+  catchItemId?: string;
   speciesId?: string;
   species: string;
   catchDate: Date;
@@ -32,7 +32,7 @@ export class SeafoodLotsService {
     private readonly lotsRepository: SeafoodLotsRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly alertsRepository: TemperatureAlertsRepository,
-    private readonly catchesRepository: CatchesRepository,
+    private readonly catchItemsRepository: CatchItemsRepository,
     private readonly speciesRepository: SpeciesRepository,
     private readonly landingSitesRepository: LandingSitesRepository,
   ) {}
@@ -52,31 +52,34 @@ export class SeafoodLotsService {
   }
 
   // A lot may be sourced three ways, in priority order: (1) linked to a
-  // registered Catch - full traceability, every field derived from the
-  // catch/species/landing-site chain; (2) linked to a Species only -
-  // regulatory/seasonal rules enforced, everything else from the DTO;
-  // (3) the original direct-entry path with no linkage at all, unchanged
-  // for backward compatibility with vendors/tests that predate this chain.
+  // registered CatchItem - full traceability, every field derived from the
+  // catchItem/catch/species/landing-site chain (a lot is species-
+  // homogeneous, so it traces to one species-specific line item of a
+  // catch, never the whole mixed-species catch); (2) linked to a Species
+  // only - regulatory/seasonal rules enforced, everything else from the
+  // DTO; (3) the original direct-entry path with no linkage at all,
+  // unchanged for backward compatibility with vendors/tests that predate
+  // this chain.
   private async resolveLotSourceFields(dto: CreateSeafoodLotDto): Promise<ResolvedLotSourceFields> {
-    if (dto.catchId) {
-      const catchRecord = await this.catchesRepository.findById(dto.catchId);
-      if (!catchRecord) {
-        throw new NotFoundException('Catch not found');
+    if (dto.catchItemId) {
+      const catchItem = await this.catchItemsRepository.findById(dto.catchItemId);
+      if (!catchItem) {
+        throw new NotFoundException('Catch item not found');
       }
 
       const [species, landingSite] = await Promise.all([
-        this.speciesRepository.findById(catchRecord.speciesId),
-        this.landingSitesRepository.findById(catchRecord.landingSiteId),
+        this.speciesRepository.findById(catchItem.speciesId),
+        this.landingSitesRepository.findById(catchItem.catch.landingSiteId),
       ]);
 
       return {
-        catchId: catchRecord.id,
-        speciesId: catchRecord.speciesId,
+        catchItemId: catchItem.id,
+        speciesId: catchItem.speciesId,
         species: species?.commercialName ?? dto.species ?? 'Unknown species',
-        catchDate: catchRecord.catchDate,
-        weight: catchRecord.weight.toNumber(),
-        weightUnit: catchRecord.weightUnit,
-        catchLocation: dto.catchLocation ?? catchRecord.fishingArea ?? undefined,
+        catchDate: catchItem.catch.catchDate,
+        weight: catchItem.weight.toNumber(),
+        weightUnit: catchItem.weightUnit,
+        catchLocation: dto.catchLocation ?? catchItem.catch.fishingArea ?? undefined,
         landingSite: landingSite?.name,
       };
     }
@@ -139,7 +142,7 @@ export class SeafoodLotsService {
         return await this.lotsRepository.create({
           lotNumber,
           vendorId,
-          catchId: source.catchId,
+          catchItemId: source.catchItemId,
           species: source.species,
           speciesId: source.speciesId,
           storageType: dto.storageType,

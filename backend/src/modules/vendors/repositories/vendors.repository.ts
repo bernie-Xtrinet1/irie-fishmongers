@@ -79,4 +79,26 @@ export class VendorsRepository {
   countDeliveredOrders(vendorId: string): Promise<number> {
     return this.prisma.vendorOrder.count({ where: { vendorId, status: 'DELIVERED' } });
   }
+
+  async getComplianceSummary(): Promise<{
+    countByStatus: Record<VendorStatus, number>;
+    averageComplianceScore: number | null;
+  }> {
+    const [groups, aggregate] = await Promise.all([
+      this.prisma.vendor.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.vendor.aggregate({ _avg: { complianceScore: true } }),
+    ]);
+
+    const countByStatus: Record<VendorStatus, number> = {
+      PENDING: 0,
+      APPROVED: 0,
+      SUSPENDED: 0,
+      REJECTED: 0,
+    };
+    for (const group of groups) {
+      countByStatus[group.status] = group._count._all;
+    }
+
+    return { countByStatus, averageComplianceScore: aggregate._avg.complianceScore };
+  }
 }

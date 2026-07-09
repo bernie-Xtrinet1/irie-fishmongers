@@ -13,7 +13,7 @@ import { PrismaService } from '../../../database/prisma.service';
 export interface CreateLotInput {
   lotNumber: string;
   vendorId: string;
-  catchId?: string;
+  catchItemId?: string;
   species: string;
   speciesId?: string;
   storageType: SeafoodStorageType;
@@ -56,6 +56,10 @@ export class SeafoodLotsRepository {
 
   findById(id: string): Promise<SeafoodLot | null> {
     return this.prisma.seafoodLot.findUnique({ where: { id } });
+  }
+
+  countByStatus(status: FoodSafetyStatus): Promise<number> {
+    return this.prisma.seafoodLot.count({ where: { foodSafetyStatus: status } });
   }
 
   findByIdWithVendor(id: string): Promise<LotWithVendor | null> {

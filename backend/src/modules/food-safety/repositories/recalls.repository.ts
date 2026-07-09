@@ -88,4 +88,8 @@ export class RecallsRepository {
       include: affectedOrderItem.include,
     });
   }
+
+  countByStatus(status: RecallStatus): Promise<number> {
+    return this.prisma.recall.count({ where: { status } });
+  }
 }

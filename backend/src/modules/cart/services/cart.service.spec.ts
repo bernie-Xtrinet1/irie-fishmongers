@@ -32,8 +32,9 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
   return {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
+    publicTraceToken: 'trace-token-1',
     vendorId: 'vendor-1',
-    catchId: null,
+    catchItemId: null,
     species: 'Snapper',
     speciesId: null,
     storageType: 'FRESH',

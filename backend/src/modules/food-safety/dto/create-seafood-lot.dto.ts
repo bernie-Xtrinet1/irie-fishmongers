@@ -5,15 +5,15 @@ import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Min, MinLength } 
 export class CreateSeafoodLotDto {
   @ApiProperty({
     required: false,
-    description: 'Link a registered Catch for full traceability. When set, species/catchDate/weight/weightUnit/catchLocation/landingSite are derived from the catch and any values supplied below are ignored.',
+    description: 'Link a registered CatchItem (one species-specific line item of a Catch) for full traceability. When set, species/catchDate/weight/weightUnit/catchLocation/landingSite are derived from the catch item and any values supplied below are ignored.',
   })
   @IsOptional()
   @IsString()
-  catchId?: string;
+  catchItemId?: string;
 
   @ApiProperty({
     required: false,
-    description: 'Link a managed Species for regulatory/seasonal validation (ignored if catchId is set).',
+    description: 'Link a managed Species for regulatory/seasonal validation (ignored if catchItemId is set).',
   })
   @IsOptional()
   @IsString()
