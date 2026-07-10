@@ -18,6 +18,6 @@ import { QualityInspectionsService } from './services/quality-inspections.servic
   imports: [AuthModule, SeafoodLotsModule],
   controllers: [QualityInspectionsController, FoodSafetyIncidentsController],
   providers: [QualityInspectionsService, FoodSafetyIncidentsService, QualityInspectionsRepository, FoodSafetyIncidentsRepository],
-  exports: [FoodSafetyIncidentsRepository],
+  exports: [FoodSafetyIncidentsRepository, QualityInspectionsRepository],
 })
 export class QualityModule {}
