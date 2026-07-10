@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -26,8 +27,9 @@ export class QualityInspectionsController {
   inspect(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateQualityInspectionDto,
+    @Req() req: Request,
   ): Promise<QualityInspectionResponseEntity> {
-    return this.qualityInspectionsService.inspect(user.id, dto);
+    return this.qualityInspectionsService.inspect(user.id, dto, req.ip);
   }
 
   @Get('lot/:lotId')

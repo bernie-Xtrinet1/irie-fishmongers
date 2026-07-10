@@ -136,6 +136,10 @@ describe('Food Safety / Compliance (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {
+      // Frees ComplianceAuditLog -> userId's Restrict constraint - every
+      // admin-driven status update (lot/recall/incident/inspection) now
+      // writes an audit log entry keyed to the acting user.
+      await prisma.complianceAuditLog.deleteMany({ where: { user: { email: { in: adminEmails } } } });
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
     await app.close();

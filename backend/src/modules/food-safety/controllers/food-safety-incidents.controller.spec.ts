@@ -62,9 +62,17 @@ describe('FoodSafetyIncidentsController', () => {
   });
 
   it('updates an incident status (admin)', async () => {
+    const adminUser: RequestUser = { id: 'admin-1', email: 'a@example.com', roles: [RoleName.ADMINISTRATOR] };
     const dto = { status: 'INVESTIGATING' as const };
-    const result = await controller.updateStatus('incident-1', dto);
+    const req = { ip: '127.0.0.1' } as unknown as import('express').Request;
+    const result = await controller.updateStatus(adminUser, 'incident-1', dto, req);
     expect(result.status).toBe('INVESTIGATING');
-    expect(incidentsService.updateStatus).toHaveBeenCalledWith('incident-1', 'INVESTIGATING', undefined);
+    expect(incidentsService.updateStatus).toHaveBeenCalledWith(
+      'admin-1',
+      'incident-1',
+      'INVESTIGATING',
+      undefined,
+      '127.0.0.1',
+    );
   });
 });

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -80,9 +81,11 @@ export class SeafoodLotsController {
   @ApiOperation({ summary: 'Place a lot on hold/quarantine or clear it (admin only)' })
   @ApiResponseDoc({ status: 200, type: SeafoodLotResponseEntity })
   updateStatus(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateLotStatusDto,
+    @Req() req: Request,
   ): Promise<SeafoodLotResponseEntity> {
-    return this.seafoodLotsService.updateStatus(id, dto.status, dto.reason);
+    return this.seafoodLotsService.updateStatus(user.id, id, dto.status, dto.reason, req.ip);
   }
 }

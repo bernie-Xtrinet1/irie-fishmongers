@@ -13,8 +13,13 @@ import { ComplianceReportsService } from './services/compliance-reports.service'
 
 /**
  * New in the Phase 11 amendment's Module Restructuring - homes compliance
- * dashboard/reporting/audit-log/document-management services plus,
- * incrementally, chain-of-custody events and regulatory certifications.
+ * dashboard/reporting/document-management services plus, incrementally,
+ * chain-of-custody events and regulatory certifications. The audit log
+ * itself lives in the standalone ComplianceAuditLogModule (see that
+ * file's docblock for why it's separate) - it's imported directly by
+ * SeafoodLotsModule/QualityModule/RecallsModule/CatchesModule (the actual
+ * consumers) rather than here, and its own controller is registered
+ * through that chain.
  */
 @Module({
   imports: [AuthModule, SeafoodLotsModule, QualityModule, RecallsModule, VendorsModule, CatchesModule],

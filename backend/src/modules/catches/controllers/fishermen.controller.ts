@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -58,9 +59,11 @@ export class FishermenController {
   @ApiOperation({ summary: 'Approve, suspend, or reject a fisherman (admin only)' })
   @ApiResponseDoc({ status: 200, type: FishermanResponseEntity })
   updateStatus(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateFishermanStatusDto,
+    @Req() req: Request,
   ): Promise<FishermanResponseEntity> {
-    return this.fishermenService.updateStatus(id, dto.status);
+    return this.fishermenService.updateStatus(user.id, id, dto.status, req.ip);
   }
 }

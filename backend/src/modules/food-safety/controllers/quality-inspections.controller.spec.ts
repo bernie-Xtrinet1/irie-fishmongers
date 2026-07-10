@@ -40,8 +40,9 @@ describe('QualityInspectionsController', () => {
       freshnessGrade: 'GRADE_A' as const,
       qualityScore: 95,
     };
-    await expect(controller.inspect(adminUser, dto)).resolves.toEqual(inspection);
-    expect(qualityInspectionsService.inspect).toHaveBeenCalledWith('admin-1', dto);
+    const req = { ip: '127.0.0.1' } as unknown as import('express').Request;
+    await expect(controller.inspect(adminUser, dto, req)).resolves.toEqual(inspection);
+    expect(qualityInspectionsService.inspect).toHaveBeenCalledWith('admin-1', dto, '127.0.0.1');
   });
 
   it("gets a lot's inspection history", async () => {

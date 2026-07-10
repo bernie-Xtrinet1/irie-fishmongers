@@ -9,6 +9,7 @@ import { VendorsRepository } from '../../vendors/repositories/vendors.repository
 import { CreateSeafoodLotDto } from '../dto/create-seafood-lot.dto';
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
 function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
@@ -129,6 +130,7 @@ describe('SeafoodLotsService', () => {
   let catchItemsRepository: jest.Mocked<Pick<CatchItemsRepository, 'findById'>>;
   let speciesRepository: jest.Mocked<Pick<SpeciesRepository, 'findById'>>;
   let landingSitesRepository: jest.Mocked<Pick<LandingSitesRepository, 'findById'>>;
+  let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
   let service: SeafoodLotsService;
 
   beforeEach(() => {
@@ -146,6 +148,7 @@ describe('SeafoodLotsService', () => {
     catchItemsRepository = { findById: jest.fn() };
     speciesRepository = { findById: jest.fn() };
     landingSitesRepository = { findById: jest.fn() };
+    auditLogService = { record: jest.fn() };
 
     service = new SeafoodLotsService(
       lotsRepository as unknown as SeafoodLotsRepository,
@@ -154,6 +157,7 @@ describe('SeafoodLotsService', () => {
       catchItemsRepository as unknown as CatchItemsRepository,
       speciesRepository as unknown as SpeciesRepository,
       landingSitesRepository as unknown as LandingSitesRepository,
+      auditLogService as unknown as ComplianceAuditLogService,
     );
   });
 
@@ -420,15 +424,23 @@ describe('SeafoodLotsService', () => {
         buildLot({ foodSafetyStatus: 'QUARANTINED', statusNotes: 'Cleared after review' }),
       );
 
-      const result = await service.updateStatus('lot-1', 'QUARANTINED', 'Cleared after review');
+      const result = await service.updateStatus('admin-1', 'lot-1', 'QUARANTINED', 'Cleared after review');
 
       expect(result.foodSafetyStatus).toBe('QUARANTINED');
       expect(lotsRepository.updateStatus).toHaveBeenCalledWith('lot-1', 'QUARANTINED', 'Cleared after review');
+      expect(auditLogService.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'admin-1',
+          action: 'SEAFOOD_LOT_STATUS_UPDATED',
+          entityType: 'SeafoodLot',
+          entityId: 'lot-1',
+        }),
+      );
     });
 
     it('throws when the lot does not exist', async () => {
       lotsRepository.findById.mockResolvedValue(null);
-      await expect(service.updateStatus('missing', 'SAFE')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.updateStatus('admin-1', 'missing', 'SAFE')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

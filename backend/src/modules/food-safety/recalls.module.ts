@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { ComplianceAuditLogModule } from './compliance-audit-log.module';
 import { RecallsController } from './controllers/recalls.controller';
 import { RecallsRepository } from './repositories/recalls.repository';
 import { SeafoodLotsModule } from './seafood-lots.module';
@@ -12,7 +13,7 @@ import { RecallsService } from './services/recalls.service';
  * waste-disposal tracking tied to it.
  */
 @Module({
-  imports: [AuthModule, SeafoodLotsModule],
+  imports: [AuthModule, SeafoodLotsModule, ComplianceAuditLogModule],
   controllers: [RecallsController],
   providers: [RecallsService, RecallsRepository],
   exports: [RecallsRepository],

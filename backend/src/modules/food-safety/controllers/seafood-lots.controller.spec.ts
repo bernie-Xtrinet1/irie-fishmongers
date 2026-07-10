@@ -92,9 +92,17 @@ describe('SeafoodLotsController', () => {
   });
 
   it('updates a lot status (admin)', async () => {
+    const adminUser: RequestUser = { id: 'admin-1', email: 'a@example.com', roles: [RoleName.ADMINISTRATOR] };
     const dto = { status: 'QUARANTINED' as const, reason: 'Cleared after review' };
-    const result = await controller.updateStatus('lot-1', dto);
+    const req = { ip: '127.0.0.1' } as unknown as import('express').Request;
+    const result = await controller.updateStatus(adminUser, 'lot-1', dto, req);
     expect(result.foodSafetyStatus).toBe('QUARANTINED');
-    expect(seafoodLotsService.updateStatus).toHaveBeenCalledWith('lot-1', 'QUARANTINED', 'Cleared after review');
+    expect(seafoodLotsService.updateStatus).toHaveBeenCalledWith(
+      'admin-1',
+      'lot-1',
+      'QUARANTINED',
+      'Cleared after review',
+      '127.0.0.1',
+    );
   });
 });

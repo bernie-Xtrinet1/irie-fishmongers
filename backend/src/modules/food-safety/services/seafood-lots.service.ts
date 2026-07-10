@@ -14,6 +14,7 @@ import { SeafoodLotPublicEntity } from '../entities/seafood-lot-public.entity';
 import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entity';
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 
 interface ResolvedLotSourceFields {
   catchItemId?: string;
@@ -35,6 +36,7 @@ export class SeafoodLotsService {
     private readonly catchItemsRepository: CatchItemsRepository,
     private readonly speciesRepository: SpeciesRepository,
     private readonly landingSitesRepository: LandingSitesRepository,
+    private readonly auditLogService: ComplianceAuditLogService,
   ) {}
 
   async register(userId: string, dto: CreateSeafoodLotDto): Promise<SeafoodLotResponseEntity> {
@@ -231,9 +233,11 @@ export class SeafoodLotsService {
   }
 
   async updateStatus(
+    userId: string,
     id: string,
     status: FoodSafetyStatus,
     reason?: string,
+    ipAddress?: string,
   ): Promise<SeafoodLotResponseEntity> {
     const lot = await this.lotsRepository.findById(id);
     if (!lot) {
@@ -241,6 +245,18 @@ export class SeafoodLotsService {
     }
 
     const updated = await this.lotsRepository.updateStatus(id, status, reason);
+
+    await this.auditLogService.record({
+      userId,
+      action: 'SEAFOOD_LOT_STATUS_UPDATED',
+      entityType: 'SeafoodLot',
+      entityId: id,
+      beforeValue: { foodSafetyStatus: lot.foodSafetyStatus },
+      afterValue: { foodSafetyStatus: updated.foodSafetyStatus },
+      ipAddress,
+      reason,
+    });
+
     return SeafoodLotsService.toResponse(updated);
   }
 

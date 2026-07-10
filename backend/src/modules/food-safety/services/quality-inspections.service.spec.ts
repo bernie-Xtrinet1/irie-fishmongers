@@ -5,6 +5,7 @@ import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateQualityInspectionDto } from '../dto/create-quality-inspection.dto';
 import { QualityInspectionsRepository } from '../repositories/quality-inspections.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { QualityInspectionsService } from './quality-inspections.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
@@ -52,17 +53,20 @@ describe('QualityInspectionsService', () => {
   let inspectionsRepository: jest.Mocked<Pick<QualityInspectionsRepository, 'create' | 'findByLotId'>>;
   let lotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById' | 'updateStatus' | 'updateGrading'>>;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
+  let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
   let service: QualityInspectionsService;
 
   beforeEach(() => {
     inspectionsRepository = { create: jest.fn(), findByLotId: jest.fn() };
     lotsRepository = { findById: jest.fn(), updateStatus: jest.fn(), updateGrading: jest.fn() };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
+    auditLogService = { record: jest.fn() };
 
     service = new QualityInspectionsService(
       inspectionsRepository as unknown as QualityInspectionsRepository,
       lotsRepository as unknown as SeafoodLotsRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
+      auditLogService as unknown as ComplianceAuditLogService,
     );
   });
 

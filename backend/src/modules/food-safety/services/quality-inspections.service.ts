@@ -7,6 +7,7 @@ import { PaginatedQualityInspectionsEntity } from '../entities/paginated-quality
 import { QualityInspectionResponseEntity } from '../entities/quality-inspection-response.entity';
 import { QualityInspectionsRepository } from '../repositories/quality-inspections.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
 const RESULT_TO_LOT_STATUS: Record<InspectionResult, 'SAFE' | 'UNDER_REVIEW' | 'REJECTED' | 'QUARANTINED'> = {
@@ -22,11 +23,13 @@ export class QualityInspectionsService {
     private readonly inspectionsRepository: QualityInspectionsRepository,
     private readonly lotsRepository: SeafoodLotsRepository,
     private readonly seafoodLotsService: SeafoodLotsService,
+    private readonly auditLogService: ComplianceAuditLogService,
   ) {}
 
   async inspect(
     inspectorId: string,
     dto: CreateQualityInspectionDto,
+    ipAddress?: string,
   ): Promise<QualityInspectionResponseEntity> {
     const lot = await this.lotsRepository.findById(dto.lotId);
     if (!lot) {
@@ -61,6 +64,17 @@ export class QualityInspectionsService {
         `Updated from quality inspection result: ${dto.result}`,
       );
     }
+
+    await this.auditLogService.record({
+      userId: inspectorId,
+      action: 'QUALITY_INSPECTION_RECORDED',
+      entityType: 'SeafoodLot',
+      entityId: dto.lotId,
+      beforeValue: { freshnessGrade: lot.freshnessGrade, qualityScore: lot.qualityScore },
+      afterValue: { freshnessGrade: dto.freshnessGrade, qualityScore: dto.qualityScore, result: dto.result },
+      ipAddress,
+      reason: dto.notes,
+    });
 
     return QualityInspectionsService.toResponse(inspection);
   }

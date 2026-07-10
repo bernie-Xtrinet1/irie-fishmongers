@@ -4,6 +4,7 @@ import { FoodSafetyIncident, RoleName } from '@prisma/client';
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateIncidentDto } from '../dto/create-incident.dto';
 import { FoodSafetyIncidentsRepository } from '../repositories/food-safety-incidents.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { FoodSafetyIncidentsService } from './food-safety-incidents.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
@@ -29,6 +30,7 @@ describe('FoodSafetyIncidentsService', () => {
     Pick<FoodSafetyIncidentsRepository, 'create' | 'findByLotId' | 'findMany' | 'findById' | 'updateStatus'>
   >;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
+  let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
   let service: FoodSafetyIncidentsService;
 
   const vendorUser: RequestUser = { id: 'vendor-user-1', email: 'v@example.com', roles: [RoleName.VENDOR] };
@@ -43,10 +45,12 @@ describe('FoodSafetyIncidentsService', () => {
       updateStatus: jest.fn(),
     };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
+    auditLogService = { record: jest.fn() };
 
     service = new FoodSafetyIncidentsService(
       incidentsRepository as unknown as FoodSafetyIncidentsRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
+      auditLogService as unknown as ComplianceAuditLogService,
     );
   });
 
@@ -129,7 +133,7 @@ describe('FoodSafetyIncidentsService', () => {
   describe('updateStatus', () => {
     it('throws NotFoundException when the incident does not exist', async () => {
       incidentsRepository.findById.mockResolvedValue(null);
-      await expect(service.updateStatus('missing', 'INVESTIGATING')).rejects.toBeInstanceOf(
+      await expect(service.updateStatus('admin-1', 'missing', 'INVESTIGATING')).rejects.toBeInstanceOf(
         NotFoundException,
       );
     });
@@ -145,7 +149,7 @@ describe('FoodSafetyIncidentsService', () => {
       incidentsRepository.findById.mockResolvedValue(buildIncident({ status: from }));
       incidentsRepository.updateStatus.mockResolvedValue(buildIncident({ status: to }));
 
-      const result = await service.updateStatus('incident-1', to);
+      const result = await service.updateStatus('admin-1', 'incident-1', to);
       expect(result.status).toBe(to);
     });
 
@@ -155,7 +159,7 @@ describe('FoodSafetyIncidentsService', () => {
         buildIncident({ status: 'RESOLVED', resolvedAt: new Date() }),
       );
 
-      await service.updateStatus('incident-1', 'RESOLVED', 'Vendor retrained on packaging procedure');
+      await service.updateStatus('admin-1', 'incident-1', 'RESOLVED', 'Vendor retrained on packaging procedure');
 
       expect(incidentsRepository.updateStatus).toHaveBeenCalledWith('incident-1', 'RESOLVED', {
         correctiveAction: 'Vendor retrained on packaging procedure',
@@ -167,7 +171,7 @@ describe('FoodSafetyIncidentsService', () => {
       incidentsRepository.findById.mockResolvedValue(buildIncident({ status: 'OPEN' }));
       incidentsRepository.updateStatus.mockResolvedValue(buildIncident({ status: 'INVESTIGATING' }));
 
-      await service.updateStatus('incident-1', 'INVESTIGATING');
+      await service.updateStatus('admin-1', 'incident-1', 'INVESTIGATING');
 
       expect(incidentsRepository.updateStatus).toHaveBeenCalledWith('incident-1', 'INVESTIGATING', {
         correctiveAction: undefined,
@@ -185,7 +189,7 @@ describe('FoodSafetyIncidentsService', () => {
     ] as const)('rejects the invalid transition from %s to %s', async (from, to) => {
       incidentsRepository.findById.mockResolvedValue(buildIncident({ status: from }));
 
-      await expect(service.updateStatus('incident-1', to)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.updateStatus('admin-1', 'incident-1', to)).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

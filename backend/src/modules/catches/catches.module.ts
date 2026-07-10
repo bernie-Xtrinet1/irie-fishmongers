@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { ComplianceAuditLogModule } from '../food-safety/compliance-audit-log.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { CatchesController } from './controllers/catches.controller';
 import { FishermenController } from './controllers/fishermen.controller';
@@ -20,7 +21,7 @@ import { SpeciesService } from './services/species.service';
 import { VesselsService } from './services/vessels.service';
 
 @Module({
-  imports: [AuthModule, VendorsModule],
+  imports: [AuthModule, VendorsModule, ComplianceAuditLogModule],
   controllers: [
     FishermenController,
     LandingSitesController,

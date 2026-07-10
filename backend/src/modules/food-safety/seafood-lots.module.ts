@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { CatchesModule } from '../catches/catches.module';
 import { VendorsModule } from '../vendors/vendors.module';
+import { ComplianceAuditLogModule } from './compliance-audit-log.module';
 import { SeafoodLotsController } from './controllers/seafood-lots.controller';
 import { SeafoodLotsRepository } from './repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from './repositories/temperature-alerts.repository';
@@ -15,7 +16,7 @@ import { SeafoodLotsService } from './services/seafood-lots.service';
  * circular module dependency.
  */
 @Module({
-  imports: [AuthModule, VendorsModule, CatchesModule],
+  imports: [AuthModule, VendorsModule, CatchesModule, ComplianceAuditLogModule],
   controllers: [SeafoodLotsController],
   providers: [SeafoodLotsService, SeafoodLotsRepository, TemperatureAlertsRepository],
   exports: [SeafoodLotsService, SeafoodLotsRepository, TemperatureAlertsRepository],

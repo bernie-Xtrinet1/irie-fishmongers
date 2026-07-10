@@ -9,6 +9,7 @@ import { PaginatedRecallsEntity } from '../entities/paginated-recalls.entity';
 import { RecallResponseEntity } from '../entities/recall-response.entity';
 import { AffectedOrderItem, RecallsRepository, RecallWithLots } from '../repositories/recalls.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 
 const ALLOWED_STATUS_TRANSITIONS: Record<RecallStatus, RecallStatus[]> = {
   DRAFT: ['ACTIVE'],
@@ -23,6 +24,7 @@ export class RecallsService {
   constructor(
     private readonly recallsRepository: RecallsRepository,
     private readonly lotsRepository: SeafoodLotsRepository,
+    private readonly auditLogService: ComplianceAuditLogService,
   ) {}
 
   async create(userId: string, dto: CreateRecallDto): Promise<RecallResponseEntity> {
@@ -43,7 +45,12 @@ export class RecallsService {
     return RecallsService.toResponse(recall);
   }
 
-  async updateStatus(id: string, dto: UpdateRecallStatusDto): Promise<RecallResponseEntity> {
+  async updateStatus(
+    userId: string,
+    id: string,
+    dto: UpdateRecallStatusDto,
+    ipAddress?: string,
+  ): Promise<RecallResponseEntity> {
     const recall = await this.recallsRepository.findById(id);
     if (!recall) {
       throw new NotFoundException('Recall not found');
@@ -67,6 +74,17 @@ export class RecallsService {
         );
       }
     }
+
+    await this.auditLogService.record({
+      userId,
+      action: 'RECALL_STATUS_UPDATED',
+      entityType: 'Recall',
+      entityId: id,
+      beforeValue: { status: recall.status },
+      afterValue: { status: updated.status },
+      ipAddress,
+      reason: dto.rootCause ?? dto.resolutionNotes,
+    });
 
     return RecallsService.toResponse(updated);
   }
