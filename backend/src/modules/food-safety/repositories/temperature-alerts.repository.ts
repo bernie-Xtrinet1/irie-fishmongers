@@ -77,4 +77,8 @@ export class TemperatureAlertsRepository {
 
     return { items, total };
   }
+
+  findAllForExport(): Promise<TemperatureAlert[]> {
+    return this.prisma.temperatureAlert.findMany({ orderBy: { createdAt: 'desc' } });
+  }
 }

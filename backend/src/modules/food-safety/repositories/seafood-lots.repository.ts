@@ -62,6 +62,13 @@ export class SeafoodLotsRepository {
     return this.prisma.seafoodLot.count({ where: { foodSafetyStatus: status } });
   }
 
+  findAllForExport(): Promise<LotWithVendor[]> {
+    return this.prisma.seafoodLot.findMany({
+      include: lotWithVendor.include,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   findByIdWithVendor(id: string): Promise<LotWithVendor | null> {
     return this.prisma.seafoodLot.findUnique({ where: { id }, include: lotWithVendor.include });
   }

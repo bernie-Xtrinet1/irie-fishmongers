@@ -92,4 +92,8 @@ export class RecallsRepository {
   countByStatus(status: RecallStatus): Promise<number> {
     return this.prisma.recall.count({ where: { status } });
   }
+
+  findAllForExport(): Promise<RecallWithLots[]> {
+    return this.prisma.recall.findMany({ include: recallWithLots.include, orderBy: { createdAt: 'desc' } });
+  }
 }
