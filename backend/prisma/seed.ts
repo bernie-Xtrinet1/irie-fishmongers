@@ -347,6 +347,15 @@ const SPECIES: {
   { scientificName: 'Lobatus gigas', commercialName: 'Conch', regulatoryStatus: 'RESTRICTED' },
 ];
 
+// seafood-compliance-rules.md's own regulatory-alignment examples -
+// starting reference rows so RegulatoryCertification.issuingAuthorityId
+// has real authorities to point at from day one.
+const REGULATORY_AUTHORITIES: { name: string; country: string }[] = [
+  { name: 'Fisheries Division / National Fisheries Authority', country: 'Jamaica' },
+  { name: 'Ministry of Health', country: 'Jamaica' },
+  { name: 'Bureau of Standards Jamaica', country: 'Jamaica' },
+];
+
 // Platform-wide default thresholds (deviceId: null) - replaces the
 // previously-hardcoded FRESH_MAX_C/FROZEN_MAX_C constants with real,
 // admin-editable data. warningBandC is how far past min/max a reading must
@@ -478,6 +487,14 @@ async function main(): Promise<void> {
       where: { scientificName: species.scientificName },
       update: { commercialName: species.commercialName, regulatoryStatus: species.regulatoryStatus },
       create: species,
+    });
+  }
+
+  for (const authority of REGULATORY_AUTHORITIES) {
+    await prisma.regulatoryAuthority.upsert({
+      where: { name: authority.name },
+      update: { country: authority.country },
+      create: authority,
     });
   }
 
