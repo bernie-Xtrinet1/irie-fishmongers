@@ -73,6 +73,13 @@ export class SeafoodLotsRepository {
     return this.prisma.seafoodLot.findUnique({ where: { id }, include: lotWithVendor.include });
   }
 
+  // The Digital Product Passport's public lookup key - never by id/lotNumber
+  // (lotNumber is sequential/enumerable), closing the enumeration gap a
+  // sequential lookup would otherwise have.
+  findByPublicTraceToken(token: string): Promise<LotWithVendor | null> {
+    return this.prisma.seafoodLot.findUnique({ where: { publicTraceToken: token }, include: lotWithVendor.include });
+  }
+
   updateStatus(
     id: string,
     status: FoodSafetyStatus,

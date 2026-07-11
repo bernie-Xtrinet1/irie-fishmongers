@@ -547,4 +547,45 @@ describe('SeafoodLotsService', () => {
       );
     });
   });
+
+  describe('generateQrCode', () => {
+    const adminUser: RequestUser = {
+      id: 'admin-1',
+      email: 'admin@example.com',
+      roles: [RoleName.ADMINISTRATOR],
+    };
+    const vendorUser: RequestUser = {
+      id: 'vendor-user-1',
+      email: 'vendor@example.com',
+      roles: [RoleName.VENDOR],
+    };
+
+    it('encodes the passport URL (never the lot id or lotNumber) via publicTraceToken', async () => {
+      lotsRepository.findByIdWithVendor.mockResolvedValue(
+        buildLotWithVendor({ vendorId: 'vendor-1', publicTraceToken: 'trace-token-xyz' }),
+      );
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor({ id: 'vendor-1' }));
+
+      const result = await service.generateQrCode(vendorUser, 'lot-1');
+
+      expect(result.passportUrl).toBe('https://iriefishmongers.com/passport/trace-token-xyz');
+      expect(result.dataUri.startsWith('data:image/png;base64,')).toBe(true);
+    });
+
+    it('allows an admin to generate a QR code for a lot they do not own', async () => {
+      lotsRepository.findByIdWithVendor.mockResolvedValue(
+        buildLotWithVendor({ vendorId: 'someone-elses-vendor', publicTraceToken: 'trace-token-xyz' }),
+      );
+
+      const result = await service.generateQrCode(adminUser, 'lot-1');
+      expect(result.passportUrl).toContain('trace-token-xyz');
+    });
+
+    it('rejects a vendor who does not own the lot', async () => {
+      lotsRepository.findByIdWithVendor.mockResolvedValue(buildLotWithVendor({ vendorId: 'vendor-1' }));
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor({ id: 'vendor-2' }));
+
+      await expect(service.generateQrCode(vendorUser, 'lot-1')).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
 });

@@ -45,4 +45,8 @@ export class TemperatureReadingsRepository {
 
     return { items, total };
   }
+
+  countByLotId(lotId: string): Promise<number> {
+    return this.prisma.temperatureReading.count({ where: { lotId } });
+  }
 }

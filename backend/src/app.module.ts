@@ -21,6 +21,7 @@ import { InventoryModule } from './modules/inventory/inventory.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { PassportModule } from './modules/passport/passport.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
 import { VendorSettlementsModule } from './modules/vendor-settlements/vendor-settlements.module';
@@ -56,6 +57,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     DriverSettlementsModule,
     VendorSettlementsModule,
     FoodSafetyModule,
+    PassportModule,
     FleetModule,
     NotificationsModule,
     MarketplaceModule,

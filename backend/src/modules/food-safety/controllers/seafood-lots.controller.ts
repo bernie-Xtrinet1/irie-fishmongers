@@ -13,6 +13,7 @@ import { ListSeafoodLotsDto } from '../dto/list-seafood-lots.dto';
 import { UpdateLotStatusDto } from '../dto/update-lot-status.dto';
 import { PaginatedSeafoodLotsEntity } from '../entities/paginated-seafood-lots.entity';
 import { SeafoodLotPublicEntity } from '../entities/seafood-lot-public.entity';
+import { SeafoodLotQrCodeEntity } from '../entities/seafood-lot-qr-code.entity';
 import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entity';
 import { SeafoodLotsService } from '../services/seafood-lots.service';
 
@@ -62,6 +63,19 @@ export class SeafoodLotsController {
   @ApiResponseDoc({ status: 200, type: SeafoodLotPublicEntity })
   getPublic(@Param('id') id: string): Promise<SeafoodLotPublicEntity> {
     return this.seafoodLotsService.getPublicById(id);
+  }
+
+  @Get(':id/qr-code')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Generate a label-printing QR code encoding this lot\'s public passport URL (owning vendor or admin)' })
+  @ApiResponseDoc({ status: 200, type: SeafoodLotQrCodeEntity })
+  getQrCode(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ): Promise<SeafoodLotQrCodeEntity> {
+    return this.seafoodLotsService.generateQrCode(user, id);
   }
 
   @Get(':id')

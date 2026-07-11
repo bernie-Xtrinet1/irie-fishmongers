@@ -10,21 +10,29 @@ export function assertSpeciesSellable(species: Pick<Species, 'regulatoryStatus' 
   }
 }
 
+// null = no seasonal restriction configured for this species; a
+// restriction and an out-of-season catch are different facts and must
+// not collapse to the same falsy value (the passport's sustainability
+// block depends on this distinction).
+export function isSpeciesInSeason(
+  species: Pick<Species, 'seasonalStartMonth' | 'seasonalEndMonth'>,
+  date: Date,
+): boolean | null {
+  if (species.seasonalStartMonth === null || species.seasonalEndMonth === null) {
+    return null;
+  }
+  const month = date.getUTCMonth() + 1;
+  const { seasonalStartMonth, seasonalEndMonth } = species;
+  return seasonalStartMonth <= seasonalEndMonth
+    ? month >= seasonalStartMonth && month <= seasonalEndMonth
+    : month >= seasonalStartMonth || month <= seasonalEndMonth;
+}
+
 export function assertSpeciesInSeason(
   species: Pick<Species, 'seasonalStartMonth' | 'seasonalEndMonth' | 'commercialName'>,
   date: Date,
 ): void {
-  if (species.seasonalStartMonth === null || species.seasonalEndMonth === null) {
-    return;
-  }
-  const month = date.getUTCMonth() + 1;
-  const { seasonalStartMonth, seasonalEndMonth } = species;
-  const inSeason =
-    seasonalStartMonth <= seasonalEndMonth
-      ? month >= seasonalStartMonth && month <= seasonalEndMonth
-      : month >= seasonalStartMonth || month <= seasonalEndMonth;
-
-  if (!inSeason) {
+  if (isSpeciesInSeason(species, date) === false) {
     throw new BadRequestException(`${species.commercialName} is out of season for this date`);
   }
 }

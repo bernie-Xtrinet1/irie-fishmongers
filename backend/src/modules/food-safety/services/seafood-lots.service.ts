@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot, WeightUnit } from '@prisma/client';
+import * as QRCode from 'qrcode';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
@@ -13,11 +14,17 @@ import { CreateSeafoodLotDto } from '../dto/create-seafood-lot.dto';
 import { ListSeafoodLotsDto } from '../dto/list-seafood-lots.dto';
 import { PaginatedSeafoodLotsEntity } from '../entities/paginated-seafood-lots.entity';
 import { SeafoodLotPublicEntity } from '../entities/seafood-lot-public.entity';
+import { SeafoodLotQrCodeEntity } from '../entities/seafood-lot-qr-code.entity';
 import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entity';
 import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 import { ComplianceAuditLogService } from './compliance-audit-log.service';
+
+// The public Digital Product Passport URL a QR code resolves to - never
+// the lot id or lot number (lotNumber is sequential/enumerable; the
+// passportToken is a v4 UUID).
+export const PASSPORT_BASE_URL = 'https://iriefishmongers.com/passport';
 
 interface ResolvedLotSourceFields {
   catchItemId?: string;
@@ -290,6 +297,16 @@ export class SeafoodLotsService {
       throw new ForbiddenException('You do not have access to this lot');
     }
     return lot;
+  }
+
+  // Vendor who owns the lot, or admin - it's for label-printing, not
+  // itself public. Encodes the passport URL (never the lot id/lotNumber)
+  // via publicTraceToken, a non-enumerable v4 UUID.
+  async generateQrCode(user: RequestUser, lotId: string): Promise<SeafoodLotQrCodeEntity> {
+    const lot = await this.assertOwnedByRequester(user, lotId);
+    const passportUrl = `${PASSPORT_BASE_URL}/${lot.publicTraceToken}`;
+    const dataUri = await QRCode.toDataURL(passportUrl);
+    return { passportUrl, dataUri };
   }
 
   // seafood-compliance-rules.md's "Only Grade A and B may be sold" / "score

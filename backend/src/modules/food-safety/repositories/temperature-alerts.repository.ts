@@ -43,6 +43,10 @@ export class TemperatureAlertsRepository {
     return this.prisma.temperatureAlert.count({ where: { lotId, resolved: false } });
   }
 
+  findUnresolvedByLotId(lotId: string): Promise<TemperatureAlert[]> {
+    return this.prisma.temperatureAlert.findMany({ where: { lotId, resolved: false } });
+  }
+
   async countUnresolvedBySeverity(): Promise<Record<AlertSeverity, number>> {
     const groups = await this.prisma.temperatureAlert.groupBy({
       by: ['severity'],
