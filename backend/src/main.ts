@@ -21,7 +21,8 @@ async function bootstrap(): Promise<void> {
   const corsOrigins = configService
     .getOrThrow<string>('CORS_ORIGIN')
     .split(',')
-    .map((origin) => origin.trim());
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   app.use(helmet());
   app.use(cookieParser());

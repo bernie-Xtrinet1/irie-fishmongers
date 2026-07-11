@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, VendorOrderStatus } from '@prisma/client';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 import { PrismaClientOrTx } from './orders.repository';
 
@@ -57,7 +58,7 @@ export class VendorOrdersRepository {
     return { items, total };
   }
 
-  async countByStatus(range?: { from?: Date; to?: Date }): Promise<Record<VendorOrderStatus, number>> {
+  async countByStatus(range?: DateRange): Promise<Record<VendorOrderStatus, number>> {
     const where: Prisma.VendorOrderWhereInput =
       range?.from || range?.to
         ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }

@@ -1,4 +1,6 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1';
+import { env } from './env';
+
+const API_BASE_URL = env.apiUrl;
 
 // Every backend response is wrapped in this envelope by ResponseInterceptor/
 // HttpExceptionFilter (see backend/src/common/http) - CLAUDE.md's API RULES

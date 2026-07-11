@@ -35,9 +35,12 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 // Revokes a just-issued refresh token when the signed-in account turns out
 // not to be an administrator, so this dashboard never leaves a live session
-// behind for an account it refuses to admit.
-async function revokeCurrentSession(): Promise<void> {
+// behind for an account it refuses to admit. Also clears the query cache -
+// belt-and-suspenders, since no protected query should have fired yet on
+// this path, but a non-admin session must never leave anything behind.
+async function revokeCurrentSession(queryClient: QueryClient): Promise<void> {
   await apiPost('/auth/logout', {}).catch(() => undefined);
+  queryClient.clear();
 }
 
 export function AuthProvider({
@@ -86,7 +89,7 @@ export function AuthProvider({
         if (cancelled) return;
 
         if (!session.user.roles.includes('ADMINISTRATOR')) {
-          await revokeCurrentSession();
+          await revokeCurrentSession(queryClient);
           if (!cancelled) setStatus('unauthenticated');
           return;
         }
@@ -104,21 +107,26 @@ export function AuthProvider({
       cancelled = true;
     };
     // Intentionally runs once on mount only - this is the silent-refresh
-    // check, not a subscription to reactive dependencies.
+    // check, not a subscription to reactive dependencies. queryClient is a
+    // stable reference for the lifetime of the app (created once via
+    // useState in Providers).
   }, []);
 
-  const login = useCallback(async (email: string, password: string): Promise<void> => {
-    const session = await apiPost<AuthTokensResponse>('/auth/login', { email, password });
+  const login = useCallback(
+    async (email: string, password: string): Promise<void> => {
+      const session = await apiPost<AuthTokensResponse>('/auth/login', { email, password });
 
-    if (!session.user.roles.includes('ADMINISTRATOR')) {
-      await revokeCurrentSession();
-      throw new Error('This account does not have admin access.');
-    }
+      if (!session.user.roles.includes('ADMINISTRATOR')) {
+        await revokeCurrentSession(queryClient);
+        throw new Error('This account does not have admin access.');
+      }
 
-    accessTokenRef.current = session.accessToken;
-    setUser(session.user);
-    setStatus('authenticated');
-  }, []);
+      accessTokenRef.current = session.accessToken;
+      setUser(session.user);
+      setStatus('authenticated');
+    },
+    [queryClient],
+  );
 
   const logout = useCallback(async (): Promise<void> => {
     try {

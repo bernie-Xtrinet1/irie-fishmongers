@@ -15,7 +15,8 @@ import { usePathname } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useDashboardSummary } from '@/lib/hooks/use-dashboard-summary';
+import { env } from '@/lib/env';
+import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { cn } from '@/lib/utils';
 
 // Only the 6 screens actually shipped in Phase 12A - no placeholder links
@@ -31,15 +32,12 @@ const NAV_ITEMS = [
   { href: '/recalls', label: 'Recalls', icon: AlertTriangle },
 ];
 
-const ENVIRONMENT = process.env.NEXT_PUBLIC_ENVIRONMENT ?? 'development';
-
 export function DashboardShell({ children }: { children: React.ReactNode }): React.ReactElement {
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const health = useDashboardSummary({ widget: 'system-health', staleTimeMs: 5_000, refetchIntervalMs: 5_000 });
+  const health = useHealthStatus();
 
-  const systemHealth = health.data?.systemHealth;
-  const isHealthy = systemHealth?.postgres === 'up' && systemHealth?.redis === 'up';
+  const isHealthy = health.data?.postgres === 'up' && health.data?.redis === 'up';
 
   return (
     <div className="flex min-h-screen bg-gray-50">
@@ -71,9 +69,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
       </aside>
 
       <div className="flex flex-1 flex-col">
-        {ENVIRONMENT !== 'production' ? (
+        {env.environment !== 'production' ? (
           <div className="bg-irie-yellow px-4 py-1 text-center text-xs font-semibold uppercase tracking-wide text-gray-900">
-            {ENVIRONMENT} environment - not production data
+            {env.environment} environment - not production data
           </div>
         ) : null}
 

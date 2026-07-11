@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { HealthService } from '../../../common/health/health.service';
 import { ComplianceDashboardService } from '../../food-safety/services/compliance-dashboard.service';
 import { PaymentsRepository } from '../../payments/repositories/payments.repository';
@@ -9,11 +10,6 @@ import { VendorSettlementsRepository } from '../../vendor-settlements/repositori
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
-
-export interface DateRange {
-  from?: Date;
-  to?: Date;
-}
 
 // Composes existing repositories/services rather than duplicating their
 // logic - no repository of its own. Organized by feature domain (one

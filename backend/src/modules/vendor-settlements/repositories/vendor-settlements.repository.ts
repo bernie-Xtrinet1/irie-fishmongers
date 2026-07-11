@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, VendorOrder, VendorSettlement, VendorSettlementStatus } from '@prisma/client';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreateSettlementInput {
@@ -93,10 +94,7 @@ export class VendorSettlementsRepository {
     return { items, total };
   }
 
-  async sumPlatformFeeByStatus(
-    status: VendorSettlementStatus,
-    range?: { from?: Date; to?: Date },
-  ): Promise<Prisma.Decimal> {
+  async sumPlatformFeeByStatus(status: VendorSettlementStatus, range?: DateRange): Promise<Prisma.Decimal> {
     const result = await this.prisma.vendorSettlement.aggregate({
       _sum: { platformFee: true },
       where: {

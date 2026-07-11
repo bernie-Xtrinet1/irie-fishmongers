@@ -63,6 +63,52 @@ frontend never persists any token to `localStorage` or `sessionStorage`.**
   authorization boundary is the backend's existing
   `@Roles(RoleName.ADMINISTRATOR)` + `RolesGuard` check, already applied
   independently to every admin endpoint.
+- **A non-administrator must never end up with a live admin-dashboard
+  session, even transiently.** `POST /auth/login` sets the refresh cookie
+  *before* the frontend can inspect the returned user's roles - so
+  `AuthProvider.login()` and the silent-refresh effect both check
+  `user.roles.includes('ADMINISTRATOR')` immediately after a successful
+  login/refresh, and if it's false, call `POST /auth/logout` (revoking
+  that just-issued refresh token) and `queryClient.clear()` before ever
+  setting `status: 'authenticated'`. The same rule applies to a silent
+  refresh that resolves a non-admin user - it is revoked, not merely
+  ignored. See `apps/admin-dashboard/lib/auth/auth-context.tsx`'s
+  `revokeCurrentSession()`.
+
+---
+
+## Deployment Domain Requirements
+
+`sameSite: 'strict'` on the refresh cookie means the admin dashboard and
+the API it calls must be **same-site** (share a registrable domain) for
+the browser to send the cookie at all on the dashboard's own top-level
+navigations and fetches:
+
+- `admin.iriefishmongers.com` calling `api.iriefishmongers.com` - same
+  site (`iriefishmongers.com`), works.
+- `admin.iriefishmongers.com` calling a different registrable domain
+  (e.g. a third-party API hosting provider's own domain, unless a custom
+  domain/CNAME is configured on it) - **not** same-site; the cookie would
+  not be sent and the silent-refresh flow would break.
+
+This must hold in every environment:
+
+- **Local development**: both apps run on `localhost` at different ports
+  (`:3001` API, `:3002` admin) - same-site by the browser's port-agnostic
+  same-site rules; `secure: false` in dev (see
+  `AuthController.setRefreshTokenCookie`, gated on `NODE_ENV ===
+  'production'`) since `localhost` isn't served over HTTPS.
+- **Staging**: staging API and staging admin dashboard must share a
+  registrable domain (e.g. `admin.staging.iriefishmongers.com` /
+  `api.staging.iriefishmongers.com`), and `secure: true` requires both to
+  be served over HTTPS.
+- **Production**: same requirement, `secure: true` enforced.
+
+Any deployment plan that puts the admin dashboard and the API on
+different registrable domains must revisit this ADR before shipping -
+either provision same-site subdomains, or fall back to
+`sameSite: 'none'` with `secure: true` (a materially different CSRF risk
+profile, out of scope for this ADR's Phase 12A decision).
 
 ---
 
@@ -92,7 +138,76 @@ Claude must design the admin dashboard's `lib/api-client.ts` so that:
 `CORS_ORIGIN` string to a comma-separated allowlist (still never `origin:
 '*'`, which is incompatible with `credentials: true` regardless), so the
 admin dashboard's dev/staging/production origins can be added alongside
-the existing customer-web origin.
+the existing customer-web origin. Parsing must trim and drop empty
+entries (`.split(',').map(trim).filter(Boolean)`) so a stray trailing
+comma never silently becomes an allowed empty-string origin.
+
+**Environment configuration is centralized, not scattered.**
+`apps/admin-dashboard/lib/env.ts` is the only file that reads
+`process.env.NEXT_PUBLIC_*` with a fallback; `NEXT_PUBLIC_API_URL`,
+`NEXT_PUBLIC_ENVIRONMENT`, and `NEXT_PUBLIC_APP_URL` are consumed from
+`env` everywhere else (`api-client.ts`, `dashboard-shell.tsx`,
+`next.config.js`'s CSP). In production, a missing required variable
+throws at module-evaluation time rather than silently falling back to a
+`localhost` default that could never work; in development the documented
+`.env.example` defaults apply.
+
+**Defense in depth beyond the cookie**: the in-memory access token is
+only as safe as this page is from XSS. `apps/admin-dashboard/next.config.js`
+sets `Content-Security-Policy` (`frame-ancestors 'none'`, `connect-src`
+scoped to `'self'` plus the configured API origin, no wildcard
+`script-src`), `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+`Permissions-Policy`, and `X-Frame-Options: DENY` on every response. No
+component may use `dangerouslySetInnerHTML` with API-provided content.
+
+---
+
+## Dashboard Query Architecture
+
+An early draft had each of the six overview widgets call
+`GET /analytics/dashboard-summary` under its own React Query `queryKey`
+(one per widget) so each could pick its own refetch interval. That does
+not work the way it sounds: React Query only dedupes/shares requests for
+the *same* `queryKey` - six different keys hitting the same URL is six
+independent caches, and a widget with a 5s interval would silently
+re-trigger the full financials/orders/vendors/drivers/compliance
+aggregation every 5 seconds, not just its own field.
+
+The corrected design, in `apps/admin-dashboard/lib/hooks/`:
+
+- **One shared query** for every business-KPI consumer (`FinancialSummaryCard`,
+  `OrdersSummaryCard`, `VendorSummaryCard`, `DriverSummaryCard`,
+  `ComplianceSummaryCard`, the `NeedsAttentionPanel`, and the overview
+  page's "last refreshed" header) - `use-dashboard-summary.ts` exports a
+  single `DASHBOARD_SUMMARY_QUERY_KEY`, and each widget calls
+  `useDashboardSummary(select)` with its own `select` function to pick its
+  slice of the one cached response. One `refetchInterval` (20s) governs
+  the whole group.
+- **A separate, independent query for system health** -
+  `use-health-status.ts` polls the new `GET /health/status` endpoint (see
+  below) every 5s, entirely decoupled from the dashboard-summary query.
+  `SystemHealthCard` and the topbar connectivity indicator both use this,
+  never `useDashboardSummary`.
+- **Failure boundaries follow the query, not the widget.** Because the
+  five KPI cards and the Needs Attention panel share one query, a
+  dashboard-summary failure surfaces as an error state on all of them
+  simultaneously - they do not have independent backend failure
+  boundaries, only independent presentation. `SystemHealthCard` is the
+  only widget with a genuinely independent failure boundary, because it
+  reads a different endpoint.
+
+### `GET /health/status`
+
+`GET /health` (`backend/src/common/health/health.controller.ts`) is an
+infra readiness probe: it throws 503 the moment either dependency is
+down, which is the right behavior for a load balancer but the wrong
+behavior for a UI widget that wants to keep showing granular status
+during a partial outage. `GET /health/status` is a second, admin-gated
+route on the same controller that reuses `HealthService.checkStatus()`
+directly and always resolves 200 with `{ postgres, redis }` - cheap (two
+ping-style checks, no business-KPI computation) regardless of poll
+frequency, so polling it every 5s carries none of the cost the flawed
+per-widget design above would have had.
 
 ---
 
@@ -139,6 +254,23 @@ Negative
 - CORS configuration now requires maintaining an allowlist across
   environments instead of a single string, adding minor deployment
   configuration surface.
+- **Known gaps carried into 12B, not silently worked around in 12A:**
+  - `PATCH /vendors/:id/status` and the equivalent driver endpoint accept
+    only `{ status }` - no `reason`/note field, and neither vendor nor
+    driver status changes are audit-logged today (unlike Recalls, which
+    already go through `ComplianceAuditLogService`). The Vendor/Driver
+    Management screens' confirmation dialogs therefore do not collect a
+    reason - adding an input that silently discards what the admin types
+    would be worse than not asking. Adding `reason` + audit coverage to
+    those two endpoints is 12B scope.
+  - The Recall Management screen (12A, not yet built as of this writing)
+    depends on `GET /food-safety/audit-logs?entityType=Recall&entityId=:id`
+    for its "changed by/at/reason" detail view - the exact `entityType`
+    casing, pagination shape, response entity, and whether the caller
+    display name is embedded or must be resolved separately must be
+    verified against that controller before that screen is built, the
+    same way every other endpoint in this phase was verified against its
+    actual controller/DTO rather than assumed from the plan.
 
 ---
 

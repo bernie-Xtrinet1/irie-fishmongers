@@ -300,4 +300,15 @@ describe('Analytics (e2e)', () => {
     const summary = data<DashboardSummaryData>(res);
     expect(summary.financials.grossPaidAmount).toBe('0');
   });
+
+  it('rejects a range where from is later than to', async () => {
+    const adminToken = await createAdminAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/dashboard-summary')
+      .query({ from: '2026-12-31', to: '2026-01-01' })
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(400);
+  });
 });

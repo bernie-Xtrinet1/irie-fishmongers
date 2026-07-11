@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PaymentProviderName, PaymentStatus, Prisma } from '@prisma/client';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreatePaymentInput {
@@ -59,7 +60,7 @@ export class PaymentsRepository {
     });
   }
 
-  async sumByStatus(status: PaymentStatus, range?: { from?: Date; to?: Date }): Promise<Prisma.Decimal> {
+  async sumByStatus(status: PaymentStatus, range?: DateRange): Promise<Prisma.Decimal> {
     const result = await this.prisma.payment.aggregate({
       _sum: { amount: true },
       where: {

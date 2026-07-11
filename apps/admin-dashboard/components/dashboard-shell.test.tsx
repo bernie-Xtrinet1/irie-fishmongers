@@ -2,20 +2,20 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { useAuth } from '@/lib/auth/auth-context';
-import { useDashboardSummary } from '@/lib/hooks/use-dashboard-summary';
+import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { DashboardShell } from './dashboard-shell';
 
 jest.mock('@/lib/auth/auth-context');
-jest.mock('@/lib/hooks/use-dashboard-summary');
+jest.mock('@/lib/hooks/use-health-status');
 jest.mock('next/navigation', () => ({
   usePathname: () => '/vendors',
 }));
 
 const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
-const mockUseDashboardSummary = useDashboardSummary as jest.MockedFunction<typeof useDashboardSummary>;
+const mockUseHealthStatus = useHealthStatus as jest.MockedFunction<typeof useHealthStatus>;
 
-function mockSummary(value: unknown): void {
-  mockUseDashboardSummary.mockReturnValue(value as ReturnType<typeof useDashboardSummary>);
+function mockHealth(value: unknown): void {
+  mockUseHealthStatus.mockReturnValue(value as ReturnType<typeof useHealthStatus>);
 }
 
 describe('DashboardShell', () => {
@@ -32,7 +32,7 @@ describe('DashboardShell', () => {
   });
 
   it('renders all 6 in-scope nav items with the current route marked active', () => {
-    mockSummary({ data: undefined, isPending: true });
+    mockHealth({ data: undefined, isPending: true });
 
     render(
       <DashboardShell>
@@ -49,7 +49,7 @@ describe('DashboardShell', () => {
   });
 
   it('shows a checking state before the first health result loads', () => {
-    mockSummary({ data: undefined, isPending: true });
+    mockHealth({ data: undefined, isPending: true });
 
     render(
       <DashboardShell>
@@ -61,7 +61,7 @@ describe('DashboardShell', () => {
   });
 
   it('pairs the connectivity color with status text when systems are operational', () => {
-    mockSummary({ data: { systemHealth: { postgres: 'up', redis: 'up' } }, isPending: false });
+    mockHealth({ data: { postgres: 'up', redis: 'up' }, isPending: false });
 
     render(
       <DashboardShell>
@@ -73,7 +73,7 @@ describe('DashboardShell', () => {
   });
 
   it('surfaces a degraded status when a dependency is down - never color alone', () => {
-    mockSummary({ data: { systemHealth: { postgres: 'up', redis: 'down' } }, isPending: false });
+    mockHealth({ data: { postgres: 'up', redis: 'down' }, isPending: false });
 
     render(
       <DashboardShell>
@@ -85,7 +85,7 @@ describe('DashboardShell', () => {
   });
 
   it('calls logout when the log out control is activated', async () => {
-    mockSummary({ data: undefined, isPending: true });
+    mockHealth({ data: undefined, isPending: true });
     const user = userEvent.setup();
 
     render(

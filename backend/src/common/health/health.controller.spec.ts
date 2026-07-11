@@ -29,4 +29,12 @@ describe('HealthController', () => {
 
     await expect(controller.check()).rejects.toBeInstanceOf(HttpException);
   });
+
+  describe('checkStatus', () => {
+    it('always resolves 200 with the granular status, even when a dependency is down', async () => {
+      healthService.checkStatus.mockResolvedValue({ postgres: 'up', redis: 'down' });
+
+      await expect(controller.checkStatus()).resolves.toEqual({ postgres: 'up', redis: 'down' });
+    });
+  });
 });

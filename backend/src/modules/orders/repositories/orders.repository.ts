@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Parish, Prisma, ProductUnit } from '@prisma/client';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 
 export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
@@ -83,7 +84,7 @@ export class OrdersRepository {
     return { items, total };
   }
 
-  count(range?: { from?: Date; to?: Date }): Promise<number> {
+  count(range?: DateRange): Promise<number> {
     const where: Prisma.OrderWhereInput =
       range?.from || range?.to
         ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }

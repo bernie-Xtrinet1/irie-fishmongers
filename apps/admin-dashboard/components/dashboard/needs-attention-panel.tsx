@@ -15,18 +15,22 @@ interface AttentionItem {
 
 // Built entirely from fields the dashboard-summary endpoint already returns
 // - no new backend surface. This is the actionable subset of a future
-// notification inbox, not the inbox itself (12B+).
+// notification inbox, not the inbox itself (12B+). Shares the same
+// dashboard-summary query/cache entry as the KPI cards (see
+// lib/hooks/use-dashboard-summary.ts) via `select`, rather than issuing
+// its own separate request.
 function NeedsAttentionPanelImpl(): React.ReactElement | null {
-  const query = useDashboardSummary({ widget: 'needs-attention', staleTimeMs: 15_000, refetchIntervalMs: 15_000 });
+  const query = useDashboardSummary((data) => ({
+    pendingVendors: data.vendors.byStatus.PENDING,
+    activeRecalls: data.compliance.activeRecalls,
+    urgentAlerts: data.compliance.activeAlertsBySeverity.CRITICAL + data.compliance.activeAlertsBySeverity.EMERGENCY,
+  }));
 
   if (query.isPending || query.isError || !query.data) {
     return null;
   }
 
-  const pendingVendors = query.data.vendors.byStatus.PENDING;
-  const activeRecalls = query.data.compliance.activeRecalls;
-  const urgentAlerts =
-    query.data.compliance.activeAlertsBySeverity.CRITICAL + query.data.compliance.activeAlertsBySeverity.EMERGENCY;
+  const { pendingVendors, activeRecalls, urgentAlerts } = query.data;
 
   const items: AttentionItem[] = [
     pendingVendors > 0

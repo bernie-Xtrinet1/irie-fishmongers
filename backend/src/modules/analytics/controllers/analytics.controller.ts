@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
 
@@ -24,9 +24,13 @@ export class AnalyticsController {
   })
   @ApiResponseDoc({ status: 200, type: DashboardSummaryEntity })
   getDashboardSummary(@Query() query: DashboardSummaryQueryDto): Promise<DashboardSummaryEntity> {
-    return this.analyticsService.getDashboardSummary({
-      from: query.from ? new Date(query.from) : undefined,
-      to: query.to ? new Date(query.to) : undefined,
-    });
+    const from = query.from ? new Date(query.from) : undefined;
+    const to = query.to ? new Date(query.to) : undefined;
+
+    if (from && to && from > to) {
+      throw new BadRequestException('`from` must not be later than `to`');
+    }
+
+    return this.analyticsService.getDashboardSummary({ from, to });
   }
 }

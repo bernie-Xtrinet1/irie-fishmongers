@@ -7,9 +7,10 @@ import { SystemHealthCard } from '@/components/dashboard/system-health-card';
 import { useDashboardSummary } from '@/lib/hooks/use-dashboard-summary';
 
 export default function DashboardOverviewPage(): React.ReactElement {
-  // Drives only the "last refreshed" header indicator - each widget below
-  // still runs its own independent query at its own cadence.
-  const headerQuery = useDashboardSummary({ widget: 'header', staleTimeMs: 15_000, refetchIntervalMs: 15_000 });
+  // Drives only the "last refreshed" header indicator - shares the same
+  // dashboard-summary cache entry as every KPI card below (one query, not
+  // a separate request), so this is just reading dataUpdatedAt off it.
+  const headerQuery = useDashboardSummary();
 
   return (
     <div className="flex flex-col gap-6">

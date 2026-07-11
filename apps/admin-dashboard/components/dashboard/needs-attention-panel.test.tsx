@@ -1,4 +1,3 @@
-import type { DashboardSummary } from '@iriefishmongers/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 
@@ -9,37 +8,23 @@ jest.mock('@/lib/hooks/use-dashboard-summary');
 
 const mockUseDashboardSummary = useDashboardSummary as jest.MockedFunction<typeof useDashboardSummary>;
 
-const baseSummary: DashboardSummary = {
-  financials: { grossPaidAmount: '0', platformCommission: '0', currency: 'JMD' },
-  orders: {
-    customerOrdersTotal: 0,
-    vendorOrdersByStatus: {
-      PENDING: 0,
-      ACCEPTED: 0,
-      PREPARING: 0,
-      READY_FOR_PICKUP: 0,
-      ASSIGNED_TO_DRIVER: 0,
-      IN_TRANSIT: 0,
-      DELIVERED: 0,
-      DELIVERY_FAILED: 0,
-      REJECTED: 0,
-      CANCELLED: 0,
-    },
-  },
-  vendors: { byStatus: { PENDING: 0, APPROVED: 0, SUSPENDED: 0, REJECTED: 0 } },
-  drivers: { byStatus: { PENDING: 0, APPROVED: 0, SUSPENDED: 0, REJECTED: 0 } },
-  compliance: { activeAlertsBySeverity: { WARNING: 0, CRITICAL: 0, EMERGENCY: 0 }, activeRecalls: 0 },
-  systemHealth: { postgres: 'up', redis: 'up' },
-};
+interface AttentionSlice {
+  pendingVendors: number;
+  activeRecalls: number;
+  urgentAlerts: number;
+}
 
-function withData(data: DashboardSummary): UseQueryResult<DashboardSummary> {
+// The component calls useDashboardSummary(select) - since the mock
+// replaces the hook wholesale, these fixtures must already be in the
+// post-select shape the component actually reads.
+function withSlice(data: AttentionSlice): UseQueryResult<AttentionSlice> {
   return {
     data,
     isPending: false,
     isError: false,
     isFetching: false,
     refetch: jest.fn(),
-  } as unknown as UseQueryResult<DashboardSummary>;
+  } as unknown as UseQueryResult<AttentionSlice>;
 }
 
 describe('NeedsAttentionPanel', () => {
@@ -48,14 +33,16 @@ describe('NeedsAttentionPanel', () => {
       data: undefined,
       isPending: true,
       isError: false,
-    } as UseQueryResult<DashboardSummary>);
+    } as unknown as UseQueryResult<AttentionSlice>);
 
     const { container } = render(<NeedsAttentionPanel />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it('shows a reassuring message when nothing needs attention', () => {
-    mockUseDashboardSummary.mockReturnValue(withData(baseSummary));
+    mockUseDashboardSummary.mockReturnValue(
+      withSlice({ pendingVendors: 0, activeRecalls: 0, urgentAlerts: 0 }),
+    );
 
     render(<NeedsAttentionPanel />);
 
@@ -64,11 +51,7 @@ describe('NeedsAttentionPanel', () => {
 
   it('lists pending vendors, active recalls, and urgent alerts with correct singular/plural copy and links', () => {
     mockUseDashboardSummary.mockReturnValue(
-      withData({
-        ...baseSummary,
-        vendors: { byStatus: { ...baseSummary.vendors.byStatus, PENDING: 1 } },
-        compliance: { activeAlertsBySeverity: { WARNING: 0, CRITICAL: 2, EMERGENCY: 1 }, activeRecalls: 3 },
-      }),
+      withSlice({ pendingVendors: 1, activeRecalls: 3, urgentAlerts: 3 }),
     );
 
     render(<NeedsAttentionPanel />);

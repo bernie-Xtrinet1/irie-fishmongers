@@ -23,6 +23,13 @@ const STATUS_BADGE_VARIANT: Record<VendorStatus, 'neutral' | 'success' | 'warnin
   [VendorStatus.REJECTED]: 'danger',
 };
 
+// No reason/note field on these dialogs: PATCH /vendors/:id/status
+// (backend/src/modules/vendors/dto/update-vendor-status.dto.ts) only
+// accepts { status }, and vendor/driver status changes have no audit-log
+// coverage today (unlike Recalls, which do - see the Recall Management
+// screen). Collecting a reason here would silently discard it, which is
+// worse than not asking. Adding a `reason` field + audit trail to this
+// endpoint is 12B scope (see ADR-004).
 const ACTION_COPY: Record<AssignableVendorStatus, { label: string; title: string; description: string; variant: 'primary' | 'danger' }> = {
   [VendorStatus.APPROVED]: {
     label: 'Approve',
