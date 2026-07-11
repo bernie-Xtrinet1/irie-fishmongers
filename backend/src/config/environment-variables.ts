@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsString, IsUrl, Max, Min, MinLength } from 'class-validator';
+import { IsIn, IsInt, IsString, IsUrl, Matches, Max, Min, MinLength } from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
@@ -44,10 +44,15 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false })
   APP_BASE_URL!: string;
 
-  // The customer-facing web app's origin (apps/web) - the only origin
-  // allowed to call this API cross-origin. Distinct from APP_BASE_URL,
-  // which is this backend's OWN base URL (used for webhook callback links).
-  @IsUrl({ require_tld: false, require_protocol: true })
+  // Comma-separated allowlist of origins allowed to call this API
+  // cross-origin (e.g. the customer web app + the admin dashboard).
+  // Distinct from APP_BASE_URL, which is this backend's OWN base URL
+  // (used for webhook callback links). Never '*' - incompatible with the
+  // credentials: true CORS config main.ts uses for cookie-based auth.
+  @IsString()
+  @Matches(/^https?:\/\/[^\s,]+(,\s*https?:\/\/[^\s,]+)*$/, {
+    message: 'CORS_ORIGIN must be a comma-separated list of http(s) URLs',
+  })
   CORS_ORIGIN!: string;
 
   @IsUrl({ require_tld: false })

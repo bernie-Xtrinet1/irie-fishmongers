@@ -92,4 +92,20 @@ export class VendorSettlementsRepository {
 
     return { items, total };
   }
+
+  async sumPlatformFeeByStatus(
+    status: VendorSettlementStatus,
+    range?: { from?: Date; to?: Date },
+  ): Promise<Prisma.Decimal> {
+    const result = await this.prisma.vendorSettlement.aggregate({
+      _sum: { platformFee: true },
+      where: {
+        status,
+        ...(range?.from || range?.to
+          ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }
+          : {}),
+      },
+    });
+    return result._sum.platformFee ?? new Prisma.Decimal(0);
+  }
 }

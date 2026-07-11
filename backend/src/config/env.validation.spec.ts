@@ -53,4 +53,18 @@ describe('validateEnv', () => {
     const { REDIS_URL: _REDIS_URL, ...withoutRedis } = validConfig;
     expect(() => validateEnv(withoutRedis)).toThrow(/Environment validation failed/);
   });
+
+  it('accepts a comma-separated CORS_ORIGIN allowlist', () => {
+    const result = validateEnv({
+      ...validConfig,
+      CORS_ORIGIN: 'http://localhost:3000,http://localhost:3002',
+    });
+    expect(result.CORS_ORIGIN).toBe('http://localhost:3000,http://localhost:3002');
+  });
+
+  it('throws when CORS_ORIGIN is not a valid http(s) URL list', () => {
+    expect(() => validateEnv({ ...validConfig, CORS_ORIGIN: 'not-a-url' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
 });

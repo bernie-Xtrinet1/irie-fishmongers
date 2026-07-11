@@ -149,4 +149,31 @@ describe('VendorOrdersRepository', () => {
     });
     expect(items.length).toBeGreaterThanOrEqual(1);
   });
+
+  describe('countByStatus', () => {
+    it('returns a count for every VendorOrderStatus value, including this test run\'s ACCEPTED order', async () => {
+      const counts = await repository.countByStatus();
+      expect(counts.ACCEPTED).toBeGreaterThanOrEqual(1);
+      expect(Object.keys(counts).sort()).toEqual(
+        [
+          'PENDING',
+          'ACCEPTED',
+          'PREPARING',
+          'READY_FOR_PICKUP',
+          'ASSIGNED_TO_DRIVER',
+          'IN_TRANSIT',
+          'DELIVERED',
+          'DELIVERY_FAILED',
+          'REJECTED',
+          'CANCELLED',
+        ].sort(),
+      );
+    });
+
+    it('narrows counts to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const counts = await repository.countByStatus({ from: future });
+      expect(counts.ACCEPTED).toBe(0);
+    });
+  });
 });

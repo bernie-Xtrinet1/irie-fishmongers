@@ -161,4 +161,22 @@ describe('PaymentsRepository', () => {
     expect(updated.status).toBe('PAID');
     expect(updated.paidAt?.getTime()).toBe(paidAt.getTime());
   });
+
+  describe('sumByStatus', () => {
+    it('sums the amount of payments matching the given status', async () => {
+      const sum = await repository.sumByStatus('PAID');
+      expect(sum.toNumber()).toBeGreaterThanOrEqual(1000);
+    });
+
+    it('returns zero when no payment matches the status', async () => {
+      const sum = await repository.sumByStatus('REFUNDED');
+      expect(sum.toNumber()).toBe(0);
+    });
+
+    it('narrows the sum to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const sum = await repository.sumByStatus('PAID', { from: future });
+      expect(sum.toNumber()).toBe(0);
+    });
+  });
 });

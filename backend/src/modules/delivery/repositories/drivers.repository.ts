@@ -71,4 +71,18 @@ export class DriversRepository {
 
     return { items, total };
   }
+
+  async countByStatus(): Promise<Record<DriverStatus, number>> {
+    const groups = await this.prisma.driver.groupBy({ by: ['status'], _count: { _all: true } });
+    const counts: Record<DriverStatus, number> = {
+      PENDING: 0,
+      APPROVED: 0,
+      SUSPENDED: 0,
+      REJECTED: 0,
+    };
+    for (const group of groups) {
+      counts[group.status] = group._count._all;
+    }
+    return counts;
+  }
 }

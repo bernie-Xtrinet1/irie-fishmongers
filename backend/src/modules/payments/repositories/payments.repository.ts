@@ -58,4 +58,17 @@ export class PaymentsRepository {
       include: paymentWithOrder.include,
     });
   }
+
+  async sumByStatus(status: PaymentStatus, range?: { from?: Date; to?: Date }): Promise<Prisma.Decimal> {
+    const result = await this.prisma.payment.aggregate({
+      _sum: { amount: true },
+      where: {
+        status,
+        ...(range?.from || range?.to
+          ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }
+          : {}),
+      },
+    });
+    return result._sum.amount ?? new Prisma.Decimal(0);
+  }
 }

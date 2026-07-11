@@ -80,4 +80,12 @@ describe('DriversRepository', () => {
       expect(items.length).toBeGreaterThanOrEqual(1);
     });
   });
+
+  describe('countByStatus', () => {
+    it('returns a count for every DriverStatus value, including zero counts', async () => {
+      const counts = await repository.countByStatus();
+      expect(counts.APPROVED).toBeGreaterThanOrEqual(1);
+      expect(Object.keys(counts).sort()).toEqual(['APPROVED', 'PENDING', 'REJECTED', 'SUSPENDED'].sort());
+    });
+  });
 });

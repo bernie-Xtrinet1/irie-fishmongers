@@ -49,6 +49,6 @@ import { RegulatoryCertificationsService } from './services/regulatory-certifica
     RegulatoryCertificationsService,
     RegulatoryCertificationsRepository,
   ],
-  exports: [RegulatoryCertificationsRepository, RegulatoryAuthoritiesRepository],
+  exports: [RegulatoryCertificationsRepository, RegulatoryAuthoritiesRepository, ComplianceDashboardService],
 })
 export class ComplianceOpsModule {}

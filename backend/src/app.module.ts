@@ -10,6 +10,7 @@ import { HealthModule } from './common/health/health.module';
 import { ResponseInterceptor } from './common/http/response.interceptor';
 import { validateEnv } from './config/env.validation';
 import { PrismaModule } from './database/prisma.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
 import { CatchesModule } from './modules/catches/catches.module';
@@ -61,6 +62,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     FleetModule,
     NotificationsModule,
     MarketplaceModule,
+    AnalyticsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },

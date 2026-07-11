@@ -82,4 +82,12 @@ export class OrdersRepository {
 
     return { items, total };
   }
+
+  count(range?: { from?: Date; to?: Date }): Promise<number> {
+    const where: Prisma.OrderWhereInput =
+      range?.from || range?.to
+        ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }
+        : {};
+    return this.prisma.order.count({ where });
+  }
 }
