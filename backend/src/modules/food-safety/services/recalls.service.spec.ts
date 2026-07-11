@@ -281,6 +281,14 @@ describe('RecallsService', () => {
       expect(result.id).toBe('recall-1');
     });
 
+    it('computes retentionExpiresAt as createdAt + 7 years', async () => {
+      recallsRepository.findById.mockResolvedValue(
+        buildRecall({ createdAt: new Date('2026-01-15T00:00:00.000Z') }),
+      );
+      const result = await service.getById('recall-1');
+      expect(result.retentionExpiresAt.toISOString()).toBe('2033-01-15T00:00:00.000Z');
+    });
+
     it('throws when the recall does not exist', async () => {
       recallsRepository.findById.mockResolvedValue(null);
       await expect(service.getById('missing')).rejects.toBeInstanceOf(NotFoundException);

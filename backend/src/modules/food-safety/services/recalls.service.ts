@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { RecallStatus } from '@prisma/client';
 
+import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CreateRecallDto } from '../dto/create-recall.dto';
 import { ListRecallsDto } from '../dto/list-recalls.dto';
 import { UpdateRecallStatusDto } from '../dto/update-recall-status.dto';
@@ -148,6 +149,7 @@ export class RecallsService {
       lotIds: recall.lots.map((recallLot) => recallLot.lotId),
       closedAt: recall.closedAt,
       createdAt: recall.createdAt,
+      retentionExpiresAt: computeRetentionExpiresAt(recall.createdAt),
     };
   }
 }

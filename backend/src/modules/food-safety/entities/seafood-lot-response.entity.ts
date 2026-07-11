@@ -46,4 +46,7 @@ export class SeafoodLotResponseEntity {
 
   @ApiProperty()
   createdAt!: Date;
+
+  @ApiProperty({ description: 'Informational only (createdAt + 7 years) - not enforced by any purge job' })
+  retentionExpiresAt!: Date;
 }

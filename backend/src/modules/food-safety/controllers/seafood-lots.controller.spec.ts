@@ -22,6 +22,7 @@ const lot: SeafoodLotResponseEntity = {
   foodSafetyStatus: 'SAFE',
   statusNotes: null,
   createdAt: new Date(),
+  retentionExpiresAt: new Date(),
 };
 
 const publicLot: SeafoodLotPublicEntity = {

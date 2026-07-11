@@ -17,6 +17,7 @@ const recall: RecallResponseEntity = {
   lotIds: ['lot-1'],
   closedAt: null,
   createdAt: new Date(),
+  retentionExpiresAt: new Date(),
 };
 
 const affectedOrder: AffectedOrderEntity = {

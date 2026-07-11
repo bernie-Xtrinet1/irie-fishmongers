@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot, WeightUnit } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
+import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CatchItemsRepository } from '../../catches/repositories/catch-items.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { SpeciesRepository } from '../../catches/repositories/species.repository';
@@ -329,6 +330,7 @@ export class SeafoodLotsService {
       foodSafetyStatus: lot.foodSafetyStatus,
       statusNotes: lot.statusNotes,
       createdAt: lot.createdAt,
+      retentionExpiresAt: computeRetentionExpiresAt(lot.createdAt),
     };
   }
 }

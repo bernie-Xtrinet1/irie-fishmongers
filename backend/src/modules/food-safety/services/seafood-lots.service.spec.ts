@@ -385,6 +385,12 @@ describe('SeafoodLotsService', () => {
       expect(result.id).toBe('lot-1');
     });
 
+    it('computes retentionExpiresAt as createdAt + 7 years', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot({ createdAt: new Date('2026-01-15T00:00:00.000Z') }));
+      const result = await service.getById('lot-1');
+      expect(result.retentionExpiresAt.toISOString()).toBe('2033-01-15T00:00:00.000Z');
+    });
+
     it('throws when the lot does not exist', async () => {
       lotsRepository.findById.mockResolvedValue(null);
       await expect(service.getById('missing')).rejects.toBeInstanceOf(NotFoundException);
