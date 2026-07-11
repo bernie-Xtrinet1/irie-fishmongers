@@ -7,6 +7,7 @@ import { DriverAssignedEvent } from '../../../common/events/driver-assigned.even
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
+import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
 import { RefundStatusChangedEvent } from '../../../common/events/refund-status-changed.event';
 import { RegistrationConfirmedEvent } from '../../../common/events/registration-confirmed.event';
 import { VendorApprovedEvent } from '../../../common/events/vendor-approved.event';
@@ -123,6 +124,17 @@ export class NotificationEventsListener {
       eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
       priority: 'NORMAL',
       variables: { vendorOrderId: event.vendorOrderId },
+    });
+  }
+
+  @OnEvent(RecallIssuedEvent.eventName)
+  async onRecallIssued(event: RecallIssuedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'ORDER',
+      eventType: 'RECALL_ISSUED',
+      priority: 'CRITICAL',
+      variables: { orderId: event.orderId, lotNumber: event.lotNumber, reason: event.reason },
     });
   }
 }

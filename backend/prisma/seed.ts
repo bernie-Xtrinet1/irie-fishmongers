@@ -330,6 +330,20 @@ const NOTIFICATION_TEMPLATES: {
     body: 'Lot {{lotNumber}} recorded a {{severity}} temperature reading. Please review immediately.',
     variables: ['lotNumber', 'severity'],
   },
+  {
+    eventType: 'RECALL_ISSUED',
+    channel: 'EMAIL',
+    subject: 'Important: product recall affecting your order',
+    body: 'A seafood lot ({{lotNumber}}) in your order {{orderId}} has been recalled. Reason: {{reason}}. Please do not consume this product and contact support for a refund.',
+    variables: ['orderId', 'lotNumber', 'reason'],
+  },
+  {
+    eventType: 'RECALL_ISSUED',
+    channel: 'IN_APP',
+    subject: 'Product recall affecting your order',
+    body: 'A seafood lot ({{lotNumber}}) in your order {{orderId}} has been recalled. Reason: {{reason}}.',
+    variables: ['orderId', 'lotNumber', 'reason'],
+  },
 ];
 
 // seafood-compliance-rules.md's own species examples; Conch is seeded

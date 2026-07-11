@@ -1,6 +1,8 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeafoodLot } from '@prisma/client';
 
+import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
 import { CreateRecallDto } from '../dto/create-recall.dto';
 import { UpdateRecallStatusDto } from '../dto/update-recall-status.dto';
 import { AffectedOrderItem, RecallsRepository, RecallWithLots } from '../repositories/recalls.repository';
@@ -123,6 +125,7 @@ describe('RecallsService', () => {
   >;
   let lotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById' | 'updateStatus'>>;
   let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: RecallsService;
 
   beforeEach(() => {
@@ -131,15 +134,17 @@ describe('RecallsService', () => {
       updateStatus: jest.fn(),
       findMany: jest.fn(),
       findById: jest.fn(),
-      findAffectedOrderItems: jest.fn(),
+      findAffectedOrderItems: jest.fn().mockResolvedValue([]),
     };
     lotsRepository = { findById: jest.fn(), updateStatus: jest.fn() };
     auditLogService = { record: jest.fn() };
+    eventEmitter = { emitAsync: jest.fn() };
 
     service = new RecallsService(
       recallsRepository as unknown as RecallsRepository,
       lotsRepository as unknown as SeafoodLotsRepository,
       auditLogService as unknown as ComplianceAuditLogService,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -225,6 +230,24 @@ describe('RecallsService', () => {
       await service.updateStatus('admin-1', 'recall-1', { status: 'INVESTIGATING' });
 
       expect(lotsRepository.updateStatus).not.toHaveBeenCalled();
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+    });
+
+    it('emits a RecallIssuedEvent per affected order when transitioning to ACTIVE', async () => {
+      recallsRepository.findById.mockResolvedValue(
+        buildRecall({ status: 'DRAFT', reason: 'Confirmed pathogenic contamination' }),
+      );
+      recallsRepository.updateStatus.mockResolvedValue(buildRecall({ status: 'ACTIVE' }));
+      lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: 'RECALLED' }));
+      recallsRepository.findAffectedOrderItems.mockResolvedValue([buildAffectedOrderItem()]);
+      lotsRepository.findById.mockResolvedValue(buildLot({ lotNumber: 'LOT-2026-000001' }));
+
+      await service.updateStatus('admin-1', 'recall-1', { status: 'ACTIVE' });
+
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+        RecallIssuedEvent.eventName,
+        new RecallIssuedEvent('customer-1', 'order-1', 'LOT-2026-000001', 'Confirmed pathogenic contamination'),
+      );
     });
 
     it('sets closedAt when transitioning to CLOSED', async () => {

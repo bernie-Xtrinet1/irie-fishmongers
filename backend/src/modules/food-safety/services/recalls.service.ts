@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { RecallStatus } from '@prisma/client';
 
+import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
 import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CreateRecallDto } from '../dto/create-recall.dto';
 import { ListRecallsDto } from '../dto/list-recalls.dto';
@@ -26,6 +28,7 @@ export class RecallsService {
     private readonly recallsRepository: RecallsRepository,
     private readonly lotsRepository: SeafoodLotsRepository,
     private readonly auditLogService: ComplianceAuditLogService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(userId: string, dto: CreateRecallDto): Promise<RecallResponseEntity> {
@@ -74,6 +77,8 @@ export class RecallsService {
           `Recalled (${recall.severityClass}): ${recall.reason}`,
         );
       }
+
+      await this.notifyAffectedCustomers(id, recall.reason);
     }
 
     await this.auditLogService.record({
@@ -122,6 +127,31 @@ export class RecallsService {
     const orderItems = await this.recallsRepository.findAffectedOrderItems(lotIds);
 
     return orderItems.map((item) => RecallsService.toAffectedOrder(item));
+  }
+
+  // seafood-compliance-rules.md's recall workflow: Identify Customers ->
+  // Notify Stakeholders. Emits one RecallIssuedEvent per affected order
+  // (an affected customer may have multiple orders touching the recalled
+  // lots) - lotNumber is resolved per distinct lotId and cached, since
+  // AffectedOrderEntity only carries the lotId, not the human-readable
+  // lotNumber.
+  private async notifyAffectedCustomers(recallId: string, reason: string): Promise<void> {
+    const affectedOrders = await this.getAffectedOrders(recallId);
+    const lotNumberByLotId = new Map<string, string>();
+
+    for (const order of affectedOrders) {
+      let lotNumber = lotNumberByLotId.get(order.lotId);
+      if (!lotNumber) {
+        const lot = await this.lotsRepository.findById(order.lotId);
+        lotNumber = lot?.lotNumber ?? order.lotId;
+        lotNumberByLotId.set(order.lotId, lotNumber);
+      }
+
+      await this.eventEmitter.emitAsync(
+        RecallIssuedEvent.eventName,
+        new RecallIssuedEvent(order.customerId, order.orderId, lotNumber, reason),
+      );
+    }
   }
 
   private static toAffectedOrder(item: AffectedOrderItem): AffectedOrderEntity {
