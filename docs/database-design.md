@@ -467,26 +467,16 @@ Scope note: this is the traceability/cold-chain/recall CORE, anchored on
 entities the platform already has (Vendor, Product, VendorOrder, Delivery),
 not the full literal scope of the source docs. Deliberately deferred:
 
-- Separate Fisherman/Vessel/Landing-Site registration entities - the source
-  docs describe an independent fisherman-onboarding layer with its own
-  identity verification, vessel records, and banking information distinct
-  from vendor onboarding. This platform has no such layer; vendors register
-  seafood lots directly under their existing approved vendor profile.
-  `catchLocation`/`landingSite` are captured as free-text fields on the lot
-  rather than as foreign keys to dedicated Fisherman/Vessel/LandingSite
-  tables.
 - Real IoT sensor ingestion (cold-chain-management.md's Bluetooth/cellular
   telemetry) - no hardware exists to integrate with. Temperature readings are
   point-in-time, manually/driver-recorded observations, not a continuous
-  stream.
+  stream. The Phase 11 amendment (see below) gives readings a device
+  identity, configurable thresholds, and calibration tracking, but still no
+  actual protocol/hardware integration.
 - A scheduled/random vendor-audit subsystem distinct from lot inspections -
   the source docs describe periodic compliance audits of a vendor's
   facility/operations as a whole; this phase only models per-lot quality
   inspections (`QualityInspection`), not a separate audit-scheduling entity.
-- Actual notification delivery (email/SMS/push for recalls, incidents,
-  alerts) - no Notifications module exists yet anywhere in this codebase.
-  Alerts/incidents/recalls are recorded and queryable by admins; nothing is
-  auto-sent.
 - Mandatory `Product.lotId` - the source docs state "no seafood product may
   be sold without traceability records," which would literally mean every
   product requires a lot. `lotId` is optional instead: making it mandatory
@@ -494,6 +484,11 @@ not the full literal scope of the source docs. Deliberately deferred:
   (7 existing suites), none of which pass a lot. When a product IS linked to
   a lot, full enforcement applies (see below); this is a deliberate, revisit-
   able scope decision, not an oversight.
+
+Note: an independent Fisherman/Vessel/Landing-Site registration layer
+(originally deferred here) and actual notification delivery for recalls/
+cold-chain alerts (originally deferred pending the Notifications module)
+are both now built - see the "Phase 11 Amendment" subsection below.
 
 Tables:
 
@@ -581,8 +576,200 @@ Business rules encoded here:
   inactive product or an unapproved vendor.
 - Recall impact lookup (`GET /recalls/:id/affected-orders`) joins
   `OrderItem -> Product (lotId in the recall's lots)` to surface impacted
-  orders/customers for manual admin follow-up, since no automated
-  notification-sending exists yet.
+  orders/customers for manual admin follow-up. Activating a recall (DRAFT ->
+  ACTIVE) also now emits one `RecallIssuedEvent` per affected order via this
+  same lookup - see the Phase 11 Amendment subsection below.
+
+---
+
+# Phase 11 Amendment: Traceability Chain, Species, Cold-Chain IoT, Compliance
+# Operations, Digital Product Passport (per seafood-compliance-rules.md,
+# cold-chain-management.md, food-safety.md, business-rules1.md)
+
+Closes the gaps the Food Safety / Compliance CORE above deliberately
+deferred (Fisherman/Vessel/Landing-Site registration, real notification
+delivery) plus a further round of gaps an audit against the same source
+docs found: regulatory certification tracking, sensor calibration, a
+documented emergency-response workflow, waste/disposal evidence, and a
+customer-facing traceability passport. Additive throughout - no existing
+table's shape changed except where noted, and every new relationship keeps
+prior-phase e2e fixtures working unchanged (`catchItemId`/`speciesId` on
+`seafood_lots` stay nullable, exactly like `Product.lotId` above).
+
+Traceability chain tables:
+
+- `landing_sites` - name, parish, latitude/longitude, status (ACTIVE |
+  INACTIVE), inspectionStatus (NOT_INSPECTED | PASSED | FAILED).
+- `fishermen` - distinct from `Vendor` per the traceability chain (Sea ->
+  Fisherman -> Landing Site -> Vendor -> ...). `userId` (unique, one fisherman
+  profile per user account), optional `vendorId` link for the common case
+  where a COMMUNITY_FISHER vendor IS the fisherman (not required - a
+  retailer/peddler vendor may buy from a fisherman who never registers as a
+  vendor). fullName, contactPhone/Email, licensing/banking fields,
+  `landingSiteId`, status (PENDING | APPROVED | SUSPENDED | REJECTED,
+  default PENDING - only APPROVED fishermen may register catches).
+- `vessels` - `ownerFishermanId`, unique `registrationNumber`, name,
+  `fishingMethod` (TRAP | NET | LINE | SPEARFISHING | POT | TROLLING |
+  DIVING | LONGLINE | OTHER - modeled per-vessel, not per-catch, since a
+  vessel is generally rigged for one method), capacityTons, status (ACTIVE |
+  INACTIVE | DECOMMISSIONED).
+- `species` - scientificName (unique), commercialName, regulatoryStatus
+  (UNRESTRICTED | RESTRICTED | PROHIBITED), seasonalStartMonth/EndMonth
+  (nullable - no restriction configured, not "always in season"),
+  minimumSizeCm. Seeded with Snapper/King Fish/Mackerel/Lobster/Shrimp/Conch
+  (Conch RESTRICTED, per the spec's own example).
+- `catches` / `catch_items` - trip-level record (`catches`: catchNumber,
+  fishermanId, optional vesselId, landingSiteId, catchDate, lat/long,
+  fishingArea, photos) plus a per-species line item (`catch_items`:
+  catchId, speciesId, weight/weightUnit, estimatedFreshness). Split this way
+  because one physical landing event routinely mixes species (e.g. a net
+  catch of Snapper + King Fish + Lobster) - modeling that as three `Catch`
+  rows would force fabricating three catchNumbers/photos for one trip.
+  `seafood_lots.catchItemId` (nullable FK, `onDelete: Restrict`) links a lot
+  to one species-specific line item - a lot is species-homogeneous by
+  definition, so it can never trace to a whole mixed-species trip.
+  `seafood_lots.speciesId` (nullable FK, `onDelete: SetNull`) is a lighter
+  enrichment path for lots not linked to a full catch record; both stay
+  optional, matching `Product.lotId`'s "prospective enforcement, no
+  retroactive break" precedent.
+
+Cold-chain IoT tables:
+
+- `temperature_devices` - vendorId, unique deviceCode, status (ACTIVE |
+  OFFLINE | DECOMMISSIONED), lastSeenAt (touched on every reading that
+  supplies a `deviceId`; `isOffline` is computed on read from staleness, not
+  stored), lastCalibratedAt/calibrationDueAt (set via `PATCH
+  /temperature-devices/:id/calibrate`, due 90 days later - a documented
+  constant, not an admin-configurable interval table).
+  `isCalibrationOverdue` is computed on read and informational only - it
+  does not block new readings from an overdue device.
+- `temperature_thresholds` - replaces the previously-hardcoded FRESH_MAX_C/
+  FROZEN_MAX_C constants with real, admin-editable data. `deviceId` nullable
+  (null = platform-wide default per `SeafoodStorageType`, seeded once per
+  type); minC/maxC/warningBandC. `TemperatureReading.deviceId` (nullable)
+  lets a reading resolve a device-specific threshold first, else the
+  platform default.
+- `TemperatureAlert.severity` gains EMERGENCY (WARNING/CRITICAL already
+  existed): a reading more than 2x `warningBandC` past `minC`/`maxC` - the
+  source docs define EMERGENCY by sustained duration, which needs a
+  scheduler this codebase doesn't have, so this magnitude-based definition
+  is this service's own defensible substitute. An EMERGENCY reading
+  auto-quarantines its lot (foodSafetyStatus = QUARANTINED, an enum value
+  that existed in the schema but was never actually set anywhere before
+  this amendment) and auto-creates an `emergency_responses` row.
+- `emergency_responses` - one row per EMERGENCY alert (`alertId` unique).
+  assignedToId (nullable, set by `PATCH .../acknowledge`), status (OPEN |
+  ACKNOWLEDGED | CONTAINED | RESOLVED, strictly linear - no skipping
+  stages), actionsTaken, and a CAPA (Corrective and Preventive Action)
+  triad: rootCause/correctiveAction/preventiveAction. Transitioning to
+  RESOLVED requires rootCause and correctiveAction to be set - the same
+  "no silent auto-clear of a compliance hold" discipline already applied to
+  RECALLED lots.
+
+Compliance operations tables:
+
+- `chain_of_custody_events` - an explicit, appendable event log distinct
+  from `temperature_readings` (custody starts at the catch, before a lot
+  exists, and includes non-temperature checkpoints like INSPECTION).
+  eventType (LANDING | STORAGE_ENTRY | STORAGE_EXIT | PACKING | DISPATCH |
+  PICKUP | TRANSIT | DELIVERY | INSPECTION | DISPOSAL), nullable catchId/
+  lotId, nullable fromUserId/toUserId (who custody transferred *between*,
+  not just who logged it - LANDING sets only toUserId since the sea isn't a
+  User; DISPOSAL sets only fromUserId since there's no downstream
+  recipient; INSPECTION sets both to the inspector, a checkpoint not a
+  transfer). Auto-written at three call sites (catch registration ->
+  LANDING, lot registration -> STORAGE_ENTRY, quality inspection ->
+  INSPECTION); manual recording via `POST /food-safety/custody-events` is
+  admin-only (narrower than the original vendor/driver/admin design - the
+  leaf module that owns this table can't reach `SeafoodLotsService`'s
+  ownership check without a circular import).
+- `compliance_audit_logs` - userId, action, entityType/entityId, before/
+  afterValue (JSON), ipAddress, reason. Written by every seafood-lot/
+  recall/incident/inspection/fisherman status-update mutation. Permanent -
+  the one place in this phase with no `retentionExpiresAt` field, per the
+  spec's "Audit Logs: Permanent" retention table.
+- `compliance_documents` - documentType (INSPECTION_REPORT | RECALL_NOTICE |
+  TEMPERATURE_REPORT | AUDIT_REPORT), optional relatedLotId/relatedRecallId,
+  fileUrl, version (auto-incremented per documentType + lot/recall - never
+  overwritten), uploadedById. Distinct from the vendor-tier `VendorDocument`
+  (licensing docs) - this is for inspection/recall/temperature/audit report
+  *artifacts*.
+- `regulatory_authorities` / `regulatory_certifications` - authorities are
+  small normalized reference data (name unique, country, contact info;
+  seeded with Jamaica's Fisheries Division/NFA, Ministry of Health, Bureau
+  of Standards Jamaica) rather than a free-text `issuingAuthority` string
+  per certificate, so the same authority is one canonical, queryable row.
+  Certifications attach to exactly one of vendorId/fishermanId/
+  landingSiteId (validated in the service). status (PENDING | ACTIVE |
+  SUSPENDED | EXPIRED | REVOKED) defaults to PENDING; only an explicit
+  `PATCH .../activate` moves it to ACTIVE. Expiry detection mirrors
+  `VendorDocumentsService.syncExpiredStatuses`'s computed-on-read pattern -
+  only ACTIVE rows are swept to EXPIRED on each list call, since a PENDING/
+  SUSPENDED certificate was never in force.
+- `waste_disposal_records` - lotId, optional productId/recallId, quantity/
+  weightUnit, reason (SPOILAGE | RECALL_DESTRUCTION | EXPIRED | DAMAGED |
+  QUALITY_REJECTION | OTHER), disposalMethod, evidencePhotoUrls (plural -
+  controlled destruction typically needs multiple angles/stages),
+  witnessName/Title/SignatureUrl (required by the service when reason is
+  RECALL_DESTRUCTION - regulator-facing destruction evidence; optional for
+  the other five reasons), recordedById, disposedAt. When productId is
+  supplied, reuses `ProductsService`'s existing stock-adjustment code path
+  (a new `adjustStockForDisposal` sibling to the existing `adjustStock`,
+  sharing one `applyStockAdjustment` helper) rather than a second,
+  untracked bookkeeping trail - decrements `Product.quantityAvailable` and
+  writes an `InventoryEvent{eventType: DISPOSED}` (new enum value) in the
+  same transaction. Also writes a DISPOSAL chain-of-custody event, giving
+  the lot's custody chain an explicit end-state.
+
+Digital Product Passport (no new table - computed/composed read-model, same
+precedent as the compliance dashboard):
+
+- `seafood_lots.publicTraceToken` (unique, `@default(uuid())`) is the
+  public lookup key for `GET /passport/:token` and the QR-code endpoint -
+  deliberately not `lotNumber`, which is sequential/enumerable
+  (`LOT-2026-000001`, `-000002`, ...) and would let anyone scrape every
+  lot's traceability data by incrementing through it.
+- `GET /seafood-lots/:id/qr-code` (owning vendor or admin - it's for label
+  printing, not itself public) generates a QR PNG via the `qrcode` npm
+  package, returned as a base64 data URI encoding
+  `https://iriefishmongers.com/passport/{publicTraceToken}`.
+- The composed passport response is versioned (`passportVersion: '1.0.0'`,
+  semver) rather than the storage being versioned, so the contract can grow
+  without a schema migration: lot summary, origin (fisherman/vessel/landing
+  site/species - null when the lot has no linked catch item), the full
+  custody-chain timeline with fromRole/toRole resolved to a role label
+  (FISHERMAN | VENDOR | DRIVER | CUSTOMER - never a name, for privacy),
+  cold-chain summary (reading count / unresolved alerts / worst severity),
+  certifications (status + issuing authority name only, never documentUrl/
+  certificateNumber), and a sustainability block built entirely from
+  already-modeled data (`Vessel.fishingMethod`, `Species.regulatoryStatus`/
+  seasonal window). `sustainability.meetsMinimumSize` is always `null` -
+  this platform records no measured catch size anywhere to check against
+  `Species.minimumSizeCm`, and presenting an honest "unknown" is safer than
+  a defaulted `false` that reads as a violation that was never checked.
+
+Notification wiring closed by this amendment:
+
+- `NotificationEventType.RECALL_ISSUED` - `RecallsService.updateStatus()`
+  emits one `RecallIssuedEvent` per affected order when a recall transitions
+  to ACTIVE (reusing the already-built `getAffectedOrders()` lookup),
+  notified via Email + In-App at CRITICAL priority.
+- `NotificationEventType.COLD_CHAIN_ALERT_RAISED` has seeded templates but
+  is **not yet wired** to an actual emission point - this remains a
+  tracked, separate follow-up (no `ColdChainAlertRaisedEvent` class or
+  listener case exists yet), distinct from the rest of this amendment.
+
+Explicitly out of scope (see the source plan's own "Explicitly out of
+scope" section for the full list and reasoning): real IoT sensor
+ingestion, calibration-overdue blocking new readings, admin/operations
+broadcast notifications (`NotifyAdmin`/`NotifyOperations` for CRITICAL/
+EMERGENCY alerts - no "notify all users with role X" primitive exists;
+the `emergency_responses` OPEN queue is the practical substitute),
+scheduled/random vendor or fisherman audits, PDF/Excel export (CSV/JSON
+only), a persisted Digital Product Passport table (computed/composed only,
+not a point-in-time snapshot), and literal 7-year retention
+enforcement/purge (informational `retentionExpiresAt` only, same as the
+core Food Safety phase above).
 
 ---
 

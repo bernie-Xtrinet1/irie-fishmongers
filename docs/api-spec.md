@@ -144,6 +144,10 @@ GET /seafood-lots (admin only)
 
 GET /seafood-lots/:id/public (public - customer-facing traceability view)
 
+GET /seafood-lots/:id/qr-code (owning vendor or admin only - label-printing QR
+PNG data URI encoding the lot's public Digital Product Passport URL, keyed
+on the non-enumerable publicTraceToken, never the lot id/lotNumber)
+
 GET /seafood-lots/:id (admin only)
 
 PATCH /seafood-lots/:id/status (admin only - place on hold/quarantine/reject, or clear)
@@ -155,6 +159,21 @@ GET /temperature-readings/lot/:lotId (owning vendor or admin only)
 GET /temperature-alerts (admin only)
 
 PATCH /temperature-alerts/:id/resolve (admin only)
+
+POST /temperature-devices (vendor only - register a device)
+
+GET /temperature-devices/mine (vendor only)
+
+GET /temperature-devices (admin only - flags stale devices as offline)
+
+PATCH /temperature-devices/:id/calibrate (owning vendor or admin only - resets
+the 90-day calibration due date)
+
+POST /temperature-thresholds (admin only)
+
+GET /temperature-thresholds (admin only)
+
+PATCH /temperature-thresholds/:id (admin only)
 
 POST /quality-inspections (admin only)
 
@@ -174,9 +193,105 @@ GET /recalls (admin only)
 
 GET /recalls/:id (admin only)
 
-PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Resolved -> Closed)
+PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Resolved -> Closed;
+transitioning to Active emits one notification per affected customer/order)
 
 GET /recalls/:id/affected-orders (admin only)
+
+POST /fishermen (fisherman only - self-register, starts PENDING)
+
+GET /fishermen/me (fisherman only)
+
+GET /fishermen (admin only)
+
+PATCH /fishermen/:id/status (admin only)
+
+POST /landing-sites (admin only)
+
+GET /landing-sites (any authenticated user - registration-form picker)
+
+PATCH /landing-sites/:id (admin only)
+
+POST /species (admin only)
+
+GET /species (any authenticated user - registration-form picker)
+
+PATCH /species/:id (admin only)
+
+POST /vessels (fisherman only - self-registers their own vessel)
+
+GET /vessels/mine (fisherman only)
+
+GET /vessels (admin only)
+
+PATCH /vessels/:id/status (admin only)
+
+POST /catches (approved fisherman only - multi-species: one Catch + N CatchItem
+rows; auto-writes a LANDING chain-of-custody event)
+
+GET /catches/mine (fisherman only)
+
+GET /catches (admin only)
+
+GET /catches/:id (admin only)
+
+GET /food-safety/compliance-dashboard (admin only - active alerts by severity,
+failed inspections, lots pending review, active recalls, vendor/fisherman
+compliance summaries; computed on read)
+
+GET /food-safety/reports/traceability (admin only - ?format=csv|json)
+
+GET /food-safety/reports/temperature-compliance (admin only - ?format=csv|json)
+
+GET /food-safety/reports/recalls (admin only - ?format=csv|json)
+
+GET /food-safety/audit-logs (admin only - filterable by entityType/entityId;
+every seafood-lot/recall/incident/inspection/fisherman status change is
+logged here with before/after values, actor, IP, and reason)
+
+POST /food-safety/documents (admin only - versioned; auto-increments version
+for the same documentType + relatedLotId/relatedRecallId)
+
+GET /food-safety/documents (admin only - ?lotId=|recallId=)
+
+POST /food-safety/custody-events (admin only - manual chain-of-custody
+recording; STORAGE_ENTRY/INSPECTION are auto-written by the lot-registration
+and inspection flows, LANDING by catch registration)
+
+GET /food-safety/custody-events (admin only - ?catchId=|lotId=, full
+timeline for a lot/catch)
+
+POST /food-safety/authorities (admin only - regulatory authority reference data)
+
+GET /food-safety/authorities (admin only)
+
+POST /food-safety/certifications (admin only - exactly one of
+vendorId/fishermanId/landingSiteId; starts PENDING)
+
+GET /food-safety/certifications (admin only - ?vendorId=|fishermanId=|landingSiteId=;
+syncs lapsed ACTIVE certifications to EXPIRED on read)
+
+PATCH /food-safety/certifications/:id/activate (admin only - PENDING -> ACTIVE)
+
+PATCH /food-safety/certifications/:id (admin only - renew/suspend/reinstate/revoke)
+
+GET /food-safety/emergency-responses (admin only - ?status=OPEN; the "active
+violations" queue for EMERGENCY-severity temperature alerts)
+
+PATCH /food-safety/emergency-responses/:id/acknowledge (admin only -
+self-assigns and moves OPEN -> ACKNOWLEDGED)
+
+PATCH /food-safety/emergency-responses/:id/status (admin only - further
+transitions + CAPA notes; RESOLVED requires rootCause and correctiveAction)
+
+POST /food-safety/waste-disposal-records (owning vendor or admin only -
+requires witnessName when reason is RECALL_DESTRUCTION; decrements product
+stock and writes a DISPOSED inventory event when productId is supplied)
+
+GET /food-safety/waste-disposal-records (admin only - ?lotId=|recallId=)
+
+GET /passport/:token (public, no auth - the composed Digital Product Passport
+for a seafood lot, resolved by its non-enumerable publicTraceToken)
 
 GET /notifications/mine (authenticated user)
 
