@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+@source '../../../packages/ui/src';
+
+@theme {
+  /* Primary brand colors - .claude/ui/ui-design-system.md COLOR SYSTEM */
+  --color-irie-red: #e31e24;
+  --color-irie-green: #6db33f;
+  --color-irie-yellow: #ffd100;
+
+  /* Secondary colors */
+  --color-irie-orange: #ff6a00;
+  --color-ocean-blue: #009edb;
+
+  /* Neutral gray scale */
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
+
+  --font-sans: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
+
+  /* Border radius scale - ui-design-system.md BORDER RADIUS */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-card: 20px;
+  --radius-button: 12px;
+}
+
+body {
+  background-color: var(--color-gray-50);
+  color: var(--color-gray-900);
+  font-family: var(--font-sans);
+}
