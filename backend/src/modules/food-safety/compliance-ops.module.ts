@@ -4,11 +4,14 @@ import { AuthModule } from '../auth/auth.module';
 import { CatchesModule } from '../catches/catches.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { ComplianceDashboardController } from './controllers/compliance-dashboard.controller';
+import { ComplianceDocumentsController } from './controllers/compliance-documents.controller';
 import { ComplianceReportsController } from './controllers/compliance-reports.controller';
+import { ComplianceDocumentsRepository } from './repositories/compliance-documents.repository';
 import { QualityModule } from './quality.module';
 import { RecallsModule } from './recalls.module';
 import { SeafoodLotsModule } from './seafood-lots.module';
 import { ComplianceDashboardService } from './services/compliance-dashboard.service';
+import { ComplianceDocumentsService } from './services/compliance-documents.service';
 import { ComplianceReportsService } from './services/compliance-reports.service';
 
 /**
@@ -23,7 +26,7 @@ import { ComplianceReportsService } from './services/compliance-reports.service'
  */
 @Module({
   imports: [AuthModule, SeafoodLotsModule, QualityModule, RecallsModule, VendorsModule, CatchesModule],
-  controllers: [ComplianceDashboardController, ComplianceReportsController],
-  providers: [ComplianceDashboardService, ComplianceReportsService],
+  controllers: [ComplianceDashboardController, ComplianceReportsController, ComplianceDocumentsController],
+  providers: [ComplianceDashboardService, ComplianceReportsService, ComplianceDocumentsService, ComplianceDocumentsRepository],
 })
 export class ComplianceOpsModule {}
