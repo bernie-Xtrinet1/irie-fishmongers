@@ -209,3 +209,46 @@ export interface DashboardSummary {
   compliance: DashboardComplianceSummary;
   systemHealth: DashboardSystemHealth;
 }
+
+// --- Vendor Management (Phase 12A) ---
+
+export enum VendorStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  SUSPENDED = 'SUSPENDED',
+  REJECTED = 'REJECTED',
+}
+
+// GET /vendors and PATCH /vendors/:id/status serialize the raw Prisma
+// Vendor record (there is no ClassSerializerInterceptor registered), which
+// is wider than the backend's own VendorResponseEntity Swagger class - it
+// also includes tier/complianceScore/primaryZoneId/updatedAt. This type
+// mirrors the real runtime response, not the (currently incomplete)
+// Swagger doc; verify against a live response if backend/src/modules/
+// vendors/entities/vendor-response.entity.ts is ever corrected to match.
+export interface VendorAdmin {
+  id: string;
+  userId: string;
+  businessName: string;
+  description: string | null;
+  phone: string | null;
+  parish: Parish;
+  logoUrl: string | null;
+  status: VendorStatus;
+  tier: VendorTier;
+  complianceScore: number | null;
+  termsAcceptedAt: string;
+  primaryZoneId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// PATCH /vendors/:id/status only accepts this subset - PENDING is never a
+// settable target (vendors start PENDING at registration).
+export const ASSIGNABLE_VENDOR_STATUSES = [
+  VendorStatus.APPROVED,
+  VendorStatus.SUSPENDED,
+  VendorStatus.REJECTED,
+] as const;
+
+export type AssignableVendorStatus = (typeof ASSIGNABLE_VENDOR_STATUSES)[number];
