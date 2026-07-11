@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InventoryEventType } from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
@@ -98,12 +99,37 @@ export class ProductsService {
     delta: number,
   ): Promise<ProductResponseEntity> {
     const product = await this.getOwnedProduct(userId, productId);
-    const updated = await this.productsRepository.adjustStock(product.id, delta);
+    return this.applyStockAdjustment(product.id, delta, 'MANUAL_ADJUSTMENT', userId);
+  }
+
+  // Called by WasteDisposalRecordsService after it has already run its own
+  // ownership/admin check (which allows an admin to record disposal on a
+  // vendor's behalf) - skips getOwnedProduct's vendor-only lookup rather
+  // than re-implementing quantity decrement + InventoryEvent writing.
+  async adjustStockForDisposal(
+    productId: string,
+    delta: number,
+    triggeredById: string,
+  ): Promise<ProductResponseEntity> {
+    const product = await this.productsRepository.findById(productId);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    return this.applyStockAdjustment(product.id, delta, 'DISPOSED', triggeredById);
+  }
+
+  private async applyStockAdjustment(
+    productId: string,
+    delta: number,
+    eventType: InventoryEventType,
+    triggeredById: string,
+  ): Promise<ProductResponseEntity> {
+    const updated = await this.productsRepository.adjustStock(productId, delta);
     await this.inventoryEventsRepository.create({
-      productId: product.id,
-      eventType: 'MANUAL_ADJUSTMENT',
+      productId,
+      eventType,
       quantityDelta: delta,
-      triggeredById: userId,
+      triggeredById,
     });
     return ProductsService.toResponse(updated);
   }
