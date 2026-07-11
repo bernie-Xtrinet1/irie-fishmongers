@@ -20,6 +20,18 @@ export class TemperatureDeviceResponseEntity {
   @ApiProperty({ description: 'Computed on read: true when no reading has been seen within the staleness window' })
   isOffline!: boolean;
 
+  @ApiProperty({ required: false, nullable: true })
+  lastCalibratedAt!: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  calibrationDueAt!: Date | null;
+
+  @ApiProperty({
+    description:
+      'Computed on read, informational only - does not block reading ingestion. True when calibrationDueAt has passed.',
+  })
+  isCalibrationOverdue!: boolean;
+
   @ApiProperty()
   createdAt!: Date;
 }

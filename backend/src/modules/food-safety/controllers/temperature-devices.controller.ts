@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
 
@@ -42,5 +42,16 @@ export class TemperatureDevicesController {
   @ApiResponseDoc({ status: 200, type: TemperatureDeviceResponseEntity, isArray: true })
   list(@Query('vendorId') vendorId?: string): Promise<TemperatureDeviceResponseEntity[]> {
     return this.devicesService.list(vendorId);
+  }
+
+  @Patch(':id/calibrate')
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @ApiOperation({ summary: 'Record a calibration, resetting the 90-day calibration due date (owning vendor or admin)' })
+  @ApiResponseDoc({ status: 200, type: TemperatureDeviceResponseEntity })
+  calibrate(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ): Promise<TemperatureDeviceResponseEntity> {
+    return this.devicesService.calibrate(user, id);
   }
 }

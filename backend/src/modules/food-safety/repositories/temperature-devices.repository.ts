@@ -28,6 +28,13 @@ export class TemperatureDevicesRepository {
     return this.prisma.temperatureDevice.update({ where: { id }, data: { lastSeenAt: new Date() } });
   }
 
+  calibrate(id: string, calibratedAt: Date, dueAt: Date): Promise<TemperatureDevice> {
+    return this.prisma.temperatureDevice.update({
+      where: { id },
+      data: { lastCalibratedAt: calibratedAt, calibrationDueAt: dueAt },
+    });
+  }
+
   updateStatus(id: string, status: DeviceStatus): Promise<TemperatureDevice> {
     return this.prisma.temperatureDevice.update({ where: { id }, data: { status } });
   }

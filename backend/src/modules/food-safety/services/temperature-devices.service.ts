@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { TemperatureDevice } from '@prisma/client';
+import { RoleName, TemperatureDevice } from '@prisma/client';
 
+import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { RegisterTemperatureDeviceDto } from '../dto/register-temperature-device.dto';
 import { TemperatureDeviceResponseEntity } from '../entities/temperature-device-response.entity';
@@ -10,6 +11,11 @@ import { TemperatureDevicesRepository } from '../repositories/temperature-device
 // computed on read, not a stored/scheduled state, matching this codebase's
 // established no-scheduler-exists precedent elsewhere.
 const OFFLINE_AFTER_MS = 60 * 60 * 1000;
+
+// A documented constant, same category as the EMERGENCY-severity constant
+// elsewhere in this module - no admin-configurable interval table for a
+// single number.
+const CALIBRATION_INTERVAL_MS = 90 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class TemperatureDevicesService {
@@ -50,6 +56,25 @@ export class TemperatureDevicesService {
     return devices.map((device) => TemperatureDevicesService.toResponse(device));
   }
 
+  async calibrate(user: RequestUser, deviceId: string): Promise<TemperatureDeviceResponseEntity> {
+    const device = await this.devicesRepository.findById(deviceId);
+    if (!device) {
+      throw new NotFoundException('Temperature device not found');
+    }
+
+    if (!user.roles.includes(RoleName.ADMINISTRATOR)) {
+      const vendor = await this.vendorsRepository.findByUserId(user.id);
+      if (!vendor || vendor.id !== device.vendorId) {
+        throw new ForbiddenException('You do not own this device');
+      }
+    }
+
+    const calibratedAt = new Date();
+    const dueAt = new Date(calibratedAt.getTime() + CALIBRATION_INTERVAL_MS);
+    const updated = await this.devicesRepository.calibrate(deviceId, calibratedAt, dueAt);
+    return TemperatureDevicesService.toResponse(updated);
+  }
+
   private static toResponse(device: TemperatureDevice): TemperatureDeviceResponseEntity {
     return {
       id: device.id,
@@ -60,6 +85,9 @@ export class TemperatureDevicesService {
       isOffline:
         device.status !== 'DECOMMISSIONED' &&
         (!device.lastSeenAt || Date.now() - device.lastSeenAt.getTime() > OFFLINE_AFTER_MS),
+      lastCalibratedAt: device.lastCalibratedAt,
+      calibrationDueAt: device.calibrationDueAt,
+      isCalibrationOverdue: !!device.calibrationDueAt && Date.now() > device.calibrationDueAt.getTime(),
       createdAt: device.createdAt,
     };
   }
