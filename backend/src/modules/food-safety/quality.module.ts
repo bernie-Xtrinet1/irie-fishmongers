@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { ComplianceAuditLogModule } from './compliance-audit-log.module';
 import { FoodSafetyIncidentsController } from './controllers/food-safety-incidents.controller';
 import { QualityInspectionsController } from './controllers/quality-inspections.controller';
+import { CustodyEventsModule } from './custody-events.module';
 import { FoodSafetyIncidentsRepository } from './repositories/food-safety-incidents.repository';
 import { QualityInspectionsRepository } from './repositories/quality-inspections.repository';
 import { SeafoodLotsModule } from './seafood-lots.module';
@@ -16,7 +17,7 @@ import { QualityInspectionsService } from './services/quality-inspections.servic
  * from cold-chain telemetry and recall operations.
  */
 @Module({
-  imports: [AuthModule, SeafoodLotsModule, ComplianceAuditLogModule],
+  imports: [AuthModule, SeafoodLotsModule, ComplianceAuditLogModule, CustodyEventsModule],
   controllers: [QualityInspectionsController, FoodSafetyIncidentsController],
   providers: [QualityInspectionsService, FoodSafetyIncidentsService, QualityInspectionsRepository, FoodSafetyIncidentsRepository],
   exports: [FoodSafetyIncidentsRepository, QualityInspectionsRepository],

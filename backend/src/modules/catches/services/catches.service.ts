@@ -1,6 +1,8 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 
+import { CatchRegisteredEvent } from '../../../common/events/catch-registered.event';
 import { ListCatchesDto } from '../dto/list-catches.dto';
 import { RegisterCatchDto } from '../dto/register-catch.dto';
 import { CatchesRepository, CatchWithItems, CreateCatchItemInput } from '../repositories/catches.repository';
@@ -25,6 +27,7 @@ export class CatchesService {
     private readonly landingSitesRepository: LandingSitesRepository,
     private readonly speciesRepository: SpeciesRepository,
     private readonly vesselsRepository: VesselsRepository,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async register(userId: string, dto: RegisterCatchDto): Promise<CatchWithItems> {
@@ -68,7 +71,14 @@ export class CatchesService {
       });
     }
 
-    return this.createCatchWithUniqueCatchNumber(fisherman.id, dto, items, catchDate);
+    const created = await this.createCatchWithUniqueCatchNumber(fisherman.id, dto, items, catchDate);
+
+    await this.eventEmitter.emitAsync(
+      CatchRegisteredEvent.eventName,
+      new CatchRegisteredEvent(created.id, userId),
+    );
+
+    return created;
   }
 
   async getById(id: string): Promise<CatchWithItems> {

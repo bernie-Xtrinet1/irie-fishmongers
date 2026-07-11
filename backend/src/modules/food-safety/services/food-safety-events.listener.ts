@@ -1,9 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
+import { CatchRegisteredEvent } from '../../../common/events/catch-registered.event';
 import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { FoodSafetyIncidentsRepository } from '../repositories/food-safety-incidents.repository';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 
 /**
  * Consumes DeliveryRejectedEvent and raises one FoodSafetyIncident per
@@ -11,12 +13,17 @@ import { FoodSafetyIncidentsRepository } from '../repositories/food-safety-incid
  * repository directly rather than FoodSafetyIncidentsService.report()
  * (gated to vendor self-reports via assertOwnedByRequester) since this is a
  * system-triggered report on the customer's behalf, not identity spoofing.
+ *
+ * Also consumes CatchRegisteredEvent to write the LANDING chain-of-custody
+ * event - CatchesModule can't call CustodyEventsRepository directly
+ * without a circular import.
  */
 @Injectable()
 export class FoodSafetyEventsListener {
   constructor(
     private readonly prisma: PrismaService,
     private readonly incidentsRepository: FoodSafetyIncidentsRepository,
+    private readonly custodyEventsRepository: CustodyEventsRepository,
   ) {}
 
   @OnEvent(DeliveryRejectedEvent.eventName)
@@ -40,5 +47,14 @@ export class FoodSafetyEventsListener {
         description: `Customer rejected delivery: ${event.reason}`,
       });
     }
+  }
+
+  @OnEvent(CatchRegisteredEvent.eventName)
+  async onCatchRegistered(event: CatchRegisteredEvent): Promise<void> {
+    await this.custodyEventsRepository.create({
+      catchId: event.catchId,
+      eventType: 'LANDING',
+      toUserId: event.fishermanUserId,
+    });
   }
 }

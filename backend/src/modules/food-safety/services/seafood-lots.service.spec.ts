@@ -1,12 +1,14 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Catch, RoleName, SeafoodLot, Species, Vendor } from '@prisma/client';
+import { Catch, Fisherman, RoleName, SeafoodLot, Species, Vendor } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CatchItemWithCatch, CatchItemsRepository } from '../../catches/repositories/catch-items.repository';
+import { FishermenRepository } from '../../catches/repositories/fishermen.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { SpeciesRepository } from '../../catches/repositories/species.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateSeafoodLotDto } from '../dto/create-seafood-lot.dto';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 import { ComplianceAuditLogService } from './compliance-audit-log.service';
@@ -97,6 +99,27 @@ function buildCatch(overrides: Partial<Catch> = {}): Catch {
   };
 }
 
+function buildFisherman(overrides: Partial<Fisherman> = {}): Fisherman {
+  return {
+    id: 'fisherman-1',
+    userId: 'fisherman-user-1',
+    vendorId: null,
+    fullName: 'Ken Fisher',
+    contactPhone: '876-555-0100',
+    contactEmail: null,
+    vesselName: null,
+    vesselRegistrationNumber: null,
+    fishingLicenseNumber: null,
+    landingSiteId: 'site-1',
+    bankAccountName: null,
+    bankAccountNumber: null,
+    status: 'APPROVED',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
 function buildCatchItem(overrides: Partial<CatchItemWithCatch> = {}): CatchItemWithCatch {
   const { catch: catchOverrides, ...itemOverrides } = overrides;
   return {
@@ -131,6 +154,8 @@ describe('SeafoodLotsService', () => {
   let speciesRepository: jest.Mocked<Pick<SpeciesRepository, 'findById'>>;
   let landingSitesRepository: jest.Mocked<Pick<LandingSitesRepository, 'findById'>>;
   let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
+  let fishermenRepository: jest.Mocked<Pick<FishermenRepository, 'findById'>>;
+  let custodyEventsRepository: jest.Mocked<Pick<CustodyEventsRepository, 'create'>>;
   let service: SeafoodLotsService;
 
   beforeEach(() => {
@@ -149,6 +174,8 @@ describe('SeafoodLotsService', () => {
     speciesRepository = { findById: jest.fn() };
     landingSitesRepository = { findById: jest.fn() };
     auditLogService = { record: jest.fn() };
+    fishermenRepository = { findById: jest.fn() };
+    custodyEventsRepository = { create: jest.fn() };
 
     service = new SeafoodLotsService(
       lotsRepository as unknown as SeafoodLotsRepository,
@@ -158,6 +185,8 @@ describe('SeafoodLotsService', () => {
       speciesRepository as unknown as SpeciesRepository,
       landingSitesRepository as unknown as LandingSitesRepository,
       auditLogService as unknown as ComplianceAuditLogService,
+      fishermenRepository as unknown as FishermenRepository,
+      custodyEventsRepository as unknown as CustodyEventsRepository,
     );
   });
 
@@ -189,6 +218,12 @@ describe('SeafoodLotsService', () => {
           weightUnit: 'POUNDS',
         }),
       );
+      expect(custodyEventsRepository.create).toHaveBeenCalledWith({
+        lotId: 'lot-1',
+        eventType: 'STORAGE_ENTRY',
+        fromUserId: undefined,
+        toUserId: 'vendor-user-1',
+      });
     });
 
     it('throws when the user has no vendor profile', async () => {
@@ -228,6 +263,7 @@ describe('SeafoodLotsService', () => {
           createdAt: new Date(),
           updatedAt: new Date(),
         });
+        fishermenRepository.findById.mockResolvedValue(buildFisherman());
         lotsRepository.countCreatedThisYear.mockResolvedValue(0);
         lotsRepository.create.mockResolvedValue(buildLot());
 
@@ -243,6 +279,13 @@ describe('SeafoodLotsService', () => {
             landingSite: 'Falmouth Landing Site',
           }),
         );
+        expect(fishermenRepository.findById).toHaveBeenCalledWith('fisherman-1');
+        expect(custodyEventsRepository.create).toHaveBeenCalledWith({
+          lotId: 'lot-1',
+          eventType: 'STORAGE_ENTRY',
+          fromUserId: 'fisherman-user-1',
+          toUserId: 'vendor-user-1',
+        });
       });
 
       it('throws when the catch item does not exist', async () => {

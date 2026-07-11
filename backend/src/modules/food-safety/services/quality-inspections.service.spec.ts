@@ -3,6 +3,7 @@ import { QualityInspection, SeafoodLot } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateQualityInspectionDto } from '../dto/create-quality-inspection.dto';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { QualityInspectionsRepository } from '../repositories/quality-inspections.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { ComplianceAuditLogService } from './compliance-audit-log.service';
@@ -54,6 +55,7 @@ describe('QualityInspectionsService', () => {
   let lotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById' | 'updateStatus' | 'updateGrading'>>;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
   let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
+  let custodyEventsRepository: jest.Mocked<Pick<CustodyEventsRepository, 'create'>>;
   let service: QualityInspectionsService;
 
   beforeEach(() => {
@@ -61,12 +63,14 @@ describe('QualityInspectionsService', () => {
     lotsRepository = { findById: jest.fn(), updateStatus: jest.fn(), updateGrading: jest.fn() };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
     auditLogService = { record: jest.fn() };
+    custodyEventsRepository = { create: jest.fn() };
 
     service = new QualityInspectionsService(
       inspectionsRepository as unknown as QualityInspectionsRepository,
       lotsRepository as unknown as SeafoodLotsRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
       auditLogService as unknown as ComplianceAuditLogService,
+      custodyEventsRepository as unknown as CustodyEventsRepository,
     );
   });
 
@@ -120,6 +124,22 @@ describe('QualityInspectionsService', () => {
       expect(lotsRepository.updateGrading).toHaveBeenCalledWith('lot-1', {
         freshnessGrade: 'GRADE_A',
         qualityScore: 95,
+      });
+    });
+
+    it('writes an INSPECTION custody event with both sides set to the inspector', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      inspectionsRepository.create.mockResolvedValue(buildInspection());
+      lotsRepository.updateGrading.mockResolvedValue(buildLot());
+      lotsRepository.updateStatus.mockResolvedValue(buildLot());
+
+      await service.inspect('admin-1', dto);
+
+      expect(custodyEventsRepository.create).toHaveBeenCalledWith({
+        lotId: 'lot-1',
+        eventType: 'INSPECTION',
+        fromUserId: 'admin-1',
+        toUserId: 'admin-1',
       });
     });
 

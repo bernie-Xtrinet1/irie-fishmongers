@@ -4,6 +4,7 @@ import { FoodSafetyStatus, Prisma, RoleName, SeafoodLot, WeightUnit } from '@pri
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CatchItemsRepository } from '../../catches/repositories/catch-items.repository';
+import { FishermenRepository } from '../../catches/repositories/fishermen.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { SpeciesRepository } from '../../catches/repositories/species.repository';
 import { assertSpeciesInSeason, assertSpeciesSellable } from '../../catches/utils/species-validation.util';
@@ -13,6 +14,7 @@ import { ListSeafoodLotsDto } from '../dto/list-seafood-lots.dto';
 import { PaginatedSeafoodLotsEntity } from '../entities/paginated-seafood-lots.entity';
 import { SeafoodLotPublicEntity } from '../entities/seafood-lot-public.entity';
 import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entity';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { LotWithVendor, SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 import { ComplianceAuditLogService } from './compliance-audit-log.service';
@@ -26,6 +28,7 @@ interface ResolvedLotSourceFields {
   weightUnit: WeightUnit;
   catchLocation?: string;
   landingSite?: string;
+  fishermanUserId?: string;
 }
 
 @Injectable()
@@ -38,6 +41,8 @@ export class SeafoodLotsService {
     private readonly speciesRepository: SpeciesRepository,
     private readonly landingSitesRepository: LandingSitesRepository,
     private readonly auditLogService: ComplianceAuditLogService,
+    private readonly fishermenRepository: FishermenRepository,
+    private readonly custodyEventsRepository: CustodyEventsRepository,
   ) {}
 
   async register(userId: string, dto: CreateSeafoodLotDto): Promise<SeafoodLotResponseEntity> {
@@ -51,6 +56,14 @@ export class SeafoodLotsService {
 
     const source = await this.resolveLotSourceFields(dto);
     const lot = await this.createLotWithUniqueLotNumber(vendor.id, dto, source);
+
+    await this.custodyEventsRepository.create({
+      lotId: lot.id,
+      eventType: 'STORAGE_ENTRY',
+      fromUserId: source.fishermanUserId,
+      toUserId: vendor.userId,
+    });
+
     return SeafoodLotsService.toResponse(lot);
   }
 
@@ -70,9 +83,10 @@ export class SeafoodLotsService {
         throw new NotFoundException('Catch item not found');
       }
 
-      const [species, landingSite] = await Promise.all([
+      const [species, landingSite, fisherman] = await Promise.all([
         this.speciesRepository.findById(catchItem.speciesId),
         this.landingSitesRepository.findById(catchItem.catch.landingSiteId),
+        this.fishermenRepository.findById(catchItem.catch.fishermanId),
       ]);
 
       return {
@@ -84,6 +98,7 @@ export class SeafoodLotsService {
         weightUnit: catchItem.weightUnit,
         catchLocation: dto.catchLocation ?? catchItem.catch.fishingArea ?? undefined,
         landingSite: landingSite?.name,
+        fishermanUserId: fisherman?.userId,
       };
     }
 

@@ -5,6 +5,7 @@ import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateQualityInspectionDto } from '../dto/create-quality-inspection.dto';
 import { PaginatedQualityInspectionsEntity } from '../entities/paginated-quality-inspections.entity';
 import { QualityInspectionResponseEntity } from '../entities/quality-inspection-response.entity';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { QualityInspectionsRepository } from '../repositories/quality-inspections.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { ComplianceAuditLogService } from './compliance-audit-log.service';
@@ -24,6 +25,7 @@ export class QualityInspectionsService {
     private readonly lotsRepository: SeafoodLotsRepository,
     private readonly seafoodLotsService: SeafoodLotsService,
     private readonly auditLogService: ComplianceAuditLogService,
+    private readonly custodyEventsRepository: CustodyEventsRepository,
   ) {}
 
   async inspect(
@@ -74,6 +76,16 @@ export class QualityInspectionsService {
       afterValue: { freshnessGrade: dto.freshnessGrade, qualityScore: dto.qualityScore, result: dto.result },
       ipAddress,
       reason: dto.notes,
+    });
+
+    // INSPECTION is a checkpoint, not a custody transfer - both sides are
+    // the inspector, per the chain-of-custody design (fromUserId ===
+    // toUserId represents "held by, verified by").
+    await this.custodyEventsRepository.create({
+      lotId: dto.lotId,
+      eventType: 'INSPECTION',
+      fromUserId: inspectorId,
+      toUserId: inspectorId,
     });
 
     return QualityInspectionsService.toResponse(inspection);
