@@ -13,6 +13,7 @@ import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateTemperatureReadingDto } from '../dto/create-temperature-reading.dto';
+import { EmergencyResponsesRepository } from '../repositories/emergency-responses.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
 import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.repository';
 import { TemperatureDevicesRepository } from '../repositories/temperature-devices.repository';
@@ -166,6 +167,7 @@ describe('TemperatureMonitoringService', () => {
     Pick<TemperatureThresholdsRepository, 'findByDeviceAndStorageType' | 'findPlatformDefault'>
   >;
   let devicesRepository: jest.Mocked<Pick<TemperatureDevicesRepository, 'touchLastSeen'>>;
+  let emergencyResponsesRepository: jest.Mocked<Pick<EmergencyResponsesRepository, 'create'>>;
   let service: TemperatureMonitoringService;
 
   beforeEach(() => {
@@ -185,6 +187,7 @@ describe('TemperatureMonitoringService', () => {
       findPlatformDefault: jest.fn().mockResolvedValue(buildThreshold()),
     };
     devicesRepository = { touchLastSeen: jest.fn().mockResolvedValue(buildDevice()) };
+    emergencyResponsesRepository = { create: jest.fn() };
 
     service = new TemperatureMonitoringService(
       readingsRepository as unknown as TemperatureReadingsRepository,
@@ -195,6 +198,7 @@ describe('TemperatureMonitoringService', () => {
       seafoodLotsService as unknown as SeafoodLotsService,
       thresholdsRepository as unknown as TemperatureThresholdsRepository,
       devicesRepository as unknown as TemperatureDevicesRepository,
+      emergencyResponsesRepository as unknown as EmergencyResponsesRepository,
     );
   });
 
@@ -379,6 +383,7 @@ describe('TemperatureMonitoringService', () => {
         'QUARANTINED',
         expect.stringContaining('emergency temperature reading'),
       );
+      expect(emergencyResponsesRepository.create).toHaveBeenCalledWith('alert-1');
     });
 
     it('does not re-quarantine a lot that is already RECALLED on an EMERGENCY reading', async () => {
@@ -391,6 +396,18 @@ describe('TemperatureMonitoringService', () => {
 
       expect(result.alert?.severity).toBe('EMERGENCY');
       expect(lotsRepository.updateStatus).not.toHaveBeenCalled();
+      expect(emergencyResponsesRepository.create).toHaveBeenCalledWith('alert-1');
+    });
+
+    it('does not create an EmergencyResponse for a CRITICAL (non-EMERGENCY) reading', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot({ storageType: 'FRESH', foodSafetyStatus: 'SAFE' }));
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      readingsRepository.create.mockResolvedValue(buildReading());
+      alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'CRITICAL' }));
+
+      await service.recordReading('vendor-user-1', { ...dto, temperatureC: 7.1 });
+
+      expect(emergencyResponsesRepository.create).not.toHaveBeenCalled();
     });
 
     it('touches the device lastSeenAt when a deviceId is supplied', async () => {

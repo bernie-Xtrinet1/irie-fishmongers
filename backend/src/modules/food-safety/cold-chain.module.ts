@@ -3,13 +3,16 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { VendorsModule } from '../vendors/vendors.module';
+import { EmergencyResponsesController } from './controllers/emergency-responses.controller';
 import { TemperatureDevicesController } from './controllers/temperature-devices.controller';
 import { TemperatureMonitoringController } from './controllers/temperature-monitoring.controller';
 import { TemperatureThresholdsController } from './controllers/temperature-thresholds.controller';
+import { EmergencyResponsesRepository } from './repositories/emergency-responses.repository';
 import { TemperatureDevicesRepository } from './repositories/temperature-devices.repository';
 import { TemperatureReadingsRepository } from './repositories/temperature-readings.repository';
 import { TemperatureThresholdsRepository } from './repositories/temperature-thresholds.repository';
 import { SeafoodLotsModule } from './seafood-lots.module';
+import { EmergencyResponsesService } from './services/emergency-responses.service';
 import { TemperatureDevicesService } from './services/temperature-devices.service';
 import { TemperatureMonitoringService } from './services/temperature-monitoring.service';
 import { TemperatureThresholdsService } from './services/temperature-thresholds.service';
@@ -23,14 +26,21 @@ import { TemperatureThresholdsService } from './services/temperature-thresholds.
  */
 @Module({
   imports: [AuthModule, VendorsModule, DeliveryModule, SeafoodLotsModule],
-  controllers: [TemperatureMonitoringController, TemperatureDevicesController, TemperatureThresholdsController],
+  controllers: [
+    TemperatureMonitoringController,
+    TemperatureDevicesController,
+    TemperatureThresholdsController,
+    EmergencyResponsesController,
+  ],
   providers: [
     TemperatureMonitoringService,
     TemperatureDevicesService,
     TemperatureThresholdsService,
+    EmergencyResponsesService,
     TemperatureReadingsRepository,
     TemperatureDevicesRepository,
     TemperatureThresholdsRepository,
+    EmergencyResponsesRepository,
   ],
   exports: [TemperatureDevicesRepository, TemperatureThresholdsRepository],
 })

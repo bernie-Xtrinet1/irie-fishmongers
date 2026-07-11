@@ -16,6 +16,7 @@ import { TemperatureAlertsRepository } from '../repositories/temperature-alerts.
 import { TemperatureDevicesRepository } from '../repositories/temperature-devices.repository';
 import { TemperatureReadingsRepository } from '../repositories/temperature-readings.repository';
 import { TemperatureThresholdsRepository } from '../repositories/temperature-thresholds.repository';
+import { EmergencyResponsesRepository } from '../repositories/emergency-responses.repository';
 import { SeafoodLotsService } from './seafood-lots.service';
 
 @Injectable()
@@ -29,6 +30,7 @@ export class TemperatureMonitoringService {
     private readonly seafoodLotsService: SeafoodLotsService,
     private readonly thresholdsRepository: TemperatureThresholdsRepository,
     private readonly devicesRepository: TemperatureDevicesRepository,
+    private readonly emergencyResponsesRepository: EmergencyResponsesRepository,
   ) {}
 
   async recordReading(
@@ -94,6 +96,10 @@ export class TemperatureMonitoringService {
         'QUARANTINED',
         `Automatically quarantined after an emergency temperature reading of ${dto.temperatureC}C at ${dto.checkpoint}`,
       );
+    }
+
+    if (severity === 'EMERGENCY') {
+      await this.emergencyResponsesRepository.create(alert.id);
     }
 
     return {
