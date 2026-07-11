@@ -1,8 +1,9 @@
 'use client';
 
+import type { DashboardSummary } from '@iriefishmongers/types';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
-import { fetchDashboardSummary, type DashboardSummary } from '@/lib/api/analytics';
+import { fetchDashboardSummary } from '@/lib/api/analytics';
 
 interface UseDashboardSummaryOptions {
   // Distinguishes each caller's query cache entry so every widget (and the

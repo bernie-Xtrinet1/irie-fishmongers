@@ -140,3 +140,72 @@ export interface VendorProfile {
   coldChainScore: number | null;
   recentReviews: [];
 }
+
+// --- Admin Dashboard (Phase 12A) ---
+// Hand-mirrored from backend/src/modules/analytics/entities/dashboard-summary.entity.ts
+// - verify against that source (or GET /api/v1/docs) before relying on a
+// field that isn't already used elsewhere in this file.
+
+export interface DashboardFinancials {
+  grossPaidAmount: string;
+  platformCommission: string;
+  currency: 'JMD';
+}
+
+export interface VendorOrdersByStatus {
+  PENDING: number;
+  ACCEPTED: number;
+  PREPARING: number;
+  READY_FOR_PICKUP: number;
+  ASSIGNED_TO_DRIVER: number;
+  IN_TRANSIT: number;
+  DELIVERED: number;
+  DELIVERY_FAILED: number;
+  REJECTED: number;
+  CANCELLED: number;
+}
+
+export interface DashboardOrderCounts {
+  customerOrdersTotal: number;
+  vendorOrdersByStatus: VendorOrdersByStatus;
+}
+
+export interface FourWayStatusCounts {
+  PENDING: number;
+  APPROVED: number;
+  SUSPENDED: number;
+  REJECTED: number;
+}
+
+export interface DashboardVendorCounts {
+  byStatus: FourWayStatusCounts;
+}
+
+export interface DashboardDriverCounts {
+  byStatus: FourWayStatusCounts;
+}
+
+export interface AlertsBySeverity {
+  WARNING: number;
+  CRITICAL: number;
+  EMERGENCY: number;
+}
+
+export interface DashboardComplianceSummary {
+  activeAlertsBySeverity: AlertsBySeverity;
+  activeRecalls: number;
+}
+
+export interface DashboardSystemHealth {
+  postgres: 'up' | 'down';
+  redis: 'up' | 'down';
+}
+
+export interface DashboardSummary {
+  financials: DashboardFinancials;
+  orders: DashboardOrderCounts;
+  vendors: DashboardVendorCounts;
+  drivers: DashboardDriverCounts;
+  compliance: DashboardComplianceSummary;
+  systemHealth: DashboardSystemHealth;
+}
