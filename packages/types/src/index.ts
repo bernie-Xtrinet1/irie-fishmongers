@@ -384,3 +384,131 @@ export interface FleetTrip {
   insuranceAllocation: string | null;
   createdAt: string;
 }
+
+// --- Cold Chain Monitoring (Phase 12A) ---
+
+export enum AlertSeverity {
+  WARNING = 'WARNING',
+  CRITICAL = 'CRITICAL',
+  EMERGENCY = 'EMERGENCY',
+}
+
+// GET /temperature-alerts, PATCH /temperature-alerts/:id/resolve -
+// TemperatureAlertResponseEntity declares exactly the scalar Prisma
+// TemperatureAlert fields, no drift here.
+export interface TemperatureAlert {
+  id: string;
+  readingId: string;
+  lotId: string;
+  severity: AlertSeverity;
+  actualC: string;
+  resolved: boolean;
+  resolvedAt: string | null;
+  createdAt: string;
+}
+
+export enum DeviceStatus {
+  ACTIVE = 'ACTIVE',
+  OFFLINE = 'OFFLINE',
+  DECOMMISSIONED = 'DECOMMISSIONED',
+}
+
+// GET /temperature-devices, PATCH /temperature-devices/:id/calibrate -
+// TemperatureDeviceResponseEntity declares exactly the scalar Prisma
+// TemperatureDevice fields plus two computed-on-read booleans (isOffline,
+// isCalibrationOverdue), no drift here.
+export interface TemperatureDevice {
+  id: string;
+  vendorId: string;
+  deviceCode: string;
+  status: DeviceStatus;
+  lastSeenAt: string | null;
+  isOffline: boolean;
+  lastCalibratedAt: string | null;
+  calibrationDueAt: string | null;
+  isCalibrationOverdue: boolean;
+  createdAt: string;
+}
+
+export enum EmergencyResponseStatus {
+  OPEN = 'OPEN',
+  ACKNOWLEDGED = 'ACKNOWLEDGED',
+  CONTAINED = 'CONTAINED',
+  RESOLVED = 'RESOLVED',
+}
+
+// GET /food-safety/emergency-responses, PATCH .../acknowledge,
+// PATCH .../status - EmergencyResponseResponseEntity declares exactly the
+// scalar Prisma EmergencyResponse fields, no drift here.
+export interface EmergencyResponse {
+  id: string;
+  alertId: string;
+  assignedToId: string | null;
+  status: EmergencyResponseStatus;
+  actionsTaken: string | null;
+  rootCause: string | null;
+  correctiveAction: string | null;
+  preventiveAction: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+}
+
+// Linear, no skipping - matches EmergencyResponsesService's
+// ALLOWED_STATUS_TRANSITIONS. An EMERGENCY can't be closed out without
+// first being acknowledged and contained.
+export const EMERGENCY_RESPONSE_NEXT_STATUS: Record<EmergencyResponseStatus, EmergencyResponseStatus | null> = {
+  [EmergencyResponseStatus.OPEN]: EmergencyResponseStatus.ACKNOWLEDGED,
+  [EmergencyResponseStatus.ACKNOWLEDGED]: EmergencyResponseStatus.CONTAINED,
+  [EmergencyResponseStatus.CONTAINED]: EmergencyResponseStatus.RESOLVED,
+  [EmergencyResponseStatus.RESOLVED]: null,
+};
+
+export enum FoodSafetyStatus {
+  SAFE = 'SAFE',
+  UNDER_REVIEW = 'UNDER_REVIEW',
+  SAFETY_HOLD = 'SAFETY_HOLD',
+  QUARANTINED = 'QUARANTINED',
+  RECALLED = 'RECALLED',
+  REJECTED = 'REJECTED',
+}
+
+export enum WeightUnit {
+  POUNDS = 'POUNDS',
+  KILOGRAMS = 'KILOGRAMS',
+}
+
+// GET /seafood-lots, PATCH /seafood-lots/:id/status -
+// SeafoodLotResponseEntity declares exactly the scalar Prisma SeafoodLot
+// fields plus a computed retentionExpiresAt, no drift here.
+export interface SeafoodLotAdmin {
+  id: string;
+  lotNumber: string;
+  vendorId: string;
+  species: string;
+  storageType: SeafoodStorageType;
+  catchDate: string;
+  catchLocation: string | null;
+  landingSite: string | null;
+  weight: string;
+  weightUnit: WeightUnit;
+  freshnessGrade: FreshnessGrade | null;
+  qualityScore: number | null;
+  foodSafetyStatus: FoodSafetyStatus;
+  statusNotes: string | null;
+  createdAt: string;
+  retentionExpiresAt: string;
+}
+
+// PATCH /seafood-lots/:id/status only accepts this subset - RECALLED is
+// deliberately excluded (a lot only ever becomes RECALLED through the
+// Recall workflow, never this direct override endpoint).
+export const ASSIGNABLE_LOT_STATUSES = [
+  FoodSafetyStatus.SAFE,
+  FoodSafetyStatus.UNDER_REVIEW,
+  FoodSafetyStatus.SAFETY_HOLD,
+  FoodSafetyStatus.QUARANTINED,
+  FoodSafetyStatus.REJECTED,
+] as const;
+
+export type AssignableLotStatus = (typeof ASSIGNABLE_LOT_STATUSES)[number];
