@@ -22,21 +22,29 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
+import { CreateDriverColdChainCertificationDto } from '../dto/create-driver-cold-chain-certification.dto';
 import { ListDriversDto } from '../dto/list-drivers.dto';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { RecordLocationDto } from '../dto/record-location.dto';
 import { RegisterDriverDto } from '../dto/register-driver.dto';
 import { UpdateDriverAvailabilityDto } from '../dto/update-driver-availability.dto';
 import { UpdateDriverProfileDto } from '../dto/update-driver-profile.dto';
 import { UpdateDriverStatusDto } from '../dto/update-driver-status.dto';
+import { DriverColdChainCertificationResponseEntity } from '../entities/driver-cold-chain-certification-response.entity';
 import { DriverPerformanceMetricsEntity } from '../entities/driver-performance-metrics.entity';
 import { DriverResponseEntity } from '../entities/driver-response.entity';
+import { PaginatedDriverColdChainCertificationsEntity } from '../entities/paginated-driver-cold-chain-certifications.entity';
 import { PaginatedDriversEntity } from '../entities/paginated-drivers.entity';
+import { DriverColdChainCertificationsService } from '../services/driver-cold-chain-certifications.service';
 import { DriversService } from '../services/drivers.service';
 
 @ApiTags('drivers')
 @Controller('drivers')
 export class DriversController {
-  constructor(private readonly driversService: DriversService) {}
+  constructor(
+    private readonly driversService: DriversService,
+    private readonly driverColdChainCertificationsService: DriverColdChainCertificationsService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -144,5 +152,43 @@ export class DriversController {
   @ApiResponseDoc({ status: 200, type: DriverPerformanceMetricsEntity })
   getPerformanceMetrics(@Param('id') id: string): Promise<DriverPerformanceMetricsEntity> {
     return this.driversService.getPerformanceMetrics(id);
+  }
+
+  @Post(':id/cold-chain-certifications')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '10E: issue a cold-chain handling certification to a driver (admin only)' })
+  @ApiResponseDoc({ status: 201, type: DriverColdChainCertificationResponseEntity })
+  createColdChainCertification(
+    @Param('id') id: string,
+    @Body() dto: CreateDriverColdChainCertificationDto,
+  ): Promise<DriverColdChainCertificationResponseEntity> {
+    return this.driverColdChainCertificationsService.create(id, dto);
+  }
+
+  @Get(':id/cold-chain-certifications')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "10E: list a driver's cold-chain certifications (admin only)" })
+  @ApiResponseDoc({ status: 200, type: PaginatedDriverColdChainCertificationsEntity })
+  listColdChainCertifications(
+    @Param('id') id: string,
+    @Query() dto: PaginationDto,
+  ): Promise<PaginatedDriverColdChainCertificationsEntity> {
+    return this.driverColdChainCertificationsService.findByDriverId(id, dto);
+  }
+
+  @Patch('cold-chain-certifications/:certificationId/revoke')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "10E: revoke a driver's cold-chain certification early (admin only)" })
+  @ApiResponseDoc({ status: 200, type: DriverColdChainCertificationResponseEntity })
+  revokeColdChainCertification(
+    @Param('certificationId') certificationId: string,
+  ): Promise<DriverColdChainCertificationResponseEntity> {
+    return this.driverColdChainCertificationsService.revoke(certificationId);
   }
 }

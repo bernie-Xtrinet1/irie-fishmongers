@@ -421,16 +421,17 @@ model Driver {
   createdAt          DateTime                 @default(now())
   updatedAt          DateTime                 @updatedAt
 
-  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assignedZone        DeliveryZone?      @relation("DriverPrimaryZone", fields: [assignedZoneId], references: [id], onDelete: SetNull)
-  zoneAssignments     DriverZone[]
-  deliveries          Delivery[]
-  locations           DriverLocation[]
-  settlements         DriverSettlement[]
-  operatedFleetAssets FleetAsset[]       @relation("FleetAssetCurrentDriver")
-  fleetTrips          FleetTrip[]
-  routeHistory        RouteHistory[]
-  deliveryRuns        DeliveryRun[]
+  user                    User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedZone            DeliveryZone?                  @relation("DriverPrimaryZone", fields: [assignedZoneId], references: [id], onDelete: SetNull)
+  zoneAssignments         DriverZone[]
+  deliveries              Delivery[]
+  locations               DriverLocation[]
+  settlements             DriverSettlement[]
+  operatedFleetAssets     FleetAsset[]                   @relation("FleetAssetCurrentDriver")
+  fleetTrips              FleetTrip[]
+  routeHistory            RouteHistory[]
+  deliveryRuns            DeliveryRun[]
+  coldChainCertifications DriverColdChainCertification[]
 
   @@map("drivers")
 }
@@ -2008,11 +2009,12 @@ model FleetAsset {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
-  zone          DeliveryZone       @relation(fields: [zoneId], references: [id], onDelete: Restrict)
-  currentDriver Driver?            @relation("FleetAssetCurrentDriver", fields: [currentDriverId], references: [id], onDelete: SetNull)
-  trips         FleetTrip[]
-  maintenance   FleetMaintenance[]
-  deliveryRuns  DeliveryRun[]
+  zone              DeliveryZone            @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  currentDriver     Driver?                 @relation("FleetAssetCurrentDriver", fields: [currentDriverId], references: [id], onDelete: SetNull)
+  trips             FleetTrip[]
+  maintenance       FleetMaintenance[]
+  deliveryRuns      DeliveryRun[]
+  sanitationRecords FleetSanitationRecord[]
 
   @@index([zoneId])
   @@map("fleet_assets")
@@ -2067,6 +2069,66 @@ model FleetMaintenance {
 
   @@index([fleetAssetId])
   @@map("fleet_maintenance_records")
+}
+
+// Phase 10E: cold-chain-relevant vehicle hygiene compliance, distinct from
+// FleetMaintenance (mechanical service) - a mechanically sound vehicle can
+// still fail cold-chain sanitation requirements. IoT-telemetry-based
+// automated sanitation verification is explicitly out of scope here (no
+// physical sensor hardware exists to integrate against); this is
+// manually-recorded, matching every other compliance record in this
+// codebase (TemperatureReading, QualityInspection, etc. are all
+// human-entered too).
+enum SanitationStatus {
+  COMPLETED
+  OVERDUE
+}
+
+model FleetSanitationRecord {
+  id           String           @id @default(uuid())
+  fleetAssetId String
+  performedAt  DateTime
+  performedBy  String?
+  method       String?
+  notes        String?
+  nextDueAt    DateTime?
+  status       SanitationStatus @default(COMPLETED)
+  createdAt    DateTime         @default(now())
+
+  fleetAsset FleetAsset @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+
+  @@index([fleetAssetId])
+  @@map("fleet_sanitation_records")
+}
+
+// Phase 10E: whether a driver is currently certified to handle cold-chain
+// deliveries, separate from Driver.coldChainCapable (a vehicle-capability
+// flag on the driver's own vehicle - see 10A's dispatch eligibility).
+// Certification here is a training/compliance credential with an expiry,
+// following VendorDocumentsService.computeCanSell()'s established
+// precedent for "does this party currently satisfy a compliance
+// requirement" rather than reusing that vendor-specific service.
+enum DriverCertificationStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+model DriverColdChainCertification {
+  id          String                    @id @default(uuid())
+  driverId    String
+  issuedBy    String
+  issuedAt    DateTime
+  expiresAt   DateTime
+  status      DriverCertificationStatus @default(ACTIVE)
+  documentUrl String?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+  @@map("driver_cold_chain_certifications")
 }
 
 enum DeliveryExceptionType {

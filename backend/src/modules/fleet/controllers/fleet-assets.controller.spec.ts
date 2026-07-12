@@ -1,7 +1,9 @@
 import { FleetAssetResponseEntity } from '../entities/fleet-asset-response.entity';
 import { FleetMaintenanceResponseEntity } from '../entities/fleet-maintenance-response.entity';
+import { FleetSanitationRecordResponseEntity } from '../entities/fleet-sanitation-record-response.entity';
 import { FleetAssetsService } from '../services/fleet-assets.service';
 import { FleetMaintenanceService } from '../services/fleet-maintenance.service';
+import { FleetSanitationRecordsService } from '../services/fleet-sanitation-records.service';
 import { FleetAssetsController } from './fleet-assets.controller';
 
 const asset: FleetAssetResponseEntity = {
@@ -32,11 +34,26 @@ const maintenance: FleetMaintenanceResponseEntity = {
   updatedAt: new Date(),
 };
 
+const sanitationRecord: FleetSanitationRecordResponseEntity = {
+  id: 'sanitation-1',
+  fleetAssetId: 'asset-1',
+  performedAt: new Date(),
+  performedBy: null,
+  method: null,
+  notes: null,
+  nextDueAt: null,
+  status: 'COMPLETED',
+  createdAt: new Date(),
+};
+
 describe('FleetAssetsController', () => {
   let fleetAssetsService: jest.Mocked<
     Pick<FleetAssetsService, 'create' | 'list' | 'findById' | 'update' | 'getZoneSummary'>
   >;
   let fleetMaintenanceService: jest.Mocked<Pick<FleetMaintenanceService, 'create' | 'findByFleetAssetId'>>;
+  let fleetSanitationRecordsService: jest.Mocked<
+    Pick<FleetSanitationRecordsService, 'create' | 'findByFleetAssetId'>
+  >;
   let controller: FleetAssetsController;
 
   beforeEach(() => {
@@ -58,9 +75,19 @@ describe('FleetAssetsController', () => {
         pageSize: 20,
       }),
     };
+    fleetSanitationRecordsService = {
+      create: jest.fn().mockResolvedValue(sanitationRecord),
+      findByFleetAssetId: jest.fn().mockResolvedValue({
+        items: [sanitationRecord],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      }),
+    };
     controller = new FleetAssetsController(
       fleetAssetsService as unknown as FleetAssetsService,
       fleetMaintenanceService as unknown as FleetMaintenanceService,
+      fleetSanitationRecordsService as unknown as FleetSanitationRecordsService,
     );
   });
 
@@ -104,5 +131,18 @@ describe('FleetAssetsController', () => {
   it('gets the fleet zone summary rollup', async () => {
     const result = await controller.getZoneSummary();
     expect(result).toEqual([{ zoneId: 'zone-1', status: 'ACTIVE', count: 3 }]);
+  });
+
+  it('records a sanitation event for a fleet asset', async () => {
+    const dto = { performedAt: '2026-07-08T00:00:00.000Z' };
+    await expect(controller.createSanitationRecord('asset-1', dto)).resolves.toEqual(
+      sanitationRecord,
+    );
+    expect(fleetSanitationRecordsService.create).toHaveBeenCalledWith('asset-1', dto);
+  });
+
+  it('lists sanitation records for a fleet asset', async () => {
+    const result = await controller.listSanitationRecords('asset-1', { page: 1, pageSize: 20 });
+    expect(result.total).toBe(1);
   });
 });

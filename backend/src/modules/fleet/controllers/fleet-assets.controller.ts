@@ -12,16 +12,20 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CreateFleetAssetDto } from '../dto/create-fleet-asset.dto';
 import { CreateFleetMaintenanceDto } from '../dto/create-fleet-maintenance.dto';
+import { CreateFleetSanitationRecordDto } from '../dto/create-fleet-sanitation-record.dto';
 import { ListFleetAssetsDto } from '../dto/list-fleet-assets.dto';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { UpdateFleetAssetDto } from '../dto/update-fleet-asset.dto';
 import { FleetAssetResponseEntity } from '../entities/fleet-asset-response.entity';
 import { FleetMaintenanceResponseEntity } from '../entities/fleet-maintenance-response.entity';
+import { FleetSanitationRecordResponseEntity } from '../entities/fleet-sanitation-record-response.entity';
 import { FleetZoneSummaryEntity } from '../entities/fleet-zone-summary.entity';
 import { PaginatedFleetAssetsEntity } from '../entities/paginated-fleet-assets.entity';
 import { PaginatedFleetMaintenanceEntity } from '../entities/paginated-fleet-maintenance.entity';
+import { PaginatedFleetSanitationRecordsEntity } from '../entities/paginated-fleet-sanitation-records.entity';
 import { FleetAssetsService } from '../services/fleet-assets.service';
 import { FleetMaintenanceService } from '../services/fleet-maintenance.service';
+import { FleetSanitationRecordsService } from '../services/fleet-sanitation-records.service';
 
 @ApiTags('fleet')
 @ApiBearerAuth()
@@ -32,6 +36,7 @@ export class FleetAssetsController {
   constructor(
     private readonly fleetAssetsService: FleetAssetsService,
     private readonly fleetMaintenanceService: FleetMaintenanceService,
+    private readonly fleetSanitationRecordsService: FleetSanitationRecordsService,
   ) {}
 
   @Post()
@@ -92,5 +97,27 @@ export class FleetAssetsController {
     @Query() dto: PaginationDto,
   ): Promise<PaginatedFleetMaintenanceEntity> {
     return this.fleetMaintenanceService.findByFleetAssetId(id, dto);
+  }
+
+  @Post(':id/sanitation')
+  @ApiOperation({
+    summary: '10E: record a cold-chain sanitation event for a fleet asset (admin only)',
+  })
+  @ApiResponseDoc({ status: 201, type: FleetSanitationRecordResponseEntity })
+  createSanitationRecord(
+    @Param('id') id: string,
+    @Body() dto: CreateFleetSanitationRecordDto,
+  ): Promise<FleetSanitationRecordResponseEntity> {
+    return this.fleetSanitationRecordsService.create(id, dto);
+  }
+
+  @Get(':id/sanitation')
+  @ApiOperation({ summary: '10E: list sanitation records for a fleet asset (admin only)' })
+  @ApiResponseDoc({ status: 200, type: PaginatedFleetSanitationRecordsEntity })
+  listSanitationRecords(
+    @Param('id') id: string,
+    @Query() dto: PaginationDto,
+  ): Promise<PaginatedFleetSanitationRecordsEntity> {
+    return this.fleetSanitationRecordsService.findByFleetAssetId(id, dto);
   }
 }
