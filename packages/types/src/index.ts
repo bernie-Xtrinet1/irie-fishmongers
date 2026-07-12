@@ -321,3 +321,66 @@ export interface DriverPerformanceMetrics {
   temperatureComplianceRate: number | null;
   averageDeliveryDurationMinutes: number | null;
 }
+
+// --- Delivery Zone & Fleet Management (Phase 12A) ---
+
+// GET/POST/PATCH /delivery-zones - DeliveryZoneResponseEntity declares
+// exactly the scalar Prisma DeliveryZone fields, no drift here.
+export interface DeliveryZone {
+  id: string;
+  name: string;
+  code: string;
+  description: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export enum FleetAssetType {
+  REFRIGERATED_TRUCK = 'REFRIGERATED_TRUCK',
+  TRUCK = 'TRUCK',
+  VAN = 'VAN',
+}
+
+export enum FleetOwnership {
+  COMPANY_OWNED = 'COMPANY_OWNED',
+  RENTED = 'RENTED',
+}
+
+export enum FleetAssetStatus {
+  ACTIVE = 'ACTIVE',
+  MAINTENANCE = 'MAINTENANCE',
+  RETIRED = 'RETIRED',
+}
+
+// GET/PATCH /fleet-assets - FleetAssetResponseEntity declares exactly the
+// scalar Prisma FleetAsset fields, no drift here.
+export interface FleetAsset {
+  id: string;
+  zoneId: string;
+  assetType: FleetAssetType;
+  ownership: FleetOwnership;
+  licensePlate: string;
+  capacityLbs: string;
+  coldChainCapable: boolean;
+  status: FleetAssetStatus;
+  currentDriverId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// GET /fleet-trips - FleetTripResponseEntity declares exactly the scalar
+// Prisma FleetTrip fields, no drift here.
+export interface FleetTrip {
+  id: string;
+  fleetAssetId: string;
+  driverId: string;
+  zoneId: string;
+  startedAt: string;
+  endedAt: string | null;
+  fuelCost: string | null;
+  driverWage: string | null;
+  maintenanceAllocation: string | null;
+  insuranceAllocation: string | null;
+  createdAt: string;
+}
