@@ -15,7 +15,12 @@ export const buttonVariantClasses = cva(
       },
       size: {
         default: 'h-11 px-6 py-2',
-        sm: 'h-9 px-4 text-sm',
+        // 44px (h-11), not the more compact h-9, to meet the 44px minimum
+        // touch target required across every admin screen (see the 12A
+        // plan's Accessibility requirements) - table row actions and
+        // dialog buttons are the primary way admins operate this UI on
+        // tablets, so "sm" only trims horizontal padding, never height.
+        sm: 'h-11 px-4 text-sm',
         lg: 'h-12 px-8 text-base',
       },
     },
