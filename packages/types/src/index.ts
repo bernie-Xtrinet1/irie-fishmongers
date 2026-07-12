@@ -233,6 +233,36 @@ export interface VendorDashboard {
   topVendorsByRevenue: TopVendor[];
 }
 
+// --- Sales Analytics (Phase 12B) ---
+// Hand-mirrored from backend/src/modules/analytics/entities/sales-analytics.entity.ts
+
+export interface TopProduct {
+  productId: string;
+  productName: string;
+  quantitySold: number;
+  revenue: string;
+}
+
+export interface CategorySales {
+  categoryId: string;
+  categoryName: string;
+  quantitySold: number;
+  revenue: string;
+}
+
+export interface SalesByPaymentMethod {
+  WIPAY: string;
+  CASH_ON_DELIVERY: string;
+}
+
+export interface SalesAnalytics {
+  topProductsByRevenue: TopProduct[];
+  salesByCategory: CategorySales[];
+  salesByPaymentMethod: SalesByPaymentMethod;
+  averageOrderValue: string;
+  currency: 'JMD';
+}
+
 // --- Vendor Management (Phase 12A) ---
 
 export enum VendorStatus {

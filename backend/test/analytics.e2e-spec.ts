@@ -63,6 +63,14 @@ interface VendorDashboardData {
   topVendorsByRevenue: { vendorId: string; businessName: string; grossAmount: string }[];
 }
 
+interface SalesAnalyticsData {
+  topProductsByRevenue: { productId: string; productName: string; quantitySold: number; revenue: string }[];
+  salesByCategory: { categoryId: string; categoryName: string; quantitySold: number; revenue: string }[];
+  salesByPaymentMethod: Record<string, string>;
+  averageOrderValue: string;
+  currency: string;
+}
+
 jest.setTimeout(20_000);
 
 describe('Analytics (e2e)', () => {
@@ -292,6 +300,18 @@ describe('Analytics (e2e)', () => {
     expect(summary.drivers.byStatus.APPROVED).toBeGreaterThanOrEqual(1);
     expect(summary.systemHealth.postgres).toBe('up');
     expect(summary.systemHealth.redis).toBe('up');
+
+    const salesRes = await request(server())
+      .get('/api/v1/analytics/sales-analytics')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(salesRes.status).toBe(200);
+
+    const sales = data<SalesAnalyticsData>(salesRes);
+    expect(sales.topProductsByRevenue.some((entry) => entry.productId === product.id)).toBe(true);
+    expect(sales.salesByCategory.some((entry) => entry.categoryId === category.id)).toBe(true);
+    expect(Number(sales.salesByPaymentMethod.CASH_ON_DELIVERY)).toBeGreaterThanOrEqual(1000);
+    expect(Number(sales.averageOrderValue)).toBeGreaterThan(0);
+    expect(sales.currency).toBe('JMD');
   });
 
   it('narrows grossPaidAmount to the given date range', async () => {
@@ -324,6 +344,16 @@ describe('Analytics (e2e)', () => {
 
     const res = await request(server())
       .get('/api/v1/analytics/vendor-dashboard')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects a non-admin request to the sales analytics endpoint', async () => {
+    const customerToken = await createCustomerAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/sales-analytics')
       .set('Authorization', `Bearer ${customerToken}`);
 
     expect(res.status).toBe(403);

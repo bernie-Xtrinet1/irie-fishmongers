@@ -11,12 +11,14 @@ import { VendorsRepository } from '../../vendors/repositories/vendors.repository
 import { AnalyticsService } from './analytics.service';
 
 describe('AnalyticsService', () => {
-  let paymentsRepository: jest.Mocked<Pick<PaymentsRepository, 'sumByStatus'>>;
+  let paymentsRepository: jest.Mocked<Pick<PaymentsRepository, 'sumByStatus' | 'sumByProvider' | 'countByStatus'>>;
   let vendorSettlementsRepository: jest.Mocked<
     Pick<VendorSettlementsRepository, 'sumPlatformFeeByStatus' | 'getTopVendorsByRevenue'>
   >;
   let ordersRepository: jest.Mocked<Pick<OrdersRepository, 'count'>>;
-  let vendorOrdersRepository: jest.Mocked<Pick<VendorOrdersRepository, 'countByStatus'>>;
+  let vendorOrdersRepository: jest.Mocked<
+    Pick<VendorOrdersRepository, 'countByStatus' | 'getTopProductsByRevenue' | 'getSalesByCategory'>
+  >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'getComplianceSummary' | 'countByTier'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'countByStatus'>>;
   let complianceDashboardService: jest.Mocked<Pick<ComplianceDashboardService, 'getDashboard'>>;
@@ -41,8 +43,19 @@ describe('AnalyticsService', () => {
   const driversByStatus = { PENDING: 1, APPROVED: 8, SUSPENDED: 0, REJECTED: 0 };
   const activeAlertsBySeverity = { WARNING: 3, CRITICAL: 1, EMERGENCY: 0 };
 
+  const topProductsByRevenue = [
+    { productId: 'product-1', productName: 'Snapper', quantitySold: 20, revenue: '10000' },
+  ];
+  const salesByCategory = [{ categoryId: 'category-1', categoryName: 'Fish', quantitySold: 20, revenue: '10000' }];
+
   beforeEach(() => {
-    paymentsRepository = { sumByStatus: jest.fn().mockResolvedValue(new Prisma.Decimal(5000)) };
+    paymentsRepository = {
+      sumByStatus: jest.fn().mockResolvedValue(new Prisma.Decimal(5000)),
+      sumByProvider: jest
+        .fn()
+        .mockResolvedValue({ WIPAY: new Prisma.Decimal(3000), CASH_ON_DELIVERY: new Prisma.Decimal(2000) }),
+      countByStatus: jest.fn().mockResolvedValue(4),
+    };
     vendorSettlementsRepository = {
       sumPlatformFeeByStatus: jest.fn().mockResolvedValue(new Prisma.Decimal(500)),
       getTopVendorsByRevenue: jest
@@ -50,7 +63,11 @@ describe('AnalyticsService', () => {
         .mockResolvedValue([{ vendorId: 'vendor-1', businessName: "Vera's Catch", grossAmount: '10000' }]),
     };
     ordersRepository = { count: jest.fn().mockResolvedValue(4) };
-    vendorOrdersRepository = { countByStatus: jest.fn().mockResolvedValue(vendorOrdersByStatus) };
+    vendorOrdersRepository = {
+      countByStatus: jest.fn().mockResolvedValue(vendorOrdersByStatus),
+      getTopProductsByRevenue: jest.fn().mockResolvedValue(topProductsByRevenue),
+      getSalesByCategory: jest.fn().mockResolvedValue(salesByCategory),
+    };
     vendorsRepository = {
       getComplianceSummary: jest.fn().mockResolvedValue({ countByStatus: vendorsByStatus, averageComplianceScore: 90 }),
       countByTier: jest.fn().mockResolvedValue(vendorsByTier),
@@ -143,6 +160,41 @@ describe('AnalyticsService', () => {
       // Vendor status/tier/compliance counts are point-in-time snapshots - no range argument.
       expect(vendorsRepository.getComplianceSummary).toHaveBeenCalledWith();
       expect(vendorsRepository.countByTier).toHaveBeenCalledWith();
+    });
+  });
+
+  describe('getSalesAnalytics', () => {
+    it('composes top products, sales by category, sales by payment method, and average order value', async () => {
+      const result = await service.getSalesAnalytics();
+
+      expect(result).toEqual({
+        topProductsByRevenue,
+        salesByCategory,
+        salesByPaymentMethod: { WIPAY: '3000', CASH_ON_DELIVERY: '2000' },
+        averageOrderValue: '1250.00',
+        currency: 'JMD',
+      });
+    });
+
+    it('returns a zero average order value when there are no PAID payments', async () => {
+      paymentsRepository.countByStatus.mockResolvedValue(0);
+
+      const result = await service.getSalesAnalytics();
+
+      expect(result.averageOrderValue).toBe('0.00');
+    });
+
+    it('passes the from/to range to every underlying query', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+
+      await service.getSalesAnalytics({ from, to });
+
+      expect(vendorOrdersRepository.getTopProductsByRevenue).toHaveBeenCalledWith(10, { from, to });
+      expect(vendorOrdersRepository.getSalesByCategory).toHaveBeenCalledWith({ from, to });
+      expect(paymentsRepository.sumByProvider).toHaveBeenCalledWith('PAID', { from, to });
+      expect(paymentsRepository.countByStatus).toHaveBeenCalledWith('PAID', { from, to });
+      expect(paymentsRepository.sumByStatus).toHaveBeenCalledWith('PAID', { from, to });
     });
   });
 });

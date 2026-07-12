@@ -9,6 +9,7 @@ import {
   Route,
   Store,
   Thermometer,
+  TrendingUp,
   Truck,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -22,15 +23,16 @@ import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { cn } from '@/lib/utils';
 
 // The 6 screens shipped in Phase 12A plus Delivery Operations Center
-// (Phase 10B) and Vendor Dashboard (Phase 12B) - no placeholder links
-// implying a more-complete admin experience than what's actually shipped
-// (12C covers Compliance Administration/Reporting; the remaining Phase 12B
-// deliverables - Sales/Delivery/Inventory Analytics - are tracked but not
-// yet built).
+// (Phase 10B) and Vendor Dashboard / Sales Analytics (Phase 12B) - no
+// placeholder links implying a more-complete admin experience than what's
+// actually shipped (12C covers Compliance Administration/Reporting; the
+// remaining Phase 12B deliverables - Delivery/Inventory Analytics - are
+// tracked but not yet built).
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/vendors', label: 'Vendors', icon: Store },
   { href: '/vendor-dashboard', label: 'Vendor Dashboard', icon: BarChart3 },
+  { href: '/sales-analytics', label: 'Sales Analytics', icon: TrendingUp },
   { href: '/drivers', label: 'Drivers', icon: Truck },
   { href: '/delivery-zones', label: 'Delivery Zones & Fleet', icon: MapPinned },
   { href: '/delivery-operations', label: 'Delivery Operations', icon: Route },

@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { DashboardSummaryQueryDto } from '../dto/dashboard-summary-query.dto';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 import { AnalyticsService } from '../services/analytics.service';
 
@@ -36,6 +37,16 @@ export class AnalyticsController {
   @ApiResponseDoc({ status: 200, type: VendorDashboardEntity })
   getVendorDashboard(@Query() query: DashboardSummaryQueryDto): Promise<VendorDashboardEntity> {
     return this.analyticsService.getVendorDashboard(AnalyticsController.parseRange(query));
+  }
+
+  @Get('sales-analytics')
+  @ApiOperation({
+    summary:
+      'Sales Analytics: top products and categories by revenue, sales by payment method, average order value - admin only',
+  })
+  @ApiResponseDoc({ status: 200, type: SalesAnalyticsEntity })
+  getSalesAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<SalesAnalyticsEntity> {
+    return this.analyticsService.getSalesAnalytics(AnalyticsController.parseRange(query));
   }
 
   private static parseRange(query: DashboardSummaryQueryDto): { from?: Date; to?: Date } {

@@ -10,9 +10,11 @@ import { VendorSettlementsRepository } from '../../vendor-settlements/repositori
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 
 const TOP_VENDORS_LIMIT = 10;
+const TOP_PRODUCTS_LIMIT = 10;
 
 // Composes existing repositories/services rather than duplicating their
 // logic - no repository of its own. Organized by feature domain (one
@@ -59,6 +61,32 @@ export class AnalyticsService {
       byTier,
       averageComplianceScore,
       topVendorsByRevenue,
+    };
+  }
+
+  // 12B Sales Analytics - another sibling composer. Average order value is
+  // derived from the same PAID-payment sum/count getDashboardSummary()
+  // already uses, so it stays consistent with the dashboard's own
+  // grossPaidAmount rather than recomputing revenue a different way.
+  async getSalesAnalytics(range?: DateRange): Promise<SalesAnalyticsEntity> {
+    const [topProductsByRevenue, salesByCategory, salesByPaymentMethod, paidCount, grossPaidAmount] =
+      await Promise.all([
+        this.vendorOrdersRepository.getTopProductsByRevenue(TOP_PRODUCTS_LIMIT, range),
+        this.vendorOrdersRepository.getSalesByCategory(range),
+        this.paymentsRepository.sumByProvider('PAID', range),
+        this.paymentsRepository.countByStatus('PAID', range),
+        this.paymentsRepository.sumByStatus('PAID', range),
+      ]);
+
+    return {
+      topProductsByRevenue,
+      salesByCategory,
+      salesByPaymentMethod: {
+        WIPAY: salesByPaymentMethod.WIPAY.toString(),
+        CASH_ON_DELIVERY: salesByPaymentMethod.CASH_ON_DELIVERY.toString(),
+      },
+      averageOrderValue: paidCount > 0 ? grossPaidAmount.dividedBy(paidCount).toFixed(2) : '0.00',
+      currency: 'JMD',
     };
   }
 

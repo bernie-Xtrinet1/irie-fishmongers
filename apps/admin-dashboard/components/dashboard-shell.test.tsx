@@ -43,6 +43,7 @@ describe('DashboardShell', () => {
     expect(screen.getByRole('link', { name: 'Vendors' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: 'Dashboard' })).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('link', { name: 'Vendor Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sales Analytics' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Drivers' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Zones & Fleet' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Operations' })).toBeInTheDocument();

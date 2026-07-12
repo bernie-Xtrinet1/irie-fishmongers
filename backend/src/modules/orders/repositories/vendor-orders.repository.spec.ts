@@ -4,6 +4,7 @@ import { Category, Role, RoleName, Vendor } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
+import { PaymentsRepository } from '../../payments/repositories/payments.repository';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -107,6 +108,15 @@ describe('VendorOrdersRepository', () => {
       ],
     });
     vendorOrderId = order.vendorOrders[0]!.id;
+
+    const paymentsRepository = new PaymentsRepository(prisma);
+    const payment = await paymentsRepository.create({
+      orderId: order.id,
+      provider: 'WIPAY',
+      amount: 1000,
+      currency: 'JMD',
+    });
+    await paymentsRepository.update(payment.id, { status: 'PAID', paidAt: new Date() });
   });
 
   afterAll(async () => {
@@ -174,6 +184,33 @@ describe('VendorOrdersRepository', () => {
       const future = new Date(Date.now() + 60_000);
       const counts = await repository.countByStatus({ from: future });
       expect(counts.ACCEPTED).toBe(0);
+    });
+  });
+
+  describe('getTopProductsByRevenue', () => {
+    it('returns quantity and revenue for a product sold on a PAID order', async () => {
+      const results = await repository.getTopProductsByRevenue(10);
+      const entry = results.find((result) => result.productId === productId);
+      expect(entry).toBeDefined();
+      expect(entry?.productName).toBe('VO Repo Snapper');
+      expect(entry?.quantitySold).toBeGreaterThanOrEqual(2);
+      expect(Number(entry?.revenue)).toBeGreaterThanOrEqual(1000);
+    });
+
+    it('excludes products from a future date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const results = await repository.getTopProductsByRevenue(10, { from: future });
+      expect(results.find((result) => result.productId === productId)).toBeUndefined();
+    });
+  });
+
+  describe('getSalesByCategory', () => {
+    it("attributes a PAID order's revenue to the product's category", async () => {
+      const results = await repository.getSalesByCategory();
+      const entry = results.find((result) => result.categoryId === category.id);
+      expect(entry).toBeDefined();
+      expect(entry?.quantitySold).toBeGreaterThanOrEqual(2);
+      expect(Number(entry?.revenue)).toBeGreaterThanOrEqual(1000);
     });
   });
 });
