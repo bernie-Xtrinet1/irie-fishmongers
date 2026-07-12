@@ -589,3 +589,70 @@ export interface ComplianceAuditLogEntry {
   reason: string | null;
   createdAt: string;
 }
+
+// --- Delivery Operations Center (Phase 10B) ---
+
+export enum DeliveryRunStatus {
+  PLANNED = 'PLANNED',
+  IN_PROGRESS = 'IN_PROGRESS',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
+}
+
+export interface DeliveryRunStop {
+  id: string;
+  deliveryId: string;
+  sequence: number;
+}
+
+// GET/PATCH /delivery-runs - DeliveryRunResponseEntity declares exactly
+// these fields, no drift here.
+export interface DeliveryRun {
+  id: string;
+  zoneId: string;
+  driverId: string | null;
+  fleetAssetId: string | null;
+  status: DeliveryRunStatus;
+  stops: DeliveryRunStop[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// POST /delivery-runs/:id/dispatch (10A Fleet Dispatch Engine) - runs the
+// scoring algorithm and calls PATCH .../assign internally; the frontend
+// only needs to know it succeeded (the run comes back IN_PROGRESS) or
+// failed with a 409 (no eligible driver/asset - see ConflictException in
+// DispatchService).
+export type DispatchRunResult = DeliveryRun;
+
+// GET /delivery/exceptions - enriched with vendor/customer/driver context
+// per DeliveryExceptionWithContextEntity (Phase 12B.0 finding: the plain
+// exception list under-fetched for a dispatcher screen).
+export interface DeliveryExceptionWithContext {
+  id: string;
+  deliveryId: string;
+  vendorOrderId: string;
+  type: DeliveryExceptionType;
+  reason: string;
+  photos: string[];
+  notes: string | null;
+  resolved: boolean;
+  resolvedAt: string | null;
+  resolvedById: string | null;
+  vendorBusinessName: string;
+  customerName: string;
+  deliveryAddressLine1: string;
+  deliveryParish: Parish;
+  driverName: string;
+  createdAt: string;
+}
+
+export enum DeliveryExceptionType {
+  CUSTOMER_UNAVAILABLE = 'CUSTOMER_UNAVAILABLE',
+  ADDRESS_ISSUE = 'ADDRESS_ISSUE',
+  VEHICLE_BREAKDOWN = 'VEHICLE_BREAKDOWN',
+  TRAFFIC_DELAY = 'TRAFFIC_DELAY',
+  WEATHER_DELAY = 'WEATHER_DELAY',
+  PRODUCT_DAMAGE = 'PRODUCT_DAMAGE',
+  OTHER = 'OTHER',
+}

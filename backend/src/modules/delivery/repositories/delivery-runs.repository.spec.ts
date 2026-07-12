@@ -176,4 +176,28 @@ describe('DeliveryRunsRepository', () => {
     expect(assigned.driverId).toBe(driverId);
     expect(assigned.status).toBe('IN_PROGRESS');
   });
+
+  describe('findMany', () => {
+    it('filters by status and zoneId, and paginates', async () => {
+      const created = await repository.create({ zoneId, stops: [] });
+
+      const { items, total } = await repository.findMany(
+        { status: 'PLANNED', zoneId },
+        { skip: 0, take: 20 },
+      );
+
+      expect(total).toBeGreaterThanOrEqual(1);
+      expect(items.some((item) => item.id === created.id)).toBe(true);
+      expect(items.every((item) => item.status === 'PLANNED' && item.zoneId === zoneId)).toBe(true);
+    });
+
+    it('excludes runs that do not match the status filter', async () => {
+      const created = await repository.create({ zoneId, stops: [] });
+      await repository.assign(created.id, { driverId });
+
+      const { items } = await repository.findMany({ status: 'PLANNED', zoneId }, { skip: 0, take: 20 });
+
+      expect(items.some((item) => item.id === created.id)).toBe(false);
+    });
+  });
 });

@@ -5,6 +5,7 @@ import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting
 import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
+import { FleetMaintenanceOverdueEvent } from '../../../common/events/fleet-maintenance-overdue.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
@@ -155,6 +156,20 @@ export class NotificationEventsListener {
         severity: event.severity,
         temperatureC: event.temperatureC,
         checkpoint: event.checkpoint,
+      },
+    });
+  }
+
+  @OnEvent(FleetMaintenanceOverdueEvent.eventName)
+  async onFleetMaintenanceOverdue(event: FleetMaintenanceOverdueEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.driverUserId,
+      category: 'DELIVERY',
+      eventType: 'FLEET_MAINTENANCE_OVERDUE',
+      priority: 'HIGH',
+      variables: {
+        licensePlate: event.licensePlate,
+        nextServiceDue: event.nextServiceDue ?? 'unscheduled',
       },
     });
   }

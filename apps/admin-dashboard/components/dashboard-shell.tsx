@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   LogOut,
   MapPinned,
+  Route,
   Store,
   Thermometer,
   Truck,
@@ -19,15 +20,18 @@ import { env } from '@/lib/env';
 import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { cn } from '@/lib/utils';
 
-// Only the 6 screens actually shipped in Phase 12A - no placeholder links
-// implying a more-complete admin experience than what this phase ships
-// (12B/12C/12D cover Orders/Payments/Settlements, Compliance
-// Administration/Reporting, and Advanced Analytics respectively).
+// The 6 screens shipped in Phase 12A plus Delivery Operations Center
+// (Phase 10B) - no placeholder links implying a more-complete admin
+// experience than what's actually shipped (12C/12D cover Compliance
+// Administration/Reporting and Advanced Analytics respectively; the
+// remaining Phase 12B deliverables - Vendor Dashboard, Sales/Delivery/
+// Inventory Analytics - are tracked but not yet built).
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/vendors', label: 'Vendors', icon: Store },
   { href: '/drivers', label: 'Drivers', icon: Truck },
   { href: '/delivery-zones', label: 'Delivery Zones & Fleet', icon: MapPinned },
+  { href: '/delivery-operations', label: 'Delivery Operations', icon: Route },
   { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer },
   { href: '/recalls', label: 'Recalls', icon: AlertTriangle },
 ];

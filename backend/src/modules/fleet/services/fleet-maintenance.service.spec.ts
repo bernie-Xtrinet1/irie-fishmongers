@@ -1,6 +1,8 @@
 import { NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FleetAsset, FleetMaintenance } from '@prisma/client';
 
+import { FleetMaintenanceOverdueEvent } from '../../../common/events/fleet-maintenance-overdue.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { FleetAssetsRepository } from '../repositories/fleet-assets.repository';
 import { FleetMaintenanceRepository } from '../repositories/fleet-maintenance.repository';
@@ -45,7 +47,12 @@ describe('FleetMaintenanceService', () => {
     Pick<FleetMaintenanceRepository, 'create' | 'findById' | 'update' | 'findByFleetAssetId'>
   >;
   let fleetAssetsRepository: jest.Mocked<Pick<FleetAssetsRepository, 'findById'>>;
-  let prisma: { $transaction: jest.Mock; fleetAsset: { update: jest.Mock } };
+  let prisma: {
+    $transaction: jest.Mock;
+    fleetAsset: { update: jest.Mock };
+    driver: { findUnique: jest.Mock };
+  };
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emit'>>;
   let service: FleetMaintenanceService;
 
   beforeEach(() => {
@@ -61,11 +68,14 @@ describe('FleetMaintenanceService', () => {
         callback({ fleetAsset: { update: jest.fn() } }),
       ),
       fleetAsset: { update: jest.fn() },
+      driver: { findUnique: jest.fn().mockResolvedValue(null) },
     };
+    eventEmitter = { emit: jest.fn() };
     service = new FleetMaintenanceService(
       maintenanceRepository as unknown as FleetMaintenanceRepository,
       fleetAssetsRepository as unknown as FleetAssetsRepository,
       prisma as unknown as PrismaService,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -102,6 +112,30 @@ describe('FleetMaintenanceService', () => {
       fleetAssetsRepository.findById.mockResolvedValue(null);
       await expect(service.create('missing', dto)).rejects.toBeInstanceOf(NotFoundException);
       expect(maintenanceRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('notifies the current driver when the record is created OVERDUE', async () => {
+      fleetAssetsRepository.findById.mockResolvedValue(buildAsset({ currentDriverId: 'driver-1' }));
+      prisma.driver.findUnique.mockResolvedValue({ userId: 'driver-user-1' });
+      maintenanceRepository.create.mockResolvedValue(
+        buildMaintenance({ status: 'OVERDUE', nextServiceDue: new Date('2026-07-01T00:00:00.000Z') }),
+      );
+
+      await service.create('asset-1', { ...dto, status: 'OVERDUE' });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        FleetMaintenanceOverdueEvent.eventName,
+        expect.objectContaining({ driverUserId: 'driver-user-1', licensePlate: 'FL 1234' }),
+      );
+    });
+
+    it('does not notify when created OVERDUE with no driver currently assigned', async () => {
+      fleetAssetsRepository.findById.mockResolvedValue(buildAsset({ currentDriverId: null }));
+      maintenanceRepository.create.mockResolvedValue(buildMaintenance({ status: 'OVERDUE' }));
+
+      await service.create('asset-1', { ...dto, status: 'OVERDUE' });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 
@@ -153,6 +187,30 @@ describe('FleetMaintenanceService', () => {
       await expect(service.update('missing', { status: 'COMPLETED' })).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('notifies the current driver when the record transitions to OVERDUE', async () => {
+      maintenanceRepository.findById.mockResolvedValue(buildMaintenance({ status: 'SCHEDULED' }));
+      maintenanceRepository.update.mockResolvedValue(buildMaintenance({ status: 'OVERDUE' }));
+      fleetAssetsRepository.findById.mockResolvedValue(buildAsset({ currentDriverId: 'driver-1' }));
+      prisma.driver.findUnique.mockResolvedValue({ userId: 'driver-user-1' });
+
+      await service.update('maintenance-1', { status: 'OVERDUE' });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        FleetMaintenanceOverdueEvent.eventName,
+        expect.objectContaining({ driverUserId: 'driver-user-1' }),
+      );
+    });
+
+    it('does not re-notify when the record was already OVERDUE', async () => {
+      maintenanceRepository.findById.mockResolvedValue(buildMaintenance({ status: 'OVERDUE' }));
+      maintenanceRepository.update.mockResolvedValue(buildMaintenance({ status: 'OVERDUE' }));
+
+      await service.update('maintenance-1', { status: 'OVERDUE' });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(fleetAssetsRepository.findById).not.toHaveBeenCalled();
     });
   });
 });

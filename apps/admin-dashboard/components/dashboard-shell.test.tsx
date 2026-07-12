@@ -31,7 +31,7 @@ describe('DashboardShell', () => {
     });
   });
 
-  it('renders all 6 in-scope nav items with the current route marked active', () => {
+  it('renders all in-scope nav items with the current route marked active', () => {
     mockHealth({ data: undefined, isPending: true });
 
     render(
@@ -44,6 +44,7 @@ describe('DashboardShell', () => {
     expect(screen.getByRole('link', { name: 'Dashboard' })).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('link', { name: 'Drivers' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Zones & Fleet' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Delivery Operations' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cold Chain' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Recalls' })).toBeInTheDocument();
   });

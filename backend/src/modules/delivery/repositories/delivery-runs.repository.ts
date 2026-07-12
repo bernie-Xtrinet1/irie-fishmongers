@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { DeliveryRunStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -44,6 +44,16 @@ export interface AssignDeliveryRunInput {
   fleetAssetId?: string;
 }
 
+export interface DeliveryRunFilters {
+  status?: DeliveryRunStatus;
+  zoneId?: string;
+}
+
+export interface Page {
+  skip: number;
+  take: number;
+}
+
 @Injectable()
 export class DeliveryRunsRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -78,5 +88,31 @@ export class DeliveryRunsRepository {
       data: { driverId: input.driverId, fleetAssetId: input.fleetAssetId, status: 'IN_PROGRESS' },
       include: deliveryRunWithStops.include,
     });
+  }
+
+  // Dispatcher-facing list (10B: Delivery Operations Center) - status/zone
+  // filters let the dashboard separate "needs dispatch" (PLANNED) from
+  // "active" (IN_PROGRESS) without two hand-rolled queries client-side.
+  async findMany(
+    filters: DeliveryRunFilters,
+    page: Page,
+  ): Promise<{ items: DeliveryRunWithStops[]; total: number }> {
+    const where: Prisma.DeliveryRunWhereInput = {
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.zoneId ? { zoneId: filters.zoneId } : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.deliveryRun.findMany({
+        where,
+        include: deliveryRunWithStops.include,
+        orderBy: { createdAt: 'desc' },
+        skip: page.skip,
+        take: page.take,
+      }),
+      this.prisma.deliveryRun.count({ where }),
+    ]);
+
+    return { items, total };
   }
 }

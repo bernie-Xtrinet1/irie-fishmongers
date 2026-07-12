@@ -16,6 +16,36 @@ export interface Page {
   take: number;
 }
 
+// Closes the Phase 12B.0 finding that the plain DeliveryException list
+// under-fetches for a dispatcher screen: a dispatcher needs to know which
+// vendor/customer/driver an exception belongs to without a second lookup
+// per row.
+const deliveryExceptionWithContext = Prisma.validator<Prisma.DeliveryExceptionDefaultArgs>()({
+  include: {
+    delivery: {
+      include: {
+        vendorOrder: {
+          include: {
+            vendor: { select: { businessName: true } },
+            order: {
+              select: {
+                customer: { select: { firstName: true, lastName: true } },
+                deliveryAddressLine1: true,
+                deliveryParish: true,
+              },
+            },
+          },
+        },
+        driver: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
+    },
+  },
+});
+
+export type DeliveryExceptionWithContext = Prisma.DeliveryExceptionGetPayload<
+  typeof deliveryExceptionWithContext
+>;
+
 @Injectable()
 export class DeliveryExceptionsRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -42,15 +72,16 @@ export class DeliveryExceptionsRepository {
     });
   }
 
-  async findMany(
+  async findManyWithContext(
     resolved: boolean | undefined,
     page: Page,
-  ): Promise<{ items: DeliveryException[]; total: number }> {
+  ): Promise<{ items: DeliveryExceptionWithContext[]; total: number }> {
     const where: Prisma.DeliveryExceptionWhereInput = resolved === undefined ? {} : { resolved };
 
     const [items, total] = await Promise.all([
       this.prisma.deliveryException.findMany({
         where,
+        include: deliveryExceptionWithContext.include,
         orderBy: { createdAt: 'desc' },
         skip: page.skip,
         take: page.take,

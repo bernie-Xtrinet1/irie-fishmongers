@@ -344,6 +344,20 @@ const NOTIFICATION_TEMPLATES: {
     body: 'A seafood lot ({{lotNumber}}) in your order {{orderId}} has been recalled. Reason: {{reason}}.',
     variables: ['orderId', 'lotNumber', 'reason'],
   },
+  {
+    eventType: 'FLEET_MAINTENANCE_OVERDUE',
+    channel: 'EMAIL',
+    subject: 'Vehicle maintenance overdue',
+    body: 'Maintenance on vehicle {{licensePlate}} is overdue (next service was due {{nextServiceDue}}). Please schedule service before your next delivery run.',
+    variables: ['licensePlate', 'nextServiceDue'],
+  },
+  {
+    eventType: 'FLEET_MAINTENANCE_OVERDUE',
+    channel: 'IN_APP',
+    subject: 'Vehicle maintenance overdue',
+    body: 'Maintenance on vehicle {{licensePlate}} is overdue (next service was due {{nextServiceDue}}).',
+    variables: ['licensePlate', 'nextServiceDue'],
+  },
 ];
 
 // seafood-compliance-rules.md's own species examples; Conch is seeded

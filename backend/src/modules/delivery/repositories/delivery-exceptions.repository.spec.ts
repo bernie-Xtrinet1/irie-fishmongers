@@ -185,16 +185,24 @@ describe('DeliveryExceptionsRepository', () => {
     expect(items.every((item) => item.deliveryId === delivery.id)).toBe(true);
   });
 
-  describe('findMany', () => {
+  describe('findManyWithContext', () => {
     it('filters by resolution status and paginates', async () => {
-      const { items, total } = await repository.findMany(false, { skip: 0, take: 20 });
+      const { items, total } = await repository.findManyWithContext(false, { skip: 0, take: 20 });
       expect(total).toBeGreaterThanOrEqual(2);
       expect(items.every((item) => !item.resolved)).toBe(true);
     });
 
     it('returns all exceptions when no filter is given', async () => {
-      const { items } = await repository.findMany(undefined, { skip: 0, take: 20 });
+      const { items } = await repository.findManyWithContext(undefined, { skip: 0, take: 20 });
       expect(items.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('includes vendor/customer/driver context for each item', async () => {
+      const { items } = await repository.findManyWithContext(undefined, { skip: 0, take: 20 });
+      const item = items.find((candidate) => candidate.deliveryId === delivery.id);
+      expect(item?.delivery.vendorOrder.vendor.businessName).toBe('Exceptions Test Vendor');
+      expect(item?.delivery.vendorOrder.order.customer.firstName).toBe('Cara');
+      expect(item?.delivery.driver.user.firstName).toBe('Dana');
     });
   });
 });

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -11,7 +11,9 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { AssignDeliveryRunDto } from '../dto/assign-delivery-run.dto';
+import { ListDeliveryRunsDto } from '../dto/list-delivery-runs.dto';
 import { DeliveryRunResponseEntity } from '../entities/delivery-run-response.entity';
+import { PaginatedDeliveryRunsEntity } from '../entities/paginated-delivery-runs.entity';
 import { DeliveryRunsService } from '../services/delivery-runs.service';
 
 @ApiTags('delivery-runs')
@@ -21,6 +23,15 @@ import { DeliveryRunsService } from '../services/delivery-runs.service';
 @Controller('delivery-runs')
 export class DeliveryRunsController {
   constructor(private readonly deliveryRunsService: DeliveryRunsService) {}
+
+  @Get()
+  @ApiOperation({
+    summary: 'List delivery runs, optionally filtered by status/zone (admin only)',
+  })
+  @ApiResponseDoc({ status: 200, type: PaginatedDeliveryRunsEntity })
+  list(@Query() dto: ListDeliveryRunsDto): Promise<PaginatedDeliveryRunsEntity> {
+    return this.deliveryRunsService.list(dto);
+  }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a delivery run and its ordered stops (admin only)' })

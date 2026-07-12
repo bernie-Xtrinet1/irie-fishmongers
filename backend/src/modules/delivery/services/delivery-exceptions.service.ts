@@ -3,12 +3,16 @@ import { DeliveryException } from '@prisma/client';
 
 import { CreateDeliveryExceptionDto } from '../dto/create-delivery-exception.dto';
 import { ListDeliveryExceptionsDto } from '../dto/list-delivery-exceptions.dto';
+import { DeliveryExceptionWithContextEntity } from '../entities/delivery-exception-with-context.entity';
 import { DeliveriesRepository } from '../repositories/deliveries.repository';
-import { DeliveryExceptionsRepository } from '../repositories/delivery-exceptions.repository';
+import {
+  DeliveryExceptionsRepository,
+  DeliveryExceptionWithContext,
+} from '../repositories/delivery-exceptions.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
 
-export interface PaginatedDeliveryExceptions {
-  items: DeliveryException[];
+export interface PaginatedDeliveryExceptionsWithContext {
+  items: DeliveryExceptionWithContextEntity[];
   total: number;
   page: number;
   pageSize: number;
@@ -63,12 +67,43 @@ export class DeliveryExceptionsService {
     return this.exceptionsRepository.resolve(id, resolvedById);
   }
 
-  async list(dto: ListDeliveryExceptionsDto): Promise<PaginatedDeliveryExceptions> {
-    const { items, total } = await this.exceptionsRepository.findMany(dto.resolved, {
+  async list(dto: ListDeliveryExceptionsDto): Promise<PaginatedDeliveryExceptionsWithContext> {
+    const { items, total } = await this.exceptionsRepository.findManyWithContext(dto.resolved, {
       skip: (dto.page - 1) * dto.pageSize,
       take: dto.pageSize,
     });
 
-    return { items, total, page: dto.page, pageSize: dto.pageSize };
+    return {
+      items: items.map((exception) => DeliveryExceptionsService.toContextEntity(exception)),
+      total,
+      page: dto.page,
+      pageSize: dto.pageSize,
+    };
+  }
+
+  private static toContextEntity(
+    exception: DeliveryExceptionWithContext,
+  ): DeliveryExceptionWithContextEntity {
+    const { delivery } = exception;
+    const { vendorOrder } = delivery;
+
+    return {
+      id: exception.id,
+      deliveryId: exception.deliveryId,
+      vendorOrderId: vendorOrder.id,
+      type: exception.type,
+      reason: exception.reason,
+      photos: exception.photos,
+      notes: exception.notes,
+      resolved: exception.resolved,
+      resolvedAt: exception.resolvedAt,
+      resolvedById: exception.resolvedById,
+      vendorBusinessName: vendorOrder.vendor.businessName,
+      customerName: `${vendorOrder.order.customer.firstName} ${vendorOrder.order.customer.lastName}`,
+      deliveryAddressLine1: vendorOrder.order.deliveryAddressLine1,
+      deliveryParish: vendorOrder.order.deliveryParish,
+      driverName: `${delivery.driver.user.firstName} ${delivery.driver.user.lastName}`,
+      createdAt: exception.createdAt,
+    };
   }
 }

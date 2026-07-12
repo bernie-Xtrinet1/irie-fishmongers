@@ -38,12 +38,14 @@ function buildRun(overrides: Partial<DeliveryRunWithStops> = {}): DeliveryRunWit
 }
 
 describe('DeliveryRunsService', () => {
-  let deliveryRunsRepository: jest.Mocked<Pick<DeliveryRunsRepository, 'findById' | 'assign'>>;
+  let deliveryRunsRepository: jest.Mocked<
+    Pick<DeliveryRunsRepository, 'findById' | 'assign' | 'findMany'>
+  >;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'findById'>>;
   let service: DeliveryRunsService;
 
   beforeEach(() => {
-    deliveryRunsRepository = { findById: jest.fn(), assign: jest.fn() };
+    deliveryRunsRepository = { findById: jest.fn(), assign: jest.fn(), findMany: jest.fn() };
     driversRepository = { findById: jest.fn() };
     service = new DeliveryRunsService(
       deliveryRunsRepository as unknown as DeliveryRunsRepository,
@@ -103,6 +105,21 @@ describe('DeliveryRunsService', () => {
       await expect(
         service.assign('missing', { driverId: 'driver-1' }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('list', () => {
+    it('paginates runs filtered by status and zone', async () => {
+      deliveryRunsRepository.findMany.mockResolvedValue({ items: [buildRun()], total: 1 });
+
+      const result = await service.list({ status: 'PLANNED', zoneId: 'zone-1', page: 1, pageSize: 20 });
+
+      expect(result.total).toBe(1);
+      expect(result.items[0]?.id).toBe('delivery-run-1');
+      expect(deliveryRunsRepository.findMany).toHaveBeenCalledWith(
+        { status: 'PLANNED', zoneId: 'zone-1' },
+        { skip: 0, take: 20 },
+      );
     });
   });
 });

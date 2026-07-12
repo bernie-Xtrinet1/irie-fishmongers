@@ -14,7 +14,7 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CreateDeliveryExceptionDto } from '../dto/create-delivery-exception.dto';
 import { ListDeliveryExceptionsDto } from '../dto/list-delivery-exceptions.dto';
 import { DeliveryExceptionResponseEntity } from '../entities/delivery-exception-response.entity';
-import { PaginatedDeliveryExceptionsEntity } from '../entities/paginated-delivery-exceptions.entity';
+import { PaginatedDeliveryExceptionsWithContextEntity } from '../entities/paginated-delivery-exceptions-with-context.entity';
 import { DeliveryExceptionsService } from '../services/delivery-exceptions.service';
 
 @ApiTags('delivery')
@@ -41,10 +41,13 @@ export class DeliveryExceptionsController {
   @Roles(RoleName.ADMINISTRATOR)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'List delivery exceptions, optionally filtered by resolution status (admin only)',
+    summary:
+      'List delivery exceptions with vendor/customer/driver context, optionally filtered by resolution status (admin only)',
   })
-  @ApiResponseDoc({ status: 200, type: PaginatedDeliveryExceptionsEntity })
-  list(@Query() dto: ListDeliveryExceptionsDto): Promise<PaginatedDeliveryExceptionsEntity> {
+  @ApiResponseDoc({ status: 200, type: PaginatedDeliveryExceptionsWithContextEntity })
+  list(
+    @Query() dto: ListDeliveryExceptionsDto,
+  ): Promise<PaginatedDeliveryExceptionsWithContextEntity> {
     return this.deliveryExceptionsService.list(dto);
   }
 

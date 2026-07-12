@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { FleetMaintenance } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { FleetAsset, FleetMaintenance } from '@prisma/client';
 
+import { FleetMaintenanceOverdueEvent } from '../../../common/events/fleet-maintenance-overdue.event';
 import { PrismaService } from '../../../database/prisma.service';
 import { CreateFleetMaintenanceDto } from '../dto/create-fleet-maintenance.dto';
 import { UpdateFleetMaintenanceDto } from '../dto/update-fleet-maintenance.dto';
@@ -20,6 +22,7 @@ export class FleetMaintenanceService {
     private readonly maintenanceRepository: FleetMaintenanceRepository,
     private readonly fleetAssetsRepository: FleetAssetsRepository,
     private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(
@@ -31,8 +34,8 @@ export class FleetMaintenanceService {
       throw new NotFoundException('Fleet asset not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const record = await this.maintenanceRepository.create(
+    const record = await this.prisma.$transaction(async (tx) => {
+      const created = await this.maintenanceRepository.create(
         {
           fleetAssetId,
           serviceDate: new Date(dto.serviceDate),
@@ -48,15 +51,21 @@ export class FleetMaintenanceService {
 
       // Explicit, traceable state change made in this one call - not an
       // implicit trigger/side-effect on the asset.
-      if (record.status === 'IN_PROGRESS') {
+      if (created.status === 'IN_PROGRESS') {
         await tx.fleetAsset.update({
           where: { id: fleetAssetId },
           data: { status: 'MAINTENANCE' },
         });
       }
 
-      return record;
+      return created;
     });
+
+    if (record.status === 'OVERDUE') {
+      await this.notifyOverdueIfDriverAssigned(asset, record);
+    }
+
+    return record;
   }
 
   async findByFleetAssetId(
@@ -99,6 +108,43 @@ export class FleetMaintenanceService {
       });
     }
 
+    if (dto.status === 'OVERDUE' && existing.status !== 'OVERDUE') {
+      const asset = await this.fleetAssetsRepository.findById(existing.fleetAssetId);
+      if (asset) {
+        await this.notifyOverdueIfDriverAssigned(asset, updated);
+      }
+    }
+
     return updated;
+  }
+
+  // Reads Driver.userId directly via the global PrismaService rather than
+  // depending on DeliveryModule's DriversRepository - FleetModule staying
+  // leaf-level avoids a cycle, mirroring VendorPickupQueueService's
+  // established precedent for the same kind of cross-module lookup.
+  private async notifyOverdueIfDriverAssigned(
+    asset: FleetAsset,
+    record: FleetMaintenance,
+  ): Promise<void> {
+    if (!asset.currentDriverId) {
+      return;
+    }
+
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: asset.currentDriverId },
+      select: { userId: true },
+    });
+    if (!driver) {
+      return;
+    }
+
+    this.eventEmitter.emit(
+      FleetMaintenanceOverdueEvent.eventName,
+      new FleetMaintenanceOverdueEvent(
+        driver.userId,
+        asset.licensePlate,
+        record.nextServiceDue?.toISOString() ?? null,
+      ),
+    );
   }
 }

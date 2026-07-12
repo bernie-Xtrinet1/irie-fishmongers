@@ -2,7 +2,10 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Driver, DeliveryException } from '@prisma/client';
 
 import { DeliveriesRepository, DeliveryWithDetails } from '../repositories/deliveries.repository';
-import { DeliveryExceptionsRepository } from '../repositories/delivery-exceptions.repository';
+import {
+  DeliveryExceptionsRepository,
+  DeliveryExceptionWithContext,
+} from '../repositories/delivery-exceptions.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
 import { DeliveryExceptionsService } from './delivery-exceptions.service';
 
@@ -40,16 +43,41 @@ function buildException(overrides: Partial<DeliveryException> = {}): DeliveryExc
   };
 }
 
+function buildExceptionWithContext(
+  overrides: Partial<DeliveryException> = {},
+): DeliveryExceptionWithContext {
+  return {
+    ...buildException(overrides),
+    delivery: {
+      driver: { user: { firstName: 'Dana', lastName: 'Driver' } },
+      vendorOrder: {
+        id: 'vendor-order-1',
+        vendor: { businessName: 'Exceptions Test Vendor' },
+        order: {
+          customer: { firstName: 'Cara', lastName: 'Customer' },
+          deliveryAddressLine1: '1 Test Street',
+          deliveryParish: 'KINGSTON',
+        },
+      },
+    },
+  } as unknown as DeliveryExceptionWithContext;
+}
+
 describe('DeliveryExceptionsService', () => {
   let exceptionsRepository: jest.Mocked<
-    Pick<DeliveryExceptionsRepository, 'create' | 'findById' | 'resolve' | 'findMany'>
+    Pick<DeliveryExceptionsRepository, 'create' | 'findById' | 'resolve' | 'findManyWithContext'>
   >;
   let deliveriesRepository: jest.Mocked<Pick<DeliveriesRepository, 'findById'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'findByUserId'>>;
   let service: DeliveryExceptionsService;
 
   beforeEach(() => {
-    exceptionsRepository = { create: jest.fn(), findById: jest.fn(), resolve: jest.fn(), findMany: jest.fn() };
+    exceptionsRepository = {
+      create: jest.fn(),
+      findById: jest.fn(),
+      resolve: jest.fn(),
+      findManyWithContext: jest.fn(),
+    };
     deliveriesRepository = { findById: jest.fn() };
     driversRepository = { findByUserId: jest.fn() };
     service = new DeliveryExceptionsService(
@@ -150,13 +178,26 @@ describe('DeliveryExceptionsService', () => {
   });
 
   describe('list', () => {
-    it('paginates exceptions filtered by resolution status', async () => {
-      exceptionsRepository.findMany.mockResolvedValue({ items: [buildException()], total: 1 });
+    it('paginates exceptions filtered by resolution status and enriches them with context', async () => {
+      exceptionsRepository.findManyWithContext.mockResolvedValue({
+        items: [buildExceptionWithContext()],
+        total: 1,
+      });
 
       const result = await service.list({ resolved: false, page: 1, pageSize: 20 });
 
       expect(result.total).toBe(1);
-      expect(exceptionsRepository.findMany).toHaveBeenCalledWith(false, { skip: 0, take: 20 });
+      expect(result.items[0]).toMatchObject({
+        id: 'exception-1',
+        vendorOrderId: 'vendor-order-1',
+        vendorBusinessName: 'Exceptions Test Vendor',
+        customerName: 'Cara Customer',
+        driverName: 'Dana Driver',
+      });
+      expect(exceptionsRepository.findManyWithContext).toHaveBeenCalledWith(false, {
+        skip: 0,
+        take: 20,
+      });
     });
   });
 });

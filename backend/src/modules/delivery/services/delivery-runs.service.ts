@@ -1,12 +1,20 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { AssignDeliveryRunDto } from '../dto/assign-delivery-run.dto';
+import { ListDeliveryRunsDto } from '../dto/list-delivery-runs.dto';
 import { DeliveryRunResponseEntity } from '../entities/delivery-run-response.entity';
 import {
   DeliveryRunsRepository,
   DeliveryRunWithStops,
 } from '../repositories/delivery-runs.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
+
+export interface PaginatedDeliveryRuns {
+  items: DeliveryRunResponseEntity[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
 
 @Injectable()
 export class DeliveryRunsService {
@@ -21,6 +29,23 @@ export class DeliveryRunsService {
       throw new NotFoundException('Delivery run not found');
     }
     return DeliveryRunsService.toResponse(run);
+  }
+
+  // Feeds the Delivery Operations Center dashboard (10B): status/zoneId
+  // filters let the frontend separate "needs dispatch" (PLANNED) from
+  // "active" (IN_PROGRESS) lists without over-fetching.
+  async list(dto: ListDeliveryRunsDto): Promise<PaginatedDeliveryRuns> {
+    const { items, total } = await this.deliveryRunsRepository.findMany(
+      { status: dto.status, zoneId: dto.zoneId },
+      { skip: (dto.page - 1) * dto.pageSize, take: dto.pageSize },
+    );
+
+    return {
+      items: items.map((run) => DeliveryRunsService.toResponse(run)),
+      total,
+      page: dto.page,
+      pageSize: dto.pageSize,
+    };
   }
 
   async assign(id: string, dto: AssignDeliveryRunDto): Promise<DeliveryRunResponseEntity> {
