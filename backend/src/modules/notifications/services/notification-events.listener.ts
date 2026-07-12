@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
+import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
@@ -135,6 +136,26 @@ export class NotificationEventsListener {
       eventType: 'RECALL_ISSUED',
       priority: 'CRITICAL',
       variables: { orderId: event.orderId, lotNumber: event.lotNumber, reason: event.reason },
+    });
+  }
+
+  // cold-chain-management.md's alert-severity ladder maps directly onto
+  // NotificationPriority: WARNING is routine, CRITICAL already triggered a
+  // lot status change, EMERGENCY already triggered an auto-quarantine +
+  // emergency response - the notification priority should read the same way.
+  @OnEvent(ColdChainAlertRaisedEvent.eventName)
+  async onColdChainAlertRaised(event: ColdChainAlertRaisedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.vendorUserId,
+      category: 'VENDOR',
+      eventType: 'COLD_CHAIN_ALERT_RAISED',
+      priority: event.severity === 'EMERGENCY' ? 'CRITICAL' : event.severity === 'CRITICAL' ? 'HIGH' : 'NORMAL',
+      variables: {
+        lotNumber: event.lotNumber,
+        severity: event.severity,
+        temperatureC: event.temperatureC,
+        checkpoint: event.checkpoint,
+      },
     });
   }
 }

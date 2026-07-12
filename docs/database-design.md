@@ -754,10 +754,15 @@ Notification wiring closed by this amendment:
   emits one `RecallIssuedEvent` per affected order when a recall transitions
   to ACTIVE (reusing the already-built `getAffectedOrders()` lookup),
   notified via Email + In-App at CRITICAL priority.
-- `NotificationEventType.COLD_CHAIN_ALERT_RAISED` has seeded templates but
-  is **not yet wired** to an actual emission point - this remains a
-  tracked, separate follow-up (no `ColdChainAlertRaisedEvent` class or
-  listener case exists yet), distinct from the rest of this amendment.
+- `NotificationEventType.COLD_CHAIN_ALERT_RAISED` - `TemperatureMonitoringService.recordReading()`
+  emits one `ColdChainAlertRaisedEvent` to the owning vendor whenever a
+  reading raises a WARNING/CRITICAL/EMERGENCY alert, notified via Email +
+  In-App with priority scaled to severity (NORMAL/HIGH/CRITICAL). The
+  seeded template body was extended to interpolate `temperatureC`/
+  `checkpoint` alongside `lotNumber`/`severity`. Admin/operations
+  escalation for CRITICAL/EMERGENCY (per cold-chain-management.md's
+  automated-actions table) remains unwired - see the "Explicitly out of
+  scope" note below on `NotifyAdmin`/`NotifyOperations`.
 
 Explicitly out of scope (see the source plan's own "Explicitly out of
 scope" section for the full list and reasoning): real IoT sensor

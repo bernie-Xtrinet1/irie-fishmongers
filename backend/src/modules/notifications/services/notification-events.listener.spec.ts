@@ -1,4 +1,5 @@
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
+import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
@@ -161,6 +162,31 @@ describe('NotificationEventsListener', () => {
       eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
       priority: 'NORMAL',
       variables: { vendorOrderId: 'vo-1' },
+    });
+  });
+
+  describe('onColdChainAlertRaised', () => {
+    it.each([
+      ['WARNING', 'NORMAL'],
+      ['CRITICAL', 'HIGH'],
+      ['EMERGENCY', 'CRITICAL'],
+    ])('maps a %s severity to %s priority', async (severity, priority) => {
+      const event = new ColdChainAlertRaisedEvent('vendor-user-1', 'LOT-2026-000001', severity, '11', 'VENDOR_STORAGE');
+
+      await listener.onColdChainAlertRaised(event);
+
+      expect(notificationsService.notify).toHaveBeenCalledWith({
+        userId: 'vendor-user-1',
+        category: 'VENDOR',
+        eventType: 'COLD_CHAIN_ALERT_RAISED',
+        priority,
+        variables: {
+          lotNumber: 'LOT-2026-000001',
+          severity,
+          temperatureC: '11',
+          checkpoint: 'VENDOR_STORAGE',
+        },
+      });
     });
   });
 });

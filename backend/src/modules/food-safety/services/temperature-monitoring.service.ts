@@ -1,6 +1,8 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AlertSeverity, SeafoodStorageType, TemperatureThreshold } from '@prisma/client';
 
+import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -31,6 +33,7 @@ export class TemperatureMonitoringService {
     private readonly thresholdsRepository: TemperatureThresholdsRepository,
     private readonly devicesRepository: TemperatureDevicesRepository,
     private readonly emergencyResponsesRepository: EmergencyResponsesRepository,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async recordReading(
@@ -100,6 +103,23 @@ export class TemperatureMonitoringService {
 
     if (severity === 'EMERGENCY') {
       await this.emergencyResponsesRepository.create(alert.id);
+    }
+
+    // cold-chain-management.md's "Notify Vendor" automated action applies
+    // at every severity tier - see ColdChainAlertRaisedEvent for why the
+    // CRITICAL/EMERGENCY admin/operations escalation isn't wired here too.
+    const vendor = await this.vendorsRepository.findById(lot.vendorId);
+    if (vendor) {
+      await this.eventEmitter.emitAsync(
+        ColdChainAlertRaisedEvent.eventName,
+        new ColdChainAlertRaisedEvent(
+          vendor.userId,
+          lot.lotNumber,
+          severity,
+          dto.temperatureC.toString(),
+          dto.checkpoint,
+        ),
+      );
     }
 
     return {

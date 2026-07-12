@@ -1,4 +1,5 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   Driver,
   SeafoodLot,
@@ -9,6 +10,7 @@ import {
   Vendor,
 } from '@prisma/client';
 
+import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -160,7 +162,7 @@ describe('TemperatureMonitoringService', () => {
     Pick<TemperatureAlertsRepository, 'create' | 'findById' | 'resolve' | 'findMany'>
   >;
   let lotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById' | 'updateStatus'>>;
-  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'findByUserId'>>;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
   let thresholdsRepository: jest.Mocked<
@@ -168,6 +170,7 @@ describe('TemperatureMonitoringService', () => {
   >;
   let devicesRepository: jest.Mocked<Pick<TemperatureDevicesRepository, 'touchLastSeen'>>;
   let emergencyResponsesRepository: jest.Mocked<Pick<EmergencyResponsesRepository, 'create'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: TemperatureMonitoringService;
 
   beforeEach(() => {
@@ -179,7 +182,7 @@ describe('TemperatureMonitoringService', () => {
       findMany: jest.fn(),
     };
     lotsRepository = { findById: jest.fn(), updateStatus: jest.fn() };
-    vendorsRepository = { findByUserId: jest.fn() };
+    vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn().mockResolvedValue(buildVendor()) };
     driversRepository = { findByUserId: jest.fn() };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
     thresholdsRepository = {
@@ -188,6 +191,7 @@ describe('TemperatureMonitoringService', () => {
     };
     devicesRepository = { touchLastSeen: jest.fn().mockResolvedValue(buildDevice()) };
     emergencyResponsesRepository = { create: jest.fn() };
+    eventEmitter = { emitAsync: jest.fn() };
 
     service = new TemperatureMonitoringService(
       readingsRepository as unknown as TemperatureReadingsRepository,
@@ -199,6 +203,7 @@ describe('TemperatureMonitoringService', () => {
       thresholdsRepository as unknown as TemperatureThresholdsRepository,
       devicesRepository as unknown as TemperatureDevicesRepository,
       emergencyResponsesRepository as unknown as EmergencyResponsesRepository,
+      eventEmitter as unknown as EventEmitter2,
     );
   });
 
@@ -459,6 +464,81 @@ describe('TemperatureMonitoringService', () => {
 
       expect(result.alert).toBeUndefined();
       expect(alertsRepository.create).not.toHaveBeenCalled();
+    });
+
+    describe('ColdChainAlertRaisedEvent', () => {
+      it('does not emit when the reading stays within the safe band', async () => {
+        lotsRepository.findById.mockResolvedValue(buildLot());
+        vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+        readingsRepository.create.mockResolvedValue(buildReading());
+
+        await service.recordReading('vendor-user-1', dto);
+
+        expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+      });
+
+      it('notifies the owning vendor for a WARNING reading', async () => {
+        lotsRepository.findById.mockResolvedValue(buildLot({ vendorId: 'vendor-1', lotNumber: 'LOT-2026-000001' }));
+        vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+        vendorsRepository.findById.mockResolvedValue(buildVendor({ id: 'vendor-1', userId: 'vendor-user-owner' }));
+        readingsRepository.create.mockResolvedValue(buildReading());
+        alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'WARNING' }));
+
+        await service.recordReading('vendor-user-1', { ...dto, temperatureC: 7 });
+
+        expect(vendorsRepository.findById).toHaveBeenCalledWith('vendor-1');
+        expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+          ColdChainAlertRaisedEvent.eventName,
+          expect.objectContaining({
+            vendorUserId: 'vendor-user-owner',
+            lotNumber: 'LOT-2026-000001',
+            severity: 'WARNING',
+            checkpoint: 'VENDOR_STORAGE',
+          }),
+        );
+      });
+
+      it('notifies the owning vendor for a CRITICAL reading', async () => {
+        lotsRepository.findById.mockResolvedValue(buildLot({ foodSafetyStatus: 'SAFE' }));
+        vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+        readingsRepository.create.mockResolvedValue(buildReading());
+        alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'CRITICAL' }));
+        lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: 'UNDER_REVIEW' }));
+
+        await service.recordReading('vendor-user-1', { ...dto, temperatureC: 7.1 });
+
+        expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+          ColdChainAlertRaisedEvent.eventName,
+          expect.objectContaining({ severity: 'CRITICAL' }),
+        );
+      });
+
+      it('notifies the owning vendor for an EMERGENCY reading', async () => {
+        lotsRepository.findById.mockResolvedValue(buildLot({ foodSafetyStatus: 'SAFE' }));
+        vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+        readingsRepository.create.mockResolvedValue(buildReading());
+        alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'EMERGENCY' }));
+        lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: 'QUARANTINED' }));
+
+        await service.recordReading('vendor-user-1', { ...dto, temperatureC: 11 });
+
+        expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
+          ColdChainAlertRaisedEvent.eventName,
+          expect.objectContaining({ severity: 'EMERGENCY' }),
+        );
+      });
+
+      it('does not emit when the lot has no resolvable vendor', async () => {
+        lotsRepository.findById.mockResolvedValue(buildLot());
+        vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+        vendorsRepository.findById.mockResolvedValue(null);
+        readingsRepository.create.mockResolvedValue(buildReading());
+        alertsRepository.create.mockResolvedValue(buildAlert({ severity: 'WARNING' }));
+
+        await service.recordReading('vendor-user-1', { ...dto, temperatureC: 7 });
+
+        expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+      });
     });
   });
 
