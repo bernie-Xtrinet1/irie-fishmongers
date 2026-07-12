@@ -1,15 +1,26 @@
 # IRIE FISHMONGERS PLATFORM
 # IMPLEMENTATION ROADMAP
 
-Version: 2.1
+Version: 2.2
 
-Last reviewed: 2026-07-12 - audited every phase's STATUS against the
-actual codebase (schema, modules, apps/ directories) rather than trusting
-prior status text alone. Corrected several phases that had no STATUS
-marker at all despite being substantially built (11, 12, 14), and phases
-that claimed nothing despite being real gaps (10A-10E, 15). Added Phase
-12B (Operational Readiness) as a new gating phase before Phase 13, plus a
-Platform Maturity Matrix as a standing decision-making tool.
+Last reviewed: 2026-07-12 - Phases 10A-10E (Fleet Dispatch Engine,
+Delivery Operations Center, Advanced Route Optimization, Delivery
+Analytics & SLA, Advanced Cold Chain & Fleet Sanitation) all completed
+and marked ✓ Complete, closing every gap Phase 12B.0's verification
+identified. Remaining Phase 12B scope is now exactly: the 4 Analytics
+admin screens (Vendor Dashboard, Sales/Delivery/Inventory Analytics),
+Digital Product Passport end-to-end verification, dashboard verification
+against seeded data, a full architecture review, and a final regression
+pass - see PHASE 12B below.
+
+Previous review (2026-07-12, earlier pass): audited every phase's STATUS
+against the actual codebase (schema, modules, apps/ directories) rather
+than trusting prior status text alone. Corrected several phases that had
+no STATUS marker at all despite being substantially built (11, 12, 14),
+and phases that claimed nothing despite being real gaps (10A-10E, 15).
+Added Phase 12B (Operational Readiness) as a new gating phase before
+Phase 13, plus a Platform Maturity Matrix as a standing decision-making
+tool.
 
 This document is the master implementation roadmap for the
 Irie Fishmongers Marketplace.
@@ -352,8 +363,11 @@ Delivery & Logistics
 
 STATUS
 
-~ Operationally Ready (core workflow shipped; dispatch automation, live
-ops UI, and mobile driver app remain open - see Phase 12B)
+~ Operationally Ready (core workflow shipped; 10A-10E dispatch
+automation, ops UI, route optimization, SLA/fleet metrics, and
+sanitation/certification tracking are now all built - see each phase's
+own STATUS below. Only the mobile driver app remains open, tracked
+separately, not part of 10A-10E)
 
 Purpose
 
@@ -403,9 +417,21 @@ Fleet Dispatch Engine
 
 STATUS
 
-~ Partially Shipped - no automatic dispatch algorithm exists yet
-(assignment is still driver-initiated claim); see Phase 12B execution
-plan.
+✓ Complete (2026-07-12) - real dispatch-scoring algorithm built:
+DispatchService (new backend/src/modules/dispatch/ module) computes hard
+eligibility (zone match, APPROVED+ONLINE driver, cold-chain capability,
+capacity sufficiency, not already engaged on another IN_PROGRESS run) and
+soft ranking (computeCapacityFitScore - tighter capacity fit scores
+higher) for both drivers and fleet assets, then calls the existing
+PATCH /delivery-runs/:id/assign seam. Every decision (including
+no-eligible-candidate failures) is recorded in a new DispatchDecisionLog
+table. POST /delivery-runs/:id/dispatch (admin) is the new endpoint.
+Product.weightLbs (new nullable field) closes the capacity-check blind
+spot for PER_PACKAGE/PER_ITEM units. Scope decision: zone-match
+substitutes for real distance-to-pickup (no Vendor lat/long exists
+anywhere in the schema); "current load" is a hard eligibility filter, not
+a soft score, mirroring DeliveriesRepository.countActiveByDriverId's
+existing precedent.
 
 Purpose
 
@@ -452,8 +478,22 @@ Delivery Operations Center
 
 STATUS
 
-~ Partially Shipped - backend data/endpoints exist, no dispatcher UI, no
-real-time updates; see Phase 12B execution plan.
+✓ Complete (2026-07-12) - new /delivery-operations admin-dashboard screen
+with three live sections: Needs Dispatch (PLANNED delivery runs, one-click
+dispatch via the 10A engine with a confirmation dialog), Active Runs
+(IN_PROGRESS, informational), Open Exceptions (unresolved, enriched with
+vendor/customer/driver/address context - closes the 12B.0 finding that
+the plain exception list under-fetched for a dispatcher screen; the old
+plain findMany()/entity were removed as dead code). New GET /delivery-runs
+list endpoint (previously only GET :id existed). "Real-time" is React
+Query polling (refetchInterval), not WebSockets - same call as the 12A
+dashboard widgets, no new backend infrastructure needed. Vehicle
+maintenance alerts: FleetMaintenanceOverdueEvent notifies the asset's
+currently assigned driver when a record becomes OVERDUE (both on create
+and on update) - deliberately does not attempt an "all administrators"
+push notification, since no role-wide recipient lookup exists yet (same
+gap ColdChainAlertRaisedEvent already noted); operations-wide visibility
+comes from this screen surfacing overdue records directly instead.
 
 Purpose
 
@@ -497,9 +537,19 @@ Advanced Route Optimization
 
 STATUS
 
-~ Mostly Shipped - scaffolding and DI seam exist, but the only registered
-strategy is a no-op passthrough (no real optimization algorithm); see
-Phase 12B execution plan.
+✓ Complete (2026-07-12) - the honest no-op (SingleStopRouteOptimization
+Strategy, preserved input order) is replaced by
+ParishClusteringRouteOptimizationStrategy: a real deterministic ordering
+heuristic that sorts stops by delivery Parish first (finish one
+geographic cluster before moving to the next) and vendor second
+(consecutive same-vendor pickups aren't split apart). Explicit scope
+decision, documented in the strategy's own file comment: this is not a
+haversine distance-minimizing solver - no Vendor/Order/Customer lat/long
+exists anywhere in this schema (the only coordinates on record are
+DriverLocation GPS pings and food-safety catch/landing-site/reading
+locations), so real distance-based sequencing would require adding
+geocoding infrastructure, which is out of scope here. Same "zone-match
+substitutes for distance" scope decision 10A already made.
 
 Purpose
 
@@ -544,9 +594,24 @@ Delivery Analytics & SLA
 
 STATUS
 
-~ Partially Shipped - on-time/driver performance metrics exist; no SLA
-breach tracking, fleet utilization, or zone performance rollups; see
-Phase 12B execution plan.
+✓ Complete (2026-07-12) - SLA breach tracking and fleet/zone rollup
+metrics built. SLA = Delivery.customerDeliveryWindowEnd, the same
+promised-by deadline DriversService.getPerformanceMetrics() already used
+for its per-driver on-time/late ratio - now persisted as queryable
+SLABreach records via two detection paths: LATE_DELIVERY (created
+synchronously inside DeliveriesService.updateStatus's existing DELIVERED
+transition, when deliveredAt lands after the promised window) and
+OVERDUE_IN_TRANSIT (a delivery still in-flight past its window can't be
+caught by any state transition, so SLABreachDetectionService runs a new
+@Cron(EVERY_5_MINUTES) scan - this backend's first cron job,
+@nestjs/schedule added fresh). SLABreach has @@unique([deliveryId, type])
+and the repository always upserts, so the cron never creates duplicate
+rows for a delivery that stays overdue across ticks. Fleet/zone rollups:
+FleetAssetsRepository.countByZoneAndStatus() (GET /fleet-assets/
+zone-summary) and SLABreachesRepository.getBreachCountsByZone()
+(GET /sla-breaches/zone-summary). Both rollups are backend-only in this
+pass - wiring them into a Delivery Analytics screen is Phase 12B's
+separate, not-yet-started deliverable (see Phase 15 below).
 
 Purpose
 
@@ -592,10 +657,26 @@ Advanced Cold Chain & Fleet Sanitation
 
 STATUS
 
-~ Partially Shipped - extended checkpoints, fleet maintenance, and
-rejection-triggered incidents exist; no telemetry hooks, vehicle
-sanitation records, or driver cold-chain certification tracking; see
-Phase 12B execution plan.
+✓ Complete (2026-07-12) - the two concrete remaining gaps are closed.
+Vehicle sanitation: new FleetSanitationRecord model (POST/GET
+/fleet-assets/:id/sanitation, admin), deliberately distinct from
+FleetMaintenance - mechanical soundness and cold-chain hygiene are
+different compliance concerns. Driver cold-chain certification: new
+DriverColdChainCertification model with issuedBy/issuedAt/expiresAt
+(POST/GET /drivers/:id/cold-chain-certifications, PATCH /drivers/
+cold-chain-certifications/:id/revoke, all admin), separate from
+Driver.coldChainCapable (a vehicle-capability flag 10A's dispatch
+eligibility already reads).
+DriverColdChainCertificationsService.computeIsCertified() mirrors
+VendorDocumentsService.computeCanSell()'s "does this party currently
+satisfy a compliance requirement" precedent, but is deliberately not
+wired into 10A's dispatch eligibility in this pass - that would change
+already-shipped 10A behavior and is a real, separate integration
+decision left for its own explicit choice. Cold-chain telemetry hooks
+are an explicit non-decision, not an oversight: no physical IoT sensor
+hardware exists to integrate against, and every other compliance record
+in this codebase (TemperatureReading, QualityInspection, etc.) is
+human-entered too - nothing here blocks wiring real hardware in later.
 
 Purpose
 
@@ -791,16 +872,19 @@ Operational Readiness
 
 STATUS
 
-In Progress - gates Phase 13. No new customer-facing scope; closes the
+~ In Progress - gates Phase 13. No new customer-facing scope; closes the
 operational gaps left open across Phases 10A-10E, 11, and 15 before the
 roadmap moves on to Customer Trust. Phase 12B.0 (above) is complete;
-10A-10E implementation is underway.
+10A-10E is now fully complete (see each phase's own STATUS above). All
+that remains is the Analytics screens, DPP verification, dashboard
+verification, architecture review, and final regression listed below.
 
 Deliverables (added after Phase 12B.0)
 
 - Wire DeliveryRejectedEvent into NotificationEventsListener (customer
   rejection currently notifies no one via the notification pipeline -
-  found during Phase 12B.0, confirmed not previously known).
+  found during Phase 12B.0, confirmed not previously known). Not yet
+  started.
 
 Purpose
 
@@ -812,27 +896,33 @@ notes get resolved, not accumulated further.
 
 Deliverables
 
-- Close the Phase 10A-10E gaps that are essential for operations (see
-  the dedicated "PHASE 10A-10E EXECUTION PLAN" section below for the
-  itemized breakdown per sub-phase).
+- [DONE 2026-07-12] Close the Phase 10A-10E gaps that are essential for
+  operations (see the dedicated "PHASE 10A-10E EXECUTION PLAN" section
+  below for the itemized breakdown per sub-phase - all five items
+  shipped and independently committed).
 - Build the four Analytics deliverables from Phase 15 that don't exist
   yet: Vendor Dashboard, Sales Analytics, Delivery Analytics, Inventory
   Analytics. (The fifth Phase 15 deliverable, Admin Dashboard, is
   already substantially built: apps/admin-dashboard ships Dashboard
   Overview, Vendor Management, Driver Management, Delivery Zone & Fleet
-  Management, Cold Chain Monitoring, and Recall Management.)
+  Management, Delivery Operations Center, Cold Chain Monitoring, and
+  Recall Management.) Not yet started.
 - Verify the Digital Product Passport / QR flow end-to-end (scan a
   generated QR, confirm it resolves to the correct public traceability
   page, confirm it degrades sensibly for a recalled/quarantined lot).
+  Not yet started.
 - Verify every dashboard and report shipped so far actually renders
   correct data against a realistic seeded dataset, not just against
-  the narrow fixtures used in unit/e2e tests.
+  the narrow fixtures used in unit/e2e tests. Not yet started.
 - Run a full architecture review across everything shipped since the
   last such review (data model, module boundaries, security posture,
-  N+1 query risk, dead code) - not just a regression test pass.
+  N+1 query risk, dead code) - not just a regression test pass. Not yet
+  started.
 - Run the full monorepo regression suite (typecheck, lint, unit, e2e,
   frontend component tests) clean, on top of the architecture review's
-  findings being addressed.
+  findings being addressed. Not yet started (each 10A-10E commit was
+  independently fully verified, but a single final pass across
+  everything together has not run).
 
 Acceptance
 
@@ -856,6 +946,11 @@ Dependencies
 ------------------------------------------------------------
 
 PHASE 10A-10E EXECUTION PLAN
+
+STATUS: ✓ All 5 sub-phases complete (2026-07-12) - kept below as the
+historical record of what was planned and the scope decisions made along
+the way; see each phase's own STATUS block above for what actually
+shipped.
 
 (Referenced by Phase 12B's Deliverables above - itemized per sub-phase,
 in dependency order. Each item closes a gap explicitly called out in
@@ -998,7 +1093,13 @@ Definitions:
 
 Phase 12B's Acceptance criteria requires moving Delivery, Food Safety,
 and Admin Dashboard off their current classifications before Phase 13
-begins.
+begins. Delivery's remaining gap, now that 10A-10E is fully shipped
+(2026-07-12), is narrow: the mobile driver app (Phase 10's own remaining
+item, unrelated to 10A-10E) and the DeliveryRejectedEvent notification
+gap above. Not yet promoted to Production Ready here, deliberately - that
+promotion is reserved for Phase 12B's own verification-against-seeded-
+data and architecture-review passes, not claimed early just because the
+backend work landed.
 
 ------------------------------------------------------------
 
