@@ -128,4 +128,32 @@ describe('InventoryEventsRepository', () => {
     expect(page1.items).toHaveLength(2);
     expect(page2.items).toHaveLength(1);
   });
+
+  describe('countAndSumByType', () => {
+    it('counts and sums quantityDelta per event type within the given range', async () => {
+      const from = new Date();
+      await repository.create({ productId, eventType: 'RESTOCKED', quantityDelta: 10 });
+      await repository.create({ productId, eventType: 'RESTOCKED', quantityDelta: 5 });
+      await repository.create({ productId, eventType: 'DISPOSED', quantityDelta: -3 });
+
+      const result = await repository.countAndSumByType({ from });
+
+      expect(result.RESTOCKED).toEqual({ count: 2, totalQuantityDelta: 15 });
+      expect(result.DISPOSED).toEqual({ count: 1, totalQuantityDelta: -3 });
+      expect(result.MANUAL_ADJUSTMENT).toEqual({ count: 0, totalQuantityDelta: 0 });
+    });
+
+    it('excludes events outside the given range', async () => {
+      const future = new Date(Date.now() + 60_000);
+
+      const result = await repository.countAndSumByType({ from: future });
+
+      expect(result).toEqual({
+        DECREMENTED: { count: 0, totalQuantityDelta: 0 },
+        RESTOCKED: { count: 0, totalQuantityDelta: 0 },
+        MANUAL_ADJUSTMENT: { count: 0, totalQuantityDelta: 0 },
+        DISPOSED: { count: 0, totalQuantityDelta: 0 },
+      });
+    });
+  });
 });

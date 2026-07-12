@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Boxes,
   LayoutDashboard,
   LogOut,
   MapPinned,
@@ -23,12 +24,11 @@ import { env } from '@/lib/env';
 import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { cn } from '@/lib/utils';
 
-// The 6 screens shipped in Phase 12A plus Delivery Operations Center
-// (Phase 10B) and Vendor Dashboard / Sales Analytics / Delivery Analytics
-// (Phase 12B) - no placeholder links implying a more-complete admin
-// experience than what's actually shipped (12C covers Compliance
-// Administration/Reporting; Inventory Analytics is tracked but not yet
-// built).
+// The 6 screens shipped in Phase 12A, Delivery Operations Center
+// (Phase 10B), and all 4 Phase 12B analytics screens (Vendor Dashboard,
+// Sales/Delivery/Inventory Analytics) - no placeholder links implying a
+// more-complete admin experience than what's actually shipped (12C covers
+// Compliance Administration/Reporting).
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/vendors', label: 'Vendors', icon: Store },
@@ -38,6 +38,7 @@ const NAV_ITEMS = [
   { href: '/delivery-zones', label: 'Delivery Zones & Fleet', icon: MapPinned },
   { href: '/delivery-operations', label: 'Delivery Operations', icon: Route },
   { href: '/delivery-analytics', label: 'Delivery Analytics', icon: Activity },
+  { href: '/inventory-analytics', label: 'Inventory Analytics', icon: Boxes },
   { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer },
   { href: '/recalls', label: 'Recalls', icon: AlertTriangle },
 ];

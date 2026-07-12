@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InventoryEventType } from '@prisma/client';
+import { InventoryEventType, SeafoodLot } from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
@@ -25,6 +25,15 @@ import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { CategoriesRepository } from '../repositories/categories.repository';
 import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
+
+// Structural subset of ProductWithLot that computeAvailability() actually
+// needs - lets 12B Inventory Analytics pass a narrow Prisma `select`
+// result instead of the full lot-included product shape.
+export interface ProductAvailabilityInput {
+  isActive: boolean;
+  quantityAvailable: number;
+  lot: Pick<SeafoodLot, 'foodSafetyStatus' | 'freshnessGrade' | 'qualityScore'> | null;
+}
 
 @Injectable()
 export class ProductsService {
@@ -265,21 +274,26 @@ export class ProductsService {
     return product;
   }
 
-  private static toResponse(product: ProductWithLot): ProductResponseEntity {
-    let availability: ProductAvailability;
+  // Public + static so 12B Inventory Analytics can tally availability
+  // counts across the whole catalog using this exact same rule, rather
+  // than re-deriving "is this product sellable" a second way.
+  static computeAvailability(product: ProductAvailabilityInput): ProductAvailability {
     if (!product.isActive) {
-      availability = ProductAvailability.INACTIVE;
-    } else if (
+      return ProductAvailability.INACTIVE;
+    }
+    if (
       product.lot &&
       (product.lot.foodSafetyStatus !== 'SAFE' || !SeafoodLotsService.isGradingSellable(product.lot))
     ) {
-      availability = ProductAvailability.ON_HOLD;
-    } else if (product.quantityAvailable === 0) {
-      availability = ProductAvailability.OUT_OF_STOCK;
-    } else {
-      availability = ProductAvailability.ACTIVE;
+      return ProductAvailability.ON_HOLD;
     }
+    if (product.quantityAvailable === 0) {
+      return ProductAvailability.OUT_OF_STOCK;
+    }
+    return ProductAvailability.ACTIVE;
+  }
 
+  private static toResponse(product: ProductWithLot): ProductResponseEntity {
     return {
       id: product.id,
       vendorId: product.vendorId,
@@ -294,7 +308,7 @@ export class ProductsService {
       imageUrl: product.imageUrl,
       weightLbs: product.weightLbs?.toString() ?? null,
       isActive: product.isActive,
-      availability,
+      availability: ProductsService.computeAvailability(product),
       createdAt: product.createdAt,
     };
   }

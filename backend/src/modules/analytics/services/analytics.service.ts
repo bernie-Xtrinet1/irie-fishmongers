@@ -12,13 +12,23 @@ import { DeliveriesRepository } from '../../delivery/repositories/deliveries.rep
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { SLABreachesService } from '../../delivery/services/sla-breaches.service';
 import { FleetAssetsService } from '../../fleet/services/fleet-assets.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { ProductAvailability } from '../../products/entities/product-response.entity';
+import { ProductsRepository } from '../../products/repositories/products.repository';
+import { ProductsService } from '../../products/services/products.service';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
 import { DeliveryAnalyticsEntity } from '../entities/delivery-analytics.entity';
+import { InventoryAnalyticsEntity } from '../entities/inventory-analytics.entity';
 import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 
 const TOP_VENDORS_LIMIT = 10;
 const TOP_PRODUCTS_LIMIT = 10;
+// No stored reorder-point field exists on Product (confirmed: schema has
+// no threshold column) - this is a platform-wide operational default, not
+// a re-derivation of any per-vendor business rule.
+const LOW_STOCK_THRESHOLD = 10;
+const LOW_STOCK_LIMIT = 20;
 
 // Composes existing repositories/services rather than duplicating their
 // logic - no repository of its own. Organized by feature domain (one
@@ -37,6 +47,8 @@ export class AnalyticsService {
     private readonly deliveriesRepository: DeliveriesRepository,
     private readonly slaBreachesService: SLABreachesService,
     private readonly fleetAssetsService: FleetAssetsService,
+    private readonly productsRepository: ProductsRepository,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly complianceDashboardService: ComplianceDashboardService,
     private readonly healthService: HealthService,
   ) {}
@@ -112,6 +124,39 @@ export class AnalyticsService {
       totalUnresolvedBreaches: slaBreachesByZone.reduce((sum, zone) => sum + zone.unresolvedBreaches, 0),
       fleetByZone,
       byCustomerAcceptanceStatus,
+    };
+  }
+
+  // 12B Inventory Analytics - byAvailability is tallied with
+  // ProductsService.computeAvailability(), the exact same rule the public
+  // product listing uses, so this never drifts from what customers
+  // actually see as purchasable.
+  async getInventoryAnalytics(range?: DateRange): Promise<InventoryAnalyticsEntity> {
+    const [products, lowStockProducts, eventsByType] = await Promise.all([
+      this.productsRepository.findAllForAvailability(),
+      this.productsRepository.findLowStock(LOW_STOCK_THRESHOLD, LOW_STOCK_LIMIT),
+      this.inventoryEventsRepository.countAndSumByType(range),
+    ]);
+
+    const byAvailability: Record<ProductAvailability, number> = {
+      [ProductAvailability.ACTIVE]: 0,
+      [ProductAvailability.OUT_OF_STOCK]: 0,
+      [ProductAvailability.INACTIVE]: 0,
+      [ProductAvailability.ON_HOLD]: 0,
+    };
+    for (const product of products) {
+      byAvailability[ProductsService.computeAvailability(product)] += 1;
+    }
+
+    return {
+      byAvailability,
+      lowStockProducts: lowStockProducts.map((product) => ({
+        productId: product.id,
+        productName: product.name,
+        quantityAvailable: product.quantityAvailable,
+        vendorId: product.vendorId,
+      })),
+      eventsByType,
     };
   }
 

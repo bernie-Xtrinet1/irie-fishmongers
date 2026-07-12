@@ -45,6 +45,7 @@ describe('DashboardShell', () => {
     expect(screen.getByRole('link', { name: 'Vendor Dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sales Analytics' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Analytics' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventory Analytics' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Drivers' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Zones & Fleet' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Delivery Operations' })).toBeInTheDocument();

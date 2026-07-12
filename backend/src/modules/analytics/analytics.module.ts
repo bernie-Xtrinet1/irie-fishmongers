@@ -5,8 +5,10 @@ import { AuthModule } from '../auth/auth.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { FleetModule } from '../fleet/fleet.module';
 import { ComplianceOpsModule } from '../food-safety/compliance-ops.module';
+import { InventoryModule } from '../inventory/inventory.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { ProductsModule } from '../products/products.module';
 import { VendorSettlementsModule } from '../vendor-settlements/vendor-settlements.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { AnalyticsController } from './controllers/analytics.controller';
@@ -26,6 +28,8 @@ import { AnalyticsService } from './services/analytics.service';
     DeliveryModule,
     FleetModule,
     ComplianceOpsModule,
+    ProductsModule,
+    InventoryModule,
   ],
   controllers: [AnalyticsController],
   providers: [AnalyticsService],

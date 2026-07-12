@@ -6,9 +6,11 @@ import { DriversRepository } from '../../delivery/repositories/drivers.repositor
 import { SLABreachesService } from '../../delivery/services/sla-breaches.service';
 import { FleetAssetsService } from '../../fleet/services/fleet-assets.service';
 import { ComplianceDashboardService } from '../../food-safety/services/compliance-dashboard.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { PaymentsRepository } from '../../payments/repositories/payments.repository';
+import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorSettlementsRepository } from '../../vendor-settlements/repositories/vendor-settlements.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { AnalyticsService } from './analytics.service';
@@ -27,6 +29,8 @@ describe('AnalyticsService', () => {
   let deliveriesRepository: jest.Mocked<Pick<DeliveriesRepository, 'countByCustomerAcceptanceStatus'>>;
   let slaBreachesService: jest.Mocked<Pick<SLABreachesService, 'getZoneSummary'>>;
   let fleetAssetsService: jest.Mocked<Pick<FleetAssetsService, 'getZoneSummary'>>;
+  let productsRepository: jest.Mocked<Pick<ProductsRepository, 'findAllForAvailability' | 'findLowStock'>>;
+  let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'countAndSumByType'>>;
   let complianceDashboardService: jest.Mocked<Pick<ComplianceDashboardService, 'getDashboard'>>;
   let healthService: jest.Mocked<Pick<HealthService, 'checkStatus'>>;
   let service: AnalyticsService;
@@ -92,6 +96,23 @@ describe('AnalyticsService', () => {
     fleetAssetsService = {
       getZoneSummary: jest.fn().mockResolvedValue([{ zoneId: 'zone-1', status: 'AVAILABLE', count: 4 }]),
     };
+    productsRepository = {
+      findAllForAvailability: jest.fn().mockResolvedValue([
+        { isActive: true, quantityAvailable: 5, lot: null },
+        { isActive: false, quantityAvailable: 0, lot: null },
+      ]),
+      findLowStock: jest
+        .fn()
+        .mockResolvedValue([{ id: 'product-1', name: 'Snapper', quantityAvailable: 5, vendorId: 'vendor-1' }]),
+    };
+    inventoryEventsRepository = {
+      countAndSumByType: jest.fn().mockResolvedValue({
+        DECREMENTED: { count: 10, totalQuantityDelta: -50 },
+        RESTOCKED: { count: 3, totalQuantityDelta: 100 },
+        MANUAL_ADJUSTMENT: { count: 1, totalQuantityDelta: -2 },
+        DISPOSED: { count: 0, totalQuantityDelta: 0 },
+      }),
+    };
     complianceDashboardService = {
       getDashboard: jest.fn().mockResolvedValue({
         activeAlertsBySeverity,
@@ -115,6 +136,8 @@ describe('AnalyticsService', () => {
       deliveriesRepository as unknown as DeliveriesRepository,
       slaBreachesService as unknown as SLABreachesService,
       fleetAssetsService as unknown as FleetAssetsService,
+      productsRepository as unknown as ProductsRepository,
+      inventoryEventsRepository as unknown as InventoryEventsRepository,
       complianceDashboardService as unknown as ComplianceDashboardService,
       healthService as unknown as HealthService,
     );
@@ -253,6 +276,37 @@ describe('AnalyticsService', () => {
       // SLA breach and fleet zone summaries are point-in-time snapshots - no range argument.
       expect(slaBreachesService.getZoneSummary).toHaveBeenCalledWith();
       expect(fleetAssetsService.getZoneSummary).toHaveBeenCalledWith();
+    });
+  });
+
+  describe('getInventoryAnalytics', () => {
+    it('tallies availability using ProductsService.computeAvailability, and passes through low stock and event counts', async () => {
+      const result = await service.getInventoryAnalytics();
+
+      expect(result).toEqual({
+        byAvailability: { ACTIVE: 1, OUT_OF_STOCK: 0, INACTIVE: 1, ON_HOLD: 0 },
+        lowStockProducts: [
+          { productId: 'product-1', productName: 'Snapper', quantityAvailable: 5, vendorId: 'vendor-1' },
+        ],
+        eventsByType: {
+          DECREMENTED: { count: 10, totalQuantityDelta: -50 },
+          RESTOCKED: { count: 3, totalQuantityDelta: 100 },
+          MANUAL_ADJUSTMENT: { count: 1, totalQuantityDelta: -2 },
+          DISPOSED: { count: 0, totalQuantityDelta: 0 },
+        },
+      });
+    });
+
+    it('passes the from/to range to the inventory-event query only', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+
+      await service.getInventoryAnalytics({ from, to });
+
+      expect(inventoryEventsRepository.countAndSumByType).toHaveBeenCalledWith({ from, to });
+      // Availability and low-stock are point-in-time snapshots - no range argument.
+      expect(productsRepository.findAllForAvailability).toHaveBeenCalledWith();
+      expect(productsRepository.findLowStock).toHaveBeenCalledWith(10, 20);
     });
   });
 });

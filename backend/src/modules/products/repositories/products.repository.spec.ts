@@ -149,4 +149,48 @@ describe('ProductsRepository', () => {
       expect(page2.items).toHaveLength(1);
     });
   });
+
+  describe('findAllForAvailability', () => {
+    it('includes every product with the fields computeAvailability() needs', async () => {
+      // A distinctive quantity avoids colliding with other products already
+      // in the test database, since this method has no id/name in its
+      // narrow select to filter by directly.
+      const distinctiveQuantity = 831_204;
+      await repository.create(baseInput({ name: `Availability Snapper ${randomUUID()}`, quantityAvailable: distinctiveQuantity }));
+
+      const all = await repository.findAllForAvailability();
+
+      const found = all.find((product) => product.quantityAvailable === distinctiveQuantity);
+      expect(found).toBeDefined();
+      expect(found).toEqual({ isActive: true, quantityAvailable: distinctiveQuantity, lot: null });
+    });
+  });
+
+  describe('findLowStock', () => {
+    it('includes an active product with stock at or below the threshold', async () => {
+      const lowStockName = `Low Stock Snapper ${randomUUID()}`;
+      const created = await repository.create(baseInput({ name: lowStockName, quantityAvailable: 3 }));
+
+      const results = await repository.findLowStock(10, 50);
+
+      expect(results.some((product) => product.id === created.id)).toBe(true);
+    });
+
+    it('excludes a product with zero stock', async () => {
+      const created = await repository.create(baseInput({ name: `Zero Stock ${randomUUID()}`, quantityAvailable: 5 }));
+      await repository.adjustStock(created.id, -5);
+
+      const results = await repository.findLowStock(10, 50);
+
+      expect(results.some((product) => product.id === created.id)).toBe(false);
+    });
+
+    it('excludes a product above the threshold', async () => {
+      const created = await repository.create(baseInput({ name: `High Stock ${randomUUID()}`, quantityAvailable: 500 }));
+
+      const results = await repository.findLowStock(10, 50);
+
+      expect(results.some((product) => product.id === created.id)).toBe(false);
+    });
+  });
 });

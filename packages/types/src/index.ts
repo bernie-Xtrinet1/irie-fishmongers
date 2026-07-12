@@ -291,6 +291,41 @@ export interface DeliveryAnalytics {
   byCustomerAcceptanceStatus: DeliveryAcceptanceCounts;
 }
 
+// --- Inventory Analytics (Phase 12B) ---
+// Hand-mirrored from backend/src/modules/analytics/entities/inventory-analytics.entity.ts
+
+export interface ProductAvailabilityCounts {
+  ACTIVE: number;
+  OUT_OF_STOCK: number;
+  INACTIVE: number;
+  ON_HOLD: number;
+}
+
+export interface LowStockProduct {
+  productId: string;
+  productName: string;
+  quantityAvailable: number;
+  vendorId: string;
+}
+
+export interface InventoryEventTypeSummary {
+  count: number;
+  totalQuantityDelta: number;
+}
+
+export interface InventoryEventCounts {
+  DECREMENTED: InventoryEventTypeSummary;
+  RESTOCKED: InventoryEventTypeSummary;
+  MANUAL_ADJUSTMENT: InventoryEventTypeSummary;
+  DISPOSED: InventoryEventTypeSummary;
+}
+
+export interface InventoryAnalytics {
+  byAvailability: ProductAvailabilityCounts;
+  lowStockProducts: LowStockProduct[];
+  eventsByType: InventoryEventCounts;
+}
+
 // --- Vendor Management (Phase 12A) ---
 
 export enum VendorStatus {

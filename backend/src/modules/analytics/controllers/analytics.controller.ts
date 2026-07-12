@@ -8,6 +8,7 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { DashboardSummaryQueryDto } from '../dto/dashboard-summary-query.dto';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
 import { DeliveryAnalyticsEntity } from '../entities/delivery-analytics.entity';
+import { InventoryAnalyticsEntity } from '../entities/inventory-analytics.entity';
 import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 import { AnalyticsService } from '../services/analytics.service';
@@ -58,6 +59,16 @@ export class AnalyticsController {
   @ApiResponseDoc({ status: 200, type: DeliveryAnalyticsEntity })
   getDeliveryAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<DeliveryAnalyticsEntity> {
     return this.analyticsService.getDeliveryAnalytics(AnalyticsController.parseRange(query));
+  }
+
+  @Get('inventory-analytics')
+  @ApiOperation({
+    summary:
+      'Inventory Analytics: product counts by availability, low-stock products, inventory event activity by type - admin only',
+  })
+  @ApiResponseDoc({ status: 200, type: InventoryAnalyticsEntity })
+  getInventoryAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<InventoryAnalyticsEntity> {
+    return this.analyticsService.getInventoryAnalytics(AnalyticsController.parseRange(query));
   }
 
   private static parseRange(query: DashboardSummaryQueryDto): { from?: Date; to?: Date } {

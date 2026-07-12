@@ -78,6 +78,12 @@ interface DeliveryAnalyticsData {
   byCustomerAcceptanceStatus: Record<string, number>;
 }
 
+interface InventoryAnalyticsData {
+  byAvailability: Record<string, number>;
+  lowStockProducts: { productId: string; productName: string; quantityAvailable: number; vendorId: string }[];
+  eventsByType: Record<string, { count: number; totalQuantityDelta: number }>;
+}
+
 jest.setTimeout(20_000);
 
 describe('Analytics (e2e)', () => {
@@ -404,5 +410,47 @@ describe('Analytics (e2e)', () => {
     expect(analytics.totalUnresolvedBreaches).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(analytics.fleetByZone)).toBe(true);
     expect(Object.keys(analytics.byCustomerAcceptanceStatus).sort()).toEqual(['ACCEPTED', 'PENDING', 'REJECTED']);
+  });
+
+  it('rejects a non-admin request to the inventory analytics endpoint', async () => {
+    const customerToken = await createCustomerAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/inventory-analytics')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns a shape-correct inventory analytics summary reflecting a low-stock product', async () => {
+    const adminToken = await createAdminAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Inventory Analytics Vendor');
+    const category = await getFishCategory();
+
+    const productRes = await request(server())
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({
+        categoryId: category.id,
+        name: `Inventory Analytics Snapper ${randomUUID()}`,
+        description: 'A low-stock product for Inventory Analytics e2e tests.',
+        unit: 'PER_POUND',
+        price: 500,
+        quantityAvailable: 3,
+        imageUrl: 'https://cdn.example.com/product.jpg',
+      });
+    const product = data<ProductData>(productRes);
+
+    const res = await request(server())
+      .get('/api/v1/analytics/inventory-analytics')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+
+    const analytics = data<InventoryAnalyticsData>(res);
+    expect(analytics.byAvailability.ACTIVE).toBeGreaterThanOrEqual(1);
+    expect(analytics.lowStockProducts.some((entry) => entry.productId === product.id)).toBe(true);
+    expect(Object.keys(analytics.eventsByType).sort()).toEqual(
+      ['DECREMENTED', 'DISPOSED', 'MANUAL_ADJUSTMENT', 'RESTOCKED'].sort(),
+    );
   });
 });
