@@ -710,15 +710,97 @@ Payments reconcile correctly.
 
 ------------------------------------------------------------
 
+PHASE 12B.0
+
+Architecture Verification
+
+STATUS
+
+✓ Complete (2026-07-12) - one-time pre-flight checkpoint, not a recurring
+phase. Ran before any 10A-10E implementation began, per reviewer
+recommendation, to catch wrong assumptions before code was written on top
+of them.
+
+Purpose
+
+Verify every operational module is internally consistent before Phase
+12B implementation begins: schema vs. ADRs, API readiness for 10A-10E,
+event-flow correctness, and no duplicate/dead models.
+
+Findings
+
+- Schema vs. ADRs: all four ADRs (001-004) are schema-accurate, no
+  drift. ADR-001 names two providers (Fygaro, Stripe Connect) that don't
+  exist in code yet - expected/documented as backup/future, not a
+  contradiction.
+- 10A readiness: PATCH /delivery-runs/:id/assign already links
+  driverId+fleetAssetId to a DeliveryRun (admin-only, zero scoring) -
+  this is the seam the new dispatch algorithm should feed into, not a
+  seam to build from scratch. No weight field exists on Product/
+  OrderItem (confirmed gap). No lat/long exists on Vendor anywhere in
+  the schema - "distance-to-pickup" cannot be computed today; only
+  zone-level proximity is available without first adding vendor
+  coordinates (explicit scope decision needed, see 10A execution plan
+  update below). FleetAssetsRepository/DriversRepository need new
+  filters (coldChainCapable, availabilityStatus, assignedZoneId) for
+  candidate queries.
+- 10B readiness: GET /vendors/me/pickup-queue and GET /delivery/
+  exceptions have no Swagger/runtime drift, but the exceptions endpoint
+  under-fetches relative to what a dispatcher screen needs (bare
+  deliveryId, no vendor/customer/driver context) - the query/entity
+  needs to grow before that screen is built, not after.
+- 10C readiness: DI seam and no-op strategy confirmed exactly as
+  documented; RouteStop also has no lat/long, same gap as 10A.
+- 10D readiness: zero cron infrastructure exists anywhere in the
+  backend (no @nestjs/schedule) - confirmed needs to be introduced from
+  scratch. GET /drivers/:id/performance is per-driver only, computed via
+  in-process array operations, not SQL aggregation - fleet/zone rollups
+  need genuinely new repository methods, not a parameter change to the
+  existing one.
+- 10E readiness: no sanitation or driver-certification schema exists.
+  VendorDocumentsService.computeCanSell()/assertCanSell() (computed-on-
+  read + assert-at-point-of-action, not a stored flag) is the confirmed
+  precedent to replicate for driver cold-chain-cert gating.
+- Event flow: exactly 2 listener classes, 13 emit sites, 13 matching
+  listeners - zero dead-end emits. Analytics is confirmed 100% pull-
+  based (no @OnEvent anywhere in that module). ColdChainAlertRaisedEvent
+  has zero reverse coupling into Delivery/dispatch today, confirming
+  10A's planned integration is genuinely new, not a regression.
+  REAL GAP FOUND: DeliveryRejectedEvent (customer rejects a delivery)
+  reaches FoodSafetyEventsListener but does NOT reach
+  NotificationEventsListener - a customer rejecting a delivery today
+  raises a FoodSafetyIncident but notifies no one via the notification
+  pipeline. Tracked as a new Phase 12B deliverable (see below), not
+  silently left open.
+- Duplicate/dead models: VendorStatus/DriverStatus/FishermanStatus are
+  three separately-declared enums with identical value sets (cosmetic
+  duplication, not a bug - noted, not scheduled for consolidation, since
+  it carries real migration risk for zero functional benefit).
+  Fisherman.bankAccountName/bankAccountNumber are written but never read
+  anywhere (write-only, ahead of an unbuilt fisherman-payout feature) -
+  noted per this document's "never generate dead code" principle, left
+  in place since it's forward-compatible infrastructure, not accidental
+  dead code, and removing it would block whoever builds fisherman
+  settlement later.
+
+------------------------------------------------------------
+
 PHASE 12B
 
 Operational Readiness
 
 STATUS
 
-Not Started - this phase gates Phase 13. No new customer-facing scope;
-it closes the operational gaps left open across Phases 10A-10E, 11, and
-15 before the roadmap moves on to Customer Trust.
+In Progress - gates Phase 13. No new customer-facing scope; closes the
+operational gaps left open across Phases 10A-10E, 11, and 15 before the
+roadmap moves on to Customer Trust. Phase 12B.0 (above) is complete;
+10A-10E implementation is underway.
+
+Deliverables (added after Phase 12B.0)
+
+- Wire DeliveryRejectedEvent into NotificationEventsListener (customer
+  rejection currently notifies no one via the notification pipeline -
+  found during Phase 12B.0, confirmed not previously known).
 
 Purpose
 
@@ -781,21 +863,34 @@ that sub-phase's own STATUS note earlier in this document.)
 
 10A - Fleet Dispatch Engine
 
+SCOPE DECISION (Phase 12B.0 finding): no Vendor lat/long exists anywhere
+in the schema, so literal distance-to-pickup cannot be computed. Using
+zone-match as the proximity proxy instead of real distance - adding
+geocoding is a separate, larger scope decision left for later, not
+smuggled into this pass.
+
 1. Design and implement an actual dispatch-scoring algorithm (zone
-   match, driver availability, cold-chain eligibility, current load,
-   distance-to-pickup) that ranks candidate driver/fleet-asset pairs
-   for a given delivery run - replacing today's driver-initiated claim
-   as the only assignment path. Keep claim-based assignment available
-   as a fallback/manual-override, not a hard replacement.
-2. Link FleetAsset records to individual DeliveryRun/delivery
-   assignments (today fleet assets exist but aren't attached to a
-   specific delivery).
-3. Enforce Driver.capacityLbs against real order weight - requires
-   adding a weight field to Product/OrderItem first (does not exist
-   today), then wiring the capacity check into assignment.
-4. Dispatch audit log: record every automated assignment decision
-   (candidates considered, score, why the winner won) for later review
-   and for Phase 12B's architecture-review verification pass.
+   match, driver availability, cold-chain eligibility, current load) that
+   ranks candidate driver/fleet-asset pairs for a given delivery run, and
+   feeds the winning candidate into the existing
+   PATCH /delivery-runs/:id/assign seam (already links driverId+
+   fleetAssetId to a DeliveryRun - not being rebuilt from scratch).
+   Claim-based assignment (POST /delivery/assign) remains available as
+   fallback/manual-override, not replaced.
+2. FleetAsset-to-DeliveryRun linking already exists via the assign seam
+   above - no separate linking work needed, confirmed by Phase 12B.0.
+3. Add a weightLbs field to Product (source of truth) and enforce
+   Driver.capacityLbs against it - Driver.capacityLbs is nullable, so
+   null capacity must have a defined behavior (treat as unlimited, not
+   as excluded from candidates, since most seeded drivers have no
+   capacity set and excluding them all would starve the candidate
+   pool). Reuse/replace DriverSettlementEngine.computePoundsEquivalent()
+   rather than building a second, parallel weight-estimation path.
+4. New DispatchDecisionLog table (not a repurposed ComplianceAuditLog -
+   different module, different entity semantics per Phase 12B.0):
+   records every automated assignment decision (candidates considered,
+   score, why the winner won) for later review and for Phase 12B's
+   architecture-review verification pass.
 5. Unit + e2e tests for the scoring algorithm and capacity enforcement.
 
 10B - Delivery Operations Center
