@@ -1419,6 +1419,7 @@ enum NotificationEventType {
   COLD_CHAIN_ALERT_RAISED
   RECALL_ISSUED
   FLEET_MAINTENANCE_OVERDUE
+  DELIVERY_REJECTED
 }
 
 enum NotificationPriority {

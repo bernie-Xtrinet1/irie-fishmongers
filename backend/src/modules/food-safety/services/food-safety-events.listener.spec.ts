@@ -29,7 +29,7 @@ describe('FoodSafetyEventsListener', () => {
       { product: { lotId: 'lot-2' } },
     ]);
 
-    const event = new DeliveryRejectedEvent('customer-1', 'vo-1', 'Package arrived warm');
+    const event = new DeliveryRejectedEvent('customer-1', 'vo-1', 'Package arrived warm', 'vendor-user-1');
     await listener.onDeliveryRejected(event);
 
     expect(incidentsRepository.create).toHaveBeenCalledTimes(2);
@@ -53,7 +53,7 @@ describe('FoodSafetyEventsListener', () => {
       { product: { lotId: null } },
     ]);
 
-    const event = new DeliveryRejectedEvent('customer-1', 'vo-1', 'Wrong item delivered');
+    const event = new DeliveryRejectedEvent('customer-1', 'vo-1', 'Wrong item delivered', 'vendor-user-1');
     await listener.onDeliveryRejected(event);
 
     expect(incidentsRepository.create).not.toHaveBeenCalled();

@@ -358,6 +358,20 @@ const NOTIFICATION_TEMPLATES: {
     body: 'Maintenance on vehicle {{licensePlate}} is overdue (next service was due {{nextServiceDue}}).',
     variables: ['licensePlate', 'nextServiceDue'],
   },
+  {
+    eventType: 'DELIVERY_REJECTED',
+    channel: 'EMAIL',
+    subject: 'A customer rejected a delivered order',
+    body: 'Your order {{vendorOrderId}} was rejected by the customer after delivery. Reason: {{reason}}. A food safety incident has been logged for review.',
+    variables: ['vendorOrderId', 'reason'],
+  },
+  {
+    eventType: 'DELIVERY_REJECTED',
+    channel: 'IN_APP',
+    subject: 'Order rejected by customer',
+    body: 'Your order {{vendorOrderId}} was rejected by the customer. Reason: {{reason}}.',
+    variables: ['vendorOrderId', 'reason'],
+  },
 ];
 
 // seafood-compliance-rules.md's own species examples; Conch is seeded

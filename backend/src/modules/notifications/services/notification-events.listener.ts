@@ -3,6 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
+import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { FleetMaintenanceOverdueEvent } from '../../../common/events/fleet-maintenance-overdue.event';
@@ -171,6 +172,22 @@ export class NotificationEventsListener {
         licensePlate: event.licensePlate,
         nextServiceDue: event.nextServiceDue ?? 'unscheduled',
       },
+    });
+  }
+
+  // Notifies the vendor, not the customer who rejected - the customer
+  // already knows they rejected their own delivery. The vendor is the
+  // operationally actionable recipient (a food safety incident is being
+  // raised against their product - see FoodSafetyEventsListener, the
+  // other consumer of this same event).
+  @OnEvent(DeliveryRejectedEvent.eventName)
+  async onDeliveryRejected(event: DeliveryRejectedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.vendorUserId,
+      category: 'DELIVERY',
+      eventType: 'DELIVERY_REJECTED',
+      priority: 'HIGH',
+      variables: { vendorOrderId: event.vendorOrderId, reason: event.reason },
     });
   }
 }

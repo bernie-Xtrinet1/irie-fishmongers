@@ -340,7 +340,12 @@ export class DeliveriesService {
     if (dto.decision === 'REJECTED') {
       await this.eventEmitter.emitAsync(
         DeliveryRejectedEvent.eventName,
-        new DeliveryRejectedEvent(userId, delivery.vendorOrderId, dto.reason as string),
+        new DeliveryRejectedEvent(
+          userId,
+          delivery.vendorOrderId,
+          dto.reason as string,
+          delivery.vendorOrder.vendor.userId,
+        ),
       );
     }
 

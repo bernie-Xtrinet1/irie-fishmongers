@@ -947,6 +947,7 @@ describe('DeliveriesService', () => {
           customerId: 'customer-1',
           vendorOrderId: 'vo-1',
           reason: 'Package arrived warm',
+          vendorUserId: 'vendor-user-1',
         }),
       );
     });
