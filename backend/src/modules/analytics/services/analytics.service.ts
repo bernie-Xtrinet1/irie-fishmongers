@@ -10,6 +10,9 @@ import { VendorSettlementsRepository } from '../../vendor-settlements/repositori
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
+
+const TOP_VENDORS_LIMIT = 10;
 
 // Composes existing repositories/services rather than duplicating their
 // logic - no repository of its own. Organized by feature domain (one
@@ -40,6 +43,23 @@ export class AnalyticsService {
     ]);
 
     return { financials, orders, vendors, drivers, compliance, systemHealth };
+  }
+
+  // 12B Vendor Dashboard - a sibling composer to getDashboardSummary, per
+  // this class's own "future analytics become sibling methods" design note.
+  async getVendorDashboard(range?: DateRange): Promise<VendorDashboardEntity> {
+    const [{ countByStatus, averageComplianceScore }, byTier, topVendorsByRevenue] = await Promise.all([
+      this.vendorsRepository.getComplianceSummary(),
+      this.vendorsRepository.countByTier(),
+      this.vendorSettlementsRepository.getTopVendorsByRevenue(TOP_VENDORS_LIMIT, range),
+    ]);
+
+    return {
+      byStatus: countByStatus,
+      byTier,
+      averageComplianceScore,
+      topVendorsByRevenue,
+    };
   }
 
   private async getFinancials(range?: DateRange): Promise<DashboardSummaryEntity['financials']> {

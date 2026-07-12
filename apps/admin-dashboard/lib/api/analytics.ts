@@ -1,4 +1,4 @@
-import type { DashboardSummary } from '@iriefishmongers/types';
+import type { DashboardSummary, VendorDashboard } from '@iriefishmongers/types';
 
 import { apiGet } from '@/lib/api-client';
 
@@ -16,4 +16,15 @@ export async function fetchDashboardSummary(range?: DashboardSummaryRange): Prom
   if (range.from) params.set('from', range.from);
   if (range.to) params.set('to', range.to);
   return apiGet<DashboardSummary>(`/analytics/dashboard-summary?${params.toString()}`);
+}
+
+export async function fetchVendorDashboard(range?: DashboardSummaryRange): Promise<VendorDashboard> {
+  if (!range?.from && !range?.to) {
+    return apiGet<VendorDashboard>('/analytics/vendor-dashboard');
+  }
+
+  const params = new URLSearchParams();
+  if (range.from) params.set('from', range.from);
+  if (range.to) params.set('to', range.to);
+  return apiGet<VendorDashboard>(`/analytics/vendor-dashboard?${params.toString()}`);
 }

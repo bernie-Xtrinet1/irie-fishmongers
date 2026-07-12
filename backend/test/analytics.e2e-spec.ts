@@ -56,6 +56,13 @@ interface DashboardSummaryData {
   systemHealth: { postgres: string; redis: string };
 }
 
+interface VendorDashboardData {
+  byStatus: Record<string, number>;
+  byTier: Record<string, number>;
+  averageComplianceScore: number | null;
+  topVendorsByRevenue: { vendorId: string; businessName: string; grossAmount: string }[];
+}
+
 jest.setTimeout(20_000);
 
 describe('Analytics (e2e)', () => {
@@ -310,5 +317,30 @@ describe('Analytics (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-admin request to the vendor dashboard', async () => {
+    const customerToken = await createCustomerAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/vendor-dashboard')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns a shape-correct vendor dashboard reflecting an approved COMMUNITY_FISHER vendor', async () => {
+    const adminToken = await createAdminAndLogin();
+    await createApprovedVendorAndLogin(adminToken, 'Vendor Dashboard Test Vendor');
+
+    const res = await request(server())
+      .get('/api/v1/analytics/vendor-dashboard')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+
+    const summary = data<VendorDashboardData>(res);
+    expect(summary.byStatus.APPROVED).toBeGreaterThanOrEqual(1);
+    expect(summary.byTier.COMMUNITY_FISHER).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(summary.topVendorsByRevenue)).toBe(true);
   });
 });

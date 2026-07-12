@@ -101,4 +101,21 @@ export class VendorsRepository {
 
     return { countByStatus, averageComplianceScore: aggregate._avg.complianceScore };
   }
+
+  // 12B Vendor Dashboard: tier distribution, mirroring getComplianceSummary's
+  // status groupBy pattern.
+  async countByTier(): Promise<Record<VendorTier, number>> {
+    const groups = await this.prisma.vendor.groupBy({ by: ['tier'], _count: { _all: true } });
+
+    const countByTier: Record<VendorTier, number> = {
+      COMMUNITY_FISHER: 0,
+      VERIFIED_VENDOR: 0,
+      COMMERCIAL_SUPPLIER: 0,
+      ENTERPRISE_SUPPLIER: 0,
+    };
+    for (const group of groups) {
+      countByTier[group.tier] = group._count._all;
+    }
+    return countByTier;
+  }
 }

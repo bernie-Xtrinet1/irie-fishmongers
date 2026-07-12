@@ -12,10 +12,12 @@ import { AnalyticsService } from './analytics.service';
 
 describe('AnalyticsService', () => {
   let paymentsRepository: jest.Mocked<Pick<PaymentsRepository, 'sumByStatus'>>;
-  let vendorSettlementsRepository: jest.Mocked<Pick<VendorSettlementsRepository, 'sumPlatformFeeByStatus'>>;
+  let vendorSettlementsRepository: jest.Mocked<
+    Pick<VendorSettlementsRepository, 'sumPlatformFeeByStatus' | 'getTopVendorsByRevenue'>
+  >;
   let ordersRepository: jest.Mocked<Pick<OrdersRepository, 'count'>>;
   let vendorOrdersRepository: jest.Mocked<Pick<VendorOrdersRepository, 'countByStatus'>>;
-  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'getComplianceSummary'>>;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'getComplianceSummary' | 'countByTier'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'countByStatus'>>;
   let complianceDashboardService: jest.Mocked<Pick<ComplianceDashboardService, 'getDashboard'>>;
   let healthService: jest.Mocked<Pick<HealthService, 'checkStatus'>>;
@@ -35,6 +37,7 @@ describe('AnalyticsService', () => {
   };
 
   const vendorsByStatus = { PENDING: 2, APPROVED: 10, SUSPENDED: 1, REJECTED: 0 };
+  const vendorsByTier = { COMMUNITY_FISHER: 5, VERIFIED_VENDOR: 4, COMMERCIAL_SUPPLIER: 3, ENTERPRISE_SUPPLIER: 1 };
   const driversByStatus = { PENDING: 1, APPROVED: 8, SUSPENDED: 0, REJECTED: 0 };
   const activeAlertsBySeverity = { WARNING: 3, CRITICAL: 1, EMERGENCY: 0 };
 
@@ -42,11 +45,15 @@ describe('AnalyticsService', () => {
     paymentsRepository = { sumByStatus: jest.fn().mockResolvedValue(new Prisma.Decimal(5000)) };
     vendorSettlementsRepository = {
       sumPlatformFeeByStatus: jest.fn().mockResolvedValue(new Prisma.Decimal(500)),
+      getTopVendorsByRevenue: jest
+        .fn()
+        .mockResolvedValue([{ vendorId: 'vendor-1', businessName: "Vera's Catch", grossAmount: '10000' }]),
     };
     ordersRepository = { count: jest.fn().mockResolvedValue(4) };
     vendorOrdersRepository = { countByStatus: jest.fn().mockResolvedValue(vendorOrdersByStatus) };
     vendorsRepository = {
       getComplianceSummary: jest.fn().mockResolvedValue({ countByStatus: vendorsByStatus, averageComplianceScore: 90 }),
+      countByTier: jest.fn().mockResolvedValue(vendorsByTier),
     };
     driversRepository = { countByStatus: jest.fn().mockResolvedValue(driversByStatus) };
     complianceDashboardService = {
@@ -111,6 +118,31 @@ describe('AnalyticsService', () => {
 
       expect(result.systemHealth).toEqual({ postgres: 'up', redis: 'down' });
       expect(result.financials.grossPaidAmount).toBe('5000');
+    });
+  });
+
+  describe('getVendorDashboard', () => {
+    it('composes vendor status/tier/compliance/top-vendors into one summary', async () => {
+      const result = await service.getVendorDashboard();
+
+      expect(result).toEqual({
+        byStatus: vendorsByStatus,
+        byTier: vendorsByTier,
+        averageComplianceScore: 90,
+        topVendorsByRevenue: [{ vendorId: 'vendor-1', businessName: "Vera's Catch", grossAmount: '10000' }],
+      });
+    });
+
+    it('passes the from/to range to top-vendors-by-revenue only', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+
+      await service.getVendorDashboard({ from, to });
+
+      expect(vendorSettlementsRepository.getTopVendorsByRevenue).toHaveBeenCalledWith(10, { from, to });
+      // Vendor status/tier/compliance counts are point-in-time snapshots - no range argument.
+      expect(vendorsRepository.getComplianceSummary).toHaveBeenCalledWith();
+      expect(vendorsRepository.countByTier).toHaveBeenCalledWith();
     });
   });
 });

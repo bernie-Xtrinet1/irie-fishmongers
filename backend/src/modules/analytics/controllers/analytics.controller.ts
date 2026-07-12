@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { DashboardSummaryQueryDto } from '../dto/dashboard-summary-query.dto';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 import { AnalyticsService } from '../services/analytics.service';
 
 @ApiTags('analytics')
@@ -24,6 +25,20 @@ export class AnalyticsController {
   })
   @ApiResponseDoc({ status: 200, type: DashboardSummaryEntity })
   getDashboardSummary(@Query() query: DashboardSummaryQueryDto): Promise<DashboardSummaryEntity> {
+    return this.analyticsService.getDashboardSummary(AnalyticsController.parseRange(query));
+  }
+
+  @Get('vendor-dashboard')
+  @ApiOperation({
+    summary:
+      'Vendor Dashboard: vendor counts by status/tier, average compliance score, top vendors by revenue - admin only',
+  })
+  @ApiResponseDoc({ status: 200, type: VendorDashboardEntity })
+  getVendorDashboard(@Query() query: DashboardSummaryQueryDto): Promise<VendorDashboardEntity> {
+    return this.analyticsService.getVendorDashboard(AnalyticsController.parseRange(query));
+  }
+
+  private static parseRange(query: DashboardSummaryQueryDto): { from?: Date; to?: Date } {
     const from = query.from ? new Date(query.from) : undefined;
     const to = query.to ? new Date(query.to) : undefined;
 
@@ -31,6 +46,6 @@ export class AnalyticsController {
       throw new BadRequestException('`from` must not be later than `to`');
     }
 
-    return this.analyticsService.getDashboardSummary({ from, to });
+    return { from, to };
   }
 }

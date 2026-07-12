@@ -210,6 +210,29 @@ export interface DashboardSummary {
   systemHealth: DashboardSystemHealth;
 }
 
+// --- Vendor Dashboard (Phase 12B) ---
+// Hand-mirrored from backend/src/modules/analytics/entities/vendor-dashboard.entity.ts
+
+export interface VendorTierCounts {
+  COMMUNITY_FISHER: number;
+  VERIFIED_VENDOR: number;
+  COMMERCIAL_SUPPLIER: number;
+  ENTERPRISE_SUPPLIER: number;
+}
+
+export interface TopVendor {
+  vendorId: string;
+  businessName: string;
+  grossAmount: string;
+}
+
+export interface VendorDashboard {
+  byStatus: FourWayStatusCounts;
+  byTier: VendorTierCounts;
+  averageComplianceScore: number | null;
+  topVendorsByRevenue: TopVendor[];
+}
+
 // --- Vendor Management (Phase 12A) ---
 
 export enum VendorStatus {
