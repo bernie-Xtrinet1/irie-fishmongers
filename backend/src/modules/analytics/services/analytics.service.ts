@@ -8,8 +8,12 @@ import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { VendorSettlementsRepository } from '../../vendor-settlements/repositories/vendor-settlements.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { DeliveriesRepository } from '../../delivery/repositories/deliveries.repository';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
+import { SLABreachesService } from '../../delivery/services/sla-breaches.service';
+import { FleetAssetsService } from '../../fleet/services/fleet-assets.service';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { DeliveryAnalyticsEntity } from '../entities/delivery-analytics.entity';
 import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 
@@ -30,6 +34,9 @@ export class AnalyticsService {
     private readonly vendorOrdersRepository: VendorOrdersRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly driversRepository: DriversRepository,
+    private readonly deliveriesRepository: DeliveriesRepository,
+    private readonly slaBreachesService: SLABreachesService,
+    private readonly fleetAssetsService: FleetAssetsService,
     private readonly complianceDashboardService: ComplianceDashboardService,
     private readonly healthService: HealthService,
   ) {}
@@ -87,6 +94,24 @@ export class AnalyticsService {
       },
       averageOrderValue: paidCount > 0 ? grossPaidAmount.dividedBy(paidCount).toFixed(2) : '0.00',
       currency: 'JMD',
+    };
+  }
+
+  // 12B Delivery Analytics - SLA breach and fleet zone summaries are
+  // reused wholesale from SLABreachesService/FleetAssetsService (Phase
+  // 10D), not re-derived; only the customer-acceptance breakdown is new.
+  async getDeliveryAnalytics(range?: DateRange): Promise<DeliveryAnalyticsEntity> {
+    const [slaBreachesByZone, fleetByZone, byCustomerAcceptanceStatus] = await Promise.all([
+      this.slaBreachesService.getZoneSummary(),
+      this.fleetAssetsService.getZoneSummary(),
+      this.deliveriesRepository.countByCustomerAcceptanceStatus(range),
+    ]);
+
+    return {
+      slaBreachesByZone,
+      totalUnresolvedBreaches: slaBreachesByZone.reduce((sum, zone) => sum + zone.unresolvedBreaches, 0),
+      fleetByZone,
+      byCustomerAcceptanceStatus,
     };
   }
 

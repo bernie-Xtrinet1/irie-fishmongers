@@ -74,6 +74,8 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     DeliveryZonesRepository,
     DeliveryRunsRepository,
     DeliveryRunsService,
+    DeliveriesRepository,
+    SLABreachesService,
   ],
 })
 export class DeliveryModule {}

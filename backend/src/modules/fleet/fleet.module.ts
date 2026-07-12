@@ -26,6 +26,6 @@ import { FleetTripsService } from './services/fleet-trips.service';
     FleetMaintenanceRepository,
     FleetSanitationRecordsRepository,
   ],
-  exports: [FleetAssetsRepository],
+  exports: [FleetAssetsRepository, FleetAssetsService],
 })
 export class FleetModule {}

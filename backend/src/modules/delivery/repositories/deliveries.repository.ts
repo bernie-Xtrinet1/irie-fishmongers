@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CustomerAcceptanceStatus, Prisma, ProofOfDeliveryType } from '@prisma/client';
 
 import { PrismaClientOrTx } from '../../orders/repositories/orders.repository';
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 
 const availableVendorOrder = Prisma.validator<Prisma.VendorOrderDefaultArgs>()({
@@ -222,5 +223,31 @@ export class DeliveriesRepository {
       where: { driverId },
       select: deliveryForMetrics.select,
     });
+  }
+
+  // 12B Delivery Analytics: how customers are responding to completed
+  // deliveries - not covered by any existing dashboard (order status
+  // breakdowns only track the vendor/driver side of the lifecycle).
+  async countByCustomerAcceptanceStatus(range?: DateRange): Promise<Record<CustomerAcceptanceStatus, number>> {
+    const where: Prisma.DeliveryWhereInput =
+      range?.from || range?.to
+        ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }
+        : {};
+
+    const groups = await this.prisma.delivery.groupBy({
+      by: ['customerAcceptanceStatus'],
+      where,
+      _count: { _all: true },
+    });
+
+    const countByStatus: Record<CustomerAcceptanceStatus, number> = {
+      PENDING: 0,
+      ACCEPTED: 0,
+      REJECTED: 0,
+    };
+    for (const group of groups) {
+      countByStatus[group.customerAcceptanceStatus] = group._count._all;
+    }
+    return countByStatus;
   }
 }

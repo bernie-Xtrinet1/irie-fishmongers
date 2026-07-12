@@ -1,7 +1,10 @@
 import { Prisma } from '@prisma/client';
 
 import { HealthService } from '../../../common/health/health.service';
+import { DeliveriesRepository } from '../../delivery/repositories/deliveries.repository';
 import { DriversRepository } from '../../delivery/repositories/drivers.repository';
+import { SLABreachesService } from '../../delivery/services/sla-breaches.service';
+import { FleetAssetsService } from '../../fleet/services/fleet-assets.service';
 import { ComplianceDashboardService } from '../../food-safety/services/compliance-dashboard.service';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
@@ -21,6 +24,9 @@ describe('AnalyticsService', () => {
   >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'getComplianceSummary' | 'countByTier'>>;
   let driversRepository: jest.Mocked<Pick<DriversRepository, 'countByStatus'>>;
+  let deliveriesRepository: jest.Mocked<Pick<DeliveriesRepository, 'countByCustomerAcceptanceStatus'>>;
+  let slaBreachesService: jest.Mocked<Pick<SLABreachesService, 'getZoneSummary'>>;
+  let fleetAssetsService: jest.Mocked<Pick<FleetAssetsService, 'getZoneSummary'>>;
   let complianceDashboardService: jest.Mocked<Pick<ComplianceDashboardService, 'getDashboard'>>;
   let healthService: jest.Mocked<Pick<HealthService, 'checkStatus'>>;
   let service: AnalyticsService;
@@ -73,6 +79,19 @@ describe('AnalyticsService', () => {
       countByTier: jest.fn().mockResolvedValue(vendorsByTier),
     };
     driversRepository = { countByStatus: jest.fn().mockResolvedValue(driversByStatus) };
+    deliveriesRepository = {
+      countByCustomerAcceptanceStatus: jest
+        .fn()
+        .mockResolvedValue({ PENDING: 1, ACCEPTED: 8, REJECTED: 1 }),
+    };
+    slaBreachesService = {
+      getZoneSummary: jest
+        .fn()
+        .mockResolvedValue([{ zoneId: 'zone-1', totalBreaches: 3, unresolvedBreaches: 1 }]),
+    };
+    fleetAssetsService = {
+      getZoneSummary: jest.fn().mockResolvedValue([{ zoneId: 'zone-1', status: 'AVAILABLE', count: 4 }]),
+    };
     complianceDashboardService = {
       getDashboard: jest.fn().mockResolvedValue({
         activeAlertsBySeverity,
@@ -93,6 +112,9 @@ describe('AnalyticsService', () => {
       vendorOrdersRepository as unknown as VendorOrdersRepository,
       vendorsRepository as unknown as VendorsRepository,
       driversRepository as unknown as DriversRepository,
+      deliveriesRepository as unknown as DeliveriesRepository,
+      slaBreachesService as unknown as SLABreachesService,
+      fleetAssetsService as unknown as FleetAssetsService,
       complianceDashboardService as unknown as ComplianceDashboardService,
       healthService as unknown as HealthService,
     );
@@ -195,6 +217,42 @@ describe('AnalyticsService', () => {
       expect(paymentsRepository.sumByProvider).toHaveBeenCalledWith('PAID', { from, to });
       expect(paymentsRepository.countByStatus).toHaveBeenCalledWith('PAID', { from, to });
       expect(paymentsRepository.sumByStatus).toHaveBeenCalledWith('PAID', { from, to });
+    });
+  });
+
+  describe('getDeliveryAnalytics', () => {
+    it('composes SLA breaches by zone, fleet by zone, and customer-acceptance counts', async () => {
+      const result = await service.getDeliveryAnalytics();
+
+      expect(result).toEqual({
+        slaBreachesByZone: [{ zoneId: 'zone-1', totalBreaches: 3, unresolvedBreaches: 1 }],
+        totalUnresolvedBreaches: 1,
+        fleetByZone: [{ zoneId: 'zone-1', status: 'AVAILABLE', count: 4 }],
+        byCustomerAcceptanceStatus: { PENDING: 1, ACCEPTED: 8, REJECTED: 1 },
+      });
+    });
+
+    it('sums unresolvedBreaches across every zone', async () => {
+      slaBreachesService.getZoneSummary.mockResolvedValue([
+        { zoneId: 'zone-1', totalBreaches: 3, unresolvedBreaches: 1 },
+        { zoneId: 'zone-2', totalBreaches: 5, unresolvedBreaches: 2 },
+      ]);
+
+      const result = await service.getDeliveryAnalytics();
+
+      expect(result.totalUnresolvedBreaches).toBe(3);
+    });
+
+    it('passes the from/to range to the customer-acceptance query only', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+
+      await service.getDeliveryAnalytics({ from, to });
+
+      expect(deliveriesRepository.countByCustomerAcceptanceStatus).toHaveBeenCalledWith({ from, to });
+      // SLA breach and fleet zone summaries are point-in-time snapshots - no range argument.
+      expect(slaBreachesService.getZoneSummary).toHaveBeenCalledWith();
+      expect(fleetAssetsService.getZoneSummary).toHaveBeenCalledWith();
     });
   });
 });

@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { DashboardSummaryQueryDto } from '../dto/dashboard-summary-query.dto';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
+import { DeliveryAnalyticsEntity } from '../entities/delivery-analytics.entity';
 import { SalesAnalyticsEntity } from '../entities/sales-analytics.entity';
 import { VendorDashboardEntity } from '../entities/vendor-dashboard.entity';
 import { AnalyticsService } from '../services/analytics.service';
@@ -47,6 +48,16 @@ export class AnalyticsController {
   @ApiResponseDoc({ status: 200, type: SalesAnalyticsEntity })
   getSalesAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<SalesAnalyticsEntity> {
     return this.analyticsService.getSalesAnalytics(AnalyticsController.parseRange(query));
+  }
+
+  @Get('delivery-analytics')
+  @ApiOperation({
+    summary:
+      'Delivery Analytics: SLA breaches by zone, fleet asset counts by zone, delivery customer-acceptance breakdown - admin only',
+  })
+  @ApiResponseDoc({ status: 200, type: DeliveryAnalyticsEntity })
+  getDeliveryAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<DeliveryAnalyticsEntity> {
+    return this.analyticsService.getDeliveryAnalytics(AnalyticsController.parseRange(query));
   }
 
   private static parseRange(query: DashboardSummaryQueryDto): { from?: Date; to?: Date } {

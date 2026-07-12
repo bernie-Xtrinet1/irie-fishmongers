@@ -71,6 +71,13 @@ interface SalesAnalyticsData {
   currency: string;
 }
 
+interface DeliveryAnalyticsData {
+  slaBreachesByZone: { zoneId: string; totalBreaches: number; unresolvedBreaches: number }[];
+  totalUnresolvedBreaches: number;
+  fleetByZone: { zoneId: string; status: string; count: number }[];
+  byCustomerAcceptanceStatus: Record<string, number>;
+}
+
 jest.setTimeout(20_000);
 
 describe('Analytics (e2e)', () => {
@@ -372,5 +379,30 @@ describe('Analytics (e2e)', () => {
     expect(summary.byStatus.APPROVED).toBeGreaterThanOrEqual(1);
     expect(summary.byTier.COMMUNITY_FISHER).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(summary.topVendorsByRevenue)).toBe(true);
+  });
+
+  it('rejects a non-admin request to the delivery analytics endpoint', async () => {
+    const customerToken = await createCustomerAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/delivery-analytics')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns a shape-correct delivery analytics summary', async () => {
+    const adminToken = await createAdminAndLogin();
+
+    const res = await request(server())
+      .get('/api/v1/analytics/delivery-analytics')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+
+    const analytics = data<DeliveryAnalyticsData>(res);
+    expect(Array.isArray(analytics.slaBreachesByZone)).toBe(true);
+    expect(analytics.totalUnresolvedBreaches).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(analytics.fleetByZone)).toBe(true);
+    expect(Object.keys(analytics.byCustomerAcceptanceStatus).sort()).toEqual(['ACCEPTED', 'PENDING', 'REJECTED']);
   });
 });

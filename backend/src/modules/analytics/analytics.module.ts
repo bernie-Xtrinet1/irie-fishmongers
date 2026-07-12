@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { HealthModule } from '../../common/health/health.module';
 import { AuthModule } from '../auth/auth.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { FleetModule } from '../fleet/fleet.module';
 import { ComplianceOpsModule } from '../food-safety/compliance-ops.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -23,6 +24,7 @@ import { AnalyticsService } from './services/analytics.service';
     OrdersModule,
     VendorsModule,
     DeliveryModule,
+    FleetModule,
     ComplianceOpsModule,
   ],
   controllers: [AnalyticsController],

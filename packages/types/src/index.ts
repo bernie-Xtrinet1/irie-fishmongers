@@ -263,6 +263,34 @@ export interface SalesAnalytics {
   currency: 'JMD';
 }
 
+// --- Delivery Analytics (Phase 12B) ---
+// Hand-mirrored from backend/src/modules/analytics/entities/delivery-analytics.entity.ts
+
+export interface ZoneBreachSummary {
+  zoneId: string;
+  totalBreaches: number;
+  unresolvedBreaches: number;
+}
+
+export interface FleetZoneSummary {
+  zoneId: string;
+  status: string;
+  count: number;
+}
+
+export interface DeliveryAcceptanceCounts {
+  PENDING: number;
+  ACCEPTED: number;
+  REJECTED: number;
+}
+
+export interface DeliveryAnalytics {
+  slaBreachesByZone: ZoneBreachSummary[];
+  totalUnresolvedBreaches: number;
+  fleetByZone: FleetZoneSummary[];
+  byCustomerAcceptanceStatus: DeliveryAcceptanceCounts;
+}
+
 // --- Vendor Management (Phase 12A) ---
 
 export enum VendorStatus {

@@ -1,4 +1,4 @@
-import type { DashboardSummary, SalesAnalytics, VendorDashboard } from '@iriefishmongers/types';
+import type { DashboardSummary, DeliveryAnalytics, SalesAnalytics, VendorDashboard } from '@iriefishmongers/types';
 
 import { apiGet } from '@/lib/api-client';
 
@@ -38,4 +38,15 @@ export async function fetchSalesAnalytics(range?: DashboardSummaryRange): Promis
   if (range.from) params.set('from', range.from);
   if (range.to) params.set('to', range.to);
   return apiGet<SalesAnalytics>(`/analytics/sales-analytics?${params.toString()}`);
+}
+
+export async function fetchDeliveryAnalytics(range?: DashboardSummaryRange): Promise<DeliveryAnalytics> {
+  if (!range?.from && !range?.to) {
+    return apiGet<DeliveryAnalytics>('/analytics/delivery-analytics');
+  }
+
+  const params = new URLSearchParams();
+  if (range.from) params.set('from', range.from);
+  if (range.to) params.set('to', range.to);
+  return apiGet<DeliveryAnalytics>(`/analytics/delivery-analytics?${params.toString()}`);
 }
