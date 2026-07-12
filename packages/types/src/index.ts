@@ -512,3 +512,80 @@ export const ASSIGNABLE_LOT_STATUSES = [
 ] as const;
 
 export type AssignableLotStatus = (typeof ASSIGNABLE_LOT_STATUSES)[number];
+
+// --- Recall Management (Phase 12A) ---
+
+export enum RecallSeverityClass {
+  CLASS_I = 'CLASS_I',
+  CLASS_II = 'CLASS_II',
+  CLASS_III = 'CLASS_III',
+}
+
+export enum RecallStatus {
+  DRAFT = 'DRAFT',
+  ACTIVE = 'ACTIVE',
+  INVESTIGATING = 'INVESTIGATING',
+  RESOLVED = 'RESOLVED',
+  CLOSED = 'CLOSED',
+}
+
+// GET/POST /recalls, PATCH /recalls/:id/status - RecallResponseEntity
+// declares exactly the scalar Prisma Recall fields plus lotIds (derived
+// from the RecallLot join table) and a computed retentionExpiresAt, no
+// drift here.
+export interface Recall {
+  id: string;
+  severityClass: RecallSeverityClass;
+  status: RecallStatus;
+  reason: string;
+  rootCause: string | null;
+  resolutionNotes: string | null;
+  createdById: string;
+  lotIds: string[];
+  closedAt: string | null;
+  createdAt: string;
+  retentionExpiresAt: string;
+}
+
+// Strictly linear per backend/src/modules/food-safety/services/recalls.service.ts's
+// ALLOWED_STATUS_TRANSITIONS - null means no further transition is possible.
+export const RECALL_NEXT_STATUS: Record<RecallStatus, RecallStatus | null> = {
+  [RecallStatus.DRAFT]: RecallStatus.ACTIVE,
+  [RecallStatus.ACTIVE]: RecallStatus.INVESTIGATING,
+  [RecallStatus.INVESTIGATING]: RecallStatus.RESOLVED,
+  [RecallStatus.RESOLVED]: RecallStatus.CLOSED,
+  [RecallStatus.CLOSED]: null,
+};
+
+// GET /recalls/:id/affected-orders - AffectedOrderEntity declares exactly
+// these fields, no drift here.
+export interface AffectedOrder {
+  orderId: string;
+  vendorOrderId: string;
+  customerId: string;
+  customerEmail: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  lotId: string;
+}
+
+// GET /food-safety/audit-logs?entityType=Recall&entityId=:id -
+// AuditLogResponseEntity declares exactly the scalar Prisma
+// ComplianceAuditLog fields, no drift here. entityType is a free-text
+// string on the backend (not an enum), and Recall status transitions are
+// logged with the exact literal "Recall" (PascalCase) - see
+// RecallsService.updateStatus. This is the only entity with real
+// audit-log coverage today; vendor/driver status changes have none.
+export interface ComplianceAuditLogEntry {
+  id: string;
+  userId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  beforeValue: unknown;
+  afterValue: unknown;
+  ipAddress: string | null;
+  reason: string | null;
+  createdAt: string;
+}
