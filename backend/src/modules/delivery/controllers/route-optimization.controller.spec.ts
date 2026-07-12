@@ -3,8 +3,16 @@ import { RouteOptimizationService } from '../services/route-optimization.service
 import { RouteOptimizationController } from './route-optimization.controller';
 
 const plan: RoutePlanResponseEntity = {
-  strategyName: 'single-stop-default',
-  orderedStops: [{ deliveryId: 'delivery-1', vendorOrderId: 'vo-1', zoneId: 'zone-1' }],
+  strategyName: 'single-stop-parish-clustered',
+  orderedStops: [
+    {
+      deliveryId: 'delivery-1',
+      vendorOrderId: 'vo-1',
+      zoneId: 'zone-1',
+      vendorId: 'vendor-1',
+      deliveryParish: 'KINGSTON',
+    },
+  ],
   routeOptimizationRunId: 'run-1',
   deliveryRunId: 'delivery-run-1',
 };

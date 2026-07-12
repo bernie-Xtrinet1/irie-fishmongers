@@ -47,20 +47,40 @@ describe('RouteOptimizationService', () => {
   it('plans a route, persists the audit run, and persists a DeliveryRun with ordered stops', async () => {
     deliveryZonesRepository.findById.mockResolvedValue(buildZone());
     deliveriesRepository.findScheduledForZone.mockResolvedValue([
-      { id: 'delivery-1', vendorOrderId: 'vo-1' } as DeliveryWithDetails,
-      { id: 'delivery-2', vendorOrderId: 'vo-2' } as DeliveryWithDetails,
+      {
+        id: 'delivery-1',
+        vendorOrderId: 'vo-1',
+        vendorOrder: { vendorId: 'vendor-1', order: { deliveryParish: 'KINGSTON' } },
+      } as DeliveryWithDetails,
+      {
+        id: 'delivery-2',
+        vendorOrderId: 'vo-2',
+        vendorOrder: { vendorId: 'vendor-2', order: { deliveryParish: 'ST_ANDREW' } },
+      } as DeliveryWithDetails,
     ]);
     strategy.planRoute.mockReturnValue({
-      strategyName: 'single-stop-default',
+      strategyName: 'single-stop-parish-clustered',
       orderedStops: [
-        { deliveryId: 'delivery-1', vendorOrderId: 'vo-1', zoneId: 'zone-1' },
-        { deliveryId: 'delivery-2', vendorOrderId: 'vo-2', zoneId: 'zone-1' },
+        {
+          deliveryId: 'delivery-1',
+          vendorOrderId: 'vo-1',
+          zoneId: 'zone-1',
+          vendorId: 'vendor-1',
+          deliveryParish: 'KINGSTON',
+        },
+        {
+          deliveryId: 'delivery-2',
+          vendorOrderId: 'vo-2',
+          zoneId: 'zone-1',
+          vendorId: 'vendor-2',
+          deliveryParish: 'ST_ANDREW',
+        },
       ],
     });
     routeOptimizationRunsRepository.create.mockResolvedValue({
       id: 'run-1',
       zoneId: 'zone-1',
-      strategyName: 'single-stop-default',
+      strategyName: 'single-stop-parish-clustered',
       deliveryIds: ['delivery-1', 'delivery-2'],
       decidedAt: new Date(),
     });
@@ -78,12 +98,24 @@ describe('RouteOptimizationService', () => {
     const result = await service.optimizeRoute('zone-1');
 
     expect(strategy.planRoute).toHaveBeenCalledWith([
-      { deliveryId: 'delivery-1', vendorOrderId: 'vo-1', zoneId: 'zone-1' },
-      { deliveryId: 'delivery-2', vendorOrderId: 'vo-2', zoneId: 'zone-1' },
+      {
+        deliveryId: 'delivery-1',
+        vendorOrderId: 'vo-1',
+        zoneId: 'zone-1',
+        vendorId: 'vendor-1',
+        deliveryParish: 'KINGSTON',
+      },
+      {
+        deliveryId: 'delivery-2',
+        vendorOrderId: 'vo-2',
+        zoneId: 'zone-1',
+        vendorId: 'vendor-2',
+        deliveryParish: 'ST_ANDREW',
+      },
     ]);
     expect(routeOptimizationRunsRepository.create).toHaveBeenCalledWith({
       zoneId: 'zone-1',
-      strategyName: 'single-stop-default',
+      strategyName: 'single-stop-parish-clustered',
       deliveryIds: ['delivery-1', 'delivery-2'],
     });
     expect(deliveryRunsRepository.create).toHaveBeenCalledWith({

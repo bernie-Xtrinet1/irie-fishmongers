@@ -22,9 +22,9 @@ import { DeliveryExceptionsService } from './services/delivery-exceptions.servic
 import { DeliveryRunsService } from './services/delivery-runs.service';
 import { DeliveryZonesService } from './services/delivery-zones.service';
 import { DriversService } from './services/drivers.service';
+import { ParishClusteringRouteOptimizationStrategy } from './services/parish-clustering-route-optimization.strategy';
 import { ROUTE_OPTIMIZATION_STRATEGY } from './services/route-optimization-strategy.interface';
 import { RouteOptimizationService } from './services/route-optimization.service';
-import { SingleStopRouteOptimizationStrategy } from './services/single-stop-route-optimization.strategy';
 import { ZoneResolutionService } from './services/zone-resolution.service';
 
 @Module({
@@ -46,7 +46,7 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     DeliveryRunsService,
     ZoneResolutionService,
     DriverSettlementEngine,
-    { provide: ROUTE_OPTIMIZATION_STRATEGY, useClass: SingleStopRouteOptimizationStrategy },
+    { provide: ROUTE_OPTIMIZATION_STRATEGY, useClass: ParishClusteringRouteOptimizationStrategy },
     DriversRepository,
     DriverLocationsRepository,
     DeliveriesRepository,

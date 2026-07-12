@@ -1,7 +1,11 @@
+import { Parish } from '@prisma/client';
+
 export interface RouteStop {
   deliveryId: string;
   vendorOrderId: string;
   zoneId: string;
+  vendorId: string;
+  deliveryParish: Parish;
 }
 
 export interface RoutePlan {

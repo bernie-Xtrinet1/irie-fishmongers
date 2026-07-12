@@ -32,6 +32,8 @@ export class RouteOptimizationService {
       deliveryId: delivery.id,
       vendorOrderId: delivery.vendorOrderId,
       zoneId,
+      vendorId: delivery.vendorOrder.vendorId,
+      deliveryParish: delivery.vendorOrder.order.deliveryParish,
     }));
 
     const plan = this.strategy.planRoute(stops);

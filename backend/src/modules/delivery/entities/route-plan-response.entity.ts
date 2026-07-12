@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Parish } from '@prisma/client';
 
 export class RouteStopEntity {
   @ApiProperty()
@@ -9,6 +10,12 @@ export class RouteStopEntity {
 
   @ApiProperty()
   zoneId!: string;
+
+  @ApiProperty()
+  vendorId!: string;
+
+  @ApiProperty({ enum: Parish })
+  deliveryParish!: Parish;
 }
 
 export class RoutePlanResponseEntity {
