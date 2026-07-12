@@ -252,3 +252,72 @@ export const ASSIGNABLE_VENDOR_STATUSES = [
 ] as const;
 
 export type AssignableVendorStatus = (typeof ASSIGNABLE_VENDOR_STATUSES)[number];
+
+// --- Driver Management (Phase 12A) ---
+
+export enum DriverStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  SUSPENDED = 'SUSPENDED',
+  REJECTED = 'REJECTED',
+}
+
+export enum DriverAvailabilityStatus {
+  ONLINE = 'ONLINE',
+  OFFLINE = 'OFFLINE',
+  BUSY = 'BUSY',
+}
+
+export enum VehicleType {
+  MOTORCYCLE = 'MOTORCYCLE',
+  CAR = 'CAR',
+  VAN = 'VAN',
+  TRUCK = 'TRUCK',
+}
+
+export enum VehicleOwnership {
+  PERSONAL_VEHICLE = 'PERSONAL_VEHICLE',
+  COMPANY_VEHICLE = 'COMPANY_VEHICLE',
+  RENTED_VEHICLE = 'RENTED_VEHICLE',
+}
+
+// GET /drivers and PATCH /drivers/:id/status serialize the raw Prisma
+// Driver record (no ClassSerializerInterceptor, same drift as VendorAdmin
+// above) - wider than the backend's DriverResponseEntity Swagger class,
+// which is missing vehicleOwnership/assignedZoneId/updatedAt.
+export interface DriverAdmin {
+  id: string;
+  userId: string;
+  licensePlate: string;
+  vehicleType: VehicleType;
+  vehicleOwnership: VehicleOwnership;
+  status: DriverStatus;
+  availabilityStatus: DriverAvailabilityStatus;
+  capacityLbs: string | null;
+  coldChainCapable: boolean;
+  assignedZoneId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// PATCH /drivers/:id/status only accepts this subset - PENDING is never a
+// settable target (drivers start PENDING at registration).
+export const ASSIGNABLE_DRIVER_STATUSES = [
+  DriverStatus.APPROVED,
+  DriverStatus.SUSPENDED,
+  DriverStatus.REJECTED,
+] as const;
+
+export type AssignableDriverStatus = (typeof ASSIGNABLE_DRIVER_STATUSES)[number];
+
+// GET /drivers/:id/performance and GET /drivers/me/performance - every
+// field is a 0-1 ratio (or a minute duration) that is null when the
+// driver has no qualifying deliveries yet, never 0 by default.
+export interface DriverPerformanceMetrics {
+  onTimeDeliveryRate: number | null;
+  averagePickupDelayMinutes: number | null;
+  customerAcceptanceRate: number | null;
+  failedDeliveryRate: number | null;
+  temperatureComplianceRate: number | null;
+  averageDeliveryDurationMinutes: number | null;
+}
