@@ -292,6 +292,7 @@ export class ProductsService {
       currency: product.currency,
       quantityAvailable: product.quantityAvailable,
       imageUrl: product.imageUrl,
+      weightLbs: product.weightLbs?.toString() ?? null,
       isActive: product.isActive,
       availability,
       createdAt: product.createdAt,

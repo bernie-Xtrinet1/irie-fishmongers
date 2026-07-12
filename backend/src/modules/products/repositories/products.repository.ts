@@ -21,6 +21,7 @@ export interface CreateProductInput {
   price: number;
   quantityAvailable: number;
   imageUrl: string;
+  weightLbs?: number;
 }
 
 export interface UpdateProductInput {
@@ -30,6 +31,7 @@ export interface UpdateProductInput {
   unit?: ProductUnit;
   price?: number;
   imageUrl?: string;
+  weightLbs?: number;
 }
 
 export interface ProductSearchFilters {

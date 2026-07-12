@@ -21,6 +21,7 @@ export interface UpdateFleetAssetInput {
 export interface FleetAssetFilters {
   zoneId?: string;
   status?: FleetAssetStatus;
+  coldChainCapable?: boolean;
 }
 
 export interface Page {
@@ -55,6 +56,7 @@ export class FleetAssetsRepository {
     const where: Prisma.FleetAssetWhereInput = {
       ...(filters.zoneId ? { zoneId: filters.zoneId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.coldChainCapable !== undefined ? { coldChainCapable: filters.coldChainCapable } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -68,5 +70,19 @@ export class FleetAssetsRepository {
     ]);
 
     return { items, total };
+  }
+
+  // 10A Fleet Dispatch Engine's candidate pool, mirroring
+  // DriversRepository.findDispatchCandidates: ACTIVE + zone match + (cold-
+  // chain capable if required) + not already on another in-progress run.
+  async findDispatchCandidates(zoneId: string, requiresColdChain: boolean): Promise<FleetAsset[]> {
+    return this.prisma.fleetAsset.findMany({
+      where: {
+        zoneId,
+        status: 'ACTIVE',
+        ...(requiresColdChain ? { coldChainCapable: true } : {}),
+        deliveryRuns: { none: { status: 'IN_PROGRESS' } },
+      },
+    });
   }
 }

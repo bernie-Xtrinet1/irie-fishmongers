@@ -42,6 +42,13 @@ export class ProductResponseEntity {
   @ApiProperty()
   imageUrl!: string;
 
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Decimal string in pounds, e.g. "15.00" - null if not yet set',
+  })
+  weightLbs!: string | null;
+
   @ApiProperty()
   isActive!: boolean;
 

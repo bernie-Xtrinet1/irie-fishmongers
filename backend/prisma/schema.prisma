@@ -148,8 +148,8 @@ model Vendor {
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  primaryZone        DeliveryZone?          @relation("VendorPrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  primaryZone        DeliveryZone?             @relation("VendorPrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
   secondaryZones     VendorZone[]
   products           Product[]
   vendorOrders       VendorOrder[]
@@ -199,6 +199,15 @@ model Product {
   quantityAvailable Int         @default(0)
   imageUrl          String
   isActive          Boolean     @default(true)
+  // Per-unit weight (matching `unit`'s own measure, e.g. per pound/kg/package/
+  // item) - nullable because most products predate this field. Added for the
+  // 10A Fleet Dispatch Engine's driver/fleet-asset capacity check; existing
+  // vendors must set it before their products count toward any capacity
+  // calculation. Deliberately NOT reusing DriverSettlementEngine's
+  // computePoundsEquivalent() heuristic (PER_POUND/PER_KILOGRAM only, silently
+  // 0 for PER_PACKAGE/PER_ITEM) - this field is the real, direct value that
+  // heuristic was always a stand-in for.
+  weightLbs         Decimal?    @db.Decimal(10, 2)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -679,17 +688,17 @@ model SeafoodLot {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  vendor              Vendor                @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  catchItem           CatchItem?            @relation(fields: [catchItemId], references: [id], onDelete: Restrict)
-  speciesRef          Species?              @relation(fields: [speciesId], references: [id], onDelete: SetNull)
-  products            Product[]
-  temperatureReadings TemperatureReading[]
-  temperatureAlerts   TemperatureAlert[]
-  inspections         QualityInspection[]
-  incidents           FoodSafetyIncident[]
-  recallLots          RecallLot[]
-  documents           ComplianceDocument[]
-  custodyEvents       ChainOfCustodyEvent[]
+  vendor               Vendor                @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  catchItem            CatchItem?            @relation(fields: [catchItemId], references: [id], onDelete: Restrict)
+  speciesRef           Species?              @relation(fields: [speciesId], references: [id], onDelete: SetNull)
+  products             Product[]
+  temperatureReadings  TemperatureReading[]
+  temperatureAlerts    TemperatureAlert[]
+  inspections          QualityInspection[]
+  incidents            FoodSafetyIncident[]
+  recallLots           RecallLot[]
+  documents            ComplianceDocument[]
+  custodyEvents        ChainOfCustodyEvent[]
   wasteDisposalRecords WasteDisposalRecord[]
 
   @@index([vendorId])
@@ -1008,15 +1017,15 @@ enum VesselRegistrationStatus {
 // stay unchanged for backward compatibility - this is the normalized
 // registry going forward, referenced optionally from Catch.
 model Vessel {
-  id                 String                    @id @default(uuid())
+  id                 String                   @id @default(uuid())
   ownerFishermanId   String
-  registrationNumber String                    @unique
+  registrationNumber String                   @unique
   name               String
   fishingMethod      FishingMethod
-  capacityTons       Decimal?                  @db.Decimal(8, 2)
-  status             VesselRegistrationStatus  @default(ACTIVE)
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
+  capacityTons       Decimal?                 @db.Decimal(8, 2)
+  status             VesselRegistrationStatus @default(ACTIVE)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
 
   owner   Fisherman @relation(fields: [ownerFishermanId], references: [id], onDelete: Restrict)
   catches Catch[]
@@ -2140,10 +2149,11 @@ model DeliveryRun {
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
 
-  zone       DeliveryZone      @relation(fields: [zoneId], references: [id], onDelete: Restrict)
-  driver     Driver?           @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  fleetAsset FleetAsset?       @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
-  stops      DeliveryRunStop[]
+  zone                 DeliveryZone          @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  driver               Driver?               @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  fleetAsset           FleetAsset?           @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  stops                DeliveryRunStop[]
+  dispatchDecisionLogs DispatchDecisionLog[]
 
   @@map("delivery_runs")
 }
@@ -2159,4 +2169,29 @@ model DeliveryRunStop {
 
   @@unique([deliveryRunId, sequence])
   @@map("delivery_run_stops")
+}
+
+// 10A Fleet Dispatch Engine's audit trail - a parallel table to
+// ComplianceAuditLog, not a reuse of it (different module, different entity
+// semantics per the Phase 12B.0 architecture verification). One row per
+// automated dispatch decision: every candidate considered, its score, and
+// which one won and why. candidates/selection are Json since the candidate
+// set size and score breakdown are inherently variable-shape, matching this
+// schema's existing precedent for VendorScore-style audit data.
+model DispatchDecisionLog {
+  id                String   @id @default(uuid())
+  deliveryRunId     String
+  requiresColdChain Boolean
+  totalWeightLbs    Decimal  @db.Decimal(10, 2)
+  candidateDrivers  Json
+  candidateAssets   Json
+  selectedDriverId  String?
+  selectedAssetId   String?
+  reason            String
+  decidedAt         DateTime @default(now())
+
+  deliveryRun DeliveryRun @relation(fields: [deliveryRunId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryRunId])
+  @@map("dispatch_decision_logs")
 }

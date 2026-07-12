@@ -9,6 +9,31 @@ const deliveryRunWithStops = Prisma.validator<Prisma.DeliveryRunDefaultArgs>()({
 
 export type DeliveryRunWithStops = Prisma.DeliveryRunGetPayload<typeof deliveryRunWithStops>;
 
+// Everything the 10A dispatch-scoring algorithm needs to compute a run's
+// total weight and cold-chain requirement in one query, rather than N+1
+// per-stop lookups against DeliveriesRepository.
+const deliveryRunWithDispatchContext = Prisma.validator<Prisma.DeliveryRunDefaultArgs>()({
+  include: {
+    stops: {
+      include: {
+        delivery: {
+          include: {
+            vendorOrder: {
+              include: {
+                items: { include: { product: { select: { weightLbs: true, lotId: true } } } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
+export type DeliveryRunWithDispatchContext = Prisma.DeliveryRunGetPayload<
+  typeof deliveryRunWithDispatchContext
+>;
+
 export interface CreateDeliveryRunInput {
   zoneId: string;
   stops: { deliveryId: string; sequence: number }[];
@@ -37,6 +62,13 @@ export class DeliveryRunsRepository {
     return this.prisma.deliveryRun.findUnique({
       where: { id },
       include: deliveryRunWithStops.include,
+    });
+  }
+
+  findByIdWithDispatchContext(id: string): Promise<DeliveryRunWithDispatchContext | null> {
+    return this.prisma.deliveryRun.findUnique({
+      where: { id },
+      include: deliveryRunWithDispatchContext.include,
     });
   }
 

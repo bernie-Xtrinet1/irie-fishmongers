@@ -72,6 +72,27 @@ export class DriversRepository {
     return { items, total };
   }
 
+  // 10A Fleet Dispatch Engine's candidate pool for a delivery run: eligible
+  // means APPROVED + ONLINE + assigned to the run's zone + (cold-chain
+  // capable if the run requires it) + not already driving another
+  // in-progress run (current-load exclusion, mirroring
+  // DeliveriesRepository.countActiveByDriverId's hard-block pattern for the
+  // single-delivery claim path rather than inventing a new one). Zone match
+  // substitutes for real distance-to-pickup - no Vendor lat/long exists in
+  // this schema (Phase 12B.0 finding), so this is an explicit scope
+  // decision, not an oversight.
+  async findDispatchCandidates(zoneId: string, requiresColdChain: boolean): Promise<Driver[]> {
+    return this.prisma.driver.findMany({
+      where: {
+        status: 'APPROVED',
+        availabilityStatus: 'ONLINE',
+        assignedZoneId: zoneId,
+        ...(requiresColdChain ? { coldChainCapable: true } : {}),
+        deliveryRuns: { none: { status: 'IN_PROGRESS' } },
+      },
+    });
+  }
+
   async countByStatus(): Promise<Record<DriverStatus, number>> {
     const groups = await this.prisma.driver.groupBy({ by: ['status'], _count: { _all: true } });
     const counts: Record<DriverStatus, number> = {

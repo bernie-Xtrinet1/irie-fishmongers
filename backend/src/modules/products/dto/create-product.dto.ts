@@ -42,4 +42,17 @@ export class CreateProductDto {
   @ApiProperty({ example: 'https://cdn.iriefishmongers.com/products/snapper.jpg' })
   @IsUrl()
   imageUrl!: string;
+
+  @ApiProperty({
+    required: false,
+    example: 15,
+    description:
+      "Per-unit weight in pounds (matching this product's own unit) - used by the Fleet " +
+      'Dispatch Engine to check a delivery run against driver/fleet-asset capacity. Optional ' +
+      'for backward compatibility with products created before this field existed.',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  weightLbs?: number;
 }

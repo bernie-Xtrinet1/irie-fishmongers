@@ -17,6 +17,7 @@ const product: ProductResponseEntity = {
   currency: 'JMD',
   quantityAvailable: 10,
   imageUrl: 'https://cdn.example.com/snapper.jpg',
+  weightLbs: null,
   isActive: true,
   availability: ProductAvailability.ACTIVE,
   createdAt: new Date(),

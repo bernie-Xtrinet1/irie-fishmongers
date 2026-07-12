@@ -28,6 +28,7 @@ function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
     currency: 'JMD',
     quantityAvailable: 20,
     imageUrl: 'https://cdn.example.com/snapper.jpg',
+    weightLbs: null,
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),

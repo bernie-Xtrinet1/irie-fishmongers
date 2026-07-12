@@ -75,6 +75,7 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
       currency: 'JMD',
       quantityAvailable: 10,
       imageUrl: 'https://cdn.example.com/snapper.jpg',
+      weightLbs: null,
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),

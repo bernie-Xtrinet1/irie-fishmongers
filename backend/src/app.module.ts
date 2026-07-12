@@ -15,6 +15,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
 import { CatchesModule } from './modules/catches/catches.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
+import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
 import { FleetModule } from './modules/fleet/fleet.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
@@ -55,6 +56,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     OrdersModule,
     PaymentsModule,
     DeliveryModule,
+    DispatchModule,
     DriverSettlementsModule,
     VendorSettlementsModule,
     FoodSafetyModule,

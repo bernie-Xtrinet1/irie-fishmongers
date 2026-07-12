@@ -56,6 +56,12 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     RouteOptimizationRunsRepository,
     DeliveryRunsRepository,
   ],
-  exports: [DriversRepository, DriverLocationsRepository, DeliveryZonesRepository],
+  exports: [
+    DriversRepository,
+    DriverLocationsRepository,
+    DeliveryZonesRepository,
+    DeliveryRunsRepository,
+    DeliveryRunsService,
+  ],
 })
 export class DeliveryModule {}
