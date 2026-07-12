@@ -85,4 +85,23 @@ export class FleetAssetsRepository {
       },
     });
   }
+
+  // 10D fleet/zone rollup: how many assets per zone are ACTIVE vs
+  // MAINTENANCE vs RETIRED - a direct utilization signal (a zone with most
+  // of its fleet in MAINTENANCE has less real dispatch capacity than its
+  // raw asset count implies), mirroring DriversRepository.countByStatus's
+  // groupBy pattern.
+  async countByZoneAndStatus(): Promise<
+    { zoneId: string; status: FleetAssetStatus; count: number }[]
+  > {
+    const groups = await this.prisma.fleetAsset.groupBy({
+      by: ['zoneId', 'status'],
+      _count: { _all: true },
+    });
+    return groups.map((group) => ({
+      zoneId: group.zoneId,
+      status: group.status,
+      count: group._count._all,
+    }));
+  }
 }

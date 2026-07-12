@@ -17,6 +17,7 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { UpdateFleetAssetDto } from '../dto/update-fleet-asset.dto';
 import { FleetAssetResponseEntity } from '../entities/fleet-asset-response.entity';
 import { FleetMaintenanceResponseEntity } from '../entities/fleet-maintenance-response.entity';
+import { FleetZoneSummaryEntity } from '../entities/fleet-zone-summary.entity';
 import { PaginatedFleetAssetsEntity } from '../entities/paginated-fleet-assets.entity';
 import { PaginatedFleetMaintenanceEntity } from '../entities/paginated-fleet-maintenance.entity';
 import { FleetAssetsService } from '../services/fleet-assets.service';
@@ -45,6 +46,15 @@ export class FleetAssetsController {
   @ApiResponseDoc({ status: 200, type: PaginatedFleetAssetsEntity })
   list(@Query() dto: ListFleetAssetsDto): Promise<PaginatedFleetAssetsEntity> {
     return this.fleetAssetsService.list(dto);
+  }
+
+  @Get('zone-summary')
+  @ApiOperation({
+    summary: '10D fleet/zone rollup: asset counts per zone by status (admin only)',
+  })
+  @ApiResponseDoc({ status: 200, type: FleetZoneSummaryEntity, isArray: true })
+  getZoneSummary(): Promise<FleetZoneSummaryEntity[]> {
+    return this.fleetAssetsService.getZoneSummary();
   }
 
   @Get(':id')

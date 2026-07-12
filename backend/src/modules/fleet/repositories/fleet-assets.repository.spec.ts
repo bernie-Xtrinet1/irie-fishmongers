@@ -70,4 +70,13 @@ describe('FleetAssetsRepository', () => {
       expect(items.some((item) => item.id === assetId)).toBe(true);
     });
   });
+
+  describe('countByZoneAndStatus', () => {
+    it('includes a group for this zone/status combination after the update above', async () => {
+      const groups = await repository.countByZoneAndStatus();
+      const group = groups.find((g) => g.zoneId === zoneId && g.status === 'MAINTENANCE');
+      expect(group).toBeDefined();
+      expect(group?.count).toBeGreaterThanOrEqual(1);
+    });
+  });
 });

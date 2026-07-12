@@ -61,6 +61,7 @@ model User {
   triggeredInventoryEvents     InventoryEvent[]
   vendorConfirmedDeliveries    Delivery[]                    @relation("DeliveryVendorConfirmedBy")
   resolvedDeliveryExceptions   DeliveryException[]           @relation("DeliveryExceptionResolvedBy")
+  resolvedSLABreaches          SLABreach[]                   @relation("SLABreachResolvedBy")
   complianceAuditLogs          ComplianceAuditLog[]
   uploadedComplianceDocuments  ComplianceDocument[]
   custodyEventsAsSender        ChainOfCustodyEvent[]         @relation("CustodyEventFrom")
@@ -474,6 +475,7 @@ model Delivery {
   vendorConfirmedBy User?               @relation("DeliveryVendorConfirmedBy", fields: [vendorConfirmedById], references: [id], onDelete: SetNull)
   settlement        DriverSettlement?
   exceptions        DeliveryException[]
+  slaBreaches       SLABreach[]
   runStop           DeliveryRunStop?
   routeHistory      RouteHistory?
 
@@ -2094,6 +2096,45 @@ model DeliveryException {
 
   @@index([deliveryId])
   @@map("delivery_exceptions")
+}
+
+// SLA = Delivery.customerDeliveryWindowEnd, the same promised-by deadline
+// DriversService.getPerformanceMetrics() already uses for its on-time/late
+// ratio - this table persists that same boundary as queryable records
+// instead of only ever computing it live per-driver. Two distinct
+// detection paths, not one: OVERDUE_IN_TRANSIT is inherently
+// time-passage-driven (the delivery hasn't completed yet, so nothing
+// event-driven can catch it - a cron is genuinely necessary here) and is
+// created by SLABreachDetectionService's scheduled scan; LATE_DELIVERY is
+// a direct consequence of an existing state transition and is created
+// synchronously inside DeliveriesService.updateStatus()'s DELIVERED
+// branch, in the same transaction, when deliveredAt lands after the
+// promised window.
+enum SLABreachType {
+  OVERDUE_IN_TRANSIT
+  LATE_DELIVERY
+}
+
+model SLABreach {
+  id           String        @id @default(uuid())
+  deliveryId   String
+  type         SLABreachType
+  scheduledEnd DateTime
+  minutesLate  Int
+  detectedAt   DateTime      @default(now())
+  resolved     Boolean       @default(false)
+  resolvedAt   DateTime?
+  resolvedById String?
+
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("SLABreachResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  // One breach record per (delivery, type) - the cron scans every 5
+  // minutes and must not create a duplicate OVERDUE_IN_TRANSIT row on
+  // every tick a delivery remains overdue.
+  @@unique([deliveryId, type])
+  @@index([deliveryId])
+  @@map("sla_breaches")
 }
 
 // Reuses DriverSettlementEngine.computeDistanceKm - does not reimplement GPS

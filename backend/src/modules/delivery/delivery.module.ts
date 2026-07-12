@@ -9,6 +9,7 @@ import { DeliveryRunsController } from './controllers/delivery-runs.controller';
 import { DeliveryZonesController } from './controllers/delivery-zones.controller';
 import { DriversController } from './controllers/drivers.controller';
 import { RouteOptimizationController } from './controllers/route-optimization.controller';
+import { SLABreachesController } from './controllers/sla-breaches.controller';
 import { DeliveriesRepository } from './repositories/deliveries.repository';
 import { DeliveryExceptionsRepository } from './repositories/delivery-exceptions.repository';
 import { DeliveryRunsRepository } from './repositories/delivery-runs.repository';
@@ -17,6 +18,7 @@ import { DriverLocationsRepository } from './repositories/driver-locations.repos
 import { DriversRepository } from './repositories/drivers.repository';
 import { RouteHistoryRepository } from './repositories/route-history.repository';
 import { RouteOptimizationRunsRepository } from './repositories/route-optimization-runs.repository';
+import { SLABreachesRepository } from './repositories/sla-breaches.repository';
 import { DeliveriesService } from './services/deliveries.service';
 import { DeliveryExceptionsService } from './services/delivery-exceptions.service';
 import { DeliveryRunsService } from './services/delivery-runs.service';
@@ -25,6 +27,8 @@ import { DriversService } from './services/drivers.service';
 import { ParishClusteringRouteOptimizationStrategy } from './services/parish-clustering-route-optimization.strategy';
 import { ROUTE_OPTIMIZATION_STRATEGY } from './services/route-optimization-strategy.interface';
 import { RouteOptimizationService } from './services/route-optimization.service';
+import { SLABreachDetectionService } from './services/sla-breach-detection.service';
+import { SLABreachesService } from './services/sla-breaches.service';
 import { ZoneResolutionService } from './services/zone-resolution.service';
 
 @Module({
@@ -36,6 +40,7 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     DeliveryExceptionsController,
     RouteOptimizationController,
     DeliveryRunsController,
+    SLABreachesController,
   ],
   providers: [
     DriversService,
@@ -44,6 +49,8 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     DeliveryExceptionsService,
     RouteOptimizationService,
     DeliveryRunsService,
+    SLABreachesService,
+    SLABreachDetectionService,
     ZoneResolutionService,
     DriverSettlementEngine,
     { provide: ROUTE_OPTIMIZATION_STRATEGY, useClass: ParishClusteringRouteOptimizationStrategy },
@@ -55,6 +62,7 @@ import { ZoneResolutionService } from './services/zone-resolution.service';
     RouteHistoryRepository,
     RouteOptimizationRunsRepository,
     DeliveryRunsRepository,
+    SLABreachesRepository,
   ],
   exports: [
     DriversRepository,

@@ -30,6 +30,7 @@ import { PaginatedDriverDeliveriesEntity } from '../entities/paginated-driver-de
 import { DriverLocationsRepository } from '../repositories/driver-locations.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
 import { RouteHistoryRepository } from '../repositories/route-history.repository';
+import { SLABreachesRepository } from '../repositories/sla-breaches.repository';
 import {
   AvailableVendorOrder,
   DeliveriesRepository,
@@ -46,6 +47,7 @@ export class DeliveriesService {
     private readonly driversRepository: DriversRepository,
     private readonly driverLocationsRepository: DriverLocationsRepository,
     private readonly routeHistoryRepository: RouteHistoryRepository,
+    private readonly slaBreachesRepository: SLABreachesRepository,
     private readonly settlementEngine: DriverSettlementEngine,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -182,6 +184,31 @@ export class DeliveriesService {
           dto.proofUrl,
           tx,
         );
+        // SLA breach detection, path 1 of 2 (see SLABreach's schema
+        // comment): a direct consequence of this state transition, so it
+        // belongs in the same transaction as the DELIVERED write rather
+        // than a separate cron pass. The in-flight-overdue case
+        // (OVERDUE_IN_TRANSIT) is handled by SLABreachDetectionService's
+        // scheduled scan instead, since it can't be caught by any state
+        // transition.
+        if (
+          delivery.customerDeliveryWindowEnd &&
+          (delivered.deliveredAt as Date) > delivery.customerDeliveryWindowEnd
+        ) {
+          await this.slaBreachesRepository.upsert(
+            {
+              deliveryId: delivery.id,
+              type: 'LATE_DELIVERY',
+              scheduledEnd: delivery.customerDeliveryWindowEnd,
+              minutesLate: Math.round(
+                ((delivered.deliveredAt as Date).getTime() -
+                  delivery.customerDeliveryWindowEnd.getTime()) /
+                  60_000,
+              ),
+            },
+            tx,
+          );
+        }
         const routeHistory = await this.recordRouteHistory(
           delivery,
           delivered.deliveredAt as Date,

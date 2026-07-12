@@ -33,7 +33,9 @@ const maintenance: FleetMaintenanceResponseEntity = {
 };
 
 describe('FleetAssetsController', () => {
-  let fleetAssetsService: jest.Mocked<Pick<FleetAssetsService, 'create' | 'list' | 'findById' | 'update'>>;
+  let fleetAssetsService: jest.Mocked<
+    Pick<FleetAssetsService, 'create' | 'list' | 'findById' | 'update' | 'getZoneSummary'>
+  >;
   let fleetMaintenanceService: jest.Mocked<Pick<FleetMaintenanceService, 'create' | 'findByFleetAssetId'>>;
   let controller: FleetAssetsController;
 
@@ -43,6 +45,9 @@ describe('FleetAssetsController', () => {
       list: jest.fn().mockResolvedValue({ items: [asset], total: 1, page: 1, pageSize: 20 }),
       findById: jest.fn().mockResolvedValue(asset),
       update: jest.fn().mockResolvedValue({ ...asset, status: 'RETIRED' }),
+      getZoneSummary: jest
+        .fn()
+        .mockResolvedValue([{ zoneId: 'zone-1', status: 'ACTIVE', count: 3 }]),
     };
     fleetMaintenanceService = {
       create: jest.fn().mockResolvedValue(maintenance),
@@ -94,5 +99,10 @@ describe('FleetAssetsController', () => {
   it('lists maintenance records for a fleet asset', async () => {
     const result = await controller.listMaintenance('asset-1', { page: 1, pageSize: 20 });
     expect(result.total).toBe(1);
+  });
+
+  it('gets the fleet zone summary rollup', async () => {
+    const result = await controller.getZoneSummary();
+    expect(result).toEqual([{ zoneId: 'zone-1', status: 'ACTIVE', count: 3 }]);
   });
 });

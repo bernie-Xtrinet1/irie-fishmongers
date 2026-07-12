@@ -24,7 +24,10 @@ function buildAsset(overrides: Partial<FleetAsset> = {}): FleetAsset {
 
 describe('FleetAssetsService', () => {
   let fleetAssetsRepository: jest.Mocked<
-    Pick<FleetAssetsRepository, 'create' | 'findById' | 'findByLicensePlate' | 'update' | 'findMany'>
+    Pick<
+      FleetAssetsRepository,
+      'create' | 'findById' | 'findByLicensePlate' | 'update' | 'findMany' | 'countByZoneAndStatus'
+    >
   >;
   let prisma: { deliveryZone: { findUnique: jest.Mock }; driver: { findUnique: jest.Mock } };
   let service: FleetAssetsService;
@@ -36,6 +39,7 @@ describe('FleetAssetsService', () => {
       findByLicensePlate: jest.fn(),
       update: jest.fn(),
       findMany: jest.fn(),
+      countByZoneAndStatus: jest.fn(),
     };
     prisma = {
       deliveryZone: { findUnique: jest.fn() },
@@ -130,6 +134,22 @@ describe('FleetAssetsService', () => {
         { zoneId: undefined, status: undefined },
         { skip: 0, take: 20 },
       );
+    });
+  });
+
+  describe('getZoneSummary', () => {
+    it('delegates to the repository rollup', async () => {
+      fleetAssetsRepository.countByZoneAndStatus.mockResolvedValue([
+        { zoneId: 'zone-1', status: 'ACTIVE', count: 3 },
+        { zoneId: 'zone-1', status: 'MAINTENANCE', count: 1 },
+      ]);
+
+      const result = await service.getZoneSummary();
+
+      expect(result).toEqual([
+        { zoneId: 'zone-1', status: 'ACTIVE', count: 3 },
+        { zoneId: 'zone-1', status: 'MAINTENANCE', count: 1 },
+      ]);
     });
   });
 });

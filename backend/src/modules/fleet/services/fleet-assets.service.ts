@@ -1,11 +1,17 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { FleetAsset } from '@prisma/client';
+import { FleetAsset, FleetAssetStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { CreateFleetAssetDto } from '../dto/create-fleet-asset.dto';
 import { ListFleetAssetsDto } from '../dto/list-fleet-assets.dto';
 import { UpdateFleetAssetDto } from '../dto/update-fleet-asset.dto';
 import { FleetAssetsRepository } from '../repositories/fleet-assets.repository';
+
+export interface FleetZoneSummary {
+  zoneId: string;
+  status: FleetAssetStatus;
+  count: number;
+}
 
 export interface PaginatedFleetAssets {
   items: FleetAsset[];
@@ -65,5 +71,9 @@ export class FleetAssetsService {
     );
 
     return { items, total, page: dto.page, pageSize: dto.pageSize };
+  }
+
+  getZoneSummary(): Promise<FleetZoneSummary[]> {
+    return this.fleetAssetsRepository.countByZoneAndStatus();
   }
 }

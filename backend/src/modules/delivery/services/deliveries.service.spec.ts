@@ -15,6 +15,7 @@ import {
 import { DriverLocationsRepository } from '../repositories/driver-locations.repository';
 import { DriversRepository } from '../repositories/drivers.repository';
 import { RouteHistoryRepository } from '../repositories/route-history.repository';
+import { SLABreachesRepository } from '../repositories/sla-breaches.repository';
 import { DeliveriesService } from './deliveries.service';
 
 function buildDriver(overrides: Partial<Driver> = {}): Driver {
@@ -190,6 +191,7 @@ describe('DeliveriesService', () => {
     Pick<DriverLocationsRepository, 'findLatestByDriverId' | 'findBetween'>
   >;
   let routeHistoryRepository: jest.Mocked<Pick<RouteHistoryRepository, 'create'>>;
+  let slaBreachesRepository: jest.Mocked<Pick<SLABreachesRepository, 'upsert'>>;
   let settlementEngine: jest.Mocked<Pick<DriverSettlementEngine, 'computeDistanceKm'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: DeliveriesService;
@@ -223,6 +225,7 @@ describe('DeliveriesService', () => {
       findBetween: jest.fn().mockResolvedValue([]),
     };
     routeHistoryRepository = { create: jest.fn() };
+    slaBreachesRepository = { upsert: jest.fn() };
     settlementEngine = { computeDistanceKm: jest.fn().mockReturnValue(0) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
@@ -233,6 +236,7 @@ describe('DeliveriesService', () => {
       driversRepository as unknown as DriversRepository,
       driverLocationsRepository as unknown as DriverLocationsRepository,
       routeHistoryRepository as unknown as RouteHistoryRepository,
+      slaBreachesRepository as unknown as SLABreachesRepository,
       settlementEngine as unknown as DriverSettlementEngine,
       eventEmitter as unknown as EventEmitter2,
     );
@@ -554,6 +558,88 @@ describe('DeliveriesService', () => {
         'delivery.awaiting_customer_acceptance',
         expect.objectContaining({ customerId: 'customer-1', vendorOrderId: 'vo-1' }),
       );
+    });
+
+    it('records an SLA breach when delivered after the promised window', async () => {
+      const pickedUpAt = new Date('2026-07-08T09:00:00.000Z');
+      const windowEnd = new Date('2026-07-08T10:00:00.000Z');
+      const deliveredAt = new Date('2026-07-08T10:20:00.000Z');
+      driversRepository.findByUserId.mockResolvedValue(buildDriver());
+      deliveriesRepository.findById.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt, customerDeliveryWindowEnd: windowEnd }),
+      );
+      deliveriesRepository.markDelivered.mockResolvedValue(
+        buildDeliveryWithDetails({
+          pickedUpAt,
+          deliveredAt,
+          customerDeliveryWindowEnd: windowEnd,
+          proofType: 'PHOTO',
+          proofUrl: 'https://cdn.example.com/proof.jpg',
+        }),
+      );
+      driverLocationsRepository.findBetween.mockResolvedValue([]);
+      routeHistoryRepository.create.mockResolvedValue({
+        id: 'route-1',
+        deliveryId: 'delivery-1',
+        driverId: 'driver-1',
+        gpsSamples: 0,
+        distanceKm: { toString: () => '0' } as never,
+        durationMinutes: 80,
+        createdAt: new Date(),
+      });
+
+      await service.updateStatus('driver-user-1', 'delivery-1', {
+        action: 'DELIVERED',
+        proofType: 'PHOTO',
+        proofUrl: 'https://cdn.example.com/proof.jpg',
+      });
+
+      expect(slaBreachesRepository.upsert).toHaveBeenCalledWith(
+        {
+          deliveryId: 'delivery-1',
+          type: 'LATE_DELIVERY',
+          scheduledEnd: windowEnd,
+          minutesLate: 20,
+        },
+        {},
+      );
+    });
+
+    it('does not record an SLA breach when delivered within the promised window', async () => {
+      const pickedUpAt = new Date('2026-07-08T09:00:00.000Z');
+      const windowEnd = new Date('2026-07-08T10:00:00.000Z');
+      const deliveredAt = new Date('2026-07-08T09:50:00.000Z');
+      driversRepository.findByUserId.mockResolvedValue(buildDriver());
+      deliveriesRepository.findById.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt, customerDeliveryWindowEnd: windowEnd }),
+      );
+      deliveriesRepository.markDelivered.mockResolvedValue(
+        buildDeliveryWithDetails({
+          pickedUpAt,
+          deliveredAt,
+          customerDeliveryWindowEnd: windowEnd,
+          proofType: 'PHOTO',
+          proofUrl: 'https://cdn.example.com/proof.jpg',
+        }),
+      );
+      driverLocationsRepository.findBetween.mockResolvedValue([]);
+      routeHistoryRepository.create.mockResolvedValue({
+        id: 'route-1',
+        deliveryId: 'delivery-1',
+        driverId: 'driver-1',
+        gpsSamples: 0,
+        distanceKm: { toString: () => '0' } as never,
+        durationMinutes: 50,
+        createdAt: new Date(),
+      });
+
+      await service.updateStatus('driver-user-1', 'delivery-1', {
+        action: 'DELIVERED',
+        proofType: 'PHOTO',
+        proofUrl: 'https://cdn.example.com/proof.jpg',
+      });
+
+      expect(slaBreachesRepository.upsert).not.toHaveBeenCalled();
     });
 
     it('rejects marking delivered before pickup', async () => {
