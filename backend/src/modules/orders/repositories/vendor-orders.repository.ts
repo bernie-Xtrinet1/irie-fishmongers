@@ -169,12 +169,12 @@ export class VendorOrdersRepository {
     }
 
     return Array.from(totalsByCategory.entries())
+      .sort(([, a], [, b]) => b.revenue.comparedTo(a.revenue))
       .map(([categoryId, totals]) => ({
         categoryId,
         categoryName: totals.categoryName,
         quantitySold: totals.quantitySold,
         revenue: totals.revenue.toString(),
-      }))
-      .sort((a, b) => Number(b.revenue) - Number(a.revenue));
+      }));
   }
 }

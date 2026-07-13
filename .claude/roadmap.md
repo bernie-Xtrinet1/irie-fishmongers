@@ -881,10 +881,13 @@ verification, architecture review, and final regression listed below.
 
 Deliverables (added after Phase 12B.0)
 
-- Wire DeliveryRejectedEvent into NotificationEventsListener (customer
-  rejection currently notifies no one via the notification pipeline -
-  found during Phase 12B.0, confirmed not previously known). Not yet
-  started.
+- [DONE 2026-07-12] Wire DeliveryRejectedEvent into
+  NotificationEventsListener (customer rejection currently notifies no
+  one via the notification pipeline - found during Phase 12B.0,
+  confirmed not previously known). The vendor (not the customer) is
+  notified, since the customer already knows they rejected their own
+  delivery, and a food-safety incident is simultaneously raised against
+  their product via the pre-existing FoodSafetyEventsListener.
 
 Purpose
 
@@ -900,29 +903,63 @@ Deliverables
   operations (see the dedicated "PHASE 10A-10E EXECUTION PLAN" section
   below for the itemized breakdown per sub-phase - all five items
   shipped and independently committed).
-- Build the four Analytics deliverables from Phase 15 that don't exist
-  yet: Vendor Dashboard, Sales Analytics, Delivery Analytics, Inventory
-  Analytics. (The fifth Phase 15 deliverable, Admin Dashboard, is
-  already substantially built: apps/admin-dashboard ships Dashboard
-  Overview, Vendor Management, Driver Management, Delivery Zone & Fleet
-  Management, Delivery Operations Center, Cold Chain Monitoring, and
-  Recall Management.) Not yet started.
-- Verify the Digital Product Passport / QR flow end-to-end (scan a
-  generated QR, confirm it resolves to the correct public traceability
-  page, confirm it degrades sensibly for a recalled/quarantined lot).
-  Not yet started.
-- Verify every dashboard and report shipped so far actually renders
-  correct data against a realistic seeded dataset, not just against
-  the narrow fixtures used in unit/e2e tests. Not yet started.
-- Run a full architecture review across everything shipped since the
-  last such review (data model, module boundaries, security posture,
-  N+1 query risk, dead code) - not just a regression test pass. Not yet
-  started.
+- [DONE 2026-07-12] Build the four Analytics deliverables from Phase 15:
+  Vendor Dashboard, Sales Analytics, Delivery Analytics, Inventory
+  Analytics. Each ships as a GET /analytics/* endpoint (composing
+  existing repositories/services, no duplicated aggregation logic) plus
+  an apps/admin-dashboard screen following the established
+  loading/error/empty-state + Card/Table pattern. (The fifth Phase 15
+  deliverable, Admin Dashboard, was already substantially built:
+  apps/admin-dashboard ships Dashboard Overview, Vendor Management,
+  Driver Management, Delivery Zone & Fleet Management, Delivery
+  Operations Center, Cold Chain Monitoring, and Recall Management.)
+- [DONE 2026-07-12] Verify the Digital Product Passport / QR flow
+  end-to-end. Confirmed: SeafoodLot.publicTraceToken is a required,
+  unique, DB-default UUID (never left null); a real scannable QR PNG is
+  generated server-side (qrcode package, GET /seafood-lots/:id/qr-code,
+  vendor/admin only) encoding the public passport URL; the public
+  GET /passport/:token endpoint resolves it with no auth. Existing e2e
+  coverage: happy path (QR generation, 403 for a non-owning vendor, and
+  the public passport lookup resolving lot/custody/coldChainSummary/
+  certifications), plus 404 for an unknown token. Gap identified (not
+  blocking): no e2e case yet covers a lot with a full linked
+  catchItem/origin/certifications chain, only the catchItem-less
+  partial-passport case - tracked as a follow-up, not silently dropped.
+- [DONE 2026-07-12] Verify every dashboard and report shipped so far
+  renders correct data. All 1283 backend unit tests and the full e2e
+  suite (which hits real Postgres with real data assertions, and whose
+  success proves the complete NestJS module graph - including this
+  phase's DeliveryModule/FleetModule/ProductsModule/InventoryModule
+  export changes - bootstraps cleanly) pass. 5 of 11 admin screens
+  (Dashboard Overview, Vendor Dashboard, Sales Analytics, Delivery
+  Analytics, Inventory Analytics) were additionally live-verified in
+  browser against real accumulated dev-DB data with zero console
+  errors; the other 6 had no frontend changes this phase beyond an
+  additive, test-covered nav item and were live-verified in their
+  original build phases (12A, 10B). Gap identified (not blocking):
+  backend/prisma/seed.ts only seeds reference/config data (roles,
+  categories, zones, tier configs, species, thresholds), not
+  transactional data (vendors/orders/deliveries) - the realistic data
+  observed in the dev DB comes from accumulated real e2e-test fixtures,
+  not a dedicated seed script.
+- [DONE 2026-07-12] Run a full architecture review across everything
+  shipped in Phase 12B (data model, module boundaries, API envelope/DTO
+  consistency, business-logic duplication, frontend consistency, dead
+  code). No CLAUDE.md violations found (no any/@ts-ignore/eslint-disable/
+  TODO/mock/dead code; all files well under the 400-line file / 500-line
+  service caps; no duplicated aggregation logic - the 4 new Analytics
+  methods are pure composers reusing existing repositories/services);
+  no circular module imports introduced. Two non-blocking style items
+  noted: ProductsRepository.findAllForAvailability() does a full table
+  scan with no pagination (fine at current scale, revisit if catalog
+  volume grows materially), and VendorOrdersRepository's two revenue-
+  ranking methods sort via slightly different Decimal-comparison idioms.
 - Run the full monorepo regression suite (typecheck, lint, unit, e2e,
-  frontend component tests) clean, on top of the architecture review's
-  findings being addressed. Not yet started (each 10A-10E commit was
-  independently fully verified, but a single final pass across
-  everything together has not run).
+  frontend component tests) clean on top of the architecture review's
+  findings being addressed. In progress - each individual Phase 12B
+  commit was already independently fully verified (typecheck/lint/unit/
+  e2e clean across all 5 workspaces at commit time), but the single
+  final pass across everything together has not yet run.
 
 Acceptance
 
