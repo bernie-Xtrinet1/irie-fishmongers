@@ -146,6 +146,7 @@ describe('SeafoodLotsService', () => {
       | 'countCreatedThisYear'
       | 'findManyByVendor'
       | 'findMany'
+      | 'findLatestInspectedAt'
     >
   >;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
@@ -167,6 +168,7 @@ describe('SeafoodLotsService', () => {
       countCreatedThisYear: jest.fn(),
       findManyByVendor: jest.fn(),
       findMany: jest.fn(),
+      findLatestInspectedAt: jest.fn().mockResolvedValue(null),
     };
     vendorsRepository = { findByUserId: jest.fn() };
     alertsRepository = { countUnresolvedByLotId: jest.fn() };
@@ -450,6 +452,30 @@ describe('SeafoodLotsService', () => {
       expect(result.temperatureVerified).toBe(true);
       expect(result.vendorBusinessName).toBe("Vera's Catch");
       expect(result.catchLocation).toBe('North Coast');
+    });
+
+    it('includes qualityScore and lastInspectedAt from the most recent inspection', async () => {
+      const inspectedAt = new Date('2026-07-10');
+      lotsRepository.findByIdWithVendor.mockResolvedValue(buildLotWithVendor({ qualityScore: 92 }));
+      alertsRepository.countUnresolvedByLotId.mockResolvedValue(0);
+      lotsRepository.findLatestInspectedAt.mockResolvedValue(inspectedAt);
+
+      const result = await service.getPublicById('lot-1');
+
+      expect(result.qualityScore).toBe(92);
+      expect(result.lastInspectedAt).toBe(inspectedAt);
+      expect(lotsRepository.findLatestInspectedAt).toHaveBeenCalledWith('lot-1');
+    });
+
+    it('returns null qualityScore/lastInspectedAt when the lot has never been inspected', async () => {
+      lotsRepository.findByIdWithVendor.mockResolvedValue(buildLotWithVendor({ qualityScore: null }));
+      alertsRepository.countUnresolvedByLotId.mockResolvedValue(0);
+      lotsRepository.findLatestInspectedAt.mockResolvedValue(null);
+
+      const result = await service.getPublicById('lot-1');
+
+      expect(result.qualityScore).toBeNull();
+      expect(result.lastInspectedAt).toBeNull();
     });
 
     it('returns temperatureVerified false when there are unresolved alerts', async () => {

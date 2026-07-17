@@ -240,7 +240,10 @@ export class SeafoodLotsService {
       throw new NotFoundException('Seafood lot not found');
     }
 
-    const activeAlertCount = await this.alertsRepository.countUnresolvedByLotId(id);
+    const [activeAlertCount, lastInspectedAt] = await Promise.all([
+      this.alertsRepository.countUnresolvedByLotId(id),
+      this.lotsRepository.findLatestInspectedAt(id),
+    ]);
 
     return {
       lotNumber: lot.lotNumber,
@@ -250,6 +253,12 @@ export class SeafoodLotsService {
       catchLocation: lot.catchLocation,
       landingSite: lot.landingSite,
       freshnessGrade: lot.freshnessGrade,
+      qualityScore: lot.qualityScore,
+      // SeafoodLot itself has no "last inspected" timestamp column - it
+      // only carries the resulting qualityScore/freshnessGrade. The
+      // inspection date comes from the most recent QualityInspection row
+      // for this lot.
+      lastInspectedAt,
       vendorBusinessName: lot.vendor.businessName,
       temperatureVerified: activeAlertCount === 0,
     };

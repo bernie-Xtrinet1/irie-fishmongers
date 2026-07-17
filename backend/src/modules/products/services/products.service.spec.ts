@@ -360,6 +360,8 @@ describe('ProductsService', () => {
         catchLocation: 'North Coast',
         landingSite: 'Falmouth Landing Site',
         freshnessGrade: null,
+        qualityScore: null,
+        lastInspectedAt: null,
         vendorBusinessName: "Vera's Catch",
         temperatureVerified: true,
       };

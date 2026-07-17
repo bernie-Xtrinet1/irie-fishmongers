@@ -117,6 +117,22 @@ export class SeafoodLotsRepository {
     return { items, total };
   }
 
+  // Phase 13D: the "as of" date for a lot's public qualityScore.
+  // SeafoodLot itself has no inspection-timestamp column - queried
+  // directly against QualityInspection here (rather than injecting
+  // QualityInspectionsRepository, which lives in QualityModule and
+  // imports SeafoodLotsModule - injecting it back would create a module
+  // cycle) since a Prisma query against a table isn't scoped by NestJS
+  // module boundaries the way service injection is.
+  async findLatestInspectedAt(lotId: string): Promise<Date | null> {
+    const latest = await this.prisma.qualityInspection.findFirst({
+      where: { lotId },
+      orderBy: { inspectedAt: 'desc' },
+      select: { inspectedAt: true },
+    });
+    return latest?.inspectedAt ?? null;
+  }
+
   async findMany(
     filters: LotFilters,
     page: Page,

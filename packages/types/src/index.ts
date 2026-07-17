@@ -85,6 +85,8 @@ export interface SeafoodLotPublic {
   catchLocation: string | null;
   landingSite: string | null;
   freshnessGrade: FreshnessGrade | null;
+  qualityScore: number | null;
+  lastInspectedAt: string | null;
   vendorBusinessName: string;
   temperatureVerified: boolean;
 }

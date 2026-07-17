@@ -176,9 +176,31 @@ function ProductInformationCard({ product }: { product: ProductDetail }): React.
           label="Freshness Grade"
           value={product.lot?.freshnessGrade ? formatEnumLabel(product.lot.freshnessGrade) : 'Not graded'}
         />
+        <DetailRow
+          label="Quality & Freshness Score"
+          value={formatQualityFreshness(product.lot)}
+        />
       </CardContent>
     </Card>
   );
+}
+
+// The "Freshness Score" the customer-facing spec calls for is
+// SeafoodLot.qualityScore (0-100, set by a QualityInspection). It's shown
+// together with its grade and inspection date so the number is never a
+// bare, undated figure that could read as current when it's actually old.
+function formatQualityFreshness(lot: ProductDetail['lot']): string {
+  if (!lot || lot.qualityScore === null) {
+    return 'Not scored';
+  }
+  const parts = [`${lot.qualityScore}/100`];
+  if (lot.freshnessGrade) {
+    parts.push(`Grade ${formatEnumLabel(lot.freshnessGrade).replace(/^Grade /, '')}`);
+  }
+  if (lot.lastInspectedAt) {
+    parts.push(`Inspected ${formatDate(lot.lastInspectedAt)}`);
+  }
+  return parts.join(' · ');
 }
 
 function TraceabilityCard({ product }: { product: ProductDetail }): React.ReactElement {

@@ -45,6 +45,8 @@ interface LotData {
 interface PublicLotData {
   lotNumber: string;
   temperatureVerified: boolean;
+  qualityScore: number | null;
+  lastInspectedAt: string | null;
 }
 
 interface RecordReadingResultData {
@@ -291,6 +293,22 @@ describe('Food Safety / Compliance (e2e)', () => {
     const publicLot = data<PublicLotData>(publicRes);
     expect(publicLot.lotNumber).toBe(lot.lotNumber);
     expect(publicLot.temperatureVerified).toBe(true);
+    // A freshly-registered, never-inspected lot has no quality score or
+    // inspection date yet (Phase 13D).
+    expect(publicLot.qualityScore).toBeNull();
+    expect(publicLot.lastInspectedAt).toBeNull();
+
+    // After a PASSED inspection, the public lot surfaces the resulting
+    // quality/freshness score and the inspection timestamp.
+    await request(server())
+      .post('/api/v1/quality-inspections')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ lotId: lot.id, result: 'PASSED', freshnessGrade: 'GRADE_A', qualityScore: 93 });
+
+    const publicAfterInspectionRes = await request(server()).get(`/api/v1/seafood-lots/${lot.id}/public`);
+    const publicLotAfter = data<PublicLotData>(publicAfterInspectionRes);
+    expect(publicLotAfter.qualityScore).toBe(93);
+    expect(publicLotAfter.lastInspectedAt).not.toBeNull();
 
     const mineRes = await request(server())
       .get('/api/v1/seafood-lots/mine')

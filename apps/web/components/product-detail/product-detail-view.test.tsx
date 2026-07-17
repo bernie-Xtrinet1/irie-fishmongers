@@ -50,6 +50,8 @@ const baseProduct: ProductDetail = {
     catchLocation: 'North Coast',
     landingSite: 'Falmouth Landing Site',
     freshnessGrade: FreshnessGrade.GRADE_A,
+    qualityScore: 92,
+    lastInspectedAt: new Date('2026-01-16').toISOString(),
     vendorBusinessName: "Vera's Catch",
     temperatureVerified: true,
   },
@@ -106,6 +108,25 @@ describe('ProductDetailView', () => {
     expect(screen.getByText('Vendor Information')).toBeInTheDocument();
     expect(screen.getByText('North Coast')).toBeInTheDocument();
     expect(screen.getByText('Not yet rated')).toBeInTheDocument();
+  });
+
+  it('shows the quality & freshness score with its grade and inspection date', async () => {
+    mockFetchProductDetail.mockResolvedValue(baseProduct);
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    expect(await screen.findByText('Quality & Freshness Score')).toBeInTheDocument();
+    expect(screen.getByText(/92\/100 · Grade A · Inspected/)).toBeInTheDocument();
+  });
+
+  it('shows "Not scored" when the lot has no quality score', async () => {
+    mockFetchProductDetail.mockResolvedValue({
+      ...baseProduct,
+      lot: baseProduct.lot ? { ...baseProduct.lot, qualityScore: null, lastInspectedAt: null } : null,
+    });
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    expect(await screen.findByText('Quality & Freshness Score')).toBeInTheDocument();
+    expect(screen.getByText('Not scored')).toBeInTheDocument();
   });
 
   it('hides Option B when bestAvailableEnabled is false', async () => {
