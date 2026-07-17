@@ -68,6 +68,8 @@ model User {
   custodyEventsAsRecipient     ChainOfCustodyEvent[]         @relation("CustodyEventTo")
   assignedEmergencyResponses   EmergencyResponse[]
   recordedWasteDisposals       WasteDisposalRecord[]
+  reviewsAuthored              Review[]                      @relation("ReviewAuthor")
+  reviewsRemoved               Review[]                      @relation("ReviewRemovedBy")
 
   @@map("users")
 }
@@ -164,6 +166,7 @@ model Vendor {
   fishermen          Fisherman[]
   temperatureDevices TemperatureDevice[]
   certifications     RegulatoryCertification[]
+  reviews            Review[]
 
   @@map("vendors")
 }
@@ -222,6 +225,7 @@ model Product {
   vendorAssignments               VendorAssignment[]
   inventoryEvents                 InventoryEvent[]
   wasteDisposalRecords            WasteDisposalRecord[]
+  reviews                         Review[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -304,6 +308,7 @@ model VendorOrder {
   delivery        Delivery?
   settlement      VendorSettlement?
   inventoryEvents InventoryEvent[]
+  reviews         Review[]
 
   @@index([vendorId])
   @@index([orderId])
@@ -325,6 +330,57 @@ model OrderItem {
   product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@map("order_items")
+}
+
+enum ReviewModerationStatus {
+  VISIBLE
+  REMOVED_BY_AUTHOR
+  REMOVED_BY_ADMIN
+}
+
+// Customer reviews of a vendor (productId null) or a specific purchased
+// product (productId set), always tied to the completed VendorOrder that
+// makes the customer eligible (Phase 13A). FK deletes are deliberately
+// non-cascading: reviews are trust/moderation records that must survive
+// account or catalog changes - author SetNull (a deleted account's review
+// text stays, attribution nulled), everything else Restrict so a vendor/
+// order/product with reviews can't be physically deleted (this platform
+// soft-deactivates instead). Removal is soft via moderationStatus, never a
+// row delete.
+//
+// "Fake reviews are prohibited" (business-rules1.md) is enforced as a
+// one-review-per-(author, vendorOrder, productId) DB constraint. Postgres
+// treats every NULL as distinct, so a plain @@unique across a nullable
+// productId would not block duplicate vendor-only reviews - the migration
+// hand-adds two PARTIAL unique indexes instead (one WHERE productId IS
+// NULL, one WHERE productId IS NOT NULL). That is why no @@unique appears
+// on this model.
+model Review {
+  id               String                 @id @default(uuid())
+  authorId         String?
+  vendorId         String
+  productId        String?
+  vendorOrderId    String
+  rating           Int
+  title            String?
+  body             String
+  moderationStatus ReviewModerationStatus @default(VISIBLE)
+  removedById      String?
+  removalReason    String?
+  removedAt        DateTime?
+  editedAt         DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  author      User?       @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  vendor      Vendor      @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product     Product?    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  removedBy   User?       @relation("ReviewRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+
+  @@index([vendorId, moderationStatus])
+  @@index([productId, moderationStatus])
+  @@map("reviews")
 }
 
 enum PaymentProviderName {

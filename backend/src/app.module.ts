@@ -27,6 +27,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { PassportModule } from './modules/passport/passport.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
 import { VendorSettlementsModule } from './modules/vendor-settlements/vendor-settlements.module';
 import { VendorTiersModule } from './modules/vendor-tiers/vendor-tiers.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
@@ -67,6 +68,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     NotificationsModule,
     MarketplaceModule,
     AnalyticsModule,
+    ReviewsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
