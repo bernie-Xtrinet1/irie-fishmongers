@@ -70,6 +70,7 @@ model User {
   recordedWasteDisposals       WasteDisposalRecord[]
   reviewsAuthored              Review[]                      @relation("ReviewAuthor")
   reviewsRemoved               Review[]                      @relation("ReviewRemovedBy")
+  reviewModerationActions      ReviewAuditLog[]              @relation("ReviewModerationActor")
 
   @@map("users")
 }
@@ -372,15 +373,41 @@ model Review {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
-  author      User?       @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  vendor      Vendor      @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  product     Product?    @relation(fields: [productId], references: [id], onDelete: Restrict)
-  vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
-  removedBy   User?       @relation("ReviewRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+  author      User?            @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  vendor      Vendor           @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product     Product?         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder      @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  removedBy   User?            @relation("ReviewRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+  auditLogs   ReviewAuditLog[]
 
   @@index([vendorId, moderationStatus])
   @@index([productId, moderationStatus])
   @@map("reviews")
+}
+
+// Immutable trail of admin moderation actions on a review (Phase 13B).
+// Structurally mirrors ComplianceAuditLog but with a stricter contract: the
+// audit row is written in the SAME transaction as the moderation update, so
+// a review can never be admin-removed without an accountable record of who
+// did it and why (ReviewModerationService.remove). reviewId is Restrict
+// (reviews are soft-deleted, never physically removed) and actorId is
+// Restrict so the admin who acted can't be deleted out from under the trail.
+model ReviewAuditLog {
+  id          String   @id @default(uuid())
+  reviewId    String
+  actorId     String
+  action      String
+  beforeValue Json?
+  afterValue  Json?
+  reason      String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  actor  User   @relation("ReviewModerationActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([reviewId])
+  @@map("review_audit_logs")
 }
 
 enum PaymentProviderName {
