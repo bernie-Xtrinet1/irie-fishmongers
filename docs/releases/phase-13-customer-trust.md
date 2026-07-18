@@ -1,5 +1,8 @@
 # Phase 13 — Customer Trust (Reviews, Ratings, Compliance Score)
 
+_Release notes. Convention: one file per release/phase under `docs/releases/`;
+this doubles as the source for the GitHub PR body and GitHub Release text._
+
 > ⚠️ **DO NOT MERGE TO `main` YET.** Final regression sign-off is blocked on
 > backend e2e DB isolation (see "Known gate" below). Safe to review now.
 >
@@ -86,3 +89,14 @@ tree before sign-off. When integrating, review it against:
 
 **Sign-off requires:** two consecutive clean full-suite runs locally AND in
 GitHub Actions.
+
+## Pre-Merge Gate
+
+- [ ] Confirm the E2E isolation fix commit and inspect its diff.
+- [ ] Cherry-pick the confirmed fix into the release branch.
+- [ ] Run the complete backend E2E suite twice successfully.
+- [ ] Confirm a failing Jest test produces a non-zero process exit code.
+- [ ] Run full monorepo typecheck, lint, unit and frontend test suites.
+- [ ] Confirm migrations and the compliance-score backfill procedure.
+- [ ] Confirm the working tree is clean.
+- [ ] Push the release branch and wait for GitHub Actions to pass.
