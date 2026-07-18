@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { ReviewModerationController } from './controllers/review-moderation.controller';
 import { ReviewsController } from './controllers/reviews.controller';
+import { ReviewAuditLogsRepository } from './repositories/review-audit-logs.repository';
 import { ReviewsRepository } from './repositories/reviews.repository';
 import { ReviewEligibilityService } from './services/review-eligibility.service';
+import { ReviewModerationService } from './services/review-moderation.service';
 import { ReviewsQueryService } from './services/reviews-query.service';
 import { ReviewsService } from './services/reviews.service';
 
@@ -15,8 +18,15 @@ import { ReviewsService } from './services/reviews.service';
 // narrow ReviewsQueryService is exported for other modules to depend on.
 @Module({
   imports: [AuthModule],
-  controllers: [ReviewsController],
-  providers: [ReviewsRepository, ReviewEligibilityService, ReviewsService, ReviewsQueryService],
+  controllers: [ReviewsController, ReviewModerationController],
+  providers: [
+    ReviewsRepository,
+    ReviewAuditLogsRepository,
+    ReviewEligibilityService,
+    ReviewsService,
+    ReviewModerationService,
+    ReviewsQueryService,
+  ],
   exports: [ReviewsQueryService],
 })
 export class ReviewsModule {}

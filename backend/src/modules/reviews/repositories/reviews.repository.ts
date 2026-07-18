@@ -1,7 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { CustomerAcceptanceStatus, Prisma, Review, VendorOrderStatus } from '@prisma/client';
+import {
+  CustomerAcceptanceStatus,
+  Prisma,
+  Review,
+  ReviewModerationStatus,
+  VendorOrderStatus,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
+import {
+  CreateReviewAuditLogInput,
+  ReviewAuditLogsRepository,
+} from './review-audit-logs.repository';
 
 export interface CreateReviewInput {
   authorId: string;
@@ -50,6 +60,37 @@ const publicReview = Prisma.validator<Prisma.ReviewDefaultArgs>()({
 
 export type PublicReview = Prisma.ReviewGetPayload<typeof publicReview>;
 
+// Admin moderation rows carry everything the moderator queue needs: the
+// author's name parts (for a masked label), the product name, and the
+// joined delivery's customer-acceptance status so deliveryWasRejected can
+// be computed at read time (Phase 13B step 5) rather than stored.
+const adminReview = Prisma.validator<Prisma.ReviewDefaultArgs>()({
+  include: {
+    author: { select: { firstName: true, lastName: true } },
+    product: { select: { name: true } },
+    vendorOrder: { select: { delivery: { select: { customerAcceptanceStatus: true } } } },
+  },
+});
+
+export type AdminReview = Prisma.ReviewGetPayload<typeof adminReview>;
+
+export interface AdminReviewFilters {
+  moderationStatus?: ReviewModerationStatus;
+  vendorId?: string;
+  productId?: string;
+  rating?: number;
+  deliveryWasRejected?: boolean;
+  createdAfter?: Date;
+  createdBefore?: Date;
+}
+
+export interface AdminRemoveInput {
+  reviewId: string;
+  actorId: string;
+  reason: string;
+  audit: CreateReviewAuditLogInput;
+}
+
 export interface RatingSummary {
   average: number | null;
   count: number;
@@ -57,7 +98,10 @@ export interface RatingSummary {
 
 @Injectable()
 export class ReviewsRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reviewAuditLogs: ReviewAuditLogsRepository,
+  ) {}
 
   create(input: CreateReviewInput): Promise<Review> {
     return this.prisma.review.create({ data: input });
@@ -170,5 +214,73 @@ export class ReviewsRepository {
       _count: { _all: true },
     });
     return { average: result._avg.rating, count: result._count._all };
+  }
+
+  findAdminById(id: string): Promise<AdminReview | null> {
+    return this.prisma.review.findUnique({ where: { id }, include: adminReview.include });
+  }
+
+  async listForAdmin(
+    filters: AdminReviewFilters,
+    page: Page,
+  ): Promise<{ items: AdminReview[]; total: number }> {
+    // deliveryWasRejected filters on the nested Delivery record: true means
+    // the customer rejected it; false means everything else (accepted,
+    // pending, or no delivery record at all).
+    const rejectedFilter: Prisma.ReviewWhereInput | undefined =
+      filters.deliveryWasRejected === undefined
+        ? undefined
+        : filters.deliveryWasRejected
+          ? { vendorOrder: { delivery: { customerAcceptanceStatus: 'REJECTED' } } }
+          : { NOT: { vendorOrder: { delivery: { customerAcceptanceStatus: 'REJECTED' } } } };
+
+    const where: Prisma.ReviewWhereInput = {
+      ...(filters.moderationStatus ? { moderationStatus: filters.moderationStatus } : {}),
+      ...(filters.vendorId ? { vendorId: filters.vendorId } : {}),
+      ...(filters.productId ? { productId: filters.productId } : {}),
+      ...(filters.rating ? { rating: filters.rating } : {}),
+      ...(filters.createdAfter || filters.createdBefore
+        ? {
+            createdAt: {
+              ...(filters.createdAfter ? { gte: filters.createdAfter } : {}),
+              ...(filters.createdBefore ? { lte: filters.createdBefore } : {}),
+            },
+          }
+        : {}),
+      ...(rejectedFilter ?? {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.review.findMany({
+        where,
+        include: adminReview.include,
+        orderBy: { createdAt: 'desc' },
+        skip: page.skip,
+        take: page.take,
+      }),
+      this.prisma.review.count({ where }),
+    ]);
+
+    return { items, total };
+  }
+
+  // The moderation update and its audit record commit together or not at
+  // all: the audit row IS part of the moderation action's integrity, so a
+  // failed audit write must leave the review VISIBLE (Phase 13B).
+  async removeByAdmin(input: AdminRemoveInput): Promise<AdminReview> {
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.review.update({
+        where: { id: input.reviewId },
+        data: {
+          moderationStatus: 'REMOVED_BY_ADMIN',
+          removedById: input.actorId,
+          removalReason: input.reason,
+          removedAt: new Date(),
+        },
+        include: adminReview.include,
+      }),
+      this.reviewAuditLogs.buildCreate(input.audit),
+    ]);
+    return updated;
   }
 }
