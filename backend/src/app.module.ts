@@ -10,6 +10,7 @@ import { RedisModule } from './common/redis/redis.module';
 import { HealthModule } from './common/health/health.module';
 import { ResponseInterceptor } from './common/http/response.interceptor';
 import { validateEnv } from './config/env.validation';
+import { isSchedulerEnabled } from './config/scheduler.config';
 import { PrismaModule } from './database/prisma.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -45,7 +46,12 @@ import { VendorsModule } from './modules/vendors/vendors.module';
       },
     ]),
     EventEmitterModule.forRoot(),
-    ScheduleModule.forRoot(),
+    // Register the timer-driven cron scheduler only when enabled (default
+    // on). Disabled in e2e (ENABLE_SCHEDULER=false) so wall-clock @Cron
+    // ticks - notably the every-5-min SLA-breach sweep - cannot fire during
+    // the multi-minute run and race a suite's teardown (Prisma P2025). Cron
+    // bodies stay unit-tested by calling the service methods directly.
+    ...(isSchedulerEnabled() ? [ScheduleModule.forRoot()] : []),
     PrismaModule,
     RedisModule,
     HealthModule,

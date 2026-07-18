@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsString, IsUrl, Matches, Max, Min, MinLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength } from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
@@ -9,6 +9,18 @@ export enum NodeEnv {
 export class EnvironmentVariables {
   @IsIn([NodeEnv.Development, NodeEnv.Test, NodeEnv.Production])
   NODE_ENV!: NodeEnv;
+
+  // Explicit master switch for the timer-driven @Cron jobs
+  // (ScheduleModule.forRoot). Optional; anything other than the string
+  // 'false' leaves scheduling ENABLED, so dev/prod behaviour is unchanged
+  // when the var is absent. The e2e suite sets it to 'false' so wall-clock
+  // cron ticks (the every-5-min SLA sweep) can't fire mid-run and race a
+  // suite's teardown. Deliberately its OWN flag, not derived from NODE_ENV,
+  // so scheduling can be toggled independently (e.g. a scheduler-specific
+  // test run, or disabling crons on a read-replica instance).
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  ENABLE_SCHEDULER?: string;
 
   @IsInt()
   @Min(1)
