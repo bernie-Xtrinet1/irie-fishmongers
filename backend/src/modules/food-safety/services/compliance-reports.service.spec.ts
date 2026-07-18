@@ -35,6 +35,7 @@ function buildLot(overrides: Partial<LotWithVendor> = {}): LotWithVendor {
       status: 'APPROVED',
       tier: 'COMMUNITY_FISHER',
       complianceScore: null,
+      complianceScoreUpdatedAt: null,
       termsAcceptedAt: new Date(),
       primaryZoneId: null,
       createdAt: new Date(),

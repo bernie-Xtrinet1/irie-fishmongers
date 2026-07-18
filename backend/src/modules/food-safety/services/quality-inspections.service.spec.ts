@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { QualityInspection, SeafoodLot } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
@@ -71,6 +72,7 @@ describe('QualityInspectionsService', () => {
       seafoodLotsService as unknown as SeafoodLotsService,
       auditLogService as unknown as ComplianceAuditLogService,
       custodyEventsRepository as unknown as CustodyEventsRepository,
+      new EventEmitter2(),
     );
   });
 

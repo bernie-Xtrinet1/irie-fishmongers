@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { RecallStatus } from '@prisma/client';
 
 import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
+import { RecallStatusChangedEvent } from '../../../common/events/recall-status-changed.event';
 import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CreateRecallDto } from '../dto/create-recall.dto';
 import { ListRecallsDto } from '../dto/list-recalls.dto';
@@ -92,6 +93,12 @@ export class RecallsService {
       reason: dto.rootCause ?? dto.resolutionNotes,
     });
 
+    // Any recall status change may raise or lower the compliance score of
+    // every vendor whose lots the recall touches (an ACTIVE/INVESTIGATING
+    // recall deducts; RESOLVED/CLOSED lets the score recover). Emitted after
+    // the status update and lot/audit writes commit (Phase 13C).
+    await this.emitStatusChanged(id, recall.lots, updated.status);
+
     return RecallsService.toResponse(updated);
   }
 
@@ -127,6 +134,30 @@ export class RecallsService {
     const orderItems = await this.recallsRepository.findAffectedOrderItems(lotIds);
 
     return orderItems.map((item) => RecallsService.toAffectedOrder(item));
+  }
+
+  // Resolves the DISTINCT vendors whose lots a recall touches and emits a
+  // single RecallStatusChangedEvent for the compliance-score listener. A
+  // recall spanning three of one vendor's lots yields that vendor once.
+  private async emitStatusChanged(
+    recallId: string,
+    lots: { lotId: string }[],
+    status: string,
+  ): Promise<void> {
+    const vendorIds = new Set<string>();
+    for (const recallLot of lots) {
+      const lot = await this.lotsRepository.findById(recallLot.lotId);
+      if (lot) {
+        vendorIds.add(lot.vendorId);
+      }
+    }
+    if (vendorIds.size === 0) {
+      return;
+    }
+    await this.eventEmitter.emitAsync(
+      RecallStatusChangedEvent.eventName,
+      new RecallStatusChangedEvent(recallId, status, [...vendorIds]),
+    );
   }
 
   // seafood-compliance-rules.md's recall workflow: Identify Customers ->

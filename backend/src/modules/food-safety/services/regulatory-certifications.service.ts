@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CertificationStatus, RegulatoryCertification } from '@prisma/client';
 
+import { RegulatoryCertificationStatusChangedEvent } from '../../../common/events/regulatory-certification-status-changed.event';
 import { FishermenRepository } from '../../catches/repositories/fishermen.repository';
 import { LandingSitesRepository } from '../../catches/repositories/landing-sites.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -31,6 +33,7 @@ export class RegulatoryCertificationsService {
     private readonly vendorsRepository: VendorsRepository,
     private readonly fishermenRepository: FishermenRepository,
     private readonly landingSitesRepository: LandingSitesRepository,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(dto: CreateRegulatoryCertificationDto): Promise<RegulatoryCertificationResponseEntity> {
@@ -79,6 +82,7 @@ export class RegulatoryCertificationsService {
     }
 
     const updated = await this.certificationsRepository.update(id, { status: 'ACTIVE' });
+    await this.emitVendorStatusChanged(updated);
     return RegulatoryCertificationsService.toResponse(updated);
   }
 
@@ -108,7 +112,25 @@ export class RegulatoryCertificationsService {
       documentUrl: dto.documentUrl,
     });
 
+    // A vendor cert's activation/suspension/revocation/renewal is
+    // action-based and must recompute the score immediately (Phase 13C),
+    // not wait for the nightly sweep. Only fired when the status actually
+    // moved and the subject is a vendor.
+    if (dto.status && dto.status !== certification.status) {
+      await this.emitVendorStatusChanged(updated);
+    }
+
     return RegulatoryCertificationsService.toResponse(updated);
+  }
+
+  private async emitVendorStatusChanged(certification: RegulatoryCertification): Promise<void> {
+    if (!certification.vendorId) {
+      return;
+    }
+    await this.eventEmitter.emitAsync(
+      RegulatoryCertificationStatusChangedEvent.eventName,
+      new RegulatoryCertificationStatusChangedEvent(certification.vendorId, certification.status),
+    );
   }
 
   async list(dto: ListRegulatoryCertificationsDto): Promise<PaginatedRegulatoryCertificationsEntity> {

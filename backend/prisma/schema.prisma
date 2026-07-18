@@ -137,20 +137,24 @@ enum Parish {
 }
 
 model Vendor {
-  id              String       @id @default(uuid())
-  userId          String       @unique
-  businessName    String
-  description     String?
-  phone           String?
-  parish          Parish
-  logoUrl         String?
-  status          VendorStatus @default(PENDING)
-  tier            VendorTier   @default(COMMUNITY_FISHER)
-  complianceScore Int?
-  termsAcceptedAt DateTime
-  primaryZoneId   String?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id                       String       @id @default(uuid())
+  userId                   String       @unique
+  businessName             String
+  description              String?
+  phone                    String?
+  parish                   Parish
+  logoUrl                  String?
+  status                   VendorStatus @default(PENDING)
+  tier                     VendorTier   @default(COMMUNITY_FISHER)
+  complianceScore          Int?
+  // When complianceScore was last recomputed (Phase 13C). Written together
+  // with the score so any reader can tell how fresh it is; null until the
+  // vendor has been assessed for the first time.
+  complianceScoreUpdatedAt DateTime?
+  termsAcceptedAt          DateTime
+  primaryZoneId            String?
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
 
   user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   primaryZone        DeliveryZone?             @relation("VendorPrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)

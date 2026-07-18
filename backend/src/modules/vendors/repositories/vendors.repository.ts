@@ -49,6 +49,29 @@ export class VendorsRepository {
     return this.prisma.vendor.update({ where: { id }, data: { tier } });
   }
 
+  // Write-through cache of the composite compliance score (Phase 13C). The
+  // timestamp is written in the same update so any reader can tell how fresh
+  // the score is - a bare number with no "as of" is indistinguishable from a
+  // stale one.
+  updateComplianceScore(id: string, score: number): Promise<Vendor> {
+    return this.prisma.vendor.update({
+      where: { id },
+      data: { complianceScore: score, complianceScoreUpdatedAt: new Date() },
+    });
+  }
+
+  // Page through APPROVED vendors for the nightly compliance recompute sweep
+  // and the one-time backfill, ordered stably so paging is deterministic.
+  findApprovedIds(page: Page): Promise<{ id: string; tier: VendorTier }[]> {
+    return this.prisma.vendor.findMany({
+      where: { status: 'APPROVED' },
+      select: { id: true, tier: true },
+      orderBy: { createdAt: 'asc' },
+      skip: page.skip,
+      take: page.take,
+    });
+  }
+
   update(id: string, input: UpdateVendorInput): Promise<Vendor> {
     return this.prisma.vendor.update({ where: { id }, data: input });
   }

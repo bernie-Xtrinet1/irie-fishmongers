@@ -44,3 +44,12 @@ export const REQUIRED_DOCUMENTS_BY_TIER: Record<VendorTier, VendorDocumentType[]
     'REGULATORY_CERTIFICATION',
   ],
 };
+
+// A tier requires an active regulatory certification exactly when its
+// required-documents list includes REGULATORY_CERTIFICATION - derived from
+// the mapping above rather than hardcoded, so the compliance-score
+// certification rule (Phase 13C) and the document requirements can never
+// drift apart, per the VENDOR TIER DIRECTIVE's config-driven mandate.
+export function tierRequiresCertification(tier: VendorTier): boolean {
+  return REQUIRED_DOCUMENTS_BY_TIER[tier].includes('REGULATORY_CERTIFICATION');
+}

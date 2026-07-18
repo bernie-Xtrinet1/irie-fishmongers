@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FreshnessGrade, InspectionResult, QualityInspection } from '@prisma/client';
 
+import { QualityInspectionRecordedEvent } from '../../../common/events/quality-inspection-recorded.event';
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateQualityInspectionDto } from '../dto/create-quality-inspection.dto';
 import { PaginatedQualityInspectionsEntity } from '../entities/paginated-quality-inspections.entity';
@@ -26,6 +28,7 @@ export class QualityInspectionsService {
     private readonly seafoodLotsService: SeafoodLotsService,
     private readonly auditLogService: ComplianceAuditLogService,
     private readonly custodyEventsRepository: CustodyEventsRepository,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async inspect(
@@ -87,6 +90,13 @@ export class QualityInspectionsService {
       fromUserId: inspectorId,
       toUserId: inspectorId,
     });
+
+    // A failed/conditional inspection feeds the owning vendor's compliance
+    // score (Phase 13C); emitted only after every write above has committed.
+    await this.eventEmitter.emitAsync(
+      QualityInspectionRecordedEvent.eventName,
+      new QualityInspectionRecordedEvent(lot.vendorId, dto.lotId, dto.result),
+    );
 
     return QualityInspectionsService.toResponse(inspection);
   }

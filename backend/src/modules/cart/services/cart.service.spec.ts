@@ -66,6 +66,7 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     status: 'APPROVED',
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
+    complianceScoreUpdatedAt: null,
     termsAcceptedAt: new Date(),
     primaryZoneId: null,
     createdAt: new Date(),

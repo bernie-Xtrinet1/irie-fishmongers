@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Fisherman, LandingSite, RegulatoryAuthority, RegulatoryCertification, Vendor } from '@prisma/client';
 
 import { FishermenRepository } from '../../catches/repositories/fishermen.repository';
@@ -71,6 +72,7 @@ describe('RegulatoryCertificationsService', () => {
       vendorsRepository as unknown as VendorsRepository,
       fishermenRepository as unknown as FishermenRepository,
       landingSitesRepository as unknown as LandingSitesRepository,
+      new EventEmitter2(),
     );
   });
 

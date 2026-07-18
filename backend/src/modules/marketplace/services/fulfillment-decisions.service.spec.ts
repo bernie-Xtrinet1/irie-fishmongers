@@ -67,6 +67,7 @@ function buildCandidate(overrides: Partial<ProductCandidate> = {}): ProductCandi
       status: 'APPROVED',
       tier: 'COMMUNITY_FISHER',
       complianceScore: null,
+      complianceScoreUpdatedAt: null,
       termsAcceptedAt: new Date(),
       primaryZoneId: null,
       createdAt: new Date(),

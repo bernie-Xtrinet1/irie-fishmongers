@@ -17,6 +17,7 @@ const vendor: Vendor = {
   status: 'PENDING',
   tier: 'COMMUNITY_FISHER',
   complianceScore: null,
+  complianceScoreUpdatedAt: null,
   termsAcceptedAt: new Date(),
   primaryZoneId: null,
   createdAt: new Date(),

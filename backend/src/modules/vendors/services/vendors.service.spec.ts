@@ -17,6 +17,7 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     status: 'PENDING',
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
+    complianceScoreUpdatedAt: null,
     termsAcceptedAt: new Date(),
     primaryZoneId: null,
     createdAt: new Date(),
@@ -127,6 +128,7 @@ describe('VendorsService', () => {
         logoUrl: null,
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
+        complianceScoreUpdatedAt: null,
       });
       expect(result).not.toHaveProperty('phone');
       expect(result).not.toHaveProperty('userId');
