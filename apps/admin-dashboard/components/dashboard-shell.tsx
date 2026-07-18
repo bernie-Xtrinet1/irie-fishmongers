@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   LogOut,
   MapPinned,
+  MessageSquare,
   Route,
   Store,
   Thermometer,
@@ -41,6 +42,7 @@ const NAV_ITEMS = [
   { href: '/inventory-analytics', label: 'Inventory Analytics', icon: Boxes },
   { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer },
   { href: '/recalls', label: 'Recalls', icon: AlertTriangle },
+  { href: '/reviews', label: 'Review Moderation', icon: MessageSquare },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }): React.ReactElement {
