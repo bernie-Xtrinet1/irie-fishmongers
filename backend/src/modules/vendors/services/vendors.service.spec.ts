@@ -128,7 +128,6 @@ describe('VendorsService', () => {
         logoUrl: null,
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
-        complianceScoreUpdatedAt: null,
       });
       expect(result).not.toHaveProperty('phone');
       expect(result).not.toHaveProperty('userId');
