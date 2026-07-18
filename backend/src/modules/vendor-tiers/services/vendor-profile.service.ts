@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { VendorProfileResponseEntity } from '../entities/vendor-profile-response.entity';
+import { deriveComplianceBand } from '../utils/compliance-score-band.util';
 import { deriveVendorComplianceStatus } from '../utils/vendor-compliance-status.util';
 import { VendorPermissionsService } from './vendor-permissions.service';
 
@@ -10,6 +12,7 @@ export class VendorProfileService {
   constructor(
     private readonly vendorsRepository: VendorsRepository,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly reviewsQueryService: ReviewsQueryService,
   ) {}
 
   async getProfile(vendorId: string): Promise<VendorProfileResponseEntity> {
@@ -18,9 +21,11 @@ export class VendorProfileService {
       throw new NotFoundException('Vendor not found');
     }
 
-    const [permissions, ordersCompleted] = await Promise.all([
+    const [permissions, ordersCompleted, ratingSummary, recentReviews] = await Promise.all([
       this.vendorPermissionsService.getPermissions(vendor.tier),
       this.vendorsRepository.countDeliveredOrders(vendor.id),
+      this.reviewsQueryService.getVendorRatingSummary(vendor.id),
+      this.reviewsQueryService.getRecentVendorReviews(vendor.id),
     ]);
 
     const complianceStatus = deriveVendorComplianceStatus(vendor.complianceScore);
@@ -32,12 +37,14 @@ export class VendorProfileService {
       badge: permissions.badge,
       parish: vendor.parish,
       complianceScore: vendor.complianceScore,
+      complianceBand: deriveComplianceBand(vendor.complianceScore),
+      complianceScoreUpdatedAt: vendor.complianceScoreUpdatedAt,
       foodSafetyStatus: complianceStatus,
       traceabilityStatus: complianceStatus,
       ordersCompleted,
-      rating: null,
+      rating: ratingSummary.averageRating,
       coldChainScore: null,
-      recentReviews: [],
+      recentReviews,
     };
   }
 }

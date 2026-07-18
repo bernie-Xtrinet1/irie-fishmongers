@@ -2,6 +2,7 @@ import {
   VendorComplianceStatusLabel,
   VendorProfileResponseEntity,
 } from '../entities/vendor-profile-response.entity';
+import { ComplianceBand } from '../utils/compliance-score-band.util';
 import { VendorProfileService } from '../services/vendor-profile.service';
 import { VendorProfileController } from './vendor-profile.controller';
 
@@ -12,6 +13,8 @@ const profile: VendorProfileResponseEntity = {
   badge: '🐟 Community Fisher',
   parish: 'KINGSTON',
   complianceScore: null,
+  complianceBand: ComplianceBand.NOT_YET_ASSESSED,
+  complianceScoreUpdatedAt: null,
   foodSafetyStatus: VendorComplianceStatusLabel.NOT_YET_ASSESSED,
   traceabilityStatus: VendorComplianceStatusLabel.NOT_YET_ASSESSED,
   ordersCompleted: 3,

@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { Vendor } from '@prisma/client';
 
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { VendorPermissionsEntity } from '../entities/vendor-permissions.entity';
 import { VendorPermissionsService } from './vendor-permissions.service';
@@ -51,14 +52,22 @@ function buildPermissions(overrides: Partial<VendorPermissionsEntity> = {}): Ven
 describe('VendorProfileService', () => {
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById' | 'countDeliveredOrders'>>;
   let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'getPermissions'>>;
+  let reviewsQueryService: jest.Mocked<
+    Pick<ReviewsQueryService, 'getVendorRatingSummary' | 'getRecentVendorReviews'>
+  >;
   let service: VendorProfileService;
 
   beforeEach(() => {
     vendorsRepository = { findById: jest.fn(), countDeliveredOrders: jest.fn() };
     vendorPermissionsService = { getPermissions: jest.fn() };
+    reviewsQueryService = {
+      getVendorRatingSummary: jest.fn().mockResolvedValue({ averageRating: null, reviewCount: 0 }),
+      getRecentVendorReviews: jest.fn().mockResolvedValue([]),
+    };
     service = new VendorProfileService(
       vendorsRepository as unknown as VendorsRepository,
       vendorPermissionsService as unknown as VendorPermissionsService,
+      reviewsQueryService as unknown as ReviewsQueryService,
     );
   });
 

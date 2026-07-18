@@ -6,6 +6,7 @@ import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.serv
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
 import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -108,6 +109,7 @@ describe('ProductsService', () => {
   let marketplaceConfigService: jest.Mocked<Pick<MarketplaceConfigService, 'getCurrentModeConfig'>>;
   let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
   let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'getAvailableToPurchase'>>;
+  let reviewsQueryService: jest.Mocked<Pick<ReviewsQueryService, 'getVendorRatingSummary'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -131,6 +133,9 @@ describe('ProductsService', () => {
     marketplaceConfigService = { getCurrentModeConfig: jest.fn() };
     inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
     inventoryReservations = { getAvailableToPurchase: jest.fn().mockResolvedValue(10) };
+    reviewsQueryService = {
+      getVendorRatingSummary: jest.fn().mockResolvedValue({ averageRating: null, reviewCount: 0 }),
+    };
 
     service = new ProductsService(
       productsRepository as unknown as ProductsRepository,
@@ -143,6 +148,7 @@ describe('ProductsService', () => {
       marketplaceConfigService as unknown as MarketplaceConfigService,
       inventoryEventsRepository as unknown as InventoryEventsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
+      reviewsQueryService as unknown as ReviewsQueryService,
     );
   });
 

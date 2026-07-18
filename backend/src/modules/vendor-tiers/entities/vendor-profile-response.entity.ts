@@ -1,6 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Parish, VendorTier } from '@prisma/client';
 
+import { ReviewResponseEntity } from '../../reviews/entities/review-response.entity';
+import { ComplianceBand } from '../utils/compliance-score-band.util';
+
 export enum VendorComplianceStatusLabel {
   NOT_YET_ASSESSED = 'NOT_YET_ASSESSED',
   COMPLIANT = 'COMPLIANT',
@@ -8,11 +11,11 @@ export enum VendorComplianceStatusLabel {
   NON_COMPLIANT = 'NON_COMPLIANT',
 }
 
-// Rating/coldChainScore/recentReviews are always null/empty today - no
-// Review/Rating model or cold-chain scoring engine exists yet in this
-// codebase (see docs/database-design.md's Marketplace Selection Engine
-// scope notes). Surfacing an honest empty/neutral value here, not a
-// fabricated one, per vendor-screens.md's VENDOR PROFILE SCREEN spec.
+// rating and recentReviews are populated from ReviewsQueryService (Phase
+// 13E); complianceScore/complianceBand come from the Phase 13C engine.
+// coldChainScore stays null - no cold-chain scoring engine exists yet (see
+// docs/database-design.md's Marketplace Selection Engine scope notes) -
+// surfaced as an honest null, not a fabricated value.
 export class VendorProfileResponseEntity {
   @ApiProperty()
   id!: string;
@@ -32,6 +35,12 @@ export class VendorProfileResponseEntity {
   @ApiProperty({ required: false, nullable: true })
   complianceScore!: number | null;
 
+  @ApiProperty({ enum: ComplianceBand })
+  complianceBand!: ComplianceBand;
+
+  @ApiProperty({ required: false, nullable: true })
+  complianceScoreUpdatedAt!: Date | null;
+
   @ApiProperty({ enum: VendorComplianceStatusLabel })
   foodSafetyStatus!: VendorComplianceStatusLabel;
 
@@ -47,6 +56,6 @@ export class VendorProfileResponseEntity {
   @ApiProperty({ nullable: true })
   coldChainScore!: number | null;
 
-  @ApiProperty({ type: [String] })
-  recentReviews!: [];
+  @ApiProperty({ type: ReviewResponseEntity, isArray: true })
+  recentReviews!: ReviewResponseEntity[];
 }

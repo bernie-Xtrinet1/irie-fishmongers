@@ -12,6 +12,8 @@ import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.serv
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
+import { deriveComplianceBand } from '../../vendor-tiers/utils/compliance-score-band.util';
 import { deriveVendorComplianceStatus } from '../../vendor-tiers/utils/vendor-compliance-status.util';
 import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -48,6 +50,7 @@ export class ProductsService {
     private readonly marketplaceConfigService: MarketplaceConfigService,
     private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly inventoryReservations: InventoryReservationsService,
+    private readonly reviewsQueryService: ReviewsQueryService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -193,10 +196,11 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    const [lot, permissions, modeConfig] = await Promise.all([
+    const [lot, permissions, modeConfig, ratingSummary] = await Promise.all([
       product.lotId ? this.seafoodLotsService.getPublicById(product.lotId) : Promise.resolve(null),
       this.vendorPermissionsService.getPermissions(vendor.tier),
       this.marketplaceConfigService.getCurrentModeConfig(),
+      this.reviewsQueryService.getVendorRatingSummary(vendor.id),
     ]);
 
     return {
@@ -210,6 +214,8 @@ export class ProductsService {
         parish: vendor.parish,
         complianceScore: vendor.complianceScore,
         complianceStatus: deriveVendorComplianceStatus(vendor.complianceScore),
+        complianceBand: deriveComplianceBand(vendor.complianceScore),
+        rating: ratingSummary.averageRating,
         logoUrl: vendor.logoUrl,
       },
       marketplaceModes: {

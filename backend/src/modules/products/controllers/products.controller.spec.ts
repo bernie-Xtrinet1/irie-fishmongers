@@ -1,4 +1,5 @@
 import { VendorComplianceStatusLabel } from '../../vendor-tiers/entities/vendor-profile-response.entity';
+import { ComplianceBand } from '../../vendor-tiers/utils/compliance-score-band.util';
 import { ProductAvailabilityEntity } from '../entities/product-availability.entity';
 import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
@@ -34,6 +35,8 @@ const productDetail: ProductDetailEntity = {
     parish: 'KINGSTON',
     complianceScore: null,
     complianceStatus: VendorComplianceStatusLabel.NOT_YET_ASSESSED,
+    complianceBand: ComplianceBand.NOT_YET_ASSESSED,
+    rating: null,
     logoUrl: null,
   },
   marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: false },

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { ReviewsModule } from '../reviews/reviews.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { ComplianceScoreController } from './controllers/compliance-score.controller';
 import { TierUpgradeRequestsController } from './controllers/tier-upgrade-requests.controller';
@@ -24,7 +25,7 @@ import { VendorProfileService } from './services/vendor-profile.service';
 import { VendorTiersService } from './services/vendor-tiers.service';
 
 @Module({
-  imports: [AuthModule, VendorsModule],
+  imports: [AuthModule, VendorsModule, ReviewsModule],
   controllers: [
     VendorPermissionsController,
     VendorDocumentsController,

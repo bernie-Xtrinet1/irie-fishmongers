@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Parish, VendorTier } from '@prisma/client';
 
 import { VendorComplianceStatusLabel } from '../../vendor-tiers/entities/vendor-profile-response.entity';
+import { ComplianceBand } from '../../vendor-tiers/utils/compliance-score-band.util';
 
 export class ProductDetailVendorEntity {
   @ApiProperty()
@@ -24,6 +25,12 @@ export class ProductDetailVendorEntity {
 
   @ApiProperty({ enum: VendorComplianceStatusLabel })
   complianceStatus!: VendorComplianceStatusLabel;
+
+  @ApiProperty({ enum: ComplianceBand })
+  complianceBand!: ComplianceBand;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Average vendor rating (one decimal), null if unrated' })
+  rating!: number | null;
 
   @ApiProperty({ required: false, nullable: true })
   logoUrl!: string | null;
