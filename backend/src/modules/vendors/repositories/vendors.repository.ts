@@ -61,12 +61,14 @@ export class VendorsRepository {
   }
 
   // Page through APPROVED vendors for the nightly compliance recompute sweep
-  // and the one-time backfill, ordered stably so paging is deterministic.
+  // and the one-time backfill. id is a secondary sort key so offset paging
+  // stays deterministic: without it, vendors sharing a createdAt at a page
+  // boundary could be skipped (never scored that run) or double-processed.
   findApprovedIds(page: Page): Promise<{ id: string; tier: VendorTier }[]> {
     return this.prisma.vendor.findMany({
       where: { status: 'APPROVED' },
       select: { id: true, tier: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       skip: page.skip,
       take: page.take,
     });
@@ -109,7 +111,12 @@ export class VendorsRepository {
   }> {
     const [groups, aggregate] = await Promise.all([
       this.prisma.vendor.groupBy({ by: ['status'], _count: { _all: true } }),
-      this.prisma.vendor.aggregate({ _avg: { complianceScore: true } }),
+      // Average only over APPROVED vendors: event-driven recompute can write
+      // a compliance score onto a non-APPROVED vendor (e.g. a suspended
+      // vendor whose existing lots still raise temperature/inspection/recall
+      // signals), and a formerly-APPROVED vendor keeps its last score after
+      // suspension. Neither should skew the marketplace-wide average.
+      this.prisma.vendor.aggregate({ where: { status: 'APPROVED' }, _avg: { complianceScore: true } }),
     ]);
 
     const countByStatus: Record<VendorStatus, number> = {
