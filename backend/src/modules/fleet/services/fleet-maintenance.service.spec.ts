@@ -52,7 +52,7 @@ describe('FleetMaintenanceService', () => {
     fleetAsset: { update: jest.Mock };
     driver: { findUnique: jest.Mock };
   };
-  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emit'>>;
+  let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: FleetMaintenanceService;
 
   beforeEach(() => {
@@ -70,7 +70,7 @@ describe('FleetMaintenanceService', () => {
       fleetAsset: { update: jest.fn() },
       driver: { findUnique: jest.fn().mockResolvedValue(null) },
     };
-    eventEmitter = { emit: jest.fn() };
+    eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
     service = new FleetMaintenanceService(
       maintenanceRepository as unknown as FleetMaintenanceRepository,
       fleetAssetsRepository as unknown as FleetAssetsRepository,
@@ -123,7 +123,7 @@ describe('FleetMaintenanceService', () => {
 
       await service.create('asset-1', { ...dto, status: 'OVERDUE' });
 
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         FleetMaintenanceOverdueEvent.eventName,
         expect.objectContaining({ driverUserId: 'driver-user-1', licensePlate: 'FL 1234' }),
       );
@@ -135,7 +135,7 @@ describe('FleetMaintenanceService', () => {
 
       await service.create('asset-1', { ...dto, status: 'OVERDUE' });
 
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
     });
   });
 
@@ -197,7 +197,7 @@ describe('FleetMaintenanceService', () => {
 
       await service.update('maintenance-1', { status: 'OVERDUE' });
 
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         FleetMaintenanceOverdueEvent.eventName,
         expect.objectContaining({ driverUserId: 'driver-user-1' }),
       );
@@ -209,7 +209,7 @@ describe('FleetMaintenanceService', () => {
 
       await service.update('maintenance-1', { status: 'OVERDUE' });
 
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
       expect(fleetAssetsRepository.findById).not.toHaveBeenCalled();
     });
   });

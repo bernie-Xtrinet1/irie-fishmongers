@@ -138,7 +138,14 @@ export class FleetMaintenanceService {
       return;
     }
 
-    this.eventEmitter.emit(
+    // await emitAsync (not fire-and-forget emit): the @OnEvent notification
+    // listener creates a notification then updates its status, and if that
+    // dispatch runs detached from the request it can outlive the caller and
+    // race a later e2e suite's teardown - the notification's user gets
+    // cascade-deleted before the status update lands (Prisma P2025). Awaiting
+    // keeps the whole dispatch inside this request, matching every other
+    // event producer in the codebase.
+    await this.eventEmitter.emitAsync(
       FleetMaintenanceOverdueEvent.eventName,
       new FleetMaintenanceOverdueEvent(
         driver.userId,
