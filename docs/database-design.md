@@ -1353,3 +1353,42 @@ Explicitly still out of scope after this pass: real route-optimization math
 having no weight field), and `DeliveryRun` as an active dispatch/claiming
 mechanism (it's a planning/grouping layer - drivers still claim deliveries
 one at a time via the existing `assign()` flow).
+
+# Customer Trust Tables (Phase 13, Reviews / Ratings / Compliance Score)
+
+- `reviews` - a customer review of a vendor (`productId` null) or a specific
+  purchased product (`productId` set), always tied to the completed
+  `VendorOrder` that makes the author eligible. FK deletes are deliberately
+  non-cascading (trust/moderation records must survive account/catalog
+  changes): `author` -> SetNull, `vendor`/`product`/`vendorOrder` ->
+  Restrict. Removal is soft via `moderationStatus`
+  (`VISIBLE`/`REMOVED_BY_AUTHOR`/`REMOVED_BY_ADMIN`), never a row delete.
+  "One review per purchase" is enforced by TWO hand-added partial unique
+  indexes (Postgres treats every NULL as distinct, so a plain compound
+  `@@unique` over a nullable `productId` would not block a second vendor-only
+  review): `WHERE productId IS NULL` and `WHERE productId IS NOT NULL`. The
+  service catches the resulting P2002 and returns 409. Eligibility gates on a
+  DELIVERED VendorOrder with a joined Delivery record, a 90-day creation
+  window from `deliveredAt`, and a 14-day edit/restore window from
+  `createdAt`; a rejected delivery still allows a vendor review while flagging
+  the product review (`deliveryWasRejected`, computed at read time).
+- `review_audit_logs` - an immutable trail of admin moderation actions,
+  mirroring `compliance_audit_logs`' shape but with a STRICTER contract: the
+  audit row is written in the SAME `prisma.$transaction` as the moderation
+  update, so a review can never be admin-removed without an accountable
+  record (a failed audit write rolls the removal back to VISIBLE). `reviewId`
+  and `actorId` are Restrict.
+- `vendors.complianceScoreUpdatedAt DateTime?` - written together with
+  `complianceScore` so any reader can tell how fresh the score is. The score
+  itself (`vendors.complianceScore`, an existing but previously never-written
+  column) becomes a write-through cache: a pure formula
+  (`compliance-score-formula.util`) deducts from a 100 baseline per category
+  (temperature alerts / failed inspections / active recalls / certifications,
+  each capped), maintained by event listeners (reusing
+  `ColdChainAlertRaisedEvent`, plus new `QualityInspectionRecordedEvent`,
+  `RecallStatusChangedEvent`, `RegulatoryCertificationStatusChangedEvent`)
+  and a nightly `America/Jamaica` cron; a one-time `compliance:scores:
+  recompute-all` CLI backfills existing APPROVED vendors via the same shared
+  batch runner. The platform-wide dashboard average is scoped to APPROVED
+  vendors. Recall counts are deduped per distinct recall (one recall across
+  three lots deducts once).

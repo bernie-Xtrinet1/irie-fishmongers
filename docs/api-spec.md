@@ -421,3 +421,45 @@ PATCH /fleet-trips/:id (admin only - endedAt, cost fields)
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.
 Full request/response schemas and try-it-out docs are served by Swagger at
 /api/v1/docs once the backend is running.
+
+# Reviews & Compliance Score (Phase 13, Customer Trust)
+
+POST /reviews (customer only - write a review for a delivered order; body
+vendorOrderId, optional productId, rating 1-5, optional title, body;
+rate-limited; 409 on a duplicate for the same author/order/product)
+
+GET /reviews/eligibility?vendorOrderId=&productId= (customer only - lets the
+UI show/hide "Write a Review" without a failing POST)
+
+PATCH /reviews/:id (customer only - edit own review within the 14-day window)
+
+PATCH /reviews/:id/restore (customer only - un-soft-delete own author-removed
+review within the 14-day window; 403 on an admin-removed one)
+
+DELETE /reviews/:id (customer only - soft delete, REMOVED_BY_AUTHOR, no time
+limit; 204)
+
+GET /reviews/vendor/:vendorId (public - paginated, newest first, page size
+default 20 / max 50; masked author display name + averageRating, no PII)
+
+GET /reviews/product/:productId (public - same shape as the vendor list)
+
+GET /admin/reviews (admin only - moderation queue, filterable by
+moderationStatus/vendorId/productId/rating/deliveryWasRejected/created-at
+range; each row carries the computed deliveryWasRejected flag)
+
+GET /admin/reviews/:id (admin only - full review + its moderation audit trail)
+
+POST /admin/reviews/:id/remove (admin only - reason required; the review
+update and its ReviewAuditLog entry commit in one transaction)
+
+GET /admin/vendors/:vendorId/compliance-score (admin only - stored score +
+band + updatedAt plus a freshly recomputed per-category breakdown)
+
+POST /admin/vendors/:vendorId/compliance-score/recompute (admin only - forces
+an immediate recompute, returns the same explanation shape)
+
+Product detail (GET /products/:id/detail) and vendor profile (GET
+/vendors/:id/profile) now also return the vendor rating, recentReviews, and
+customer-facing compliance band; product detail additionally exposes the lot
+quality/freshness score + last-inspected date.
