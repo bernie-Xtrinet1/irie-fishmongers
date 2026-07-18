@@ -60,6 +60,23 @@ export enum VendorComplianceStatusLabel {
   NON_COMPLIANT = 'NON_COMPLIANT',
 }
 
+// Customer-facing compliance band (Phase 13C/13E). Distinct from
+// VendorComplianceStatusLabel (internal risk classification): this is the
+// wording shown to shoppers, derived server-side from the numeric score.
+export enum ComplianceBand {
+  EXCELLENT = 'EXCELLENT',
+  GOOD = 'GOOD',
+  FAIR = 'FAIR',
+  NEEDS_IMPROVEMENT = 'NEEDS_IMPROVEMENT',
+  NOT_YET_ASSESSED = 'NOT_YET_ASSESSED',
+}
+
+export enum ReviewModerationStatus {
+  VISIBLE = 'VISIBLE',
+  REMOVED_BY_AUTHOR = 'REMOVED_BY_AUTHOR',
+  REMOVED_BY_ADMIN = 'REMOVED_BY_ADMIN',
+}
+
 export interface ProductResponse {
   id: string;
   vendorId: string;
@@ -99,7 +116,52 @@ export interface ProductDetailVendor {
   parish: Parish;
   complianceScore: number | null;
   complianceStatus: VendorComplianceStatusLabel;
+  complianceBand: ComplianceBand;
+  rating: number | null;
   logoUrl: string | null;
+}
+
+// Public, customer-facing review shape (Phase 13E). Deliberately carries NO
+// authorId, email, phone, or delivery/address data - authorDisplayName is a
+// masked "First L." derived server-side, verifiedPurchase is always true.
+export interface ReviewSummary {
+  id: string;
+  authorDisplayName: string;
+  verifiedPurchase: boolean;
+  rating: number;
+  title: string | null;
+  body: string;
+  productId: string | null;
+  productName: string | null;
+  createdAt: string;
+  editedAt: string | null;
+}
+
+export interface PaginatedReviews {
+  items: ReviewSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  averageRating: number | null;
+}
+
+export interface ReviewEligibility {
+  eligible: boolean;
+  reason: string | null;
+}
+
+export interface CreateReviewInput {
+  vendorOrderId: string;
+  productId?: string;
+  rating: number;
+  title?: string;
+  body: string;
+}
+
+export interface UpdateReviewInput {
+  rating?: number;
+  title?: string;
+  body?: string;
 }
 
 export interface MarketplaceModes {
@@ -135,12 +197,14 @@ export interface VendorProfile {
   badge: string;
   parish: Parish;
   complianceScore: number | null;
+  complianceBand: ComplianceBand;
+  complianceScoreUpdatedAt: string | null;
   foodSafetyStatus: VendorComplianceStatusLabel;
   traceabilityStatus: VendorComplianceStatusLabel;
   ordersCompleted: number;
   rating: number | null;
   coldChainScore: number | null;
-  recentReviews: [];
+  recentReviews: ReviewSummary[];
 }
 
 // --- Admin Dashboard (Phase 12A) ---
@@ -773,4 +837,60 @@ export enum DeliveryExceptionType {
   WEATHER_DELAY = 'WEATHER_DELAY',
   PRODUCT_DAMAGE = 'PRODUCT_DAMAGE',
   OTHER = 'OTHER',
+}
+
+// --- Review Moderation (Phase 13E, admin dashboard) ---
+// Hand-mirrored from backend AdminReviewEntity / AdminReviewDetailEntity /
+// ReviewAuditLogEntity / ComplianceScoreExplanationEntity.
+
+export interface AdminReview {
+  id: string;
+  authorId: string | null;
+  authorDisplayName: string;
+  vendorId: string;
+  productId: string | null;
+  productName: string | null;
+  vendorOrderId: string;
+  rating: number;
+  title: string | null;
+  body: string;
+  moderationStatus: ReviewModerationStatus;
+  removedById: string | null;
+  removalReason: string | null;
+  removedAt: string | null;
+  deliveryWasRejected: boolean;
+  editedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewAuditLogEntry {
+  id: string;
+  reviewId: string;
+  actorId: string;
+  action: string;
+  beforeValue: unknown;
+  afterValue: unknown;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface AdminReviewDetail extends AdminReview {
+  auditLogs: ReviewAuditLogEntry[];
+}
+
+export interface ComplianceScoreBreakdown {
+  score: number;
+  temperatureDeduction: number;
+  inspectionDeduction: number;
+  recallDeduction: number;
+  certificationDeduction: number;
+}
+
+export interface ComplianceScoreExplanation {
+  vendorId: string;
+  score: number | null;
+  band: ComplianceBand;
+  updatedAt: string | null;
+  breakdown: ComplianceScoreBreakdown;
 }
