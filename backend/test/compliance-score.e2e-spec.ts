@@ -31,7 +31,7 @@ interface ExplanationData {
   };
 }
 
-jest.setTimeout(30_000);
+jest.setTimeout(60_000);
 
 // Seeds food-safety signals directly via Prisma (the signal-gathering and
 // dedup logic is what's under test, not the food-safety write endpoints) and

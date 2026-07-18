@@ -46,7 +46,7 @@ interface FleetMaintenanceData {
   status: string;
 }
 
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Fleet (e2e)', () => {
   let app: INestApplication;

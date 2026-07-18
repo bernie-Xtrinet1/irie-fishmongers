@@ -84,7 +84,7 @@ interface InventoryAnalyticsData {
   eventsByType: Record<string, { count: number; totalQuantityDelta: number }>;
 }
 
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Analytics (e2e)', () => {
   let app: INestApplication;

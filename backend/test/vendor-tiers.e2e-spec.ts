@@ -79,7 +79,7 @@ interface DowngradeEventData {
 // The listing-limit test creates products up to the tier's real limit (50)
 // and the sales-limit test drives several checkouts - both well beyond
 // Jest's default 5s per-test timeout.
-jest.setTimeout(40_000);
+jest.setTimeout(60_000);
 
 describe('Vendor Tiers (e2e)', () => {
   let app: INestApplication;

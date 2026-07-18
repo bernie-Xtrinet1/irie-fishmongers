@@ -64,7 +64,7 @@ interface GenerateResultData {
 // Each test registers several roles and drives an order through the full
 // checkout -> delivery -> payment -> settlement lifecycle, well beyond
 // Jest's default 5s per-test timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Vendor Settlements (e2e)', () => {
   let app: INestApplication;

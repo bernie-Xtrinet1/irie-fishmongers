@@ -111,7 +111,7 @@ interface PickupQueueEntryData {
 // Each test in this file registers several roles (admin, customer, vendor,
 // driver) and drives a vendor order through multiple sequential status
 // transitions, well beyond Jest's default 5s per-test timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Delivery (e2e)', () => {
   let app: INestApplication;

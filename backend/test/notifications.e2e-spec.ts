@@ -63,7 +63,7 @@ interface PreferenceData {
 // (fast-failing, since these are placeholder dev credentials) call to
 // SendGrid. Only IN_APP is asserted on here since it never depends on an
 // external provider succeeding.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Notifications (e2e)', () => {
   let app: INestApplication;

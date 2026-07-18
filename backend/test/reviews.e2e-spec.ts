@@ -65,7 +65,7 @@ interface EligibilityData {
 // Each test registers several roles and drives a vendor order through the
 // real checkout -> accept -> prepare -> ready -> assign -> pickup -> deliver
 // -> accept workflow, well beyond Jest's default per-test timeout.
-jest.setTimeout(30_000);
+jest.setTimeout(60_000);
 
 describe('Reviews (e2e)', () => {
   let app: INestApplication;

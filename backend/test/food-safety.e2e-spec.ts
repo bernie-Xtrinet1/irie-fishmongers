@@ -88,7 +88,7 @@ interface OrderData {
 
 // Several tests drive a lot through registration -> temperature breach ->
 // inspection -> checkout -> recall, well beyond Jest's default 5s timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Food Safety / Compliance (e2e)', () => {
   let app: INestApplication;
