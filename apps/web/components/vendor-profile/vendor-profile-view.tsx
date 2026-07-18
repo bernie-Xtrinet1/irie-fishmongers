@@ -1,13 +1,14 @@
 'use client';
 
-import { VendorTierBadge } from '@iriefishmongers/ui';
+import { StarRating, VendorTierBadge } from '@iriefishmongers/ui';
 import Image from 'next/image';
 import Link from 'next/link';
 
 import { ApiError } from '@/lib/api-client';
-import { formatEnumLabel } from '@/lib/format';
+import { formatComplianceBand, formatEnumLabel, formatRelativeTime } from '@/lib/format';
 import { useVendorProducts } from '@/lib/hooks/use-vendor-products';
 import { useVendorProfile } from '@/lib/hooks/use-vendor-profile';
+import { ReviewList } from '@/components/reviews/review-list';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -62,16 +63,19 @@ export function VendorProfileView({ vendorId }: { vendorId: string }): React.Rea
           </CardHeader>
           <CardContent className="space-y-1 text-sm text-gray-700">
             <DetailRow label="Operating Area" value={formatEnumLabel(vendor.parish)} />
-            <DetailRow label="Ratings" value={vendor.rating !== null ? vendor.rating.toFixed(1) : 'Not yet rated'} />
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-500">Rating</span>
+              {vendor.rating === null ? (
+                <span className="text-right text-gray-900">Not yet rated</span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <StarRating value={vendor.rating} size="sm" readOnly />
+                  <span className="text-gray-900">{vendor.rating.toFixed(1)}</span>
+                </span>
+              )}
+            </div>
             <DetailRow label="Orders Completed" value={String(vendor.ordersCompleted)} />
-            <DetailRow
-              label="Compliance Score"
-              value={vendor.complianceScore !== null ? String(vendor.complianceScore) : 'Not yet assessed'}
-            />
-            <DetailRow
-              label="Cold Chain Score"
-              value={vendor.coldChainScore !== null ? String(vendor.coldChainScore) : 'Not yet assessed'}
-            />
+            <DetailRow label="Cold Chain Score" value={vendor.coldChainScore !== null ? String(vendor.coldChainScore) : 'Not yet assessed'} />
           </CardContent>
         </Card>
 
@@ -80,6 +84,15 @@ export function VendorProfileView({ vendorId }: { vendorId: string }): React.Rea
             <CardTitle>Compliance</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm text-gray-700">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-500">Compliance Standing</span>
+              <span className="text-right text-gray-900">
+                {formatComplianceBand(vendor.complianceBand)}
+                {formatRelativeTime(vendor.complianceScoreUpdatedAt) ? (
+                  <span className="text-gray-400"> · updated {formatRelativeTime(vendor.complianceScoreUpdatedAt)}</span>
+                ) : null}
+              </span>
+            </div>
             <DetailRow label="Food Safety Status" value={formatEnumLabel(vendor.foodSafetyStatus)} />
             <DetailRow label="Traceability Status" value={formatEnumLabel(vendor.traceabilityStatus)} />
           </CardContent>
@@ -123,7 +136,11 @@ export function VendorProfileView({ vendorId }: { vendorId: string }): React.Rea
         <h2 className="text-lg font-medium text-gray-900">Recent Reviews</h2>
         {vendor.recentReviews.length === 0 ? (
           <p className="mt-3 text-sm text-gray-500">This vendor has no reviews yet.</p>
-        ) : null}
+        ) : (
+          <div className="mt-3">
+            <ReviewList reviews={vendor.recentReviews} showProductName />
+          </div>
+        )}
       </div>
     </div>
   );

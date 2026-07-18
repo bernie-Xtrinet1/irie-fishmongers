@@ -1,7 +1,7 @@
 'use client';
 
 import { Parish, ProductAvailability, type ProductDetail } from '@iriefishmongers/types';
-import { VendorTierBadge } from '@iriefishmongers/ui';
+import { StarRating, VendorTierBadge } from '@iriefishmongers/ui';
 import { useMutation } from '@tanstack/react-query';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -10,8 +10,9 @@ import { useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
 import { resolveBestVendor } from '@/lib/api/marketplace';
-import { formatDate, formatEnumLabel } from '@/lib/format';
+import { formatComplianceBand, formatDate, formatEnumLabel } from '@/lib/format';
 import { useProductDetail } from '@/lib/hooks/use-product-detail';
+import { ProductReviewsSection } from './product-reviews-section';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -153,6 +154,8 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
         <FoodSafetyCard product={product} />
         <VendorInformationCard product={product} />
       </div>
+
+      <ProductReviewsSection productId={productId} />
     </div>
   );
 }
@@ -271,9 +274,19 @@ function VendorInformationCard({ product }: { product: ProductDetail }): React.R
             complianceStatus={product.vendor.complianceStatus}
           />
         </div>
-        <DetailRow label="Vendor Rating" value="Not yet rated" />
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Vendor Rating</span>
+          {product.vendor.rating === null ? (
+            <span className="font-medium text-gray-900">Not yet rated</span>
+          ) : (
+            <span className="flex items-center gap-1.5">
+              <StarRating value={product.vendor.rating} size="sm" readOnly />
+              <span className="font-medium text-gray-900">{product.vendor.rating.toFixed(1)}</span>
+            </span>
+          )}
+        </div>
         <DetailRow label="Vendor Location" value={formatEnumLabel(product.vendor.parish)} />
-        <DetailRow label="Compliance Status" value={formatEnumLabel(product.vendor.complianceStatus)} />
+        <DetailRow label="Compliance Standing" value={formatComplianceBand(product.vendor.complianceBand)} />
         <Link href={`/vendors/${product.vendor.id}`}>
           <Button variant="secondary" size="sm" className="mt-2">
             View Vendor Profile

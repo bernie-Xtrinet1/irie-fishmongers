@@ -1,4 +1,5 @@
 import {
+  ComplianceBand,
   FreshnessGrade,
   Parish,
   ProductAvailability,
@@ -17,15 +18,18 @@ import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
 import { resolveBestVendor } from '@/lib/api/marketplace';
 import { fetchProductDetail } from '@/lib/api/products';
+import { fetchProductReviews } from '@/lib/api/reviews';
 import { ProductDetailView } from './product-detail-view';
 
 jest.mock('@/lib/api/products');
 jest.mock('@/lib/api/cart');
 jest.mock('@/lib/api/marketplace');
+jest.mock('@/lib/api/reviews');
 
 const mockFetchProductDetail = fetchProductDetail as jest.MockedFunction<typeof fetchProductDetail>;
 const mockAddCartItem = addCartItem as jest.MockedFunction<typeof addCartItem>;
 const mockResolveBestVendor = resolveBestVendor as jest.MockedFunction<typeof resolveBestVendor>;
+const mockFetchProductReviews = fetchProductReviews as jest.MockedFunction<typeof fetchProductReviews>;
 
 const baseProduct: ProductDetail = {
   id: 'product-1',
@@ -63,6 +67,8 @@ const baseProduct: ProductDetail = {
     parish: Parish.KINGSTON,
     complianceScore: 90,
     complianceStatus: VendorComplianceStatusLabel.COMPLIANT,
+    complianceBand: ComplianceBand.EXCELLENT,
+    rating: 4.5,
     logoUrl: null,
   },
   marketplaceModes: { customerSelectedEnabled: true, bestAvailableEnabled: false },
@@ -76,6 +82,13 @@ function renderWithClient(ui: ReactNode) {
 describe('ProductDetailView', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetchProductReviews.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      averageRating: null,
+    });
   });
 
   it('shows a loading skeleton while fetching', () => {
@@ -107,7 +120,9 @@ describe('ProductDetailView', () => {
     expect(screen.getByText('Food Safety Information')).toBeInTheDocument();
     expect(screen.getByText('Vendor Information')).toBeInTheDocument();
     expect(screen.getByText('North Coast')).toBeInTheDocument();
-    expect(screen.getByText('Not yet rated')).toBeInTheDocument();
+    // Vendor rating renders as stars plus the one-decimal value.
+    expect(screen.getByText('4.5')).toBeInTheDocument();
+    expect(screen.getByLabelText('Rated 4.5 out of 5 stars')).toBeInTheDocument();
   });
 
   it('shows the quality & freshness score with its grade and inspection date', async () => {

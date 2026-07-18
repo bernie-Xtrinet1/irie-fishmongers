@@ -1,4 +1,5 @@
 import {
+  ComplianceBand,
   Parish,
   ProductAvailability,
   ProductUnit,
@@ -29,6 +30,8 @@ const baseProfile: VendorProfile = {
   badge: '✓ Verified Vendor',
   parish: Parish.ST_ANN,
   complianceScore: 85,
+  complianceBand: ComplianceBand.GOOD,
+  complianceScoreUpdatedAt: new Date('2026-07-10').toISOString(),
   foodSafetyStatus: VendorComplianceStatusLabel.COMPLIANT,
   traceabilityStatus: VendorComplianceStatusLabel.COMPLIANT,
   ordersCompleted: 42,
@@ -92,7 +95,8 @@ describe('VendorProfileView', () => {
     expect(screen.getByText('✓ Verified Vendor')).toBeInTheDocument();
     expect(screen.getByText('St Ann')).toBeInTheDocument();
     expect(screen.getByText('42')).toBeInTheDocument();
-    expect(screen.getByText('85')).toBeInTheDocument();
+    // Compliance standing shows the customer-facing band, not the raw score.
+    expect(screen.getByText(/Good/)).toBeInTheDocument();
     expect(screen.getByText('Not yet rated')).toBeInTheDocument();
     expect(screen.getAllByText('Not yet assessed')).toHaveLength(1);
     expect(screen.getByText('This vendor has no reviews yet.')).toBeInTheDocument();
