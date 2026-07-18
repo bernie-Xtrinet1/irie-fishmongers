@@ -86,9 +86,13 @@ describe('Reviews (e2e)', () => {
   });
 
   afterAll(async () => {
-    // Review.vendorOrderId is Restrict, so reviews must be cleared before
-    // the customer cascade (Order -> VendorOrder) can run.
+    // ReviewAuditLog.reviewId is Restrict, so audit rows must go before their
+    // reviews; Review.vendorOrderId is Restrict, so reviews must be cleared
+    // before the customer cascade (Order -> VendorOrder) can run.
     if (vendorUserEmails.length > 0) {
+      await prisma.reviewAuditLog.deleteMany({
+        where: { review: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.review.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
     }
     if (customerEmails.length > 0) {
@@ -475,5 +479,115 @@ describe('Reviews (e2e)', () => {
       .patch(`/api/v1/reviews/${reviewId}/restore`)
       .set('Authorization', `Bearer ${customer.accessToken}`)
       .expect(403);
+  });
+
+  it('lets an admin remove a review with a required reason, recording an audit trail and hiding it publicly', async () => {
+    interface AdminReviewData {
+      id: string;
+      moderationStatus: string;
+      removalReason: string | null;
+      deliveryWasRejected: boolean;
+      auditLogs?: { action: string; reason: string | null; actorId: string }[];
+    }
+    interface AdminListData {
+      items: AdminReviewData[];
+      total: number;
+    }
+
+    const adminToken = await createAdminAndLogin();
+    const customer = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Moderation Vendor');
+    const driverToken = await createApprovedDriverAndLogin(adminToken, 'MD 1111');
+    const category = await getFishCategory();
+    const productId = await createProduct(vendor.accessToken, category.id, `Mod Snapper ${randomUUID()}`);
+    const { vendorOrderId } = await deliverOrder(customer.accessToken, vendor.accessToken, driverToken, productId);
+
+    // A vendor review (kept) and a product review (to be removed).
+    await request(server())
+      .post('/api/v1/reviews')
+      .set('Authorization', `Bearer ${customer.accessToken}`)
+      .send({ vendorOrderId, rating: 5, body: 'Vendor review that stays visible.' })
+      .expect(201);
+    const productReview = data<ReviewData>(
+      await request(server())
+        .post('/api/v1/reviews')
+        .set('Authorization', `Bearer ${customer.accessToken}`)
+        .send({ vendorOrderId, productId, rating: 1, body: 'Product review that will be moderated away.' }),
+    );
+
+    // Vendor average before removal: (5 + 1) / 2 = 3.
+    const before = data<PaginatedReviewsData>(
+      await request(server()).get(`/api/v1/reviews/vendor/${vendor.vendorId}`),
+    );
+    expect(before.averageRating).toBe(3);
+
+    // Non-admins are blocked from the moderation surface.
+    await request(server()).get('/api/v1/admin/reviews').expect(401);
+    await request(server())
+      .get('/api/v1/admin/reviews')
+      .set('Authorization', `Bearer ${customer.accessToken}`)
+      .expect(403);
+    await request(server())
+      .post(`/api/v1/admin/reviews/${productReview.id}/remove`)
+      .set('Authorization', `Bearer ${customer.accessToken}`)
+      .send({ reason: 'not allowed' })
+      .expect(403);
+
+    // A reason is mandatory.
+    await request(server())
+      .post(`/api/v1/admin/reviews/${productReview.id}/remove`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({})
+      .expect(400);
+
+    // Admin removes the product review.
+    await request(server())
+      .post(`/api/v1/admin/reviews/${productReview.id}/remove`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Rating not supported by the review content' })
+      .expect(201);
+
+    // Removing again is rejected - it is already admin-removed.
+    await request(server())
+      .post(`/api/v1/admin/reviews/${productReview.id}/remove`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'second attempt' })
+      .expect(400);
+
+    // Public product list is now empty; vendor average recalculates to 5.
+    const productAfter = data<PaginatedReviewsData>(
+      await request(server()).get(`/api/v1/reviews/product/${productId}`),
+    );
+    expect(productAfter.total).toBe(0);
+    const vendorAfter = data<PaginatedReviewsData>(
+      await request(server()).get(`/api/v1/reviews/vendor/${vendor.vendorId}`),
+    );
+    expect(vendorAfter.total).toBe(1);
+    expect(vendorAfter.averageRating).toBe(5);
+
+    // The removed review still appears in the admin list, flagged.
+    const adminList = data<AdminListData>(
+      await request(server())
+        .get('/api/v1/admin/reviews')
+        .query({ moderationStatus: 'REMOVED_BY_ADMIN', vendorId: vendor.vendorId })
+        .set('Authorization', `Bearer ${adminToken}`),
+    );
+    expect(adminList.items.some((item) => item.id === productReview.id)).toBe(true);
+
+    // The detail view carries the audit trail with the reason and actor.
+    const detail = data<AdminReviewData>(
+      await request(server())
+        .get(`/api/v1/admin/reviews/${productReview.id}`)
+        .set('Authorization', `Bearer ${adminToken}`),
+    );
+    expect(detail.moderationStatus).toBe('REMOVED_BY_ADMIN');
+    expect(detail.removalReason).toBe('Rating not supported by the review content');
+    expect(detail.auditLogs?.length).toBe(1);
+    expect(detail.auditLogs?.[0]?.action).toBe('REMOVED_BY_ADMIN');
+    expect(detail.auditLogs?.[0]?.reason).toBe('Rating not supported by the review content');
+
+    // The audit row survives independently in the DB.
+    const auditRows = await prisma.reviewAuditLog.findMany({ where: { reviewId: productReview.id } });
+    expect(auditRows).toHaveLength(1);
   });
 });
