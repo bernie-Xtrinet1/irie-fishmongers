@@ -88,7 +88,12 @@
       "redis.constants.ts",
       "auth.constants.ts",
       "roles.decorator.ts",
-      "current-user.decorator.ts"
+      "current-user.decorator.ts",
+      "\\.controller\\.ts$",
+      "\\.dto\\.ts$",
+      "\\.entity\\.ts$",
+      "\\.event\\.ts$",
+      "\\.repository\\.ts$"
     ],
     "coverageThreshold": {
       "global": {
