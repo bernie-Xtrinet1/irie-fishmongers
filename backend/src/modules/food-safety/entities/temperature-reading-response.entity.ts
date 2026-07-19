@@ -8,6 +8,9 @@ export class TemperatureReadingResponseEntity {
   @ApiProperty()
   lotId!: string;
 
+  @ApiProperty({ required: false, nullable: true })
+  deviceId!: string | null;
+
   @ApiProperty({ enum: TemperatureCheckpoint })
   checkpoint!: TemperatureCheckpoint;
 

@@ -47,3 +47,23 @@ Compliance Dashboard
 - Inspection Results
 - Audit History
 - Food Safety Score
+
+# VENDOR PROFILE SCREEN
+
+Display
+
+- Vendor Name
+- Vendor Tier
+- Operating Area
+- Ratings
+- Orders Completed
+- Compliance Score
+- Cold Chain Score
+
+Products
+
+Recent Reviews
+
+Food Safety Status
+
+Traceability Status

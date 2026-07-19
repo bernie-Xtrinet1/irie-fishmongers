@@ -49,6 +49,31 @@ export class VendorsRepository {
     return this.prisma.vendor.update({ where: { id }, data: { tier } });
   }
 
+  // Write-through cache of the composite compliance score (Phase 13C). The
+  // timestamp is written in the same update so any reader can tell how fresh
+  // the score is - a bare number with no "as of" is indistinguishable from a
+  // stale one.
+  updateComplianceScore(id: string, score: number): Promise<Vendor> {
+    return this.prisma.vendor.update({
+      where: { id },
+      data: { complianceScore: score, complianceScoreUpdatedAt: new Date() },
+    });
+  }
+
+  // Page through APPROVED vendors for the nightly compliance recompute sweep
+  // and the one-time backfill. id is a secondary sort key so offset paging
+  // stays deterministic: without it, vendors sharing a createdAt at a page
+  // boundary could be skipped (never scored that run) or double-processed.
+  findApprovedIds(page: Page): Promise<{ id: string; tier: VendorTier }[]> {
+    return this.prisma.vendor.findMany({
+      where: { status: 'APPROVED' },
+      select: { id: true, tier: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      skip: page.skip,
+      take: page.take,
+    });
+  }
+
   update(id: string, input: UpdateVendorInput): Promise<Vendor> {
     return this.prisma.vendor.update({ where: { id }, data: input });
   }
@@ -74,5 +99,53 @@ export class VendorsRepository {
     ]);
 
     return { items, total };
+  }
+
+  countDeliveredOrders(vendorId: string): Promise<number> {
+    return this.prisma.vendorOrder.count({ where: { vendorId, status: 'DELIVERED' } });
+  }
+
+  async getComplianceSummary(): Promise<{
+    countByStatus: Record<VendorStatus, number>;
+    averageComplianceScore: number | null;
+  }> {
+    const [groups, aggregate] = await Promise.all([
+      this.prisma.vendor.groupBy({ by: ['status'], _count: { _all: true } }),
+      // Average only over APPROVED vendors: event-driven recompute can write
+      // a compliance score onto a non-APPROVED vendor (e.g. a suspended
+      // vendor whose existing lots still raise temperature/inspection/recall
+      // signals), and a formerly-APPROVED vendor keeps its last score after
+      // suspension. Neither should skew the marketplace-wide average.
+      this.prisma.vendor.aggregate({ where: { status: 'APPROVED' }, _avg: { complianceScore: true } }),
+    ]);
+
+    const countByStatus: Record<VendorStatus, number> = {
+      PENDING: 0,
+      APPROVED: 0,
+      SUSPENDED: 0,
+      REJECTED: 0,
+    };
+    for (const group of groups) {
+      countByStatus[group.status] = group._count._all;
+    }
+
+    return { countByStatus, averageComplianceScore: aggregate._avg.complianceScore };
+  }
+
+  // 12B Vendor Dashboard: tier distribution, mirroring getComplianceSummary's
+  // status groupBy pattern.
+  async countByTier(): Promise<Record<VendorTier, number>> {
+    const groups = await this.prisma.vendor.groupBy({ by: ['tier'], _count: { _all: true } });
+
+    const countByTier: Record<VendorTier, number> = {
+      COMMUNITY_FISHER: 0,
+      VERIFIED_VENDOR: 0,
+      COMMERCIAL_SUPPLIER: 0,
+      ENTERPRISE_SUPPLIER: 0,
+    };
+    for (const group of groups) {
+      countByTier[group.tier] = group._count._all;
+    }
+    return countByTier;
   }
 }

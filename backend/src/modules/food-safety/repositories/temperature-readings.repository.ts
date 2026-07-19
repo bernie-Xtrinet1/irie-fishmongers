@@ -5,6 +5,7 @@ import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreateReadingInput {
   lotId: string;
+  deviceId?: string;
   checkpoint: TemperatureCheckpoint;
   temperatureC: number;
   recordedById: string;
@@ -43,5 +44,9 @@ export class TemperatureReadingsRepository {
     ]);
 
     return { items, total };
+  }
+
+  countByLotId(lotId: string): Promise<number> {
+    return this.prisma.temperatureReading.count({ where: { lotId } });
   }
 }

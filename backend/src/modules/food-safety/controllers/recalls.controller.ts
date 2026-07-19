@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -52,10 +53,12 @@ export class RecallsController {
   })
   @ApiResponseDoc({ status: 200, type: RecallResponseEntity })
   updateStatus(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateRecallStatusDto,
+    @Req() req: Request,
   ): Promise<RecallResponseEntity> {
-    return this.recallsService.updateStatus(id, dto);
+    return this.recallsService.updateStatus(user.id, id, dto, req.ip);
   }
 
   @Get(':id/affected-orders')

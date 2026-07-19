@@ -12,6 +12,7 @@ describe('validateEnv', () => {
     JWT_REFRESH_SECRET: 'b'.repeat(32),
     JWT_REFRESH_EXPIRES_IN: '7d',
     APP_BASE_URL: 'http://localhost:3001',
+    CORS_ORIGIN: 'http://localhost:3000',
     WIPAY_API_URL: 'https://tx.wipayfinancial.com/plugins/payments',
     WIPAY_ACCOUNT_NUMBER: 'test-account-number',
     WIPAY_API_KEY: 'test-wipay-key',
@@ -51,5 +52,19 @@ describe('validateEnv', () => {
   it('throws when a required variable is missing', () => {
     const { REDIS_URL: _REDIS_URL, ...withoutRedis } = validConfig;
     expect(() => validateEnv(withoutRedis)).toThrow(/Environment validation failed/);
+  });
+
+  it('accepts a comma-separated CORS_ORIGIN allowlist', () => {
+    const result = validateEnv({
+      ...validConfig,
+      CORS_ORIGIN: 'http://localhost:3000,http://localhost:3002',
+    });
+    expect(result.CORS_ORIGIN).toBe('http://localhost:3000,http://localhost:3002');
+  });
+
+  it('throws when CORS_ORIGIN is not a valid http(s) URL list', () => {
+    expect(() => validateEnv({ ...validConfig, CORS_ORIGIN: 'not-a-url' })).toThrow(
+      /Environment validation failed/,
+    );
   });
 });

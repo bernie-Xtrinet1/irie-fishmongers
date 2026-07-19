@@ -3,6 +3,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -32,6 +35,8 @@ export class OrdersService {
     private readonly vendorsRepository: VendorsRepository,
     private readonly paymentsService: PaymentsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
+    private readonly inventoryReservations: InventoryReservationsService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -47,7 +52,11 @@ export class OrdersService {
       if (!item.product.isActive) {
         throw new BadRequestException(`"${item.product.name}" is no longer available`);
       }
-      if (item.product.lot && item.product.lot.foodSafetyStatus !== 'SAFE') {
+      if (
+        item.product.lot &&
+        (item.product.lot.foodSafetyStatus !== 'SAFE' ||
+          !SeafoodLotsService.isGradingSellable(item.product.lot))
+      ) {
         throw new BadRequestException(
           `"${item.product.name}" is currently on hold pending a food-safety review`,
         );
@@ -76,6 +85,16 @@ export class OrdersService {
         );
       }
     }
+
+    // Resolved directly from the global PrismaService, not a DeliveryModule
+    // import: DeliveryModule already imports OrdersModule, so importing it
+    // back here would create a circular dependency. See ZoneResolutionService
+    // for the equivalent lookup used within DeliveryModule itself.
+    const zoneMapping = await this.prisma.deliveryZoneParish.findUnique({
+      where: { parish: dto.deliveryParish },
+      select: { zoneId: true },
+    });
+    const deliveryZoneId = zoneMapping?.zoneId ?? null;
 
     const order = await this.prisma.$transaction(async (tx) => {
       const vendorGroups = new Map<string, VendorOrderInput>();
@@ -113,15 +132,38 @@ export class OrdersService {
           deliveryAddressLine2: dto.deliveryAddressLine2,
           deliveryParish: dto.deliveryParish,
           deliveryPhone: dto.deliveryPhone,
+          deliveryZoneId,
           vendorOrders: Array.from(vendorGroups.values()),
         },
         tx,
       );
 
+      for (const vendorOrder of created.vendorOrders) {
+        for (const item of vendorOrder.items) {
+          await this.inventoryEventsRepository.create(
+            {
+              productId: item.productId,
+              eventType: 'DECREMENTED',
+              quantityDelta: -item.quantity,
+              vendorOrderId: vendorOrder.id,
+            },
+            tx,
+          );
+        }
+      }
+
       await this.cartRepository.clear(cart.id, tx);
 
       return created;
     });
+
+    // No longer "reserved", it's actually decremented now - release the
+    // soft holds for exactly the products just purchased so they stop
+    // counting against other shoppers' availability.
+    const purchasedProductIds = new Set(cart.items.map((item) => item.productId));
+    for (const productId of purchasedProductIds) {
+      await this.inventoryReservations.release(productId, cart.id);
+    }
 
     const total = order.vendorOrders.reduce(
       (sum, vendorOrder) => sum + vendorOrder.subtotal.toNumber(),
@@ -226,6 +268,15 @@ export class OrdersService {
   ): Promise<void> {
     for (const item of vendorOrder.items) {
       await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
+      await this.inventoryEventsRepository.create(
+        {
+          productId: item.productId,
+          eventType: 'RESTOCKED',
+          quantityDelta: item.quantity,
+          vendorOrderId: vendorOrder.id,
+        },
+        tx,
+      );
     }
     await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'CANCELLED');
   }
@@ -251,6 +302,7 @@ export class OrdersService {
       deliveryAddressLine2: order.deliveryAddressLine2,
       deliveryParish: order.deliveryParish,
       deliveryPhone: order.deliveryPhone,
+      deliveryZoneId: order.deliveryZoneId,
       createdAt: order.createdAt,
       vendorOrders: order.vendorOrders.map((vendorOrder) => ({
         id: vendorOrder.id,

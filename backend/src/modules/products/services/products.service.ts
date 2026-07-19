@@ -4,18 +4,38 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InventoryEventType, SeafoodLot } from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
+import { deriveComplianceBand } from '../../vendor-tiers/utils/compliance-score-band.util';
+import { deriveVendorComplianceStatus } from '../../vendor-tiers/utils/vendor-compliance-status.util';
+import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { SearchProductsDto } from '../dto/search-products.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
+import { ProductAvailabilityEntity } from '../entities/product-availability.entity';
 import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
+import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { CategoriesRepository } from '../repositories/categories.repository';
 import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
+
+// Structural subset of ProductWithLot that computeAvailability() actually
+// needs - lets 12B Inventory Analytics pass a narrow Prisma `select`
+// result instead of the full lot-included product shape.
+export interface ProductAvailabilityInput {
+  isActive: boolean;
+  quantityAvailable: number;
+  lot: Pick<SeafoodLot, 'foodSafetyStatus' | 'freshnessGrade' | 'qualityScore'> | null;
+}
 
 @Injectable()
 export class ProductsService {
@@ -24,7 +44,13 @@ export class ProductsService {
     private readonly categoriesRepository: CategoriesRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly seafoodLotsRepository: SeafoodLotsRepository,
+    private readonly seafoodLotsService: SeafoodLotsService,
     private readonly vendorPermissionsService: VendorPermissionsService,
+    private readonly vendorDocumentsService: VendorDocumentsService,
+    private readonly marketplaceConfigService: MarketplaceConfigService,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
+    private readonly inventoryReservations: InventoryReservationsService,
+    private readonly reviewsQueryService: ReviewsQueryService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -35,6 +61,7 @@ export class ProductsService {
     if (vendor.status !== 'APPROVED') {
       throw new ForbiddenException('Only approved vendors may list products');
     }
+    await this.vendorDocumentsService.assertCanSell(vendor.id, vendor.tier);
 
     const category = await this.categoriesRepository.findById(dto.categoryId);
     if (!category) {
@@ -53,6 +80,7 @@ export class ProductsService {
           'This seafood lot is not currently cleared for sale (must be SAFE)',
         );
       }
+      this.seafoodLotsService.assertSellable(lot);
     }
 
     const product = await this.productsRepository.create({ ...dto, vendorId: vendor.id });
@@ -83,8 +111,60 @@ export class ProductsService {
     delta: number,
   ): Promise<ProductResponseEntity> {
     const product = await this.getOwnedProduct(userId, productId);
-    const updated = await this.productsRepository.adjustStock(product.id, delta);
+    return this.applyStockAdjustment(product.id, delta, 'MANUAL_ADJUSTMENT', userId);
+  }
+
+  // Called by WasteDisposalRecordsService after it has already run its own
+  // ownership/admin check (which allows an admin to record disposal on a
+  // vendor's behalf) - skips getOwnedProduct's vendor-only lookup rather
+  // than re-implementing quantity decrement + InventoryEvent writing.
+  async adjustStockForDisposal(
+    productId: string,
+    delta: number,
+    triggeredById: string,
+  ): Promise<ProductResponseEntity> {
+    const product = await this.productsRepository.findById(productId);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    return this.applyStockAdjustment(product.id, delta, 'DISPOSED', triggeredById);
+  }
+
+  private async applyStockAdjustment(
+    productId: string,
+    delta: number,
+    eventType: InventoryEventType,
+    triggeredById: string,
+  ): Promise<ProductResponseEntity> {
+    const updated = await this.productsRepository.adjustStock(productId, delta);
+    await this.inventoryEventsRepository.create({
+      productId,
+      eventType,
+      quantityDelta: delta,
+      triggeredById,
+    });
     return ProductsService.toResponse(updated);
+  }
+
+  async getAvailability(productId: string): Promise<ProductAvailabilityEntity> {
+    const product = await this.productsRepository.findById(productId);
+    if (!product || !product.isActive) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const availableToPurchase = await this.inventoryReservations.getAvailableToPurchase(
+      product.id,
+      product.quantityAvailable,
+      '',
+    );
+    const reserved = product.quantityAvailable - availableToPurchase;
+
+    return {
+      productId: product.id,
+      quantityAvailable: product.quantityAvailable,
+      reserved,
+      availableToPurchase,
+    };
   }
 
   async setActive(
@@ -103,6 +183,46 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
     return ProductsService.toResponse(product);
+  }
+
+  async getPublicDetail(id: string): Promise<ProductDetailEntity> {
+    const product = await this.productsRepository.findById(id);
+    if (!product || !product.isActive) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const vendor = await this.vendorsRepository.findById(product.vendorId);
+    if (!vendor) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const [lot, permissions, modeConfig, ratingSummary] = await Promise.all([
+      product.lotId ? this.seafoodLotsService.getPublicById(product.lotId) : Promise.resolve(null),
+      this.vendorPermissionsService.getPermissions(vendor.tier),
+      this.marketplaceConfigService.getCurrentModeConfig(),
+      this.reviewsQueryService.getVendorRatingSummary(vendor.id),
+    ]);
+
+    return {
+      ...ProductsService.toResponse(product),
+      lot,
+      vendor: {
+        id: vendor.id,
+        businessName: vendor.businessName,
+        tier: vendor.tier,
+        badge: permissions.badge,
+        parish: vendor.parish,
+        complianceScore: vendor.complianceScore,
+        complianceStatus: deriveVendorComplianceStatus(vendor.complianceScore),
+        complianceBand: deriveComplianceBand(vendor.complianceScore),
+        rating: ratingSummary.averageRating,
+        logoUrl: vendor.logoUrl,
+      },
+      marketplaceModes: {
+        customerSelectedEnabled: modeConfig.customerSelectedEnabled,
+        bestAvailableEnabled: modeConfig.bestAvailableEnabled,
+      },
+    };
   }
 
   async search(dto: SearchProductsDto): Promise<PaginatedProductsEntity> {
@@ -160,18 +280,26 @@ export class ProductsService {
     return product;
   }
 
-  private static toResponse(product: ProductWithLot): ProductResponseEntity {
-    let availability: ProductAvailability;
+  // Public + static so 12B Inventory Analytics can tally availability
+  // counts across the whole catalog using this exact same rule, rather
+  // than re-deriving "is this product sellable" a second way.
+  static computeAvailability(product: ProductAvailabilityInput): ProductAvailability {
     if (!product.isActive) {
-      availability = ProductAvailability.INACTIVE;
-    } else if (product.lot && product.lot.foodSafetyStatus !== 'SAFE') {
-      availability = ProductAvailability.ON_HOLD;
-    } else if (product.quantityAvailable === 0) {
-      availability = ProductAvailability.OUT_OF_STOCK;
-    } else {
-      availability = ProductAvailability.ACTIVE;
+      return ProductAvailability.INACTIVE;
     }
+    if (
+      product.lot &&
+      (product.lot.foodSafetyStatus !== 'SAFE' || !SeafoodLotsService.isGradingSellable(product.lot))
+    ) {
+      return ProductAvailability.ON_HOLD;
+    }
+    if (product.quantityAvailable === 0) {
+      return ProductAvailability.OUT_OF_STOCK;
+    }
+    return ProductAvailability.ACTIVE;
+  }
 
+  private static toResponse(product: ProductWithLot): ProductResponseEntity {
     return {
       id: product.id,
       vendorId: product.vendorId,
@@ -184,8 +312,9 @@ export class ProductsService {
       currency: product.currency,
       quantityAvailable: product.quantityAvailable,
       imageUrl: product.imageUrl,
+      weightLbs: product.weightLbs?.toString() ?? null,
       isActive: product.isActive,
-      availability,
+      availability: ProductsService.computeAvailability(product),
       createdAt: product.createdAt,
     };
   }

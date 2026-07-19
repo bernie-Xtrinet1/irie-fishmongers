@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { RecallStatus } from '@prisma/client';
 
+import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
+import { RecallStatusChangedEvent } from '../../../common/events/recall-status-changed.event';
+import { computeRetentionExpiresAt } from '../../../common/utils/retention.util';
 import { CreateRecallDto } from '../dto/create-recall.dto';
 import { ListRecallsDto } from '../dto/list-recalls.dto';
 import { UpdateRecallStatusDto } from '../dto/update-recall-status.dto';
@@ -9,6 +13,7 @@ import { PaginatedRecallsEntity } from '../entities/paginated-recalls.entity';
 import { RecallResponseEntity } from '../entities/recall-response.entity';
 import { AffectedOrderItem, RecallsRepository, RecallWithLots } from '../repositories/recalls.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 
 const ALLOWED_STATUS_TRANSITIONS: Record<RecallStatus, RecallStatus[]> = {
   DRAFT: ['ACTIVE'],
@@ -23,6 +28,8 @@ export class RecallsService {
   constructor(
     private readonly recallsRepository: RecallsRepository,
     private readonly lotsRepository: SeafoodLotsRepository,
+    private readonly auditLogService: ComplianceAuditLogService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(userId: string, dto: CreateRecallDto): Promise<RecallResponseEntity> {
@@ -43,7 +50,12 @@ export class RecallsService {
     return RecallsService.toResponse(recall);
   }
 
-  async updateStatus(id: string, dto: UpdateRecallStatusDto): Promise<RecallResponseEntity> {
+  async updateStatus(
+    userId: string,
+    id: string,
+    dto: UpdateRecallStatusDto,
+    ipAddress?: string,
+  ): Promise<RecallResponseEntity> {
     const recall = await this.recallsRepository.findById(id);
     if (!recall) {
       throw new NotFoundException('Recall not found');
@@ -66,7 +78,26 @@ export class RecallsService {
           `Recalled (${recall.severityClass}): ${recall.reason}`,
         );
       }
+
+      await this.notifyAffectedCustomers(id, recall.reason);
     }
+
+    await this.auditLogService.record({
+      userId,
+      action: 'RECALL_STATUS_UPDATED',
+      entityType: 'Recall',
+      entityId: id,
+      beforeValue: { status: recall.status },
+      afterValue: { status: updated.status },
+      ipAddress,
+      reason: dto.rootCause ?? dto.resolutionNotes,
+    });
+
+    // Any recall status change may raise or lower the compliance score of
+    // every vendor whose lots the recall touches (an ACTIVE/INVESTIGATING
+    // recall deducts; RESOLVED/CLOSED lets the score recover). Emitted after
+    // the status update and lot/audit writes commit (Phase 13C).
+    await this.emitStatusChanged(id, recall.lots, updated.status);
 
     return RecallsService.toResponse(updated);
   }
@@ -105,6 +136,55 @@ export class RecallsService {
     return orderItems.map((item) => RecallsService.toAffectedOrder(item));
   }
 
+  // Resolves the DISTINCT vendors whose lots a recall touches and emits a
+  // single RecallStatusChangedEvent for the compliance-score listener. A
+  // recall spanning three of one vendor's lots yields that vendor once.
+  private async emitStatusChanged(
+    recallId: string,
+    lots: { lotId: string }[],
+    status: string,
+  ): Promise<void> {
+    const vendorIds = new Set<string>();
+    for (const recallLot of lots) {
+      const lot = await this.lotsRepository.findById(recallLot.lotId);
+      if (lot) {
+        vendorIds.add(lot.vendorId);
+      }
+    }
+    if (vendorIds.size === 0) {
+      return;
+    }
+    await this.eventEmitter.emitAsync(
+      RecallStatusChangedEvent.eventName,
+      new RecallStatusChangedEvent(recallId, status, [...vendorIds]),
+    );
+  }
+
+  // seafood-compliance-rules.md's recall workflow: Identify Customers ->
+  // Notify Stakeholders. Emits one RecallIssuedEvent per affected order
+  // (an affected customer may have multiple orders touching the recalled
+  // lots) - lotNumber is resolved per distinct lotId and cached, since
+  // AffectedOrderEntity only carries the lotId, not the human-readable
+  // lotNumber.
+  private async notifyAffectedCustomers(recallId: string, reason: string): Promise<void> {
+    const affectedOrders = await this.getAffectedOrders(recallId);
+    const lotNumberByLotId = new Map<string, string>();
+
+    for (const order of affectedOrders) {
+      let lotNumber = lotNumberByLotId.get(order.lotId);
+      if (!lotNumber) {
+        const lot = await this.lotsRepository.findById(order.lotId);
+        lotNumber = lot?.lotNumber ?? order.lotId;
+        lotNumberByLotId.set(order.lotId, lotNumber);
+      }
+
+      await this.eventEmitter.emitAsync(
+        RecallIssuedEvent.eventName,
+        new RecallIssuedEvent(order.customerId, order.orderId, lotNumber, reason),
+      );
+    }
+  }
+
   private static toAffectedOrder(item: AffectedOrderItem): AffectedOrderEntity {
     return {
       orderId: item.vendorOrder.order.id,
@@ -130,6 +210,7 @@ export class RecallsService {
       lotIds: recall.lots.map((recallLot) => recallLot.lotId),
       closedAt: recall.closedAt,
       createdAt: recall.createdAt,
+      retentionExpiresAt: computeRetentionExpiresAt(recall.createdAt),
     };
   }
 }

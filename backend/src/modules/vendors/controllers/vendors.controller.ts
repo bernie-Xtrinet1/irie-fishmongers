@@ -16,14 +16,19 @@ import { RegisterVendorDto } from '../dto/register-vendor.dto';
 import { UpdateVendorProfileDto } from '../dto/update-vendor-profile.dto';
 import { UpdateVendorStatusDto } from '../dto/update-vendor-status.dto';
 import { PaginatedVendorsEntity } from '../entities/paginated-vendors.entity';
+import { PickupQueueEntryEntity } from '../entities/pickup-queue-entry.entity';
 import { VendorPublicEntity } from '../entities/vendor-public.entity';
 import { VendorResponseEntity } from '../entities/vendor-response.entity';
+import { VendorPickupQueueService } from '../services/vendor-pickup-queue.service';
 import { VendorsService } from '../services/vendors.service';
 
 @ApiTags('vendors')
 @Controller('vendors')
 export class VendorsController {
-  constructor(private readonly vendorsService: VendorsService) {}
+  constructor(
+    private readonly vendorsService: VendorsService,
+    private readonly vendorPickupQueueService: VendorPickupQueueService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -59,6 +64,18 @@ export class VendorsController {
     @Body() dto: UpdateVendorProfileDto,
   ): Promise<VendorResponseEntity> {
     return this.vendorsService.updateOwnProfile(user.id, dto);
+  }
+
+  @Get('me/pickup-queue')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: "List the authenticated vendor's ready-for-pickup and assigned-to-driver orders",
+  })
+  @ApiResponseDoc({ status: 200, type: PickupQueueEntryEntity, isArray: true })
+  getPickupQueue(@CurrentUser() user: RequestUser): Promise<PickupQueueEntryEntity[]> {
+    return this.vendorPickupQueueService.getForUser(user.id);
   }
 
   @Get()

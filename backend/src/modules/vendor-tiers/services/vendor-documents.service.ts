@@ -4,6 +4,7 @@ import { VendorDocument, VendorTier } from '@prisma/client';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { ReviewVendorDocumentDto } from '../dto/review-vendor-document.dto';
 import { UploadVendorDocumentDto } from '../dto/upload-vendor-document.dto';
+import { VendorComplianceStatusEntity } from '../entities/vendor-compliance-status.entity';
 import { VendorDocumentResponseEntity } from '../entities/vendor-document-response.entity';
 import { VendorDocumentsRepository } from '../repositories/vendor-documents.repository';
 import { REQUIRED_DOCUMENTS_BY_TIER } from '../vendor-tier.constants';
@@ -103,6 +104,28 @@ export class VendorDocumentsService {
         'This vendor is missing required, approved compliance documents for their tier',
       );
     }
+  }
+
+  /**
+   * Per-document-type breakdown backing the vendor dashboard's compliance
+   * checklist (✓/✗ per required document), rather than just the boolean
+   * `computeCanSell` used to gate product creation. Builds both from a
+   * single `syncExpiredStatuses` read.
+   */
+  async getComplianceStatus(vendorId: string, tier: VendorTier): Promise<VendorComplianceStatusEntity> {
+    const required = REQUIRED_DOCUMENTS_BY_TIER[tier];
+    const documents = await this.syncExpiredStatuses(vendorId);
+
+    const requiredDocuments = required.map((documentType) => ({
+      type: documentType,
+      status: documents.find((document) => document.documentType === documentType)?.status ?? ('MISSING' as const),
+    }));
+
+    return {
+      tier,
+      canSell: requiredDocuments.every((document) => document.status === 'APPROVED'),
+      requiredDocuments,
+    };
   }
 
   /**

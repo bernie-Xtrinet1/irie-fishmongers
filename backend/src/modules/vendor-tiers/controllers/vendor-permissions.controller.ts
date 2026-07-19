@@ -7,7 +7,9 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { VendorComplianceStatusEntity } from '../entities/vendor-compliance-status.entity';
 import { VendorPermissionsEntity } from '../entities/vendor-permissions.entity';
+import { VendorDocumentsService } from '../services/vendor-documents.service';
 import { VendorPermissionsService } from '../services/vendor-permissions.service';
 
 @ApiTags('vendor-permissions')
@@ -17,6 +19,7 @@ import { VendorPermissionsService } from '../services/vendor-permissions.service
 export class VendorPermissionsController {
   constructor(
     private readonly permissionsService: VendorPermissionsService,
+    private readonly documentsService: VendorDocumentsService,
     private readonly vendorsRepository: VendorsRepository,
   ) {}
 
@@ -30,6 +33,20 @@ export class VendorPermissionsController {
       throw new NotFoundException('No vendor profile exists for this account');
     }
     return this.permissionsService.getPermissions(vendor.tier);
+  }
+
+  @Get('me/compliance-status')
+  @Roles(RoleName.VENDOR)
+  @ApiOperation({
+    summary: "Get the authenticated vendor's tier-required document compliance checklist",
+  })
+  @ApiResponseDoc({ status: 200, type: VendorComplianceStatusEntity })
+  async getMyComplianceStatus(@CurrentUser() user: RequestUser): Promise<VendorComplianceStatusEntity> {
+    const vendor = await this.vendorsRepository.findByUserId(user.id);
+    if (!vendor) {
+      throw new NotFoundException('No vendor profile exists for this account');
+    }
+    return this.documentsService.getComplianceStatus(vendor.id, vendor.tier);
   }
 
   @Get(':id/permissions')

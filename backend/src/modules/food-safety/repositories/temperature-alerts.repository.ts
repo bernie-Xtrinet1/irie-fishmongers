@@ -43,6 +43,23 @@ export class TemperatureAlertsRepository {
     return this.prisma.temperatureAlert.count({ where: { lotId, resolved: false } });
   }
 
+  findUnresolvedByLotId(lotId: string): Promise<TemperatureAlert[]> {
+    return this.prisma.temperatureAlert.findMany({ where: { lotId, resolved: false } });
+  }
+
+  async countUnresolvedBySeverity(): Promise<Record<AlertSeverity, number>> {
+    const groups = await this.prisma.temperatureAlert.groupBy({
+      by: ['severity'],
+      where: { resolved: false },
+      _count: { _all: true },
+    });
+    const counts: Record<AlertSeverity, number> = { WARNING: 0, CRITICAL: 0, EMERGENCY: 0 };
+    for (const group of groups) {
+      counts[group.severity] = group._count._all;
+    }
+    return counts;
+  }
+
   async findMany(
     filters: AlertFilters,
     page: Page,
@@ -63,5 +80,9 @@ export class TemperatureAlertsRepository {
     ]);
 
     return { items, total };
+  }
+
+  findAllForExport(): Promise<TemperatureAlert[]> {
+    return this.prisma.temperatureAlert.findMany({ orderBy: { createdAt: 'desc' } });
   }
 }

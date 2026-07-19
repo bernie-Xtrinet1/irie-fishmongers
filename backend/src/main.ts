@@ -16,9 +16,17 @@ async function bootstrap(): Promise<void> {
 
   const apiPrefix = configService.getOrThrow<string>('API_PREFIX');
   const port = configService.getOrThrow<number>('PORT');
+  // Comma-separated allowlist (e.g. the customer web app + admin dashboard
+  // origins) - never '*', which is incompatible with credentials: true.
+  const corsOrigins = configService
+    .getOrThrow<string>('CORS_ORIGIN')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   app.use(helmet());
   app.use(cookieParser());
+  app.enableCors({ origin: corsOrigins, credentials: true });
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(
     new ValidationPipe({

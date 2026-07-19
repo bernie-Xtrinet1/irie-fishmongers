@@ -12,6 +12,7 @@ enum RoleName {
   VENDOR
   DRIVER
   ADMINISTRATOR
+  FISHERMAN
 }
 
 enum UserStatus {
@@ -37,22 +38,39 @@ model User {
   createdAt                       DateTime   @default(now())
   updatedAt                       DateTime   @updatedAt
 
-  roles                   UserRole[]
-  refreshTokens           RefreshToken[]
-  vendor                  Vendor?
-  driver                  Driver?
-  cart                    Cart?
-  orders                  Order[]
-  temperatureReadings     TemperatureReading[]
-  qualityInspections      QualityInspection[]
-  reportedIncidents       FoodSafetyIncident[]
-  createdRecalls          Recall[]
-  notifications           Notification[]
-  notificationPreference  NotificationPreference?
-  deviceTokens            DeviceToken[]
-  verifiedDocuments       VendorDocument[]        @relation("DocumentVerifiedBy")
-  reviewedUpgradeRequests VendorUpgradeRequest[]  @relation("UpgradeRequestReviewedBy")
-  triggeredDowngrades     VendorDowngradeEvent[]  @relation("DowngradeTriggeredBy")
+  roles                        UserRole[]
+  refreshTokens                RefreshToken[]
+  vendor                       Vendor?
+  driver                       Driver?
+  fisherman                    Fisherman?
+  cart                         Cart?
+  orders                       Order[]
+  temperatureReadings          TemperatureReading[]
+  qualityInspections           QualityInspection[]
+  reportedIncidents            FoodSafetyIncident[]
+  createdRecalls               Recall[]
+  notifications                Notification[]
+  notificationPreference       NotificationPreference?
+  deviceTokens                 DeviceToken[]
+  verifiedDocuments            VendorDocument[]              @relation("DocumentVerifiedBy")
+  reviewedUpgradeRequests      VendorUpgradeRequest[]        @relation("UpgradeRequestReviewedBy")
+  triggeredDowngrades          VendorDowngradeEvent[]        @relation("DowngradeTriggeredBy")
+  marketplaceModeUpdates       MarketplaceModeConfig[]
+  vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
+  fulfillmentDecisions         FulfillmentDecision[]
+  triggeredInventoryEvents     InventoryEvent[]
+  vendorConfirmedDeliveries    Delivery[]                    @relation("DeliveryVendorConfirmedBy")
+  resolvedDeliveryExceptions   DeliveryException[]           @relation("DeliveryExceptionResolvedBy")
+  resolvedSLABreaches          SLABreach[]                   @relation("SLABreachResolvedBy")
+  complianceAuditLogs          ComplianceAuditLog[]
+  uploadedComplianceDocuments  ComplianceDocument[]
+  custodyEventsAsSender        ChainOfCustodyEvent[]         @relation("CustodyEventFrom")
+  custodyEventsAsRecipient     ChainOfCustodyEvent[]         @relation("CustodyEventTo")
+  assignedEmergencyResponses   EmergencyResponse[]
+  recordedWasteDisposals       WasteDisposalRecord[]
+  reviewsAuthored              Review[]                      @relation("ReviewAuthor")
+  reviewsRemoved               Review[]                      @relation("ReviewRemovedBy")
+  reviewModerationActions      ReviewAuditLog[]              @relation("ReviewModerationActor")
 
   @@map("users")
 }
@@ -119,28 +137,41 @@ enum Parish {
 }
 
 model Vendor {
-  id              String       @id @default(uuid())
-  userId          String       @unique
-  businessName    String
-  description     String?
-  phone           String?
-  parish          Parish
-  logoUrl         String?
-  status          VendorStatus @default(PENDING)
-  tier            VendorTier   @default(COMMUNITY_FISHER)
-  complianceScore Int?
-  termsAcceptedAt DateTime
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id                       String       @id @default(uuid())
+  userId                   String       @unique
+  businessName             String
+  description              String?
+  phone                    String?
+  parish                   Parish
+  logoUrl                  String?
+  status                   VendorStatus @default(PENDING)
+  tier                     VendorTier   @default(COMMUNITY_FISHER)
+  complianceScore          Int?
+  // When complianceScore was last recomputed (Phase 13C). Written together
+  // with the score so any reader can tell how fresh it is; null until the
+  // vendor has been assessed for the first time.
+  complianceScoreUpdatedAt DateTime?
+  termsAcceptedAt          DateTime
+  primaryZoneId            String?
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
 
-  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  products        Product[]
-  vendorOrders    VendorOrder[]
-  settlements     VendorSettlement[]
-  seafoodLots     SeafoodLot[]
-  documents       VendorDocument[]
-  upgradeRequests VendorUpgradeRequest[]
-  downgradeEvents VendorDowngradeEvent[]
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  primaryZone        DeliveryZone?             @relation("VendorPrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  secondaryZones     VendorZone[]
+  products           Product[]
+  vendorOrders       VendorOrder[]
+  settlements        VendorSettlement[]
+  seafoodLots        SeafoodLot[]
+  documents          VendorDocument[]
+  upgradeRequests    VendorUpgradeRequest[]
+  downgradeEvents    VendorDowngradeEvent[]
+  vendorScores       VendorScore[]
+  vendorAssignments  VendorAssignment[]
+  fishermen          Fisherman[]
+  temperatureDevices TemperatureDevice[]
+  certifications     RegulatoryCertification[]
+  reviews            Review[]
 
   @@map("vendors")
 }
@@ -177,14 +208,29 @@ model Product {
   quantityAvailable Int         @default(0)
   imageUrl          String
   isActive          Boolean     @default(true)
+  // Per-unit weight (matching `unit`'s own measure, e.g. per pound/kg/package/
+  // item) - nullable because most products predate this field. Added for the
+  // 10A Fleet Dispatch Engine's driver/fleet-asset capacity check; existing
+  // vendors must set it before their products count toward any capacity
+  // calculation. Deliberately NOT reusing DriverSettlementEngine's
+  // computePoundsEquivalent() heuristic (PER_POUND/PER_KILOGRAM only, silently
+  // 0 for PER_PACKAGE/PER_ITEM) - this field is the real, direct value that
+  // heuristic was always a stand-in for.
+  weightLbs         Decimal?    @db.Decimal(10, 2)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  category   Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  lot        SeafoodLot? @relation(fields: [lotId], references: [id], onDelete: Restrict)
-  cartItems  CartItem[]
-  orderItems OrderItem[]
+  vendor                          Vendor                @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  category                        Category              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  lot                             SeafoodLot?           @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  cartItems                       CartItem[]
+  orderItems                      OrderItem[]
+  requestedInFulfillmentDecisions FulfillmentDecision[]
+  vendorScores                    VendorScore[]
+  vendorAssignments               VendorAssignment[]
+  inventoryEvents                 InventoryEvent[]
+  wasteDisposalRecords            WasteDisposalRecord[]
+  reviews                         Review[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -239,10 +285,12 @@ model Order {
   deliveryAddressLine2 String?
   deliveryParish       Parish
   deliveryPhone        String
+  deliveryZoneId       String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   customer     User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  deliveryZone DeliveryZone? @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
   vendorOrders VendorOrder[]
   payment      Payment?
 
@@ -259,11 +307,13 @@ model VendorOrder {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  order      Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  vendor     Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  items      OrderItem[]
-  delivery   Delivery?
-  settlement VendorSettlement?
+  order           Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendor          Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items           OrderItem[]
+  delivery        Delivery?
+  settlement      VendorSettlement?
+  inventoryEvents InventoryEvent[]
+  reviews         Review[]
 
   @@index([vendorId])
   @@index([orderId])
@@ -285,6 +335,83 @@ model OrderItem {
   product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@map("order_items")
+}
+
+enum ReviewModerationStatus {
+  VISIBLE
+  REMOVED_BY_AUTHOR
+  REMOVED_BY_ADMIN
+}
+
+// Customer reviews of a vendor (productId null) or a specific purchased
+// product (productId set), always tied to the completed VendorOrder that
+// makes the customer eligible (Phase 13A). FK deletes are deliberately
+// non-cascading: reviews are trust/moderation records that must survive
+// account or catalog changes - author SetNull (a deleted account's review
+// text stays, attribution nulled), everything else Restrict so a vendor/
+// order/product with reviews can't be physically deleted (this platform
+// soft-deactivates instead). Removal is soft via moderationStatus, never a
+// row delete.
+//
+// "Fake reviews are prohibited" (business-rules1.md) is enforced as a
+// one-review-per-(author, vendorOrder, productId) DB constraint. Postgres
+// treats every NULL as distinct, so a plain @@unique across a nullable
+// productId would not block duplicate vendor-only reviews - the migration
+// hand-adds two PARTIAL unique indexes instead (one WHERE productId IS
+// NULL, one WHERE productId IS NOT NULL). That is why no @@unique appears
+// on this model.
+model Review {
+  id               String                 @id @default(uuid())
+  authorId         String?
+  vendorId         String
+  productId        String?
+  vendorOrderId    String
+  rating           Int
+  title            String?
+  body             String
+  moderationStatus ReviewModerationStatus @default(VISIBLE)
+  removedById      String?
+  removalReason    String?
+  removedAt        DateTime?
+  editedAt         DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  author      User?            @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  vendor      Vendor           @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product     Product?         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder      @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  removedBy   User?            @relation("ReviewRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+  auditLogs   ReviewAuditLog[]
+
+  @@index([vendorId, moderationStatus])
+  @@index([productId, moderationStatus])
+  @@map("reviews")
+}
+
+// Immutable trail of admin moderation actions on a review (Phase 13B).
+// Structurally mirrors ComplianceAuditLog but with a stricter contract: the
+// audit row is written in the SAME transaction as the moderation update, so
+// a review can never be admin-removed without an accountable record of who
+// did it and why (ReviewModerationService.remove). reviewId is Restrict
+// (reviews are soft-deleted, never physically removed) and actorId is
+// Restrict so the admin who acted can't be deleted out from under the trail.
+model ReviewAuditLog {
+  id          String   @id @default(uuid())
+  reviewId    String
+  actorId     String
+  action      String
+  beforeValue Json?
+  afterValue  Json?
+  reason      String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  actor  User   @relation("ReviewModerationActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([reviewId])
+  @@map("review_audit_logs")
 }
 
 enum PaymentProviderName {
@@ -358,22 +485,40 @@ enum VehicleType {
 enum VehicleOwnership {
   PERSONAL_VEHICLE
   COMPANY_VEHICLE
+  RENTED_VEHICLE
+}
+
+enum DriverAvailabilityStatus {
+  ONLINE
+  OFFLINE
+  BUSY
 }
 
 model Driver {
-  id               String           @id @default(uuid())
-  userId           String           @unique
-  licensePlate     String
-  vehicleType      VehicleType
-  vehicleOwnership VehicleOwnership @default(PERSONAL_VEHICLE)
-  status           DriverStatus     @default(PENDING)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id                 String                   @id @default(uuid())
+  userId             String                   @unique
+  licensePlate       String
+  vehicleType        VehicleType
+  vehicleOwnership   VehicleOwnership         @default(PERSONAL_VEHICLE)
+  status             DriverStatus             @default(PENDING)
+  availabilityStatus DriverAvailabilityStatus @default(OFFLINE)
+  capacityLbs        Decimal?                 @db.Decimal(10, 2)
+  coldChainCapable   Boolean                  @default(false)
+  assignedZoneId     String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
 
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries  Delivery[]
-  locations   DriverLocation[]
-  settlements DriverSettlement[]
+  user                    User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedZone            DeliveryZone?                  @relation("DriverPrimaryZone", fields: [assignedZoneId], references: [id], onDelete: SetNull)
+  zoneAssignments         DriverZone[]
+  deliveries              Delivery[]
+  locations               DriverLocation[]
+  settlements             DriverSettlement[]
+  operatedFleetAssets     FleetAsset[]                   @relation("FleetAssetCurrentDriver")
+  fleetTrips              FleetTrip[]
+  routeHistory            RouteHistory[]
+  deliveryRuns            DeliveryRun[]
+  coldChainCertifications DriverColdChainCertification[]
 
   @@map("drivers")
 }
@@ -383,23 +528,44 @@ enum ProofOfDeliveryType {
   PHOTO
 }
 
-model Delivery {
-  id            String               @id @default(uuid())
-  vendorOrderId String               @unique
-  driverId      String
-  assignedAt    DateTime             @default(now())
-  pickedUpAt    DateTime?
-  deliveredAt   DateTime?
-  failedAt      DateTime?
-  failureReason String?
-  proofType     ProofOfDeliveryType?
-  proofUrl      String?
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+enum CustomerAcceptanceStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
 
-  vendorOrder VendorOrder       @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
-  driver      Driver            @relation(fields: [driverId], references: [id], onDelete: Restrict)
-  settlement  DriverSettlement?
+model Delivery {
+  id                          String                   @id @default(uuid())
+  vendorOrderId               String                   @unique
+  driverId                    String
+  assignedAt                  DateTime                 @default(now())
+  pickedUpAt                  DateTime?
+  deliveredAt                 DateTime?
+  failedAt                    DateTime?
+  failureReason               String?
+  proofType                   ProofOfDeliveryType?
+  proofUrl                    String?
+  scheduledPickupWindowStart  DateTime?
+  scheduledPickupWindowEnd    DateTime?
+  customerDeliveryWindowStart DateTime?
+  customerDeliveryWindowEnd   DateTime?
+  vendorConfirmedAt           DateTime?
+  vendorConfirmedById         String?
+  customerAcceptanceStatus    CustomerAcceptanceStatus @default(PENDING)
+  customerAcceptedAt          DateTime?
+  customerRejectedAt          DateTime?
+  rejectionReason             String?
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @updatedAt
+
+  vendorOrder       VendorOrder         @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  driver            Driver              @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vendorConfirmedBy User?               @relation("DeliveryVendorConfirmedBy", fields: [vendorConfirmedById], references: [id], onDelete: SetNull)
+  settlement        DriverSettlement?
+  exceptions        DeliveryException[]
+  slaBreaches       SLABreach[]
+  runStop           DeliveryRunStop?
+  routeHistory      RouteHistory?
 
   @@index([driverId])
   @@map("deliveries")
@@ -594,8 +760,11 @@ enum FreshnessGrade {
 model SeafoodLot {
   id               String             @id @default(uuid())
   lotNumber        String             @unique
+  publicTraceToken String             @unique @default(uuid())
   vendorId         String
+  catchItemId      String?
   species          String
+  speciesId        String?
   storageType      SeafoodStorageType
   catchDate        DateTime
   catchLocation    String?
@@ -609,15 +778,22 @@ model SeafoodLot {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  vendor              Vendor               @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  products            Product[]
-  temperatureReadings TemperatureReading[]
-  temperatureAlerts   TemperatureAlert[]
-  inspections         QualityInspection[]
-  incidents           FoodSafetyIncident[]
-  recallLots          RecallLot[]
+  vendor               Vendor                @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  catchItem            CatchItem?            @relation(fields: [catchItemId], references: [id], onDelete: Restrict)
+  speciesRef           Species?              @relation(fields: [speciesId], references: [id], onDelete: SetNull)
+  products             Product[]
+  temperatureReadings  TemperatureReading[]
+  temperatureAlerts    TemperatureAlert[]
+  inspections          QualityInspection[]
+  incidents            FoodSafetyIncident[]
+  recallLots           RecallLot[]
+  documents            ComplianceDocument[]
+  custodyEvents        ChainOfCustodyEvent[]
+  wasteDisposalRecords WasteDisposalRecord[]
 
   @@index([vendorId])
+  @@index([catchItemId])
+  @@index([speciesId])
   @@map("seafood_lots")
 }
 
@@ -628,11 +804,14 @@ enum TemperatureCheckpoint {
   DRIVER_PICKUP
   IN_TRANSIT
   DELIVERY
+  VEHICLE_LOADING
+  CUSTOMER_ACCEPTANCE
 }
 
 model TemperatureReading {
   id           String                @id @default(uuid())
   lotId        String
+  deviceId     String?
   checkpoint   TemperatureCheckpoint
   temperatureC Decimal               @db.Decimal(5, 2)
   recordedById String
@@ -641,11 +820,13 @@ model TemperatureReading {
   photoUrl     String?
   recordedAt   DateTime              @default(now())
 
-  lot        SeafoodLot        @relation(fields: [lotId], references: [id], onDelete: Cascade)
-  recordedBy User              @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  lot        SeafoodLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  device     TemperatureDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  recordedBy User               @relation(fields: [recordedById], references: [id], onDelete: Restrict)
   alert      TemperatureAlert?
 
   @@index([lotId])
+  @@index([deviceId])
   @@map("temperature_readings")
 }
 
@@ -668,8 +849,9 @@ model TemperatureAlert {
   resolvedAt DateTime?
   createdAt  DateTime      @default(now())
 
-  reading TemperatureReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
-  lot     SeafoodLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  reading           TemperatureReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
+  lot               SeafoodLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  emergencyResponse EmergencyResponse?
 
   @@index([lotId])
   @@map("temperature_alerts")
@@ -773,8 +955,10 @@ model Recall {
   updatedAt       DateTime            @updatedAt
   closedAt        DateTime?
 
-  createdBy User        @relation(fields: [createdById], references: [id], onDelete: Restrict)
-  lots      RecallLot[]
+  createdBy            User                  @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  lots                 RecallLot[]
+  documents            ComplianceDocument[]
+  wasteDisposalRecords WasteDisposalRecord[]
 
   @@map("recalls")
 }
@@ -790,6 +974,474 @@ model RecallLot {
   @@unique([recallId, lotId])
   @@index([lotId])
   @@map("recall_lots")
+}
+
+// ---------------------------------------------------------------------------
+// Food Safety Phase 11: traceability chain (Fisherman/LandingSite/Catch),
+// Species regulation, cold-chain device/threshold data, and compliance
+// operations (audit log, document management), per
+// .claude/rules/seafood-compliance-rules.md and cold-chain-management.md.
+//
+// SeafoodLot.catchId/speciesId are additive and nullable - existing lots
+// and every existing lot/product-creation call site keep working
+// unchanged. Enforcement is prospective only: a Catch requires an APPROVED
+// Fisherman; a SeafoodLot may optionally link a catch/species for full
+// traceability. See docs/database-design.md for the full rationale.
+// ---------------------------------------------------------------------------
+
+enum LandingSiteStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SiteInspectionStatus {
+  NOT_INSPECTED
+  PASSED
+  FAILED
+}
+
+model LandingSite {
+  id               String               @id @default(uuid())
+  name             String
+  parish           Parish
+  latitude         Float?
+  longitude        Float?
+  status           LandingSiteStatus    @default(ACTIVE)
+  inspectionStatus SiteInspectionStatus @default(NOT_INSPECTED)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  fishermen      Fisherman[]
+  catches        Catch[]
+  certifications RegulatoryCertification[]
+
+  @@map("landing_sites")
+}
+
+enum FishermanStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+  REJECTED
+}
+
+// Distinct from Vendor, per seafood-compliance-rules.md's traceability
+// chain (Sea -> Fisherman -> Landing Site -> Vendor -> ...). Optionally
+// linked to a Vendor for the common case where a COMMUNITY_FISHER vendor
+// IS the fisherman, but not required - a retailer/peddler vendor may
+// source catches from a fisherman who never registers as a vendor at all.
+model Fisherman {
+  id                       String          @id @default(uuid())
+  userId                   String          @unique
+  vendorId                 String?
+  fullName                 String
+  contactPhone             String
+  contactEmail             String?
+  vesselName               String?
+  vesselRegistrationNumber String?
+  fishingLicenseNumber     String?
+  landingSiteId            String?
+  bankAccountName          String?
+  bankAccountNumber        String?
+  status                   FishermanStatus @default(PENDING)
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+
+  user           User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendor         Vendor?                   @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  landingSite    LandingSite?              @relation(fields: [landingSiteId], references: [id], onDelete: SetNull)
+  catches        Catch[]
+  vessels        Vessel[]
+  certifications RegulatoryCertification[]
+
+  @@index([vendorId])
+  @@map("fishermen")
+}
+
+enum RegulatoryStatus {
+  UNRESTRICTED
+  RESTRICTED
+  PROHIBITED
+}
+
+// SeafoodLot.species (free-text) is left untouched for backward
+// compatibility; speciesId is additive enrichment. CatchItem.speciesId is
+// required - a catch item is always species-identified at the source.
+model Species {
+  id                 String           @id @default(uuid())
+  scientificName     String           @unique
+  commercialName     String
+  regulatoryStatus   RegulatoryStatus @default(UNRESTRICTED)
+  seasonalStartMonth Int?
+  seasonalEndMonth   Int?
+  minimumSizeCm      Decimal?         @db.Decimal(6, 2)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  catchItems CatchItem[]
+  lots       SeafoodLot[]
+
+  @@map("species")
+}
+
+enum FishingMethod {
+  TRAP
+  NET
+  LINE
+  SPEARFISHING
+  POT
+  TROLLING
+  DIVING
+  LONGLINE
+  OTHER
+}
+
+enum VesselRegistrationStatus {
+  ACTIVE
+  INACTIVE
+  DECOMMISSIONED
+}
+
+// The real vessel registry (Phase 11 amendment, section 10).
+// Fisherman.vesselName/vesselRegistrationNumber (flat, optional strings)
+// stay unchanged for backward compatibility - this is the normalized
+// registry going forward, referenced optionally from Catch.
+model Vessel {
+  id                 String                   @id @default(uuid())
+  ownerFishermanId   String
+  registrationNumber String                   @unique
+  name               String
+  fishingMethod      FishingMethod
+  capacityTons       Decimal?                 @db.Decimal(8, 2)
+  status             VesselRegistrationStatus @default(ACTIVE)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  owner   Fisherman @relation(fields: [ownerFishermanId], references: [id], onDelete: Restrict)
+  catches Catch[]
+
+  @@index([ownerFishermanId])
+  @@map("vessels")
+}
+
+// Trip-level record (Phase 11 amendment's section 1a correction: a single
+// fishing trip routinely lands multiple species in one haul). Per-species
+// line items live on CatchItem below.
+model Catch {
+  id            String   @id @default(uuid())
+  catchNumber   String   @unique
+  fishermanId   String
+  vesselId      String?
+  landingSiteId String
+  catchDate     DateTime
+  latitude      Float?
+  longitude     Float?
+  fishingArea   String?
+  photos        String[]
+  createdAt     DateTime @default(now())
+
+  fisherman     Fisherman             @relation(fields: [fishermanId], references: [id], onDelete: Restrict)
+  vessel        Vessel?               @relation(fields: [vesselId], references: [id], onDelete: SetNull)
+  landingSite   LandingSite           @relation(fields: [landingSiteId], references: [id], onDelete: Restrict)
+  items         CatchItem[]
+  custodyEvents ChainOfCustodyEvent[]
+
+  @@index([fishermanId])
+  @@index([landingSiteId])
+  @@map("catches")
+}
+
+// Per-species line item within a Catch (Phase 11 amendment's section 1a
+// correction). A SeafoodLot traces to exactly one CatchItem, never to a
+// whole mixed-species Catch, since a lot is species-homogeneous.
+model CatchItem {
+  id                 String          @id @default(uuid())
+  catchId            String
+  speciesId          String
+  weight             Decimal         @db.Decimal(10, 2)
+  weightUnit         WeightUnit
+  estimatedFreshness FreshnessGrade?
+  createdAt          DateTime        @default(now())
+
+  catch   Catch        @relation(fields: [catchId], references: [id], onDelete: Cascade)
+  species Species      @relation(fields: [speciesId], references: [id], onDelete: Restrict)
+  lots    SeafoodLot[]
+
+  @@index([catchId])
+  @@index([speciesId])
+  @@map("catch_items")
+}
+
+enum DeviceStatus {
+  ACTIVE
+  OFFLINE
+  DECOMMISSIONED
+}
+
+model TemperatureDevice {
+  id               String       @id @default(uuid())
+  vendorId         String
+  deviceCode       String       @unique
+  status           DeviceStatus @default(ACTIVE)
+  lastSeenAt       DateTime?
+  lastCalibratedAt DateTime?
+  calibrationDueAt DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  vendor     Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  readings   TemperatureReading[]
+  thresholds TemperatureThreshold[]
+
+  @@index([vendorId])
+  @@map("temperature_devices")
+}
+
+// deviceId null = platform-wide default (seeded once per SeafoodStorageType),
+// replacing the previously-hardcoded FRESH_MAX_C/FROZEN_MAX_C constants with
+// real, admin-editable data.
+model TemperatureThreshold {
+  id           String             @id @default(uuid())
+  deviceId     String?
+  storageType  SeafoodStorageType
+  minC         Decimal            @db.Decimal(5, 2)
+  maxC         Decimal            @db.Decimal(5, 2)
+  warningBandC Decimal            @db.Decimal(5, 2)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  device TemperatureDevice? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@map("temperature_thresholds")
+}
+
+// Deliberately scoped to this module's own mutation points (lot/recall/
+// incident status changes, inspections, fisherman approval) - not a
+// platform-wide audit log for every module.
+model ComplianceAuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  action      String
+  entityType  String
+  entityId    String
+  beforeValue Json?
+  afterValue  Json?
+  ipAddress   String?
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@map("compliance_audit_logs")
+}
+
+enum ComplianceDocumentType {
+  INSPECTION_REPORT
+  RECALL_NOTICE
+  TEMPERATURE_REPORT
+  AUDIT_REPORT
+}
+
+// Distinct from VendorDocument (vendor-tier licensing docs, a different
+// module/phase) - these are inspection/recall/temperature/audit report
+// artifacts. Versioned: a new upload for the same documentType +
+// relatedLotId/relatedRecallId bumps version rather than overwriting.
+model ComplianceDocument {
+  id              String                 @id @default(uuid())
+  documentType    ComplianceDocumentType
+  relatedLotId    String?
+  relatedRecallId String?
+  fileUrl         String
+  version         Int                    @default(1)
+  uploadedById    String
+  createdAt       DateTime               @default(now())
+
+  lot        SeafoodLot? @relation(fields: [relatedLotId], references: [id], onDelete: SetNull)
+  recall     Recall?     @relation(fields: [relatedRecallId], references: [id], onDelete: SetNull)
+  uploadedBy User        @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([relatedLotId])
+  @@index([relatedRecallId])
+  @@map("compliance_documents")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 amendment: chain-of-custody, regulatory certification, emergency
+// response, and waste-disposal tracking, per the second round of gaps
+// requested on top of the original Phase 11 plan (seafood-compliance-
+// rules.md's Chain-of-Custody/Regulatory/Recall sections and cold-chain-
+// management.md's Automated Actions table).
+// ---------------------------------------------------------------------------
+
+enum CustodyEventType {
+  LANDING
+  STORAGE_ENTRY
+  STORAGE_EXIT
+  PACKING
+  DISPATCH
+  PICKUP
+  TRANSIT
+  DELIVERY
+  INSPECTION
+  DISPOSAL
+}
+
+// fromUserId/toUserId record who custody actually transferred between, not
+// just who logged the event. Both nullable: LANDING sets only toUserId (the
+// sea isn't a User), DISPOSAL sets only fromUserId (no downstream
+// recipient), INSPECTION sets both to the inspector (a checkpoint, not a
+// transfer).
+model ChainOfCustodyEvent {
+  id         String           @id @default(uuid())
+  catchId    String?
+  lotId      String?
+  eventType  CustodyEventType
+  fromUserId String?
+  toUserId   String?
+  location   String?
+  latitude   Float?
+  longitude  Float?
+  notes      String?
+  occurredAt DateTime         @default(now())
+
+  catch    Catch?      @relation(fields: [catchId], references: [id], onDelete: SetNull)
+  lot      SeafoodLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  fromUser User?       @relation("CustodyEventFrom", fields: [fromUserId], references: [id], onDelete: SetNull)
+  toUser   User?       @relation("CustodyEventTo", fields: [toUserId], references: [id], onDelete: SetNull)
+
+  @@index([catchId])
+  @@index([lotId])
+  @@map("chain_of_custody_events")
+}
+
+// Normalized instead of a free-text issuingAuthority string, so the same
+// authority is one canonical, queryable row referenced by every certificate
+// it issues.
+model RegulatoryAuthority {
+  id           String   @id @default(uuid())
+  name         String   @unique
+  country      String?
+  contactEmail String?
+  contactPhone String?
+  website      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  certifications RegulatoryCertification[]
+
+  @@map("regulatory_authorities")
+}
+
+enum CertificationStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  REVOKED
+}
+
+// Exactly one of vendorId/fishermanId/landingSiteId is set (validated in
+// the service). PENDING is the default on create; only an explicit
+// activate action moves it to ACTIVE. Expiry detection is computed-on-read
+// (mirrors VendorDocumentsService.syncExpiredStatuses) and only sweeps
+// ACTIVE rows - a PENDING/SUSPENDED cert was never in force.
+model RegulatoryCertification {
+  id                 String              @id @default(uuid())
+  vendorId           String?
+  fishermanId        String?
+  landingSiteId      String?
+  certificateType    String
+  certificateNumber  String
+  issuingAuthorityId String
+  issuedDate         DateTime
+  expiryDate         DateTime?
+  status             CertificationStatus @default(PENDING)
+  documentUrl        String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  vendor           Vendor?             @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  fisherman        Fisherman?          @relation(fields: [fishermanId], references: [id], onDelete: Cascade)
+  landingSite      LandingSite?        @relation(fields: [landingSiteId], references: [id], onDelete: Cascade)
+  issuingAuthority RegulatoryAuthority @relation(fields: [issuingAuthorityId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId])
+  @@index([fishermanId])
+  @@index([landingSiteId])
+  @@index([issuingAuthorityId])
+  @@map("regulatory_certifications")
+}
+
+enum EmergencyResponseStatus {
+  OPEN
+  ACKNOWLEDGED
+  CONTAINED
+  RESOLVED
+}
+
+// One row per EMERGENCY-severity TemperatureAlert, auto-created alongside
+// the existing auto-quarantine. rootCause/correctiveAction/preventiveAction
+// are the standard CAPA triad - the service requires rootCause and
+// correctiveAction to be set before allowing the RESOLVED transition.
+model EmergencyResponse {
+  id               String                  @id @default(uuid())
+  alertId          String                  @unique
+  assignedToId     String?
+  status           EmergencyResponseStatus @default(OPEN)
+  actionsTaken     String?
+  rootCause        String?
+  correctiveAction String?
+  preventiveAction String?
+  acknowledgedAt   DateTime?
+  resolvedAt       DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  alert      TemperatureAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  assignedTo User?            @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@map("emergency_responses")
+}
+
+enum WasteReason {
+  SPOILAGE
+  RECALL_DESTRUCTION
+  EXPIRED
+  DAMAGED
+  QUALITY_REJECTION
+  OTHER
+}
+
+// witnessName is required by the service when reason === RECALL_DESTRUCTION
+// (regulator-facing destruction evidence); optional for the other five
+// reasons. productId is optional - when supplied, the service decrements
+// Product.quantityAvailable and writes an InventoryEvent{DISPOSED} in the
+// same transaction rather than a second, untracked bookkeeping trail.
+model WasteDisposalRecord {
+  id                  String      @id @default(uuid())
+  lotId               String
+  productId           String?
+  recallId            String?
+  quantity            Decimal     @db.Decimal(10, 2)
+  weightUnit          WeightUnit
+  reason              WasteReason
+  disposalMethod      String?
+  evidencePhotoUrls   String[]
+  witnessName         String?
+  witnessTitle        String?
+  witnessSignatureUrl String?
+  recordedById        String
+  disposedAt          DateTime    @default(now())
+  createdAt           DateTime    @default(now())
+
+  lot        SeafoodLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  product    Product?   @relation(fields: [productId], references: [id], onDelete: SetNull)
+  recall     Recall?    @relation(fields: [recallId], references: [id], onDelete: SetNull)
+  recordedBy User       @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+
+  @@index([lotId])
+  @@map("waste_disposal_records")
 }
 
 // -----------------------------------------------------------------------------
@@ -836,7 +1488,11 @@ enum NotificationCategory {
 }
 
 // Fine-grained event identifying which template/recipient-rule applies -
-// intentionally only the 7 events currently wired (see scope note above).
+// intentionally only the events currently wired (see scope note above).
+// DRIVER_ASSIGNED/AWAITING_CUSTOMER_ACCEPTANCE are the two Phase 10 events
+// actually fired; DRIVER_NEARBY/PICKUP_DELAYED/DELIVERY_DELAYED remain
+// unwired TS event classes only (no geocoding/scheduler infra yet), so they
+// are deliberately not added here.
 enum NotificationEventType {
   REGISTRATION_CONFIRMED
   VENDOR_APPROVED
@@ -845,6 +1501,12 @@ enum NotificationEventType {
   PAYMENT_CONFIRMED
   DELIVERY_STATUS_UPDATED
   REFUND_STATUS_CHANGED
+  DRIVER_ASSIGNED
+  AWAITING_CUSTOMER_ACCEPTANCE
+  COLD_CHAIN_ALERT_RAISED
+  RECALL_ISSUED
+  FLEET_MAINTENANCE_OVERDUE
+  DELIVERY_REJECTED
 }
 
 enum NotificationPriority {
@@ -1161,4 +1823,567 @@ model VendorDowngradeEvent {
 
   @@index([vendorId])
   @@map("vendor_downgrade_events")
+}
+
+// -----------------------------------------------------------------------------
+// Marketplace Selection Engine (Vendor Tier Marketplace Enhancement, per
+// .claude/marketplace/marketplace-modes.md, vendor-selection-engine.md,
+// fulfillment-strategy.md, and vendor-tier-rules.md's MARKETPLACE VISIBILITY
+// section).
+//
+// Two purchasing modes: Mode 1 (customer explicitly picks a vendor - already
+// fully supported by the existing Product/Cart/Order flow, no schema change
+// needed) and Mode 2 (customer picks a product, the platform auto-selects the
+// fulfilling vendor - "Best Available Vendor"). MarketplaceModeConfig gates
+// which modes are active; vendor-selection-engine.md requires this to be
+// database-configurable, never hardcoded.
+//
+// Scope note: FulfillmentDecision/VendorScore/VendorAssignment are the
+// append-only audit trail vendor-selection-engine.md's Audit Requirements
+// mandate (decision time, decision factors, winning vendor, competing
+// vendors, scores). A decision persists even when no vendor is eligible
+// (VendorScore rows recorded with eligible=false + reason, no
+// VendorAssignment created) - a "no eligible vendor" outcome is itself an
+// auditable fact, not an error to discard.
+// -----------------------------------------------------------------------------
+
+// Append-only, mirrors SettlementRateConfig/PlatformCommissionConfig:
+// toggling a mode creates a new row rather than mutating the current one.
+// "Current" is always the most recently created row.
+model MarketplaceModeConfig {
+  id                      String   @id @default(uuid())
+  customerSelectedEnabled Boolean  @default(true)
+  bestAvailableEnabled    Boolean  @default(false)
+  updatedById             String?
+  createdAt               DateTime @default(now())
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("marketplace_mode_configs")
+}
+
+// Append-only weighted-scoring configuration for the vendor selection engine
+// (Inventory/Freshness/Compliance/Distance/Rating/Delivery Capacity, per
+// vendor-selection-engine.md's Scoring Model). Weights are fractional
+// (0.0000-1.0000) and are read by VendorSelectionEngineService - the engine
+// itself never hardcodes a weight value.
+model VendorSelectionWeightConfig {
+  id                     String   @id @default(uuid())
+  inventoryWeight        Decimal  @db.Decimal(5, 4)
+  freshnessWeight        Decimal  @db.Decimal(5, 4)
+  complianceWeight       Decimal  @db.Decimal(5, 4)
+  distanceWeight         Decimal  @db.Decimal(5, 4)
+  ratingWeight           Decimal  @db.Decimal(5, 4)
+  deliveryCapacityWeight Decimal  @db.Decimal(5, 4)
+  updatedById            String?
+  createdAt              DateTime @default(now())
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("vendor_selection_weight_configs")
+}
+
+// One row per "resolve best vendor" attempt (fulfillment-strategy.md's
+// CLAUDE EXECUTION RULE: "All fulfillment decisions must be auditable.
+// Selection reason must be recorded."). requestedProductId is the product the
+// customer viewed; the actual fulfilling product/vendor (if any) is recorded
+// via the related VendorAssignment, keeping the winner normalized in one
+// place instead of duplicated onto this row.
+model FulfillmentDecision {
+  id                 String   @id @default(uuid())
+  requestedProductId String
+  quantity           Int
+  deliveryParish     Parish
+  customerId         String
+  decidedAt          DateTime
+  createdAt          DateTime @default(now())
+
+  requestedProduct Product           @relation(fields: [requestedProductId], references: [id], onDelete: Restrict)
+  customer         User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  scores           VendorScore[]
+  assignment       VendorAssignment?
+
+  @@index([requestedProductId])
+  @@index([customerId])
+  @@map("fulfillment_decisions")
+}
+
+// One row per vendor considered for a FulfillmentDecision (the "Competing
+// Vendors" + "Scores" audit fields) - includes ineligible vendors with
+// eligible=false and a reason, not just the winner, so the full comparison
+// is reconstructable later.
+model VendorScore {
+  id                    String   @id @default(uuid())
+  fulfillmentDecisionId String
+  vendorId              String
+  productId             String
+  inventoryScore        Decimal  @db.Decimal(5, 2)
+  freshnessScore        Decimal  @db.Decimal(5, 2)
+  complianceScore       Decimal  @db.Decimal(5, 2)
+  distanceScore         Decimal  @db.Decimal(5, 2)
+  ratingScore           Decimal  @db.Decimal(5, 2)
+  deliveryCapacityScore Decimal  @db.Decimal(5, 2)
+  totalScore            Decimal  @db.Decimal(5, 2)
+  eligible              Boolean
+  ineligibilityReason   String?
+  createdAt             DateTime @default(now())
+
+  fulfillmentDecision FulfillmentDecision @relation(fields: [fulfillmentDecisionId], references: [id], onDelete: Cascade)
+  vendor              Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product             Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([fulfillmentDecisionId])
+  @@index([vendorId])
+  @@map("vendor_scores")
+}
+
+// The winning vendor+product for a FulfillmentDecision (the "Winning Vendor"
+// audit field). 1:1 with FulfillmentDecision - absent entirely when no
+// eligible vendor was found.
+model VendorAssignment {
+  id                    String   @id @default(uuid())
+  fulfillmentDecisionId String   @unique
+  vendorId              String
+  productId             String
+  createdAt             DateTime @default(now())
+
+  fulfillmentDecision FulfillmentDecision @relation(fields: [fulfillmentDecisionId], references: [id], onDelete: Cascade)
+  vendor              Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  product             Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId])
+  @@map("vendor_assignments")
+}
+
+// -----------------------------------------------------------------------------
+// Inventory Management (Phase 7, per .claude/roadmap.md - "Prevent
+// overselling"). ProductsRepository.adjustStock already makes the checkout
+// decrement atomic via a floor-at-zero WHERE guard; the gap this phase closes
+// is upstream of that - Cart previously accepted any quantity with no stock
+// check, so a customer could carry an unfulfillable quantity all the way to
+// the final checkout step before finding out.
+//
+// Deliberately two data stores, not one: live reservation state (which cart
+// is currently holding how much of which product, with a 15-minute soft-hold
+// expiry) lives entirely in Redis - high-churn, ephemeral, self-expiring, and
+// never written here. This table is the durable ledger of real
+// quantityAvailable movements only (checkout decrement, cancellation/
+// rejection restock, manual vendor adjustment), satisfying "Inventory Events"
+// and "Inventory Audit" as one mechanism rather than two.
+// -----------------------------------------------------------------------------
+
+enum InventoryEventType {
+  DECREMENTED
+  RESTOCKED
+  MANUAL_ADJUSTMENT
+  DISPOSED
+}
+
+model InventoryEvent {
+  id            String             @id @default(uuid())
+  productId     String
+  eventType     InventoryEventType
+  quantityDelta Int
+  vendorOrderId String?
+  triggeredById String?
+  notes         String?
+  createdAt     DateTime           @default(now())
+
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  vendorOrder VendorOrder? @relation(fields: [vendorOrderId], references: [id], onDelete: SetNull)
+  triggeredBy User?        @relation(fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@map("inventory_events")
+}
+
+// -----------------------------------------------------------------------------
+// Delivery Zones / Fleet / Logistics Tables (Delivery Zones phase, per
+// docs/integrations/ADR-002-delivery-zones.md, docs/reference/jamaica-delivery-zones.md,
+// docs/integrations/fleet-management-engine.md - deferred from the original
+// Delivery phase, now built. See docs/database-design.md's "Delivery Tables"
+// section for the original deferral note and this section's reconciliation.
+// -----------------------------------------------------------------------------
+
+model DeliveryZone {
+  id          String   @id @default(uuid())
+  name        String
+  code        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parishes              DeliveryZoneParish[]
+  vendorPrimary         Vendor[]               @relation("VendorPrimaryZone")
+  vendorSecondary       VendorZone[]
+  driverPrimary         Driver[]               @relation("DriverPrimaryZone")
+  driverAssignments     DriverZone[]
+  fleetAssets           FleetAsset[]
+  fleetTrips            FleetTrip[]
+  orders                Order[]
+  routeOptimizationRuns RouteOptimizationRun[]
+  deliveryRuns          DeliveryRun[]
+
+  @@map("delivery_zones")
+}
+
+// Every parish maps to exactly one zone. Seed-authored, not admin-editable
+// via API - the mapping is authoritative and stable (jamaica-delivery-zones.md).
+model DeliveryZoneParish {
+  id     String @id @default(uuid())
+  zoneId String
+  parish Parish @unique
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([zoneId])
+  @@map("delivery_zone_parishes")
+}
+
+model VendorZone {
+  id       String @id @default(uuid())
+  vendorId String
+  zoneId   String
+
+  vendor Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId, zoneId])
+  @@index([zoneId])
+  @@map("vendor_zones")
+}
+
+model DriverZone {
+  id       String @id @default(uuid())
+  driverId String
+  zoneId   String
+
+  driver Driver       @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, zoneId])
+  @@index([zoneId])
+  @@map("driver_zones")
+}
+
+enum FleetAssetType {
+  REFRIGERATED_TRUCK
+  TRUCK
+  VAN
+}
+
+enum FleetOwnership {
+  COMPANY_OWNED
+  RENTED
+}
+
+enum FleetAssetStatus {
+  ACTIVE
+  MAINTENANCE
+  RETIRED
+}
+
+model FleetAsset {
+  id               String           @id @default(uuid())
+  zoneId           String
+  assetType        FleetAssetType
+  ownership        FleetOwnership
+  licensePlate     String           @unique
+  capacityLbs      Decimal          @db.Decimal(10, 2)
+  coldChainCapable Boolean          @default(false)
+  status           FleetAssetStatus @default(ACTIVE)
+  currentDriverId  String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  zone              DeliveryZone            @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  currentDriver     Driver?                 @relation("FleetAssetCurrentDriver", fields: [currentDriverId], references: [id], onDelete: SetNull)
+  trips             FleetTrip[]
+  maintenance       FleetMaintenance[]
+  deliveryRuns      DeliveryRun[]
+  sanitationRecords FleetSanitationRecord[]
+
+  @@index([zoneId])
+  @@map("fleet_assets")
+}
+
+// fleet-management-engine.md's cost fields captured, not computed - same
+// "add real fields before the engine that consumes them" precedent as
+// Vendor.complianceScore. All cost fields nullable Decimal, no FleetCostEngine.
+model FleetTrip {
+  id                    String    @id @default(uuid())
+  fleetAssetId          String
+  driverId              String
+  zoneId                String
+  startedAt             DateTime
+  endedAt               DateTime?
+  fuelCost              Decimal?  @db.Decimal(10, 2)
+  driverWage            Decimal?  @db.Decimal(10, 2)
+  maintenanceAllocation Decimal?  @db.Decimal(10, 2)
+  insuranceAllocation   Decimal?  @db.Decimal(10, 2)
+  createdAt             DateTime  @default(now())
+
+  fleetAsset FleetAsset   @relation(fields: [fleetAssetId], references: [id], onDelete: Restrict)
+  driver     Driver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  zone       DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([fleetAssetId])
+  @@index([driverId])
+  @@map("fleet_trips")
+}
+
+enum FleetMaintenanceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  OVERDUE
+}
+
+model FleetMaintenance {
+  id             String                 @id @default(uuid())
+  fleetAssetId   String
+  serviceDate    DateTime
+  mileage        Int?
+  technician     String?
+  cost           Decimal?               @db.Decimal(10, 2)
+  nextServiceDue DateTime?
+  status         FleetMaintenanceStatus @default(SCHEDULED)
+  notes          String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  fleetAsset FleetAsset @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+
+  @@index([fleetAssetId])
+  @@map("fleet_maintenance_records")
+}
+
+// Phase 10E: cold-chain-relevant vehicle hygiene compliance, distinct from
+// FleetMaintenance (mechanical service) - a mechanically sound vehicle can
+// still fail cold-chain sanitation requirements. IoT-telemetry-based
+// automated sanitation verification is explicitly out of scope here (no
+// physical sensor hardware exists to integrate against); this is
+// manually-recorded, matching every other compliance record in this
+// codebase (TemperatureReading, QualityInspection, etc. are all
+// human-entered too).
+enum SanitationStatus {
+  COMPLETED
+  OVERDUE
+}
+
+model FleetSanitationRecord {
+  id           String           @id @default(uuid())
+  fleetAssetId String
+  performedAt  DateTime
+  performedBy  String?
+  method       String?
+  notes        String?
+  nextDueAt    DateTime?
+  status       SanitationStatus @default(COMPLETED)
+  createdAt    DateTime         @default(now())
+
+  fleetAsset FleetAsset @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+
+  @@index([fleetAssetId])
+  @@map("fleet_sanitation_records")
+}
+
+// Phase 10E: whether a driver is currently certified to handle cold-chain
+// deliveries, separate from Driver.coldChainCapable (a vehicle-capability
+// flag on the driver's own vehicle - see 10A's dispatch eligibility).
+// Certification here is a training/compliance credential with an expiry,
+// following VendorDocumentsService.computeCanSell()'s established
+// precedent for "does this party currently satisfy a compliance
+// requirement" rather than reusing that vendor-specific service.
+enum DriverCertificationStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+model DriverColdChainCertification {
+  id          String                    @id @default(uuid())
+  driverId    String
+  issuedBy    String
+  issuedAt    DateTime
+  expiresAt   DateTime
+  status      DriverCertificationStatus @default(ACTIVE)
+  documentUrl String?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+  @@map("driver_cold_chain_certifications")
+}
+
+enum DeliveryExceptionType {
+  CUSTOMER_UNAVAILABLE
+  ADDRESS_ISSUE
+  VEHICLE_BREAKDOWN
+  TRAFFIC_DELAY
+  WEATHER_DELAY
+  PRODUCT_DAMAGE
+  OTHER
+}
+
+model DeliveryException {
+  id           String                @id @default(uuid())
+  deliveryId   String
+  type         DeliveryExceptionType
+  reason       String
+  photos       String[]
+  notes        String?
+  resolved     Boolean               @default(false)
+  resolvedAt   DateTime?
+  resolvedById String?
+  createdAt    DateTime              @default(now())
+
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("DeliveryExceptionResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([deliveryId])
+  @@map("delivery_exceptions")
+}
+
+// SLA = Delivery.customerDeliveryWindowEnd, the same promised-by deadline
+// DriversService.getPerformanceMetrics() already uses for its on-time/late
+// ratio - this table persists that same boundary as queryable records
+// instead of only ever computing it live per-driver. Two distinct
+// detection paths, not one: OVERDUE_IN_TRANSIT is inherently
+// time-passage-driven (the delivery hasn't completed yet, so nothing
+// event-driven can catch it - a cron is genuinely necessary here) and is
+// created by SLABreachDetectionService's scheduled scan; LATE_DELIVERY is
+// a direct consequence of an existing state transition and is created
+// synchronously inside DeliveriesService.updateStatus()'s DELIVERED
+// branch, in the same transaction, when deliveredAt lands after the
+// promised window.
+enum SLABreachType {
+  OVERDUE_IN_TRANSIT
+  LATE_DELIVERY
+}
+
+model SLABreach {
+  id           String        @id @default(uuid())
+  deliveryId   String
+  type         SLABreachType
+  scheduledEnd DateTime
+  minutesLate  Int
+  detectedAt   DateTime      @default(now())
+  resolved     Boolean       @default(false)
+  resolvedAt   DateTime?
+  resolvedById String?
+
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("SLABreachResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  // One breach record per (delivery, type) - the cron scans every 5
+  // minutes and must not create a duplicate OVERDUE_IN_TRANSIT row on
+  // every tick a delivery remains overdue.
+  @@unique([deliveryId, type])
+  @@index([deliveryId])
+  @@map("sla_breaches")
+}
+
+// Reuses DriverSettlementEngine.computeDistanceKm - does not reimplement GPS
+// distance math. Written once, when a delivery reaches DELIVERED/FAILED.
+model RouteHistory {
+  id              String   @id @default(uuid())
+  deliveryId      String   @unique
+  driverId        String
+  gpsSamples      Int
+  distanceKm      Decimal  @db.Decimal(8, 2)
+  durationMinutes Int
+  createdAt       DateTime @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  driver   Driver   @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@map("route_history")
+}
+
+// Audit trail for route-decision runs, matching FulfillmentDecision/VendorScore's
+// existing precedent - not a consolidation-grouping model (see DeliveryRun below).
+model RouteOptimizationRun {
+  id           String   @id @default(uuid())
+  zoneId       String
+  strategyName String
+  deliveryIds  String[]
+  decidedAt    DateTime @default(now())
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  @@index([zoneId])
+  @@map("route_optimization_runs")
+}
+
+enum DeliveryRunStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// The operational outcome a route-optimization run PRODUCES, split from
+// RouteOptimizationRun (the audit-trail-of-the-decision) the same way this
+// codebase already splits FulfillmentDecision (audit) from VendorAssignment
+// (operational outcome) in the Marketplace Intelligence module. Does not
+// change POST /delivery/assign's single-delivery-claim flow - a driver
+// working a run still claims/works each stop one at a time.
+model DeliveryRun {
+  id           String            @id @default(uuid())
+  zoneId       String
+  driverId     String?
+  fleetAssetId String?
+  status       DeliveryRunStatus @default(PLANNED)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  zone                 DeliveryZone          @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  driver               Driver?               @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  fleetAsset           FleetAsset?           @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  stops                DeliveryRunStop[]
+  dispatchDecisionLogs DispatchDecisionLog[]
+
+  @@map("delivery_runs")
+}
+
+model DeliveryRunStop {
+  id            String @id @default(uuid())
+  deliveryRunId String
+  deliveryId    String @unique
+  sequence      Int
+
+  deliveryRun DeliveryRun @relation(fields: [deliveryRunId], references: [id], onDelete: Cascade)
+  delivery    Delivery    @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryRunId, sequence])
+  @@map("delivery_run_stops")
+}
+
+// 10A Fleet Dispatch Engine's audit trail - a parallel table to
+// ComplianceAuditLog, not a reuse of it (different module, different entity
+// semantics per the Phase 12B.0 architecture verification). One row per
+// automated dispatch decision: every candidate considered, its score, and
+// which one won and why. candidates/selection are Json since the candidate
+// set size and score breakdown are inherently variable-shape, matching this
+// schema's existing precedent for VendorScore-style audit data.
+model DispatchDecisionLog {
+  id                String   @id @default(uuid())
+  deliveryRunId     String
+  requiresColdChain Boolean
+  totalWeightLbs    Decimal  @db.Decimal(10, 2)
+  candidateDrivers  Json
+  candidateAssets   Json
+  selectedDriverId  String?
+  selectedAssetId   String?
+  reason            String
+  decidedAt         DateTime @default(now())
+
+  deliveryRun DeliveryRun @relation(fields: [deliveryRunId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryRunId])
+  @@map("dispatch_decision_logs")
 }

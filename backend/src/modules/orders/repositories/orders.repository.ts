@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Parish, Prisma, ProductUnit } from '@prisma/client';
 
+import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
 
 export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
@@ -30,6 +31,7 @@ export interface CreateOrderInput {
   deliveryAddressLine2?: string;
   deliveryParish: Parish;
   deliveryPhone: string;
+  deliveryZoneId?: string | null;
   vendorOrders: VendorOrderInput[];
 }
 
@@ -45,6 +47,7 @@ export class OrdersRepository {
         deliveryAddressLine2: input.deliveryAddressLine2,
         deliveryParish: input.deliveryParish,
         deliveryPhone: input.deliveryPhone,
+        deliveryZoneId: input.deliveryZoneId,
         vendorOrders: {
           create: input.vendorOrders.map((vendorOrder) => ({
             vendorId: vendorOrder.vendorId,
@@ -79,5 +82,13 @@ export class OrdersRepository {
     ]);
 
     return { items, total };
+  }
+
+  count(range?: DateRange): Promise<number> {
+    const where: Prisma.OrderWhereInput =
+      range?.from || range?.to
+        ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } }
+        : {};
+    return this.prisma.order.count({ where });
   }
 }

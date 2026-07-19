@@ -2,9 +2,11 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { PrismaService } from '../../../database/prisma.service';
 import {
   VendorOrderWithItems,
   VendorOrdersRepository,
@@ -40,6 +42,7 @@ function buildVendorOrder(overrides: Partial<VendorOrderWithItems> = {}): Vendor
       deliveryAddressLine2: null,
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      deliveryZoneId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     },
@@ -48,6 +51,7 @@ function buildVendorOrder(overrides: Partial<VendorOrderWithItems> = {}): Vendor
 }
 
 describe('VendorOrdersService', () => {
+  let prisma: { $transaction: jest.Mock };
   let vendorOrdersRepository: jest.Mocked<
     Pick<VendorOrdersRepository, 'findById' | 'updateStatus' | 'findManyByVendor'>
   >;
@@ -56,10 +60,16 @@ describe('VendorOrdersService', () => {
   let paymentsService: jest.Mocked<
     Pick<PaymentsService, 'assertReadyForFulfillment' | 'refundForOrder'>
   >;
+  let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: VendorOrdersService;
 
   beforeEach(() => {
+    prisma = {
+      $transaction: jest.fn().mockImplementation((callback: (tx: unknown) => unknown) =>
+        callback({}),
+      ),
+    };
     vendorOrdersRepository = {
       findById: jest.fn(),
       updateStatus: jest.fn(),
@@ -71,13 +81,16 @@ describe('VendorOrdersService', () => {
       assertReadyForFulfillment: jest.fn().mockResolvedValue(undefined),
       refundForOrder: jest.fn().mockResolvedValue(null),
     };
+    inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
     service = new VendorOrdersService(
+      prisma as unknown as PrismaService,
       vendorOrdersRepository as unknown as VendorOrdersRepository,
       vendorsRepository as unknown as VendorsRepository,
       productsRepository as unknown as ProductsRepository,
       paymentsService as unknown as PaymentsService,
+      inventoryEventsRepository as unknown as InventoryEventsRepository,
       eventEmitter as unknown as EventEmitter2,
     );
   });
@@ -94,7 +107,9 @@ describe('VendorOrdersService', () => {
       status: 'APPROVED',
       tier: 'COMMUNITY_FISHER',
       complianceScore: null,
+      complianceScoreUpdatedAt: null,
       termsAcceptedAt: new Date(),
+      primaryZoneId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -118,7 +133,9 @@ describe('VendorOrdersService', () => {
         status: 'APPROVED',
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
+        complianceScoreUpdatedAt: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -159,7 +176,9 @@ describe('VendorOrdersService', () => {
         status: 'APPROVED',
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
+        complianceScoreUpdatedAt: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -180,7 +199,9 @@ describe('VendorOrdersService', () => {
         status: 'APPROVED',
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
+        complianceScoreUpdatedAt: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -201,7 +222,7 @@ describe('VendorOrdersService', () => {
   });
 
   describe('reject', () => {
-    it('rejects a pending vendor order and restores stock', async () => {
+    it('rejects a pending vendor order and restores stock atomically with a RESTOCKED event', async () => {
       mockOwnedVendorOrder();
       vendorOrdersRepository.updateStatus.mockResolvedValue(
         buildVendorOrder({ status: 'REJECTED' }),
@@ -210,8 +231,18 @@ describe('VendorOrdersService', () => {
       const result = await service.reject('user-1', 'vo-1');
 
       expect(result.status).toBe('REJECTED');
-      expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2);
-      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'REJECTED');
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2, {});
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
+        {
+          productId: 'product-1',
+          eventType: 'RESTOCKED',
+          quantityDelta: 2,
+          vendorOrderId: 'vo-1',
+        },
+        {},
+      );
+      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'REJECTED', {});
       expect(paymentsService.refundForOrder).toHaveBeenCalledWith(
         'order-1',
         500,
@@ -267,7 +298,9 @@ describe('VendorOrdersService', () => {
         status: 'APPROVED',
         tier: 'COMMUNITY_FISHER',
         complianceScore: null,
+        complianceScoreUpdatedAt: null,
         termsAcceptedAt: new Date(),
+        primaryZoneId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

@@ -17,5 +17,6 @@ import { VendorSettlementsService } from './services/vendor-settlements.service'
     VendorSettlementAdjustmentsRepository,
     CommissionRateConfigsRepository,
   ],
+  exports: [VendorSettlementsRepository],
 })
 export class VendorSettlementsModule {}

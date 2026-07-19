@@ -9,6 +9,7 @@ import { TemperatureMonitoringController } from './temperature-monitoring.contro
 const reading = {
   id: 'reading-1',
   lotId: 'lot-1',
+  deviceId: null,
   checkpoint: 'VENDOR_STORAGE' as const,
   temperatureC: '2.50',
   latitude: 17.9714,

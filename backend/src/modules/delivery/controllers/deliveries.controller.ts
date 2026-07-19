@@ -13,6 +13,8 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { AssignDeliveryDto } from '../dto/assign-delivery.dto';
+import { CustomerAcceptanceDto } from '../dto/customer-acceptance.dto';
+import { UpdateDeliveryScheduleDto } from '../dto/update-delivery-schedule.dto';
 import { UpdateDeliveryStatusDto } from '../dto/update-delivery-status.dto';
 import { DeliveryTrackingEntity } from '../entities/delivery-tracking.entity';
 import { DriverDeliveryResponseEntity } from '../entities/driver-delivery-response.entity';
@@ -76,6 +78,47 @@ export class DeliveriesController {
     @Body() dto: UpdateDeliveryStatusDto,
   ): Promise<DriverDeliveryResponseEntity> {
     return this.deliveriesService.updateStatus(user.id, id, dto);
+  }
+
+  @Patch(':id/schedule')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.DRIVER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Set the pickup appointment and customer delivery windows for an owned delivery' })
+  @ApiResponseDoc({ status: 200, type: DriverDeliveryResponseEntity })
+  updateSchedule(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateDeliveryScheduleDto,
+  ): Promise<DriverDeliveryResponseEntity> {
+    return this.deliveriesService.updateSchedule(user.id, id, dto);
+  }
+
+  @Patch(':id/vendor-confirm')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Vendor confirms a driver collected this order at pickup' })
+  @ApiResponseDoc({ status: 200, type: DriverDeliveryResponseEntity })
+  confirmVendorPickup(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ): Promise<DriverDeliveryResponseEntity> {
+    return this.deliveriesService.confirmVendorPickup(user.id, id);
+  }
+
+  @Patch(':id/customer-acceptance')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.CUSTOMER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer accepts or rejects a delivered order' })
+  @ApiResponseDoc({ status: 200, type: DriverDeliveryResponseEntity })
+  recordCustomerAcceptance(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: CustomerAcceptanceDto,
+  ): Promise<DriverDeliveryResponseEntity> {
+    return this.deliveriesService.recordCustomerAcceptance(user.id, id, dto);
   }
 
   @Get('track/:vendorOrderId')

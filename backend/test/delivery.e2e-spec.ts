@@ -65,10 +65,53 @@ interface TrackingData {
   latestLocation: { latitude: number; longitude: number } | null;
 }
 
+interface FullDeliveryData extends DeliveryData {
+  scheduledPickupWindowStart: string | null;
+  scheduledPickupWindowEnd: string | null;
+  customerDeliveryWindowStart: string | null;
+  customerDeliveryWindowEnd: string | null;
+  vendorConfirmedAt: string | null;
+  customerAcceptanceStatus: string;
+  exceptions: { id: string; resolved: boolean }[];
+  routeHistory: { distanceKm: string; durationMinutes: number } | null;
+}
+
+interface LotData {
+  id: string;
+}
+
+interface IncidentData {
+  id: string;
+  lotId: string;
+  reportedById: string;
+}
+
+interface DeliveryZoneData {
+  id: string;
+  code: string;
+}
+
+interface RoutePlanData {
+  strategyName: string;
+  orderedStops: { deliveryId: string; vendorOrderId: string }[];
+  deliveryRunId: string;
+}
+
+interface PerformanceMetricsData {
+  onTimeDeliveryRate: number | null;
+  failedDeliveryRate: number | null;
+  averageDeliveryDurationMinutes: number | null;
+}
+
+interface PickupQueueEntryData {
+  vendorOrderId: string;
+  driverName: string | null;
+}
+
 // Each test in this file registers several roles (admin, customer, vendor,
 // driver) and drives a vendor order through multiple sequential status
 // transitions, well beyond Jest's default 5s per-test timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Delivery (e2e)', () => {
   let app: INestApplication;
@@ -95,6 +138,14 @@ describe('Delivery (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Cold-chain rejection tests raise a FoodSafetyIncident with
+    // reportedById = the customer; that FK is Restrict, so it must be
+    // cleared before the customer user rows are deleted.
+    if (customerEmails.length > 0) {
+      await prisma.foodSafetyIncident.deleteMany({
+        where: { reportedBy: { email: { in: customerEmails } } },
+      });
+    }
     // Customers first: cascades Order -> VendorOrder -> OrderItem -> Delivery,
     // freeing the Restrict constraint on Delivery.driverId and VendorOrder.vendorId
     // before the vendor/driver user rows are deleted.
@@ -102,6 +153,13 @@ describe('Delivery (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
+      // Frees Product -> SeafoodLot's Restrict constraint, then SeafoodLot ->
+      // Vendor's, for the cold-chain products created in this file.
+      await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+      await prisma.seafoodLot.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (driverUserEmails.length > 0) {
@@ -110,7 +168,9 @@ describe('Delivery (e2e)', () => {
     if (adminEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -188,6 +248,17 @@ describe('Delivery (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
     return { accessToken, vendorId };
   }
 
@@ -221,6 +292,12 @@ describe('Delivery (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    await request(server())
+      .patch('/api/v1/drivers/me/availability')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ status: 'ONLINE' })
+      .expect(200);
+
     return { accessToken, driverId };
   }
 
@@ -248,6 +325,78 @@ describe('Delivery (e2e)', () => {
         imageUrl: 'https://cdn.example.com/product.jpg',
       });
     return data<ProductData>(res);
+  }
+
+  async function createColdChainProduct(
+    vendorAccessToken: string,
+    categoryId: string,
+    name: string,
+  ): Promise<ProductData & { lotId: string }> {
+    const lotRes = await request(server())
+      .post('/api/v1/seafood-lots')
+      .set('Authorization', `Bearer ${vendorAccessToken}`)
+      .send({
+        species: 'Yellowfin Snapper',
+        storageType: 'FROZEN',
+        catchDate: '2026-07-01',
+        weight: 20,
+        weightUnit: 'POUNDS',
+      });
+    const lotId = data<LotData>(lotRes).id;
+
+    const productRes = await request(server())
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${vendorAccessToken}`)
+      .send({
+        categoryId,
+        lotId,
+        name,
+        description: 'A cold-chain product created for Delivery e2e tests.',
+        unit: 'PER_POUND',
+        price: 500,
+        quantityAvailable: 10,
+        imageUrl: 'https://cdn.example.com/product.jpg',
+      });
+    return { ...data<ProductData>(productRes), lotId };
+  }
+
+  async function createReadyVendorOrderForProduct(
+    customerToken: string,
+    vendorAccessToken: string,
+    productId: string,
+  ): Promise<{ orderId: string; vendorOrderId: string }> {
+    await request(server())
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ productId, quantity: 1 })
+      .expect(201);
+
+    const checkoutRes = await request(server())
+      .post('/api/v1/orders/checkout')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({
+        deliveryAddressLine1: '1 Ocean View Road',
+        deliveryParish: 'KINGSTON',
+        deliveryPhone: '+18765551234',
+        paymentMethod: 'CASH_ON_DELIVERY',
+      });
+    const order = data<OrderData>(checkoutRes);
+    const vendorOrderId = order.vendorOrders[0]!.id;
+
+    await request(server())
+      .patch(`/api/v1/vendor-orders/${vendorOrderId}/accept`)
+      .set('Authorization', `Bearer ${vendorAccessToken}`)
+      .expect(200);
+    await request(server())
+      .patch(`/api/v1/vendor-orders/${vendorOrderId}/preparing`)
+      .set('Authorization', `Bearer ${vendorAccessToken}`)
+      .expect(200);
+    await request(server())
+      .patch(`/api/v1/vendor-orders/${vendorOrderId}/ready`)
+      .set('Authorization', `Bearer ${vendorAccessToken}`)
+      .expect(200);
+
+    return { orderId: order.id, vendorOrderId };
   }
 
   async function createReadyVendorOrder(
@@ -420,7 +569,7 @@ describe('Delivery (e2e)', () => {
     expect(secondAssignRes.status).toBe(201);
   });
 
-  it('prevents a driver from claiming a second delivery while one is active', async () => {
+  it('prevents a driver from claiming a second delivery while busy with one already', async () => {
     const adminToken = await createAdminAndLogin();
     const customerToken = await createCustomerAndLogin();
     const vendor = await createApprovedVendorAndLogin(adminToken, 'Busy Driver Vendor');
@@ -449,7 +598,9 @@ describe('Delivery (e2e)', () => {
       .post('/api/v1/delivery/assign')
       .set('Authorization', `Bearer ${driver.accessToken}`)
       .send({ vendorOrderId: second.vendorOrderId });
-    expect(secondAssignRes.status).toBe(409);
+    // The BUSY availability gate (set automatically on the first claim) now
+    // rejects before the active-delivery-count check is ever reached.
+    expect(secondAssignRes.status).toBe(403);
   });
 
   it('prevents a driver from updating a delivery owned by another driver', async () => {
@@ -561,5 +712,372 @@ describe('Delivery (e2e)', () => {
       .post('/api/v1/drivers')
       .send({ licensePlate: 'ZZ 0000', vehicleType: 'CAR' });
     expect(registerRes.status).toBe(401);
+  });
+
+  it('blocks a non-cold-chain driver from claiming a lot-linked delivery and allows a capable one', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Cold Chain Vendor');
+    const incapableDriver = await createApprovedDriverAndLogin(adminToken, 'CC 1111');
+    const capableDriver = await createApprovedDriverAndLogin(adminToken, 'CC 2222');
+
+    const category = await getFishCategory();
+    const product = await createColdChainProduct(vendor.accessToken, category.id, 'Frozen Snapper');
+    const { vendorOrderId } = await createReadyVendorOrderForProduct(
+      customerToken,
+      vendor.accessToken,
+      product.id,
+    );
+
+    const rejectedRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${incapableDriver.accessToken}`)
+      .send({ vendorOrderId });
+    expect(rejectedRes.status).toBe(403);
+
+    await request(server())
+      .patch('/api/v1/drivers/me/profile')
+      .set('Authorization', `Bearer ${capableDriver.accessToken}`)
+      .send({ coldChainCapable: true })
+      .expect(200);
+
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${capableDriver.accessToken}`)
+      .send({ vendorOrderId });
+    expect(assignRes.status).toBe(201);
+  });
+
+  it('sets pickup/delivery scheduling windows and rejects an inverted window', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Schedule Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'SC 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Schedule Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    const invalidRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/schedule`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({
+        scheduledPickupWindowStart: '2026-07-10T12:00:00.000Z',
+        scheduledPickupWindowEnd: '2026-07-10T11:00:00.000Z',
+      });
+    expect(invalidRes.status).toBe(400);
+
+    const validRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/schedule`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({
+        scheduledPickupWindowStart: '2026-07-10T09:00:00.000Z',
+        scheduledPickupWindowEnd: '2026-07-10T10:00:00.000Z',
+        customerDeliveryWindowStart: '2026-07-10T11:00:00.000Z',
+        customerDeliveryWindowEnd: '2026-07-10T13:00:00.000Z',
+      });
+    expect(validRes.status).toBe(200);
+    const scheduled = data<FullDeliveryData>(validRes);
+    expect(scheduled.scheduledPickupWindowStart).not.toBeNull();
+    expect(scheduled.customerDeliveryWindowEnd).not.toBeNull();
+  });
+
+  it('records vendor pickup confirmation as an audit fact that does not block the driver picking up', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Vendor Confirm Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'VC 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Vendor Confirm Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    const confirmRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/vendor-confirm`)
+      .set('Authorization', `Bearer ${vendor.accessToken}`);
+    expect(confirmRes.status).toBe(200);
+    expect(data<FullDeliveryData>(confirmRes).vendorConfirmedAt).not.toBeNull();
+
+    const pickedUpRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'PICKED_UP' });
+    expect(pickedUpRes.status).toBe(200);
+  });
+
+  it('lets a customer accept a delivered order', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Accept Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'AC 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Accept Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'PICKED_UP' })
+      .expect(200);
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'DELIVERED', proofType: 'PHOTO', proofUrl: 'https://cdn.example.com/proof/a.jpg' })
+      .expect(200);
+
+    const acceptRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/customer-acceptance`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ decision: 'ACCEPTED' });
+    expect(acceptRes.status).toBe(200);
+    const accepted = data<FullDeliveryData>(acceptRes);
+    expect(accepted.customerAcceptanceStatus).toBe('ACCEPTED');
+    expect(accepted.routeHistory).not.toBeNull();
+    expect(Number(accepted.routeHistory?.durationMinutes)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('lets a customer reject a delivered order, raising a food safety incident for the linked lot', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Reject Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'RJ 1111');
+    const category = await getFishCategory();
+
+    const product = await createColdChainProduct(vendor.accessToken, category.id, 'Reject Snapper');
+    await request(server())
+      .patch('/api/v1/drivers/me/profile')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ coldChainCapable: true })
+      .expect(200);
+    const { vendorOrderId } = await createReadyVendorOrderForProduct(
+      customerToken,
+      vendor.accessToken,
+      product.id,
+    );
+
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'PICKED_UP' })
+      .expect(200);
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'DELIVERED', proofType: 'PHOTO', proofUrl: 'https://cdn.example.com/proof/b.jpg' })
+      .expect(200);
+
+    const rejectRes = await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/customer-acceptance`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ decision: 'REJECTED', reason: 'Package arrived warm and the seal was broken' });
+    expect(rejectRes.status).toBe(200);
+    expect(data<FullDeliveryData>(rejectRes).customerAcceptanceStatus).toBe('REJECTED');
+
+    // FoodSafetyEventsListener consumes DeliveryRejectedEvent asynchronously.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const incidentsRes = await request(server())
+      .get(`/api/v1/food-safety-incidents/lot/${product.lotId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(incidentsRes.status).toBe(200);
+    const incidents = data<{ items: IncidentData[] }>(incidentsRes);
+    expect(incidents.items.some((incident) => incident.lotId === product.lotId)).toBe(true);
+  });
+
+  it('reports and resolves a delivery exception', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Exception Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'EX 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Exception Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    const createRes = await request(server())
+      .post(`/api/v1/delivery/${delivery.id}/exceptions`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ type: 'CUSTOMER_UNAVAILABLE', reason: 'Customer did not answer after three attempts' });
+    expect(createRes.status).toBe(201);
+    const exception = data<{ id: string; resolved: boolean }>(createRes);
+    expect(exception.resolved).toBe(false);
+
+    const resolveRes = await request(server())
+      .patch(`/api/v1/delivery/exceptions/${exception.id}/resolve`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(resolveRes.status).toBe(200);
+    expect(data<{ resolved: boolean }>(resolveRes).resolved).toBe(true);
+  });
+
+  it('lists delivery zones and resolves the zone for a parish', async () => {
+    const customerToken = await createCustomerAndLogin();
+
+    const listRes = await request(server())
+      .get('/api/v1/delivery-zones')
+      .set('Authorization', `Bearer ${customerToken}`);
+    expect(listRes.status).toBe(200);
+    const zones = data<DeliveryZoneData[]>(listRes);
+    expect(zones.some((zone) => zone.code === 'ZONE_1')).toBe(true);
+
+    const resolveRes = await request(server())
+      .get('/api/v1/delivery-zones/resolve')
+      .query({ parish: 'KINGSTON' })
+      .set('Authorization', `Bearer ${customerToken}`);
+    expect(resolveRes.status).toBe(200);
+    expect(data<{ zoneId: string | null }>(resolveRes).zoneId).not.toBeNull();
+  });
+
+  it('plans and persists a route optimization run for a zone', async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Route Optimization Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'RO 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Route Optimization Snapper',
+    );
+    await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId })
+      .expect(201);
+
+    const zonesRes = await request(server())
+      .get('/api/v1/delivery-zones')
+      .set('Authorization', `Bearer ${adminToken}`);
+    const zone1 = data<DeliveryZoneData[]>(zonesRes).find((zone) => zone.code === 'ZONE_1')!;
+
+    const optimizeRes = await request(server())
+      .post(`/api/v1/delivery/zones/${zone1.id}/optimize-route`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(optimizeRes.status).toBe(201);
+    const plan = data<RoutePlanData>(optimizeRes);
+    expect(plan.orderedStops.some((stop) => stop.vendorOrderId === vendorOrderId)).toBe(true);
+    expect(plan.deliveryRunId).toBeTruthy();
+  });
+
+  it("returns sane driver performance metrics after a completed delivery", async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Performance Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'PM 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Performance Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'PICKED_UP' })
+      .expect(200);
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/status`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ action: 'DELIVERED', proofType: 'PHOTO', proofUrl: 'https://cdn.example.com/proof/c.jpg' })
+      .expect(200);
+
+    const ownMetricsRes = await request(server())
+      .get('/api/v1/drivers/me/performance')
+      .set('Authorization', `Bearer ${driver.accessToken}`);
+    expect(ownMetricsRes.status).toBe(200);
+    const ownMetrics = data<PerformanceMetricsData>(ownMetricsRes);
+    expect(ownMetrics.failedDeliveryRate).toBe(0);
+    expect(ownMetrics.averageDeliveryDurationMinutes).not.toBeNull();
+
+    const adminMetricsRes = await request(server())
+      .get(`/api/v1/drivers/${driver.driverId}/performance`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(adminMetricsRes.status).toBe(200);
+  });
+
+  it("reflects an assigned driver and schedule in the vendor's pickup queue", async () => {
+    const adminToken = await createAdminAndLogin();
+    const customerToken = await createCustomerAndLogin();
+    const vendor = await createApprovedVendorAndLogin(adminToken, 'Pickup Queue Vendor');
+    const driver = await createApprovedDriverAndLogin(adminToken, 'PQ 1111');
+    const category = await getFishCategory();
+
+    const { vendorOrderId } = await createReadyVendorOrder(
+      customerToken,
+      vendor.accessToken,
+      category.id,
+      'Pickup Queue Snapper',
+    );
+    const assignRes = await request(server())
+      .post('/api/v1/delivery/assign')
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ vendorOrderId });
+    const delivery = data<DeliveryData>(assignRes);
+
+    await request(server())
+      .patch(`/api/v1/delivery/${delivery.id}/schedule`)
+      .set('Authorization', `Bearer ${driver.accessToken}`)
+      .send({ scheduledPickupWindowStart: '2026-07-10T09:00:00.000Z' })
+      .expect(200);
+
+    const queueRes = await request(server())
+      .get('/api/v1/vendors/me/pickup-queue')
+      .set('Authorization', `Bearer ${vendor.accessToken}`);
+    expect(queueRes.status).toBe(200);
+    const queue = data<PickupQueueEntryData[]>(queueRes);
+    const entry = queue.find((item) => item.vendorOrderId === vendorOrderId);
+    expect(entry?.driverName).toBe('Dana Driver');
   });
 });

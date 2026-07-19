@@ -3,7 +3,9 @@ import { RoleName, Vendor } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { VendorComplianceStatusEntity } from '../entities/vendor-compliance-status.entity';
 import { VendorPermissionsEntity } from '../entities/vendor-permissions.entity';
+import { VendorDocumentsService } from '../services/vendor-documents.service';
 import { VendorPermissionsService } from '../services/vendor-permissions.service';
 import { VendorPermissionsController } from './vendor-permissions.controller';
 
@@ -19,7 +21,9 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     status: 'APPROVED',
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
+    complianceScoreUpdatedAt: null,
     termsAcceptedAt: new Date(),
+    primaryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -44,18 +48,27 @@ const permissions: VendorPermissionsEntity = {
   canOperateMultipleZones: false,
 };
 
+const complianceStatus: VendorComplianceStatusEntity = {
+  tier: 'COMMUNITY_FISHER',
+  canSell: false,
+  requiredDocuments: [{ type: 'GOVERNMENT_ID', status: 'MISSING' }],
+};
+
 const vendorUser: RequestUser = { id: 'user-1', email: 'vera@example.com', roles: [RoleName.VENDOR] };
 
 describe('VendorPermissionsController', () => {
   let permissionsService: jest.Mocked<Pick<VendorPermissionsService, 'getPermissions'>>;
+  let documentsService: jest.Mocked<Pick<VendorDocumentsService, 'getComplianceStatus'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let controller: VendorPermissionsController;
 
   beforeEach(() => {
     permissionsService = { getPermissions: jest.fn().mockResolvedValue(permissions) };
+    documentsService = { getComplianceStatus: jest.fn().mockResolvedValue(complianceStatus) };
     vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     controller = new VendorPermissionsController(
       permissionsService as unknown as VendorPermissionsService,
+      documentsService as unknown as VendorDocumentsService,
       vendorsRepository as unknown as VendorsRepository,
     );
   });
@@ -73,6 +86,27 @@ describe('VendorPermissionsController', () => {
     it('throws NotFoundException when the caller has no vendor profile', async () => {
       vendorsRepository.findByUserId.mockResolvedValue(null);
       await expect(controller.getMine(vendorUser)).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getMyComplianceStatus', () => {
+    it("returns the authenticated vendor's compliance status", async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+
+      const result = await controller.getMyComplianceStatus(vendorUser);
+
+      expect(result).toEqual(complianceStatus);
+      expect(documentsService.getComplianceStatus).toHaveBeenCalledWith(
+        'vendor-1',
+        'COMMUNITY_FISHER',
+      );
+    });
+
+    it('throws NotFoundException when the caller has no vendor profile', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(null);
+      await expect(controller.getMyComplianceStatus(vendorUser)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 

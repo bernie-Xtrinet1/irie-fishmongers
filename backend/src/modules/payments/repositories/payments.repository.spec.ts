@@ -161,4 +161,49 @@ describe('PaymentsRepository', () => {
     expect(updated.status).toBe('PAID');
     expect(updated.paidAt?.getTime()).toBe(paidAt.getTime());
   });
+
+  describe('sumByStatus', () => {
+    it('sums the amount of payments matching the given status', async () => {
+      const sum = await repository.sumByStatus('PAID');
+      expect(sum.toNumber()).toBeGreaterThanOrEqual(1000);
+    });
+
+    it('returns zero when no payment matches the status', async () => {
+      const sum = await repository.sumByStatus('REFUNDED');
+      expect(sum.toNumber()).toBe(0);
+    });
+
+    it('narrows the sum to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const sum = await repository.sumByStatus('PAID', { from: future });
+      expect(sum.toNumber()).toBe(0);
+    });
+  });
+
+  describe('countByStatus', () => {
+    it('counts payments matching the given status', async () => {
+      const count = await repository.countByStatus('PAID');
+      expect(count).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns zero when no payment matches the status', async () => {
+      const count = await repository.countByStatus('REFUNDED');
+      expect(count).toBe(0);
+    });
+  });
+
+  describe('sumByProvider', () => {
+    it('splits the PAID sum by provider, defaulting providers with no payments to zero', async () => {
+      const sums = await repository.sumByProvider('PAID');
+      expect(sums.CASH_ON_DELIVERY.toNumber()).toBeGreaterThanOrEqual(1000);
+      expect(sums.WIPAY.toNumber()).toBeGreaterThanOrEqual(0);
+    });
+
+    it('narrows the sum to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const sums = await repository.sumByProvider('PAID', { from: future });
+      expect(sums.CASH_ON_DELIVERY.toNumber()).toBe(0);
+      expect(sums.WIPAY.toNumber()).toBe(0);
+    });
+  });
 });

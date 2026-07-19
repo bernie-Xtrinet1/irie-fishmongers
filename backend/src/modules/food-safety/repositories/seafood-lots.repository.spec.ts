@@ -160,6 +160,73 @@ describe('SeafoodLotsRepository', () => {
     expect(items.every((item) => item.vendorId === vendorId)).toBe(true);
   });
 
+  describe('findLatestInspectedAt', () => {
+    it('returns null when the lot has never been inspected', async () => {
+      const created = await repository.create({
+        lotNumber: `LOT-TEST-${randomUUID()}`,
+        vendorId,
+        species: 'Snapper',
+        storageType: 'FRESH',
+        catchDate: new Date(),
+        weight: 15,
+        weightUnit: 'POUNDS',
+      });
+
+      await expect(repository.findLatestInspectedAt(created.id)).resolves.toBeNull();
+    });
+
+    it('returns the most recent inspection timestamp', async () => {
+      const created = await repository.create({
+        lotNumber: `LOT-TEST-${randomUUID()}`,
+        vendorId,
+        species: 'Snapper',
+        storageType: 'FRESH',
+        catchDate: new Date(),
+        weight: 15,
+        weightUnit: 'POUNDS',
+      });
+
+      const inspector = await new UsersRepository(prisma).create({
+        email: `seafood-lots-repo-inspector-${randomUUID()}@example.com`,
+        passwordHash: 'hashed',
+        firstName: 'Ana',
+        lastName: 'Inspector',
+        roleId: (await prisma.role.findUniqueOrThrow({ where: { name: RoleName.ADMINISTRATOR } })).id,
+        emailVerificationTokenHash: 'token-hash',
+        emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const older = new Date('2026-01-01');
+      const newer = new Date('2026-02-01');
+      await prisma.qualityInspection.create({
+        data: {
+          lotId: created.id,
+          inspectorId: inspector.id,
+          result: 'PASSED',
+          freshnessGrade: 'GRADE_B',
+          qualityScore: 80,
+          inspectedAt: older,
+        },
+      });
+      await prisma.qualityInspection.create({
+        data: {
+          lotId: created.id,
+          inspectorId: inspector.id,
+          result: 'PASSED',
+          freshnessGrade: 'GRADE_A',
+          qualityScore: 95,
+          inspectedAt: newer,
+        },
+      });
+
+      const result = await repository.findLatestInspectedAt(created.id);
+      expect(result?.getTime()).toBe(newer.getTime());
+
+      await prisma.qualityInspection.deleteMany({ where: { lotId: created.id } });
+      await prisma.user.delete({ where: { id: inspector.id } });
+    });
+  });
+
   describe('findMany', () => {
     it('filters by vendorId and status', async () => {
       const created = await repository.create({

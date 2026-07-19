@@ -21,6 +21,7 @@ export interface CreateProductInput {
   price: number;
   quantityAvailable: number;
   imageUrl: string;
+  weightLbs?: number;
 }
 
 export interface UpdateProductInput {
@@ -30,6 +31,7 @@ export interface UpdateProductInput {
   unit?: ProductUnit;
   price?: number;
   imageUrl?: string;
+  weightLbs?: number;
 }
 
 export interface ProductSearchFilters {
@@ -144,4 +146,37 @@ export class ProductsRepository {
 
     return client.product.findUniqueOrThrow({ where: { id }, include: productWithLot.include });
   }
+
+  // 12B Inventory Analytics: narrow select of exactly the fields
+  // ProductsService.computeAvailability() needs - not the full ProductWithLot
+  // shape - so tallying availability across the whole catalog doesn't pull
+  // every product field into memory.
+  findAllForAvailability(): Promise<
+    { isActive: boolean; quantityAvailable: number; lot: Prisma.SeafoodLotGetPayload<{ select: typeof lotAvailabilitySelect }> | null }[]
+  > {
+    return this.prisma.product.findMany({
+      select: { isActive: true, quantityAvailable: true, lot: { select: lotAvailabilitySelect } },
+    });
+  }
+
+  // Active products running low but not yet at zero (zero is "out of
+  // stock", already covered by the availability breakdown above) - the
+  // operational "restock soon" list.
+  findLowStock(
+    threshold: number,
+    limit: number,
+  ): Promise<{ id: string; name: string; quantityAvailable: number; vendorId: string }[]> {
+    return this.prisma.product.findMany({
+      where: { isActive: true, quantityAvailable: { gt: 0, lte: threshold } },
+      select: { id: true, name: true, quantityAvailable: true, vendorId: true },
+      orderBy: { quantityAvailable: 'asc' },
+      take: limit,
+    });
+  }
 }
+
+const lotAvailabilitySelect = {
+  foodSafetyStatus: true,
+  freshnessGrade: true,
+  qualityScore: true,
+} satisfies Prisma.SeafoodLotSelect;

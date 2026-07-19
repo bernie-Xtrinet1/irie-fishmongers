@@ -212,4 +212,22 @@ describe('VendorSettlementsRepository', () => {
     expect(total).toBeGreaterThanOrEqual(1);
     expect(items.some((item) => item.vendorId === vendor.id)).toBe(true);
   });
+
+  describe('sumPlatformFeeByStatus', () => {
+    it('sums platformFee across settlements matching the given status', async () => {
+      const sum = await repository.sumPlatformFeeByStatus('PAID');
+      expect(sum.toNumber()).toBeGreaterThanOrEqual(100);
+    });
+
+    it('returns zero when no settlement matches the status', async () => {
+      const sum = await repository.sumPlatformFeeByStatus('FAILED');
+      expect(sum.toNumber()).toBe(0);
+    });
+
+    it('narrows the sum to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      const sum = await repository.sumPlatformFeeByStatus('PAID', { from: future });
+      expect(sum.toNumber()).toBe(0);
+    });
+  });
 });

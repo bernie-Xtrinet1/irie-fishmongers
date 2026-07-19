@@ -54,7 +54,7 @@ interface PaginatedProductsData {
 // Several tests chain multiple sequential requests, well beyond Jest's
 // default 5s per-test timeout once run alongside the rest of the e2e
 // suite's parallel workers.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Vendor Management (e2e)', () => {
   let app: INestApplication;
@@ -81,7 +81,9 @@ describe('Vendor Management (e2e)', () => {
     if (createdEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: createdEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -251,6 +253,7 @@ describe('Vendor Management (e2e)', () => {
       parish: 'ST_MARY',
       logoUrl: null,
       tier: 'COMMUNITY_FISHER',
+      complianceScore: null,
     });
     expect(publicProfile).not.toHaveProperty('phone');
   });
@@ -267,6 +270,17 @@ describe('Vendor Management (e2e)', () => {
       .patch(`/api/v1/vendors/${vendorProfile.id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
+
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
 
     const categoriesRes = await request(server()).get('/api/v1/categories');
     const fishCategory = data<{ id: string; slug: string }[]>(categoriesRes).find(

@@ -1,8 +1,11 @@
 import {
   NotificationChannel,
   NotificationEventType,
+  Parish,
   PrismaClient,
+  RegulatoryStatus,
   RoleName,
+  SeafoodStorageType,
   VendorTier,
   VendorTierFeatureFlag,
 } from '@prisma/client';
@@ -14,6 +17,36 @@ const DEFAULT_CATEGORIES = [
   { name: 'Shellfish', slug: 'shellfish' },
   { name: 'Crustaceans', slug: 'crustaceans' },
   { name: 'Mollusks', slug: 'mollusks' },
+];
+
+// docs/reference/jamaica-delivery-zones.md - the authoritative parish/zone
+// mapping (also cited in ADR-002-delivery-zones.md's "Initial target: Zone
+// 1, Zone 2, Zone 3").
+const DELIVERY_ZONES: { code: string; name: string; parishes: Parish[] }[] = [
+  {
+    code: 'ZONE_1',
+    name: 'Zone 1',
+    parishes: ['KINGSTON', 'ST_ANDREW', 'ST_CATHERINE'],
+  },
+  {
+    code: 'ZONE_2',
+    name: 'Zone 2',
+    parishes: ['CLARENDON', 'MANCHESTER', 'ST_ELIZABETH'],
+  },
+  {
+    code: 'ZONE_3',
+    name: 'Zone 3',
+    parishes: [
+      'HANOVER',
+      'WESTMORELAND',
+      'ST_JAMES',
+      'TRELAWNY',
+      'ST_ANN',
+      'ST_MARY',
+      'PORTLAND',
+      'ST_THOMAS',
+    ],
+  },
 ];
 
 // Figures taken directly from .claude/marketplace/vendor-tier-rules.md's
@@ -241,6 +274,142 @@ const NOTIFICATION_TEMPLATES: {
     body: 'Your refund of {{amount}} is now {{status}}.',
     variables: ['amount', 'status'],
   },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'EMAIL',
+    subject: 'A driver has been assigned to your order',
+    body: '{{driverFirstName}} has been assigned to deliver your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'PUSH',
+    subject: 'Driver assigned',
+    body: '{{driverFirstName}} is bringing your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'DRIVER_ASSIGNED',
+    channel: 'IN_APP',
+    subject: 'Driver assigned',
+    body: '{{driverFirstName}} has been assigned to deliver your order {{vendorOrderId}}.',
+    variables: ['vendorOrderId', 'driverFirstName'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'EMAIL',
+    subject: 'Please confirm your delivery',
+    body: 'Your order {{vendorOrderId}} has been delivered. Please review it and confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'PUSH',
+    subject: 'Confirm your delivery',
+    body: 'Your order {{vendorOrderId}} arrived. Tap to confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
+  {
+    eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+    channel: 'IN_APP',
+    subject: 'Confirm your delivery',
+    body: 'Your order {{vendorOrderId}} has been delivered. Please review it and confirm you accept it.',
+    variables: ['vendorOrderId'],
+  },
+  {
+    eventType: 'COLD_CHAIN_ALERT_RAISED',
+    channel: 'EMAIL',
+    subject: 'Cold-chain temperature alert',
+    body: 'Lot {{lotNumber}} recorded a {{severity}} temperature reading of {{temperatureC}}C at the {{checkpoint}} checkpoint. Please review immediately.',
+    variables: ['lotNumber', 'severity', 'temperatureC', 'checkpoint'],
+  },
+  {
+    eventType: 'COLD_CHAIN_ALERT_RAISED',
+    channel: 'IN_APP',
+    subject: 'Cold-chain temperature alert',
+    body: 'Lot {{lotNumber}} recorded a {{severity}} temperature reading of {{temperatureC}}C at the {{checkpoint}} checkpoint. Please review immediately.',
+    variables: ['lotNumber', 'severity', 'temperatureC', 'checkpoint'],
+  },
+  {
+    eventType: 'RECALL_ISSUED',
+    channel: 'EMAIL',
+    subject: 'Important: product recall affecting your order',
+    body: 'A seafood lot ({{lotNumber}}) in your order {{orderId}} has been recalled. Reason: {{reason}}. Please do not consume this product and contact support for a refund.',
+    variables: ['orderId', 'lotNumber', 'reason'],
+  },
+  {
+    eventType: 'RECALL_ISSUED',
+    channel: 'IN_APP',
+    subject: 'Product recall affecting your order',
+    body: 'A seafood lot ({{lotNumber}}) in your order {{orderId}} has been recalled. Reason: {{reason}}.',
+    variables: ['orderId', 'lotNumber', 'reason'],
+  },
+  {
+    eventType: 'FLEET_MAINTENANCE_OVERDUE',
+    channel: 'EMAIL',
+    subject: 'Vehicle maintenance overdue',
+    body: 'Maintenance on vehicle {{licensePlate}} is overdue (next service was due {{nextServiceDue}}). Please schedule service before your next delivery run.',
+    variables: ['licensePlate', 'nextServiceDue'],
+  },
+  {
+    eventType: 'FLEET_MAINTENANCE_OVERDUE',
+    channel: 'IN_APP',
+    subject: 'Vehicle maintenance overdue',
+    body: 'Maintenance on vehicle {{licensePlate}} is overdue (next service was due {{nextServiceDue}}).',
+    variables: ['licensePlate', 'nextServiceDue'],
+  },
+  {
+    eventType: 'DELIVERY_REJECTED',
+    channel: 'EMAIL',
+    subject: 'A customer rejected a delivered order',
+    body: 'Your order {{vendorOrderId}} was rejected by the customer after delivery. Reason: {{reason}}. A food safety incident has been logged for review.',
+    variables: ['vendorOrderId', 'reason'],
+  },
+  {
+    eventType: 'DELIVERY_REJECTED',
+    channel: 'IN_APP',
+    subject: 'Order rejected by customer',
+    body: 'Your order {{vendorOrderId}} was rejected by the customer. Reason: {{reason}}.',
+    variables: ['vendorOrderId', 'reason'],
+  },
+];
+
+// seafood-compliance-rules.md's own species examples; Conch is seeded
+// RESTRICTED per the same doc's regulatory-status example.
+const SPECIES: {
+  scientificName: string;
+  commercialName: string;
+  regulatoryStatus: RegulatoryStatus;
+}[] = [
+  { scientificName: 'Lutjanus analis', commercialName: 'Snapper', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Scomberomorus cavalla', commercialName: 'King Fish', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Scomber scombrus', commercialName: 'Mackerel', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Panulirus argus', commercialName: 'Lobster', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Penaeus spp.', commercialName: 'Shrimp', regulatoryStatus: 'UNRESTRICTED' },
+  { scientificName: 'Lobatus gigas', commercialName: 'Conch', regulatoryStatus: 'RESTRICTED' },
+];
+
+// seafood-compliance-rules.md's own regulatory-alignment examples -
+// starting reference rows so RegulatoryCertification.issuingAuthorityId
+// has real authorities to point at from day one.
+const REGULATORY_AUTHORITIES: { name: string; country: string }[] = [
+  { name: 'Fisheries Division / National Fisheries Authority', country: 'Jamaica' },
+  { name: 'Ministry of Health', country: 'Jamaica' },
+  { name: 'Bureau of Standards Jamaica', country: 'Jamaica' },
+];
+
+// Platform-wide default thresholds (deviceId: null) - replaces the
+// previously-hardcoded FRESH_MAX_C/FROZEN_MAX_C constants with real,
+// admin-editable data. warningBandC is how far past min/max a reading must
+// be to escalate WARNING -> CRITICAL; EMERGENCY is 2x warningBandC further.
+const TEMPERATURE_THRESHOLDS: {
+  storageType: SeafoodStorageType;
+  minC: number;
+  maxC: number;
+  warningBandC: number;
+}[] = [
+  { storageType: 'FRESH', minC: 0, maxC: 4, warningBandC: 3 },
+  { storageType: 'FROZEN', minC: -100, maxC: -18, warningBandC: 3 },
 ];
 
 async function main(): Promise<void> {
@@ -309,6 +478,75 @@ async function main(): Promise<void> {
       update: { enabled: feature.enabled },
       create: feature,
     });
+  }
+
+  // marketplace-modes.md's own Phase 1 default: Customer Selected Vendor
+  // enabled, Marketplace Fulfillment (Best Available Vendor) disabled.
+  const existingModeConfig = await prisma.marketplaceModeConfig.findFirst();
+  if (!existingModeConfig) {
+    await prisma.marketplaceModeConfig.create({
+      data: { customerSelectedEnabled: true, bestAvailableEnabled: false },
+    });
+  }
+
+  // Default weight distribution follows fulfillment-strategy.md's Selection
+  // Priority ordering (Inventory > Compliance > Freshness > Distance >
+  // Delivery Capacity > Rating) and sums to 1.0000. Rating is weighted
+  // lowest because no Review/Rating model exists yet (see docs/database-
+  // design.md scoping notes) - it contributes a neutral score today.
+  const existingWeightConfig = await prisma.vendorSelectionWeightConfig.findFirst();
+  if (!existingWeightConfig) {
+    await prisma.vendorSelectionWeightConfig.create({
+      data: {
+        inventoryWeight: 0.3,
+        complianceWeight: 0.2,
+        freshnessWeight: 0.2,
+        distanceWeight: 0.15,
+        deliveryCapacityWeight: 0.1,
+        ratingWeight: 0.05,
+      },
+    });
+  }
+
+  for (const zone of DELIVERY_ZONES) {
+    const upsertedZone = await prisma.deliveryZone.upsert({
+      where: { code: zone.code },
+      update: { name: zone.name },
+      create: { code: zone.code, name: zone.name },
+    });
+
+    for (const parish of zone.parishes) {
+      await prisma.deliveryZoneParish.upsert({
+        where: { parish },
+        update: { zoneId: upsertedZone.id },
+        create: { parish, zoneId: upsertedZone.id },
+      });
+    }
+  }
+
+  for (const species of SPECIES) {
+    await prisma.species.upsert({
+      where: { scientificName: species.scientificName },
+      update: { commercialName: species.commercialName, regulatoryStatus: species.regulatoryStatus },
+      create: species,
+    });
+  }
+
+  for (const authority of REGULATORY_AUTHORITIES) {
+    await prisma.regulatoryAuthority.upsert({
+      where: { name: authority.name },
+      update: { country: authority.country },
+      create: authority,
+    });
+  }
+
+  for (const threshold of TEMPERATURE_THRESHOLDS) {
+    const existing = await prisma.temperatureThreshold.findFirst({
+      where: { deviceId: null, storageType: threshold.storageType },
+    });
+    if (!existing) {
+      await prisma.temperatureThreshold.create({ data: threshold });
+    }
   }
 }
 

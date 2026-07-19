@@ -24,6 +24,8 @@ GET /vendors (admin only)
 
 GET /vendors/:id/public
 
+GET /vendors/:id/profile (Vendor Profile Page - tier badge, compliance status, orders completed)
+
 PATCH /vendors/:id/status (admin only)
 
 GET /categories
@@ -34,9 +36,13 @@ GET /products
 
 GET /products/:id
 
+GET /products/:id/detail (Product Detail Page - traceability, vendor tier/compliance, marketplace modes)
+
 GET /products/mine (vendor only)
 
-POST /products (approved vendor only)
+POST /products (approved vendor only - 403 if the vendor is missing a
+required, approved compliance document for their tier; see GET
+/vendors/me/compliance-status)
 
 PATCH /products/:id (owning vendor only)
 
@@ -46,11 +52,15 @@ PATCH /products/:id/deactivate (owning vendor only)
 
 PATCH /products/:id/reactivate (owning vendor only)
 
+GET /products/:id/availability (live stock net of other customers' active
+cart holds - quantityAvailable, reserved, availableToPurchase)
+
 GET /cart (customer only)
 
-POST /cart/items (customer only)
+POST /cart/items (customer only - 409 if the requested quantity exceeds
+stock net of other customers' active reservations)
 
-PATCH /cart/items/:itemId (customer only)
+PATCH /cart/items/:itemId (customer only - same 409 availability check)
 
 DELETE /cart/items/:itemId (customer only)
 
@@ -134,6 +144,10 @@ GET /seafood-lots (admin only)
 
 GET /seafood-lots/:id/public (public - customer-facing traceability view)
 
+GET /seafood-lots/:id/qr-code (owning vendor or admin only - label-printing QR
+PNG data URI encoding the lot's public Digital Product Passport URL, keyed
+on the non-enumerable publicTraceToken, never the lot id/lotNumber)
+
 GET /seafood-lots/:id (admin only)
 
 PATCH /seafood-lots/:id/status (admin only - place on hold/quarantine/reject, or clear)
@@ -145,6 +159,21 @@ GET /temperature-readings/lot/:lotId (owning vendor or admin only)
 GET /temperature-alerts (admin only)
 
 PATCH /temperature-alerts/:id/resolve (admin only)
+
+POST /temperature-devices (vendor only - register a device)
+
+GET /temperature-devices/mine (vendor only)
+
+GET /temperature-devices (admin only - flags stale devices as offline)
+
+PATCH /temperature-devices/:id/calibrate (owning vendor or admin only - resets
+the 90-day calibration due date)
+
+POST /temperature-thresholds (admin only)
+
+GET /temperature-thresholds (admin only)
+
+PATCH /temperature-thresholds/:id (admin only)
 
 POST /quality-inspections (admin only)
 
@@ -164,9 +193,105 @@ GET /recalls (admin only)
 
 GET /recalls/:id (admin only)
 
-PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Resolved -> Closed)
+PATCH /recalls/:id/status (admin only - Draft -> Active -> Investigating -> Resolved -> Closed;
+transitioning to Active emits one notification per affected customer/order)
 
 GET /recalls/:id/affected-orders (admin only)
+
+POST /fishermen (fisherman only - self-register, starts PENDING)
+
+GET /fishermen/me (fisherman only)
+
+GET /fishermen (admin only)
+
+PATCH /fishermen/:id/status (admin only)
+
+POST /landing-sites (admin only)
+
+GET /landing-sites (any authenticated user - registration-form picker)
+
+PATCH /landing-sites/:id (admin only)
+
+POST /species (admin only)
+
+GET /species (any authenticated user - registration-form picker)
+
+PATCH /species/:id (admin only)
+
+POST /vessels (fisherman only - self-registers their own vessel)
+
+GET /vessels/mine (fisherman only)
+
+GET /vessels (admin only)
+
+PATCH /vessels/:id/status (admin only)
+
+POST /catches (approved fisherman only - multi-species: one Catch + N CatchItem
+rows; auto-writes a LANDING chain-of-custody event)
+
+GET /catches/mine (fisherman only)
+
+GET /catches (admin only)
+
+GET /catches/:id (admin only)
+
+GET /food-safety/compliance-dashboard (admin only - active alerts by severity,
+failed inspections, lots pending review, active recalls, vendor/fisherman
+compliance summaries; computed on read)
+
+GET /food-safety/reports/traceability (admin only - ?format=csv|json)
+
+GET /food-safety/reports/temperature-compliance (admin only - ?format=csv|json)
+
+GET /food-safety/reports/recalls (admin only - ?format=csv|json)
+
+GET /food-safety/audit-logs (admin only - filterable by entityType/entityId;
+every seafood-lot/recall/incident/inspection/fisherman status change is
+logged here with before/after values, actor, IP, and reason)
+
+POST /food-safety/documents (admin only - versioned; auto-increments version
+for the same documentType + relatedLotId/relatedRecallId)
+
+GET /food-safety/documents (admin only - ?lotId=|recallId=)
+
+POST /food-safety/custody-events (admin only - manual chain-of-custody
+recording; STORAGE_ENTRY/INSPECTION are auto-written by the lot-registration
+and inspection flows, LANDING by catch registration)
+
+GET /food-safety/custody-events (admin only - ?catchId=|lotId=, full
+timeline for a lot/catch)
+
+POST /food-safety/authorities (admin only - regulatory authority reference data)
+
+GET /food-safety/authorities (admin only)
+
+POST /food-safety/certifications (admin only - exactly one of
+vendorId/fishermanId/landingSiteId; starts PENDING)
+
+GET /food-safety/certifications (admin only - ?vendorId=|fishermanId=|landingSiteId=;
+syncs lapsed ACTIVE certifications to EXPIRED on read)
+
+PATCH /food-safety/certifications/:id/activate (admin only - PENDING -> ACTIVE)
+
+PATCH /food-safety/certifications/:id (admin only - renew/suspend/reinstate/revoke)
+
+GET /food-safety/emergency-responses (admin only - ?status=OPEN; the "active
+violations" queue for EMERGENCY-severity temperature alerts)
+
+PATCH /food-safety/emergency-responses/:id/acknowledge (admin only -
+self-assigns and moves OPEN -> ACKNOWLEDGED)
+
+PATCH /food-safety/emergency-responses/:id/status (admin only - further
+transitions + CAPA notes; RESOLVED requires rootCause and correctiveAction)
+
+POST /food-safety/waste-disposal-records (owning vendor or admin only -
+requires witnessName when reason is RECALL_DESTRUCTION; decrements product
+stock and writes a DISPOSED inventory event when productId is supplied)
+
+GET /food-safety/waste-disposal-records (admin only - ?lotId=|recallId=)
+
+GET /passport/:token (public, no auth - the composed Digital Product Passport
+for a seafood lot, resolved by its non-enumerable publicTraceToken)
 
 GET /notifications/mine (authenticated user)
 
@@ -181,6 +306,11 @@ POST /notifications/device-tokens (authenticated user - register a push token)
 DELETE /notifications/device-tokens/:token (authenticated user)
 
 GET /vendors/me/permissions (vendor only)
+
+GET /vendors/me/compliance-status (vendor only - per-document-type
+compliance checklist backing the POST /products 403 gate: { tier, canSell,
+requiredDocuments: [{ type, status }] }, status is PENDING/APPROVED/
+REJECTED/EXPIRED or the synthetic MISSING)
 
 GET /vendors/:id/permissions (admin only)
 
@@ -204,8 +334,132 @@ POST /vendors/:id/downgrade (admin only)
 
 GET /vendors/:id/downgrade-events (admin only)
 
+GET /marketplace/mode-config (admin only)
+
+POST /marketplace/mode-config (admin only - publish a new mode configuration)
+
+GET /marketplace/weight-config (admin only)
+
+POST /marketplace/weight-config (admin only - publish a new selection weight configuration)
+
+POST /marketplace/best-vendor/resolve (customer only - Best Available Vendor; returns the winning
+productId to pass to the existing POST /cart/items unchanged)
+
+GET /inventory/:productId/events (admin only - paginated durable inventory
+audit trail: DECREMENTED / RESTOCKED / MANUAL_ADJUSTMENT)
+
+POST /inventory/reconcile (admin only - optional productId filter; cross-checks
+Redis reservations against live cart items and releases orphaned holds)
+
+GET /delivery-zones (authenticated user - zone list for registration-form pickers)
+
+GET /delivery-zones/resolve?parish=X (authenticated user - which zone a parish maps to)
+
+POST /delivery-zones (admin only)
+
+PATCH /delivery-zones/:id (admin only)
+
+PATCH /drivers/me/availability (approved driver only - ONLINE/OFFLINE;
+rejected while an active delivery is in progress; BUSY is set/cleared
+automatically by assign()/updateStatus())
+
+PATCH /drivers/me/profile (driver only - capacityLbs, coldChainCapable)
+
+GET /drivers/me/performance (driver only - on-time delivery rate, average
+pickup delay, customer acceptance rate, failed delivery rate, temperature
+compliance rate, average delivery duration; computed on read)
+
+GET /drivers/:id/performance (admin only)
+
+PATCH /delivery/:id/schedule (owning driver only - pickup/delivery windows)
+
+PATCH /delivery/:id/vendor-confirm (owning vendor only - audit fact, does
+not gate driver pickup)
+
+PATCH /delivery/:id/customer-acceptance (owning customer only - ACCEPTED or
+REJECTED once deliveredAt is set; REJECTED raises a FoodSafetyIncident per
+distinct lot in the vendor order)
+
+POST /delivery/:id/exceptions (owning driver only)
+
+GET /delivery/exceptions (admin only - optional resolved filter)
+
+PATCH /delivery/exceptions/:id/resolve (admin only)
+
+POST /delivery/zones/:zoneId/optimize-route (admin only - read-only route
+plan; persists an audit RouteOptimizationRun + an operational DeliveryRun,
+does not reassign drivers)
+
+GET /vendors/me/pickup-queue (vendor only - ready-for-pickup and
+assigned-to-driver orders with driver name, scheduled window, pickup order)
+
+POST /fleet-assets (admin only)
+
+GET /fleet-assets (admin only - optional zoneId/status filters)
+
+GET /fleet-assets/:id (admin only)
+
+PATCH /fleet-assets/:id (admin only - status, currentDriverId, coldChainCapable)
+
+POST /fleet-assets/:id/maintenance (admin only - creating with status
+IN_PROGRESS also flips the asset to MAINTENANCE)
+
+GET /fleet-assets/:id/maintenance (admin only)
+
+PATCH /fleet-maintenance/:id (admin only)
+
+POST /fleet-trips (admin only)
+
+GET /fleet-trips (admin only - optional fleetAssetId/driverId filters)
+
+GET /fleet-trips/:id (admin only)
+
+PATCH /fleet-trips/:id (admin only - endedAt, cost fields)
+
 ---
 
 All routes are mounted under the API prefix, e.g. /api/v1/auth/register.
 Full request/response schemas and try-it-out docs are served by Swagger at
 /api/v1/docs once the backend is running.
+
+# Reviews & Compliance Score (Phase 13, Customer Trust)
+
+POST /reviews (customer only - write a review for a delivered order; body
+vendorOrderId, optional productId, rating 1-5, optional title, body;
+rate-limited; 409 on a duplicate for the same author/order/product)
+
+GET /reviews/eligibility?vendorOrderId=&productId= (customer only - lets the
+UI show/hide "Write a Review" without a failing POST)
+
+PATCH /reviews/:id (customer only - edit own review within the 14-day window)
+
+PATCH /reviews/:id/restore (customer only - un-soft-delete own author-removed
+review within the 14-day window; 403 on an admin-removed one)
+
+DELETE /reviews/:id (customer only - soft delete, REMOVED_BY_AUTHOR, no time
+limit; 204)
+
+GET /reviews/vendor/:vendorId (public - paginated, newest first, page size
+default 20 / max 50; masked author display name + averageRating, no PII)
+
+GET /reviews/product/:productId (public - same shape as the vendor list)
+
+GET /admin/reviews (admin only - moderation queue, filterable by
+moderationStatus/vendorId/productId/rating/deliveryWasRejected/created-at
+range; each row carries the computed deliveryWasRejected flag)
+
+GET /admin/reviews/:id (admin only - full review + its moderation audit trail)
+
+POST /admin/reviews/:id/remove (admin only - reason required; the review
+update and its ReviewAuditLog entry commit in one transaction)
+
+GET /admin/vendors/:vendorId/compliance-score (admin only - stored score +
+band + updatedAt plus a freshly recomputed per-category breakdown)
+
+POST /admin/vendors/:vendorId/compliance-score/recompute (admin only - forces
+an immediate recompute, returns the same explanation shape)
+
+Product detail (GET /products/:id/detail) and vendor profile (GET
+/vendors/:id/profile) now also return the vendor rating, recentReviews, and
+customer-facing compliance band; product detail additionally exposes the lot
+quality/freshness score + last-inspected date.

@@ -15,7 +15,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "compliance:scores:recompute-all": "ts-node src/scripts/recompute-compliance-scores.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -27,6 +28,7 @@
     "@nestjs/event-emitter": "^3.1.0",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.1.27",
+    "@nestjs/schedule": "^6.1.3",
     "@nestjs/swagger": "^11.4.5",
     "@nestjs/throttler": "^6.5.0",
     "@prisma/client": "^6.19.3",
@@ -36,6 +38,7 @@
     "cookie-parser": "^1.4.7",
     "helmet": "^8.2.0",
     "ioredis": "^5.4.2",
+    "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
@@ -48,6 +51,7 @@
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.5",
+    "@types/qrcode": "^1.5.6",
     "@types/supertest": "^6.0.2",
     "dotenv": "^16.4.7",
     "jest": "^30.4.2",
@@ -84,7 +88,12 @@
       "redis.constants.ts",
       "auth.constants.ts",
       "roles.decorator.ts",
-      "current-user.decorator.ts"
+      "current-user.decorator.ts",
+      "\\.controller\\.ts$",
+      "\\.dto\\.ts$",
+      "\\.entity\\.ts$",
+      "\\.event\\.ts$",
+      "\\.repository\\.ts$"
     ],
     "coverageThreshold": {
       "global": {

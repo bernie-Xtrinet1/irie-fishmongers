@@ -1,6 +1,25 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalDependencies": ["tsconfig.base.json", ".env"],
+  "globalPassThroughEnv": [
+    "NODE_ENV",
+    "PORT",
+    "API_PREFIX",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "ENABLE_SCHEDULER",
+    "JWT_ACCESS_SECRET",
+    "JWT_ACCESS_EXPIRES_IN",
+    "JWT_REFRESH_SECRET",
+    "JWT_REFRESH_EXPIRES_IN",
+    "APP_BASE_URL",
+    "WIPAY_API_URL",
+    "WIPAY_ACCOUNT_NUMBER",
+    "WIPAY_API_KEY",
+    "NEXT_PUBLIC_API_URL",
+    "NEXT_PUBLIC_ENVIRONMENT",
+    "NEXT_PUBLIC_APP_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

@@ -44,4 +44,10 @@ export class QualityInspectionsRepository {
 
     return { items, total };
   }
+
+  countFailedSince(since: Date): Promise<number> {
+    return this.prisma.qualityInspection.count({
+      where: { result: { in: ['REJECTED', 'QUARANTINED'] }, inspectedAt: { gte: since } },
+    });
+  }
 }

@@ -7,6 +7,7 @@ import { ListIncidentsDto } from '../dto/list-incidents.dto';
 import { IncidentResponseEntity } from '../entities/incident-response.entity';
 import { PaginatedIncidentsEntity } from '../entities/paginated-incidents.entity';
 import { FoodSafetyIncidentsRepository } from '../repositories/food-safety-incidents.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
 const ALLOWED_STATUS_TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
@@ -21,6 +22,7 @@ export class FoodSafetyIncidentsService {
   constructor(
     private readonly incidentsRepository: FoodSafetyIncidentsRepository,
     private readonly seafoodLotsService: SeafoodLotsService,
+    private readonly auditLogService: ComplianceAuditLogService,
   ) {}
 
   async report(user: RequestUser, dto: CreateIncidentDto): Promise<IncidentResponseEntity> {
@@ -72,9 +74,11 @@ export class FoodSafetyIncidentsService {
   }
 
   async updateStatus(
+    userId: string,
     id: string,
     status: IncidentStatus,
     correctiveAction?: string,
+    ipAddress?: string,
   ): Promise<IncidentResponseEntity> {
     const incident = await this.incidentsRepository.findById(id);
     if (!incident) {
@@ -87,6 +91,17 @@ export class FoodSafetyIncidentsService {
     const updated = await this.incidentsRepository.updateStatus(id, status, {
       correctiveAction,
       resolvedAt: status === 'RESOLVED' ? new Date() : undefined,
+    });
+
+    await this.auditLogService.record({
+      userId,
+      action: 'FOOD_SAFETY_INCIDENT_STATUS_UPDATED',
+      entityType: 'FoodSafetyIncident',
+      entityId: id,
+      beforeValue: { status: incident.status },
+      afterValue: { status: updated.status },
+      ipAddress,
+      reason: correctiveAction,
     });
 
     return FoodSafetyIncidentsService.toResponse(updated);

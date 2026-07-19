@@ -58,6 +58,12 @@ interface DocumentData {
   documentType: string;
 }
 
+interface ComplianceStatusData {
+  tier: string;
+  canSell: boolean;
+  requiredDocuments: { type: string; status: string }[];
+}
+
 interface UpgradeRequestData {
   id: string;
   status: string;
@@ -73,7 +79,7 @@ interface DowngradeEventData {
 // The listing-limit test creates products up to the tier's real limit (50)
 // and the sales-limit test drives several checkouts - both well beyond
 // Jest's default 5s per-test timeout.
-jest.setTimeout(40_000);
+jest.setTimeout(60_000);
 
 describe('Vendor Tiers (e2e)', () => {
   let app: INestApplication;
@@ -104,12 +110,17 @@ describe('Vendor Tiers (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -157,7 +168,10 @@ describe('Vendor Tiers (e2e)', () => {
     return data<SessionData>(loginRes).accessToken;
   }
 
-  async function createApprovedVendorAndLogin(
+  // Registers + admin-approves a vendor, but deliberately does NOT upload
+  // any compliance documents - used directly only by the compliance-status
+  // test below, which needs to observe the "no documents yet" state.
+  async function registerApprovedVendorWithoutDocuments(
     adminToken: string,
     businessName: string,
   ): Promise<{ accessToken: string; vendorId: string }> {
@@ -188,6 +202,25 @@ describe('Vendor Tiers (e2e)', () => {
       .send({ status: 'APPROVED' });
 
     return { accessToken, vendorId };
+  }
+
+  async function createApprovedVendorAndLogin(
+    adminToken: string,
+    businessName: string,
+  ): Promise<{ accessToken: string; vendorId: string }> {
+    const vendor = await registerApprovedVendorWithoutDocuments(adminToken, businessName);
+
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products - satisfy
+    // that here so every test using this helper gets a sellable vendor by
+    // default, the same way admin approval already happens above.
+    const govId = await uploadDocument(vendor.accessToken, 'GOVERNMENT_ID');
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${govId.id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
+    return vendor;
   }
 
   async function getFishCategory(): Promise<CategoryData> {
@@ -287,6 +320,63 @@ describe('Vendor Tiers (e2e)', () => {
       .delete(`/api/v1/vendor-documents/${uploaded.id}`)
       .set('Authorization', `Bearer ${vendor.accessToken}`);
     expect(removeRes.status).toBe(400);
+  });
+
+  it('blocks product creation until compliance documents are approved, and reflects it in compliance-status', async () => {
+    const adminToken = await createAdminAndLogin();
+    const vendor = await registerApprovedVendorWithoutDocuments(adminToken, 'Compliance Gate Vendor');
+    const category = await getFishCategory();
+
+    const beforeStatusRes = await request(server())
+      .get('/api/v1/vendors/me/compliance-status')
+      .set('Authorization', `Bearer ${vendor.accessToken}`);
+    expect(beforeStatusRes.status).toBe(200);
+    const beforeStatus = data<ComplianceStatusData>(beforeStatusRes);
+    expect(beforeStatus.tier).toBe('COMMUNITY_FISHER');
+    expect(beforeStatus.canSell).toBe(false);
+    expect(beforeStatus.requiredDocuments).toEqual([{ type: 'GOVERNMENT_ID', status: 'MISSING' }]);
+
+    const blockedRes = await request(server())
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({
+        categoryId: category.id,
+        name: 'Compliance Gate Snapper',
+        description: 'Should be blocked until GOVERNMENT_ID is approved.',
+        unit: 'PER_POUND',
+        price: 500,
+        quantityAvailable: 10,
+        imageUrl: 'https://cdn.example.com/product.jpg',
+      });
+    expect(blockedRes.status).toBe(403);
+
+    const govId = await uploadDocument(vendor.accessToken, 'GOVERNMENT_ID');
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${govId.id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' })
+      .expect(200);
+
+    const afterStatusRes = await request(server())
+      .get('/api/v1/vendors/me/compliance-status')
+      .set('Authorization', `Bearer ${vendor.accessToken}`);
+    const afterStatus = data<ComplianceStatusData>(afterStatusRes);
+    expect(afterStatus.canSell).toBe(true);
+    expect(afterStatus.requiredDocuments).toEqual([{ type: 'GOVERNMENT_ID', status: 'APPROVED' }]);
+
+    const allowedRes = await request(server())
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${vendor.accessToken}`)
+      .send({
+        categoryId: category.id,
+        name: 'Compliance Gate Snapper',
+        description: 'Now allowed - GOVERNMENT_ID is approved.',
+        unit: 'PER_POUND',
+        price: 500,
+        quantityAvailable: 10,
+        imageUrl: 'https://cdn.example.com/product.jpg',
+      });
+    expect(allowedRes.status).toBe(201);
   });
 
   it('rejects a document review without a rejection reason', async () => {

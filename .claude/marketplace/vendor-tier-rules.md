@@ -593,3 +593,24 @@ Before implementing any vendor feature:
 Never hardcode tier logic.
 
 All vendor capabilities must be configuration-driven.
+
+# MARKETPLACE VISIBILITY
+
+Community Fisher
+
+Visible To Customers
+
+Verified Vendor
+
+Visible To Customers
+
+Commercial Supplier
+
+Visible To Customers
+
+Enterprise Supplier
+
+Visible To Customers
+
+Vendor tier badge must always be displayed when
+customer-selected mode is enabled.

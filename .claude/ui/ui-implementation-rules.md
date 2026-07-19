@@ -313,3 +313,45 @@ Before generating code:
 5. Create missing components.
 6. Generate code.
 7. Generate tests.
+
+# VENDOR TIER DISPLAY RULES
+
+Vendor tier badges must be visible on:
+
+- Product Detail Screen
+- Search Results
+- Marketplace Listings
+- Vendor Profile
+- Order History
+
+---
+
+# MARKETPLACE MODE RULES
+
+Support:
+
+1. Customer Selected Vendor
+
+2. Best Available Vendor
+
+Mode controlled by configuration.
+
+Do not hardcode.
+
+---
+
+# VENDOR SELECTION RULES
+
+When Best Available Vendor is selected:
+
+Display:
+
+Fulfilled by Irie Fishmongers
+
+System chooses vendor using:
+
+- Inventory
+- Freshness
+- Compliance
+- Distance
+- Delivery Capacity

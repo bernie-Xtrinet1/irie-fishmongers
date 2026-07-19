@@ -1,26 +1,21 @@
-import { Controller, Get, HttpException, HttpStatus } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { RoleName } from '@prisma/client';
 
-import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../redis/redis.service';
-
-interface HealthStatus {
-  postgres: 'up' | 'down';
-  redis: 'up' | 'down';
-}
+import { Roles } from '../decorators/roles.decorator';
+import { JwtAuthGuard } from '../guards/jwt-auth.guard';
+import { RolesGuard } from '../guards/roles.guard';
+import { HealthService, HealthStatus } from './health.service';
 
 @ApiTags('health')
 @Controller('health')
 export class HealthController {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly redis: RedisService,
-  ) {}
+  constructor(private readonly healthService: HealthService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Check API, database, and cache connectivity' })
+  @ApiOperation({ summary: 'Check API, database, and cache connectivity (infra readiness probe - throws 503)' })
   async check(): Promise<HealthStatus> {
-    const [postgres, redis] = await Promise.all([this.checkPostgres(), this.checkRedis()]);
+    const { postgres, redis } = await this.healthService.checkStatus();
 
     if (postgres === 'down' || redis === 'down') {
       throw new HttpException(
@@ -32,21 +27,18 @@ export class HealthController {
     return { postgres, redis };
   }
 
-  private async checkPostgres(): Promise<'up' | 'down'> {
-    try {
-      await this.prisma.$queryRaw`SELECT 1`;
-      return 'up';
-    } catch {
-      return 'down';
-    }
-  }
-
-  private async checkRedis(): Promise<'up' | 'down'> {
-    try {
-      const reply = await this.redis.ping();
-      return reply === 'PONG' ? 'up' : 'down';
-    } catch {
-      return 'down';
-    }
+  // Always resolves 200 with the granular per-service status, unlike the
+  // infra probe above which throws 503 on any outage. Used by the admin
+  // dashboard's connectivity indicator/widget, polled independently and
+  // far more frequently than the full analytics dashboard-summary
+  // aggregation - it must stay cheap (two ping-style checks) regardless of
+  // poll frequency, never recompute business KPIs.
+  @Get('status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Admin dashboard connectivity widget status - always 200, admin only' })
+  checkStatus(): Promise<HealthStatus> {
+    return this.healthService.checkStatus();
   }
 }

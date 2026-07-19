@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -12,6 +13,7 @@ import { ListSeafoodLotsDto } from '../dto/list-seafood-lots.dto';
 import { UpdateLotStatusDto } from '../dto/update-lot-status.dto';
 import { PaginatedSeafoodLotsEntity } from '../entities/paginated-seafood-lots.entity';
 import { SeafoodLotPublicEntity } from '../entities/seafood-lot-public.entity';
+import { SeafoodLotQrCodeEntity } from '../entities/seafood-lot-qr-code.entity';
 import { SeafoodLotResponseEntity } from '../entities/seafood-lot-response.entity';
 import { SeafoodLotsService } from '../services/seafood-lots.service';
 
@@ -63,6 +65,19 @@ export class SeafoodLotsController {
     return this.seafoodLotsService.getPublicById(id);
   }
 
+  @Get(':id/qr-code')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Generate a label-printing QR code encoding this lot\'s public passport URL (owning vendor or admin)' })
+  @ApiResponseDoc({ status: 200, type: SeafoodLotQrCodeEntity })
+  getQrCode(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ): Promise<SeafoodLotQrCodeEntity> {
+    return this.seafoodLotsService.generateQrCode(user, id);
+  }
+
   @Get(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
@@ -80,9 +95,11 @@ export class SeafoodLotsController {
   @ApiOperation({ summary: 'Place a lot on hold/quarantine or clear it (admin only)' })
   @ApiResponseDoc({ status: 200, type: SeafoodLotResponseEntity })
   updateStatus(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateLotStatusDto,
+    @Req() req: Request,
   ): Promise<SeafoodLotResponseEntity> {
-    return this.seafoodLotsService.updateStatus(id, dto.status, dto.reason);
+    return this.seafoodLotsService.updateStatus(user.id, id, dto.status, dto.reason, req.ip);
   }
 }

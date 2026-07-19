@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
+import { Request } from 'express';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -57,9 +58,11 @@ export class FoodSafetyIncidentsController {
   @ApiOperation({ summary: 'Investigate, resolve, or close a food safety incident (admin only)' })
   @ApiResponseDoc({ status: 200, type: IncidentResponseEntity })
   updateStatus(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateIncidentStatusDto,
+    @Req() req: Request,
   ): Promise<IncidentResponseEntity> {
-    return this.incidentsService.updateStatus(id, dto.status, dto.correctiveAction);
+    return this.incidentsService.updateStatus(user.id, id, dto.status, dto.correctiveAction, req.ip);
   }
 }

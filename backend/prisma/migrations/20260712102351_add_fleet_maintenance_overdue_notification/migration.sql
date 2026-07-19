@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "NotificationEventType" ADD VALUE 'FLEET_MAINTENANCE_OVERDUE';

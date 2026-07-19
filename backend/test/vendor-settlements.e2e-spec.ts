@@ -64,7 +64,7 @@ interface GenerateResultData {
 // Each test registers several roles and drives an order through the full
 // checkout -> delivery -> payment -> settlement lifecycle, well beyond
 // Jest's default 5s per-test timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Vendor Settlements (e2e)', () => {
   let app: INestApplication;
@@ -100,6 +100,9 @@ describe('Vendor Settlements (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (driverUserEmails.length > 0) {
@@ -108,7 +111,9 @@ describe('Vendor Settlements (e2e)', () => {
     if (adminEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -186,6 +191,17 @@ describe('Vendor Settlements (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
     return { accessToken, vendorId };
   }
 
@@ -218,6 +234,12 @@ describe('Vendor Settlements (e2e)', () => {
       .patch(`/api/v1/drivers/${driverId}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
+
+    await request(server())
+      .patch('/api/v1/drivers/me/availability')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ status: 'ONLINE' })
+      .expect(200);
 
     return { accessToken, driverId };
   }

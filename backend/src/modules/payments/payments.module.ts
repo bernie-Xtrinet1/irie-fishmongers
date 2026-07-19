@@ -18,6 +18,6 @@ import { PaymentsService } from './services/payments.service';
     WiPayAdapter,
     CashOnDeliveryAdapter,
   ],
-  exports: [PaymentsService],
+  exports: [PaymentsService, PaymentsRepository],
 })
 export class PaymentsModule {}

@@ -17,6 +17,7 @@ const recall: RecallResponseEntity = {
   lotIds: ['lot-1'],
   closedAt: null,
   createdAt: new Date(),
+  retentionExpiresAt: new Date(),
 };
 
 const affectedOrder: AffectedOrderEntity = {
@@ -73,9 +74,10 @@ describe('RecallsController', () => {
 
   it('updates a recall status', async () => {
     const dto = { status: 'ACTIVE' as const };
-    const result = await controller.updateStatus('recall-1', dto);
+    const req = { ip: '127.0.0.1' } as unknown as import('express').Request;
+    const result = await controller.updateStatus(adminUser, 'recall-1', dto, req);
     expect(result.status).toBe('ACTIVE');
-    expect(recallsService.updateStatus).toHaveBeenCalledWith('recall-1', dto);
+    expect(recallsService.updateStatus).toHaveBeenCalledWith('admin-1', 'recall-1', dto, '127.0.0.1');
   });
 
   it('lists affected orders for a recall', async () => {

@@ -1,10 +1,13 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { QualityInspection, SeafoodLot } from '@prisma/client';
 
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { CreateQualityInspectionDto } from '../dto/create-quality-inspection.dto';
+import { CustodyEventsRepository } from '../repositories/custody-events.repository';
 import { QualityInspectionsRepository } from '../repositories/quality-inspections.repository';
 import { SeafoodLotsRepository } from '../repositories/seafood-lots.repository';
+import { ComplianceAuditLogService } from './compliance-audit-log.service';
 import { QualityInspectionsService } from './quality-inspections.service';
 import { SeafoodLotsService } from './seafood-lots.service';
 
@@ -12,8 +15,11 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
   return {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
+    publicTraceToken: 'trace-token-1',
     vendorId: 'vendor-1',
+    catchItemId: null,
     species: 'Snapper',
+    speciesId: null,
     storageType: 'FRESH',
     catchDate: new Date(),
     catchLocation: null,
@@ -49,17 +55,24 @@ describe('QualityInspectionsService', () => {
   let inspectionsRepository: jest.Mocked<Pick<QualityInspectionsRepository, 'create' | 'findByLotId'>>;
   let lotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById' | 'updateStatus' | 'updateGrading'>>;
   let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'assertOwnedByRequester'>>;
+  let auditLogService: jest.Mocked<Pick<ComplianceAuditLogService, 'record'>>;
+  let custodyEventsRepository: jest.Mocked<Pick<CustodyEventsRepository, 'create'>>;
   let service: QualityInspectionsService;
 
   beforeEach(() => {
     inspectionsRepository = { create: jest.fn(), findByLotId: jest.fn() };
     lotsRepository = { findById: jest.fn(), updateStatus: jest.fn(), updateGrading: jest.fn() };
     seafoodLotsService = { assertOwnedByRequester: jest.fn() };
+    auditLogService = { record: jest.fn() };
+    custodyEventsRepository = { create: jest.fn() };
 
     service = new QualityInspectionsService(
       inspectionsRepository as unknown as QualityInspectionsRepository,
       lotsRepository as unknown as SeafoodLotsRepository,
       seafoodLotsService as unknown as SeafoodLotsService,
+      auditLogService as unknown as ComplianceAuditLogService,
+      custodyEventsRepository as unknown as CustodyEventsRepository,
+      new EventEmitter2(),
     );
   });
 
@@ -79,19 +92,19 @@ describe('QualityInspectionsService', () => {
     });
 
     it.each([
-      ['PASSED', 'SAFE'],
-      ['CONDITIONAL', 'UNDER_REVIEW'],
-      ['REJECTED', 'REJECTED'],
-      ['QUARANTINED', 'QUARANTINED'],
+      ['PASSED', 'SAFE', 'GRADE_A', 95],
+      ['CONDITIONAL', 'UNDER_REVIEW', 'GRADE_B', 75],
+      ['REJECTED', 'REJECTED', 'REJECTED', 50],
+      ['QUARANTINED', 'QUARANTINED', 'REJECTED', 40],
     ] as const)(
       'creates an inspection with result %s and updates the lot status to %s',
-      async (result, expectedStatus) => {
+      async (result, expectedStatus, freshnessGrade, qualityScore) => {
         lotsRepository.findById.mockResolvedValue(buildLot({ foodSafetyStatus: 'SAFE' }));
         inspectionsRepository.create.mockResolvedValue(buildInspection({ result }));
         lotsRepository.updateGrading.mockResolvedValue(buildLot());
         lotsRepository.updateStatus.mockResolvedValue(buildLot({ foodSafetyStatus: expectedStatus }));
 
-        const result_ = await service.inspect('admin-1', { ...dto, result });
+        const result_ = await service.inspect('admin-1', { ...dto, result, freshnessGrade, qualityScore });
 
         expect(result_.result).toBe(result);
         expect(lotsRepository.updateStatus).toHaveBeenCalledWith(
@@ -114,6 +127,56 @@ describe('QualityInspectionsService', () => {
         freshnessGrade: 'GRADE_A',
         qualityScore: 95,
       });
+    });
+
+    it('writes an INSPECTION custody event with both sides set to the inspector', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      inspectionsRepository.create.mockResolvedValue(buildInspection());
+      lotsRepository.updateGrading.mockResolvedValue(buildLot());
+      lotsRepository.updateStatus.mockResolvedValue(buildLot());
+
+      await service.inspect('admin-1', dto);
+
+      expect(custodyEventsRepository.create).toHaveBeenCalledWith({
+        lotId: 'lot-1',
+        eventType: 'INSPECTION',
+        fromUserId: 'admin-1',
+        toUserId: 'admin-1',
+      });
+    });
+
+    it('rejects a PASSED result paired with a Grade C or Rejected grade', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, result: 'PASSED', freshnessGrade: 'GRADE_C' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(inspectionsRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a REJECTED result paired with a non-Rejected grade', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, result: 'REJECTED', freshnessGrade: 'GRADE_B' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a Grade A score below the Premium/Excellent band', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', { ...dto, freshnessGrade: 'GRADE_A', qualityScore: 50 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a Rejected grade with a score of 60 or above', async () => {
+      lotsRepository.findById.mockResolvedValue(buildLot());
+      await expect(
+        service.inspect('admin-1', {
+          ...dto,
+          result: 'REJECTED',
+          freshnessGrade: 'REJECTED',
+          qualityScore: 65,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('skips the status update but still creates the inspection when the lot is RECALLED', async () => {

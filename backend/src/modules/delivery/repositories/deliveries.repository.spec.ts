@@ -23,13 +23,18 @@ describe('DeliveriesRepository', () => {
   let category: Category;
   let vendorOrderId: string;
 
-  async function createReadyVendorOrder(vendor: Vendor, productId: string): Promise<string> {
+  async function createReadyVendorOrder(
+    vendor: Vendor,
+    productId: string,
+    deliveryZoneId?: string,
+  ): Promise<string> {
     const ordersRepository = new OrdersRepository(prisma);
     const order = await ordersRepository.create({
       customerId,
       deliveryAddressLine1: '1 Test Street',
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      deliveryZoneId,
       vendorOrders: [
         {
           vendorId: vendor.id,
@@ -237,5 +242,29 @@ describe('DeliveriesRepository', () => {
     expect(updated.failureReason).toBe('Customer not present');
 
     await expect(repository.countActiveByDriverId(driverId)).resolves.toBe(0);
+  });
+
+  it('finds scheduled, unclaimed-pickup deliveries in a zone', async () => {
+    const zone = await prisma.deliveryZone.findUniqueOrThrow({ where: { code: 'ZONE_1' } });
+
+    const vendorsRepository = new VendorsRepository(prisma);
+    const vendor = await vendorsRepository.findByUserId(vendorUserId);
+    const productsRepository = new ProductsRepository(prisma);
+    const product = await productsRepository.create({
+      vendorId: vendor!.id,
+      categoryId: category.id,
+      name: 'Deliveries Repo Zone Snapper',
+      description: 'Sold for zone-scoped delivery repository tests.',
+      unit: 'PER_POUND',
+      price: 500,
+      quantityAvailable: 50,
+      imageUrl: 'https://cdn.example.com/snapper.jpg',
+    });
+    const zoneVendorOrderId = await createReadyVendorOrder(vendor!, product.id, zone.id);
+    const zoneDelivery = await repository.create({ vendorOrderId: zoneVendorOrderId, driverId });
+
+    const scheduled = await repository.findScheduledForZone(zone.id);
+    expect(scheduled.some((delivery) => delivery.id === zoneDelivery.id)).toBe(true);
+    expect(scheduled.every((delivery) => delivery.pickedUpAt === null)).toBe(true);
   });
 });

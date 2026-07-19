@@ -9,6 +9,7 @@ export const SELF_REGISTERABLE_ROLES = [
   RoleName.CUSTOMER,
   RoleName.VENDOR,
   RoleName.DRIVER,
+  RoleName.FISHERMAN,
 ] as const;
 
 export class RegisterDto {

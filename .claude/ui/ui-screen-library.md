@@ -23,24 +23,11 @@ All screens must use the UI Design System.
 
 # BRANDING
 
-Use:
+Branding, color palette, and typography are defined authoritatively in
+`ui-design-system.md`. Use that document as the single source of truth for
+all colors, spacing, typography, and component styling.
 
-Irie Fishmongers Logo
-
-Primary Color:
-Ocean Blue
-
-Secondary Color:
-Seafoam Green
-
-Accent:
-Fresh Coral
-
-Background:
-White
-
-Typography:
-Modern Sans Serif
+Do not introduce colors or type styles that are not defined there.
 
 ---
 
@@ -654,3 +641,41 @@ Before creating a new screen:
 5. Ensure responsive design.
 6. Ensure food safety workflows remain visible.
 7. Ensure cold-chain status is visible where applicable.
+
+# COMPONENT
+
+Vendor Tier Badge
+
+Types
+
+- Community Fisher
+- Verified Vendor
+- Commercial Supplier
+- Enterprise Supplier
+
+Display:
+
+Badge
+Color
+Tooltip
+Compliance Status
+
+---
+
+# COMPONENT
+
+Vendor Selection Card
+
+Fields
+
+- Vendor Name
+- Tier Badge
+- Rating
+- Delivery ETA
+- Compliance Status
+- Price
+
+Actions
+
+- Select Vendor
+- View Profile

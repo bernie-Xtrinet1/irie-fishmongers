@@ -15,6 +15,16 @@ const delivery: DriverDeliveryResponseEntity = {
   deliveryAddressLine2: null,
   deliveryParish: 'KINGSTON',
   deliveryPhone: '+18765551234',
+  scheduledPickupWindowStart: null,
+  scheduledPickupWindowEnd: null,
+  customerDeliveryWindowStart: null,
+  customerDeliveryWindowEnd: null,
+  vendorConfirmedAt: null,
+  vendorConfirmedById: null,
+  customerAcceptanceStatus: 'PENDING',
+  customerAcceptedAt: null,
+  customerRejectedAt: null,
+  rejectionReason: null,
   assignedAt: new Date(),
   pickedUpAt: null,
   deliveredAt: null,
@@ -22,6 +32,8 @@ const delivery: DriverDeliveryResponseEntity = {
   failureReason: null,
   proofType: null,
   proofUrl: null,
+  exceptions: [],
+  routeHistory: null,
 };
 
 const tracking: DeliveryTrackingEntity = {
@@ -32,6 +44,8 @@ const tracking: DeliveryTrackingEntity = {
   driverVehicleType: 'CAR',
   driverLicensePlate: 'AB 1234',
   latestLocation: null,
+  customerDeliveryWindowStart: null,
+  customerDeliveryWindowEnd: null,
   assignedAt: new Date(),
   pickedUpAt: null,
   deliveredAt: null,
@@ -40,10 +54,21 @@ const tracking: DeliveryTrackingEntity = {
 
 const driverUser = { id: 'driver-user-1', email: 'a@b.com', roles: ['DRIVER' as const] };
 const customerUser = { id: 'customer-1', email: 'c@d.com', roles: ['CUSTOMER' as const] };
+const vendorUser = { id: 'vendor-user-1', email: 'v@d.com', roles: ['VENDOR' as const] };
 
 describe('DeliveriesController', () => {
   let deliveriesService: jest.Mocked<
-    Pick<DeliveriesService, 'getAvailable' | 'assign' | 'getMine' | 'updateStatus' | 'track'>
+    Pick<
+      DeliveriesService,
+      | 'getAvailable'
+      | 'assign'
+      | 'getMine'
+      | 'updateStatus'
+      | 'updateSchedule'
+      | 'confirmVendorPickup'
+      | 'recordCustomerAcceptance'
+      | 'track'
+    >
   >;
   let controller: DeliveriesController;
 
@@ -53,6 +78,15 @@ describe('DeliveriesController', () => {
       assign: jest.fn().mockResolvedValue(delivery),
       getMine: jest.fn().mockResolvedValue({ items: [delivery], total: 1, page: 1, pageSize: 20 }),
       updateStatus: jest.fn().mockResolvedValue({ ...delivery, stage: 'PICKED_UP' }),
+      updateSchedule: jest.fn().mockResolvedValue({
+        ...delivery,
+        scheduledPickupWindowStart: new Date('2026-07-10T10:00:00.000Z'),
+      }),
+      confirmVendorPickup: jest.fn().mockResolvedValue({ ...delivery, vendorConfirmedAt: new Date() }),
+      recordCustomerAcceptance: jest.fn().mockResolvedValue({
+        ...delivery,
+        customerAcceptanceStatus: 'ACCEPTED',
+      }),
       track: jest.fn().mockResolvedValue(tracking),
     };
     controller = new DeliveriesController(deliveriesService as unknown as DeliveriesService);
@@ -83,6 +117,30 @@ describe('DeliveriesController', () => {
     const result = await controller.updateStatus(driverUser, 'delivery-1', dto);
     expect(result.stage).toBe('PICKED_UP');
     expect(deliveriesService.updateStatus).toHaveBeenCalledWith('driver-user-1', 'delivery-1', dto);
+  });
+
+  it('updates a delivery schedule', async () => {
+    const dto = { scheduledPickupWindowStart: '2026-07-10T10:00:00.000Z' };
+    const result = await controller.updateSchedule(driverUser, 'delivery-1', dto);
+    expect(result.scheduledPickupWindowStart).not.toBeNull();
+    expect(deliveriesService.updateSchedule).toHaveBeenCalledWith('driver-user-1', 'delivery-1', dto);
+  });
+
+  it('confirms vendor pickup', async () => {
+    const result = await controller.confirmVendorPickup(vendorUser, 'delivery-1');
+    expect(result.vendorConfirmedAt).not.toBeNull();
+    expect(deliveriesService.confirmVendorPickup).toHaveBeenCalledWith('vendor-user-1', 'delivery-1');
+  });
+
+  it('records a customer acceptance decision', async () => {
+    const dto = { decision: 'ACCEPTED' as const };
+    const result = await controller.recordCustomerAcceptance(customerUser, 'delivery-1', dto);
+    expect(result.customerAcceptanceStatus).toBe('ACCEPTED');
+    expect(deliveriesService.recordCustomerAcceptance).toHaveBeenCalledWith(
+      'customer-1',
+      'delivery-1',
+      dto,
+    );
   });
 
   it('tracks a delivery for the owning customer', async () => {

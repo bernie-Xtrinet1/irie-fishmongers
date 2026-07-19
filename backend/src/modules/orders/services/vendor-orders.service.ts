@@ -3,6 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { VendorOrderStatus } from '@prisma/client';
 
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
+import { PrismaService } from '../../../database/prisma.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -26,10 +28,12 @@ const ALLOWED_TRANSITIONS: Record<VendorOrderStatus, VendorOrderStatus[]> = {
 @Injectable()
 export class VendorOrdersService {
   constructor(
+    private readonly prisma: PrismaService,
     private readonly vendorOrdersRepository: VendorOrdersRepository,
     private readonly vendorsRepository: VendorsRepository,
     private readonly productsRepository: ProductsRepository,
     private readonly paymentsService: PaymentsService,
+    private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -81,11 +85,23 @@ export class VendorOrdersService {
     const vendorOrder = await this.getOwnedVendorOrder(userId, vendorOrderId);
     this.assertTransitionAllowed(vendorOrder.status, 'REJECTED');
 
-    for (const item of vendorOrder.items) {
-      await this.productsRepository.adjustStock(item.productId, item.quantity);
-    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const item of vendorOrder.items) {
+        await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
+        await this.inventoryEventsRepository.create(
+          {
+            productId: item.productId,
+            eventType: 'RESTOCKED',
+            quantityDelta: item.quantity,
+            vendorOrderId: vendorOrder.id,
+          },
+          tx,
+        );
+      }
 
-    const updated = await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'REJECTED');
+      return this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'REJECTED', tx);
+    });
+
     await this.paymentsService.refundForOrder(
       vendorOrder.orderId,
       vendorOrder.subtotal.toNumber(),

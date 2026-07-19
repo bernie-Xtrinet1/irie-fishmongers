@@ -1,6 +1,8 @@
 import { Vendor } from '@prisma/client';
 
+import { PickupQueueEntryEntity } from '../entities/pickup-queue-entry.entity';
 import { VendorPublicEntity } from '../entities/vendor-public.entity';
+import { VendorPickupQueueService } from '../services/vendor-pickup-queue.service';
 import { VendorsService } from '../services/vendors.service';
 import { VendorsController } from './vendors.controller';
 
@@ -15,7 +17,9 @@ const vendor: Vendor = {
   status: 'PENDING',
   tier: 'COMMUNITY_FISHER',
   complianceScore: null,
+  complianceScoreUpdatedAt: null,
   termsAcceptedAt: new Date(),
+  primaryZoneId: null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -27,14 +31,26 @@ const publicVendor: VendorPublicEntity = {
   parish: 'KINGSTON',
   logoUrl: null,
   tier: 'COMMUNITY_FISHER',
+  complianceScore: null,
 };
 
 const user = { id: 'user-1', email: 'a@b.com', roles: ['VENDOR' as const] };
+
+const pickupQueue: PickupQueueEntryEntity[] = [
+  {
+    vendorOrderId: 'vo-1',
+    status: 'READY_FOR_PICKUP',
+    driverName: null,
+    scheduledPickupWindowStart: null,
+    pickupOrder: null,
+  },
+];
 
 describe('VendorsController', () => {
   let vendorsService: jest.Mocked<
     Pick<VendorsService, 'register' | 'getOwnProfile' | 'updateOwnProfile' | 'getPublicProfile' | 'updateStatus' | 'list'>
   >;
+  let vendorPickupQueueService: jest.Mocked<Pick<VendorPickupQueueService, 'getForUser'>>;
   let controller: VendorsController;
 
   beforeEach(() => {
@@ -46,7 +62,11 @@ describe('VendorsController', () => {
       updateStatus: jest.fn().mockResolvedValue({ ...vendor, status: 'APPROVED' }),
       list: jest.fn().mockResolvedValue({ items: [vendor], total: 1, page: 1, pageSize: 20 }),
     };
-    controller = new VendorsController(vendorsService as unknown as VendorsService);
+    vendorPickupQueueService = { getForUser: jest.fn().mockResolvedValue(pickupQueue) };
+    controller = new VendorsController(
+      vendorsService as unknown as VendorsService,
+      vendorPickupQueueService as unknown as VendorPickupQueueService,
+    );
   });
 
   const registerDto = { businessName: "Vera's Catch", parish: 'KINGSTON' as const, acceptedTerms: true as const };
@@ -73,6 +93,12 @@ describe('VendorsController', () => {
   it('lists vendors', async () => {
     const result = await controller.list({ page: 1, pageSize: 20 });
     expect(result.total).toBe(1);
+  });
+
+  it("returns the authenticated vendor's pickup queue", async () => {
+    const result = await controller.getPickupQueue(user);
+    expect(result).toEqual(pickupQueue);
+    expect(vendorPickupQueueService.getForUser).toHaveBeenCalledWith('user-1');
   });
 
   it('returns a public vendor profile', async () => {

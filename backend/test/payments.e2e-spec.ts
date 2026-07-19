@@ -67,7 +67,7 @@ interface RefundData {
 // Several tests chain multiple sequential requests, well beyond Jest's
 // default 5s per-test timeout once run alongside the rest of the e2e
 // suite's parallel workers.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Payments (e2e)', () => {
   let app: INestApplication;
@@ -99,12 +99,17 @@ describe('Payments (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -181,6 +186,17 @@ describe('Payments (e2e)', () => {
       .patch(`/api/v1/vendors/${vendorId}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
+
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
 
     return { accessToken, vendorId };
   }

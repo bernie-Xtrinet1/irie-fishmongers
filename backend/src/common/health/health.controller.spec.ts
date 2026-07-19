@@ -1,48 +1,40 @@
 import { HttpException } from '@nestjs/common';
 
-import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../redis/redis.service';
 import { HealthController } from './health.controller';
+import { HealthService } from './health.service';
 
 describe('HealthController', () => {
-  let prisma: jest.Mocked<Pick<PrismaService, '$queryRaw'>>;
-  let redis: jest.Mocked<Pick<RedisService, 'ping'>>;
+  let healthService: jest.Mocked<Pick<HealthService, 'checkStatus'>>;
   let controller: HealthController;
 
   beforeEach(() => {
-    prisma = { $queryRaw: jest.fn() };
-    redis = { ping: jest.fn() };
-    controller = new HealthController(
-      prisma as unknown as PrismaService,
-      redis as unknown as RedisService,
-    );
+    healthService = { checkStatus: jest.fn() };
+    controller = new HealthController(healthService as unknown as HealthService);
   });
 
   it('reports both dependencies up', async () => {
-    prisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
-    redis.ping.mockResolvedValue('PONG');
+    healthService.checkStatus.mockResolvedValue({ postgres: 'up', redis: 'up' });
 
     await expect(controller.check()).resolves.toEqual({ postgres: 'up', redis: 'up' });
   });
 
   it('throws 503 when postgres is unreachable', async () => {
-    prisma.$queryRaw.mockRejectedValue(new Error('connection refused'));
-    redis.ping.mockResolvedValue('PONG');
+    healthService.checkStatus.mockResolvedValue({ postgres: 'down', redis: 'up' });
 
     await expect(controller.check()).rejects.toBeInstanceOf(HttpException);
   });
 
   it('throws 503 when redis is unreachable', async () => {
-    prisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
-    redis.ping.mockRejectedValue(new Error('connection refused'));
+    healthService.checkStatus.mockResolvedValue({ postgres: 'up', redis: 'down' });
 
     await expect(controller.check()).rejects.toBeInstanceOf(HttpException);
   });
 
-  it('throws 503 when redis replies with something other than PONG', async () => {
-    prisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
-    redis.ping.mockResolvedValue('unexpected');
+  describe('checkStatus', () => {
+    it('always resolves 200 with the granular status, even when a dependency is down', async () => {
+      healthService.checkStatus.mockResolvedValue({ postgres: 'up', redis: 'down' });
 
-    await expect(controller.check()).rejects.toBeInstanceOf(HttpException);
+      await expect(controller.checkStatus()).resolves.toEqual({ postgres: 'up', redis: 'down' });
+    });
   });
 });

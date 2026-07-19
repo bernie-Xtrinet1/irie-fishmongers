@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "C:\\Windows\\System32\\cmd.exe",
+      "runtimeArgs": [
+        "/d",
+        "/c",
+        "set PATH=C:\\Program Files\\nodejs;%PATH% && cd backend && npm run dev"
+      ],
+      "port": 3001
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "C:\\Windows\\System32\\cmd.exe",
+      "runtimeArgs": [
+        "/d",
+        "/c",
+        "set PATH=C:\\Program Files\\nodejs;%PATH% && cd apps\\web && npm run dev"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "admin-dashboard",
+      "runtimeExecutable": "C:\\Windows\\System32\\cmd.exe",
+      "runtimeArgs": [
+        "/d",
+        "/c",
+        "set PATH=C:\\Program Files\\nodejs;%PATH% && cd apps\\admin-dashboard && npm run dev"
+      ],
+      "port": 3002
+    }
+  ]
+}

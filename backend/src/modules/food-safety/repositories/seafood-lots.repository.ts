@@ -13,7 +13,9 @@ import { PrismaService } from '../../../database/prisma.service';
 export interface CreateLotInput {
   lotNumber: string;
   vendorId: string;
+  catchItemId?: string;
   species: string;
+  speciesId?: string;
   storageType: SeafoodStorageType;
   catchDate: Date;
   catchLocation?: string;
@@ -56,8 +58,26 @@ export class SeafoodLotsRepository {
     return this.prisma.seafoodLot.findUnique({ where: { id } });
   }
 
+  countByStatus(status: FoodSafetyStatus): Promise<number> {
+    return this.prisma.seafoodLot.count({ where: { foodSafetyStatus: status } });
+  }
+
+  findAllForExport(): Promise<LotWithVendor[]> {
+    return this.prisma.seafoodLot.findMany({
+      include: lotWithVendor.include,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   findByIdWithVendor(id: string): Promise<LotWithVendor | null> {
     return this.prisma.seafoodLot.findUnique({ where: { id }, include: lotWithVendor.include });
+  }
+
+  // The Digital Product Passport's public lookup key - never by id/lotNumber
+  // (lotNumber is sequential/enumerable), closing the enumeration gap a
+  // sequential lookup would otherwise have.
+  findByPublicTraceToken(token: string): Promise<LotWithVendor | null> {
+    return this.prisma.seafoodLot.findUnique({ where: { publicTraceToken: token }, include: lotWithVendor.include });
   }
 
   updateStatus(
@@ -95,6 +115,22 @@ export class SeafoodLotsRepository {
     ]);
 
     return { items, total };
+  }
+
+  // Phase 13D: the "as of" date for a lot's public qualityScore.
+  // SeafoodLot itself has no inspection-timestamp column - queried
+  // directly against QualityInspection here (rather than injecting
+  // QualityInspectionsRepository, which lives in QualityModule and
+  // imports SeafoodLotsModule - injecting it back would create a module
+  // cycle) since a Prisma query against a table isn't scoped by NestJS
+  // module boundaries the way service injection is.
+  async findLatestInspectedAt(lotId: string): Promise<Date | null> {
+    const latest = await this.prisma.qualityInspection.findFirst({
+      where: { lotId },
+      orderBy: { inspectedAt: 'desc' },
+      select: { inspectedAt: true },
+    });
+    return latest?.inspectedAt ?? null;
   }
 
   async findMany(

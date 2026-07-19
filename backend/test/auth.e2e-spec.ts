@@ -40,7 +40,9 @@ describe('Auth (e2e)', () => {
     if (createdEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: createdEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {

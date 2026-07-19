@@ -1,10 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
+import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
+import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
+import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
+import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
+import { FleetMaintenanceOverdueEvent } from '../../../common/events/fleet-maintenance-overdue.event';
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
+import { RecallIssuedEvent } from '../../../common/events/recall-issued.event';
 import { RefundStatusChangedEvent } from '../../../common/events/refund-status-changed.event';
 import { RegistrationConfirmedEvent } from '../../../common/events/registration-confirmed.event';
 import { VendorApprovedEvent } from '../../../common/events/vendor-approved.event';
@@ -99,6 +105,89 @@ export class NotificationEventsListener {
       eventType: 'REFUND_STATUS_CHANGED',
       priority: 'HIGH',
       variables: { amount: event.amount, status: event.status },
+    });
+  }
+
+  @OnEvent(DriverAssignedEvent.eventName)
+  async onDriverAssigned(event: DriverAssignedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'DELIVERY',
+      eventType: 'DRIVER_ASSIGNED',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: event.vendorOrderId, driverFirstName: event.driverFirstName },
+    });
+  }
+
+  @OnEvent(AwaitingCustomerAcceptanceEvent.eventName)
+  async onAwaitingCustomerAcceptance(event: AwaitingCustomerAcceptanceEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'DELIVERY',
+      eventType: 'AWAITING_CUSTOMER_ACCEPTANCE',
+      priority: 'NORMAL',
+      variables: { vendorOrderId: event.vendorOrderId },
+    });
+  }
+
+  @OnEvent(RecallIssuedEvent.eventName)
+  async onRecallIssued(event: RecallIssuedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.customerId,
+      category: 'ORDER',
+      eventType: 'RECALL_ISSUED',
+      priority: 'CRITICAL',
+      variables: { orderId: event.orderId, lotNumber: event.lotNumber, reason: event.reason },
+    });
+  }
+
+  // cold-chain-management.md's alert-severity ladder maps directly onto
+  // NotificationPriority: WARNING is routine, CRITICAL already triggered a
+  // lot status change, EMERGENCY already triggered an auto-quarantine +
+  // emergency response - the notification priority should read the same way.
+  @OnEvent(ColdChainAlertRaisedEvent.eventName)
+  async onColdChainAlertRaised(event: ColdChainAlertRaisedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.vendorUserId,
+      category: 'VENDOR',
+      eventType: 'COLD_CHAIN_ALERT_RAISED',
+      priority: event.severity === 'EMERGENCY' ? 'CRITICAL' : event.severity === 'CRITICAL' ? 'HIGH' : 'NORMAL',
+      variables: {
+        lotNumber: event.lotNumber,
+        severity: event.severity,
+        temperatureC: event.temperatureC,
+        checkpoint: event.checkpoint,
+      },
+    });
+  }
+
+  @OnEvent(FleetMaintenanceOverdueEvent.eventName)
+  async onFleetMaintenanceOverdue(event: FleetMaintenanceOverdueEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.driverUserId,
+      category: 'DELIVERY',
+      eventType: 'FLEET_MAINTENANCE_OVERDUE',
+      priority: 'HIGH',
+      variables: {
+        licensePlate: event.licensePlate,
+        nextServiceDue: event.nextServiceDue ?? 'unscheduled',
+      },
+    });
+  }
+
+  // Notifies the vendor, not the customer who rejected - the customer
+  // already knows they rejected their own delivery. The vendor is the
+  // operationally actionable recipient (a food safety incident is being
+  // raised against their product - see FoodSafetyEventsListener, the
+  // other consumer of this same event).
+  @OnEvent(DeliveryRejectedEvent.eventName)
+  async onDeliveryRejected(event: DeliveryRejectedEvent): Promise<void> {
+    await this.notificationsService.notify({
+      userId: event.vendorUserId,
+      category: 'DELIVERY',
+      eventType: 'DELIVERY_REJECTED',
+      priority: 'HIGH',
+      variables: { vendorOrderId: event.vendorOrderId, reason: event.reason },
     });
   }
 }

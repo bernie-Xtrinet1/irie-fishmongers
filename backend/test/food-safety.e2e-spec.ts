@@ -45,6 +45,8 @@ interface LotData {
 interface PublicLotData {
   lotNumber: string;
   temperatureVerified: boolean;
+  qualityScore: number | null;
+  lastInspectedAt: string | null;
 }
 
 interface RecordReadingResultData {
@@ -86,7 +88,7 @@ interface OrderData {
 
 // Several tests drive a lot through registration -> temperature breach ->
 // inspection -> checkout -> recall, well beyond Jest's default 5s timeout.
-jest.setTimeout(20_000);
+jest.setTimeout(60_000);
 
 describe('Food Safety / Compliance (e2e)', () => {
   let app: INestApplication;
@@ -118,6 +120,10 @@ describe('Food Safety / Compliance (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
+      // Frees Product -> InventoryEvent's Restrict constraint.
+      await prisma.inventoryEvent.deleteMany({
+        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+      });
       // Frees Product -> SeafoodLot's Restrict constraint.
       await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
     }
@@ -132,9 +138,15 @@ describe('Food Safety / Compliance (e2e)', () => {
       await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
     }
     if (adminEmails.length > 0) {
+      // Frees ComplianceAuditLog -> userId's Restrict constraint - every
+      // admin-driven status update (lot/recall/incident/inspection) now
+      // writes an audit log entry keyed to the acting user.
+      await prisma.complianceAuditLog.deleteMany({ where: { user: { email: { in: adminEmails } } } });
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
@@ -212,6 +224,17 @@ describe('Food Safety / Compliance (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
+    // COMMUNITY_FISHER (the default tier on registration) requires an
+    // APPROVED GOVERNMENT_ID before the vendor may list products.
+    const uploadRes = await request(server())
+      .post('/api/v1/vendor-documents')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ documentType: 'GOVERNMENT_ID', fileUrl: 'https://cdn.example.com/vendor-docs/doc.jpg' });
+    await request(server())
+      .patch(`/api/v1/vendor-documents/${data<{ id: string }>(uploadRes).id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ decision: 'APPROVED' });
+
     return { accessToken, vendorId };
   }
 
@@ -272,6 +295,22 @@ describe('Food Safety / Compliance (e2e)', () => {
     const publicLot = data<PublicLotData>(publicRes);
     expect(publicLot.lotNumber).toBe(lot.lotNumber);
     expect(publicLot.temperatureVerified).toBe(true);
+    // A freshly-registered, never-inspected lot has no quality score or
+    // inspection date yet (Phase 13D).
+    expect(publicLot.qualityScore).toBeNull();
+    expect(publicLot.lastInspectedAt).toBeNull();
+
+    // After a PASSED inspection, the public lot surfaces the resulting
+    // quality/freshness score and the inspection timestamp.
+    await request(server())
+      .post('/api/v1/quality-inspections')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ lotId: lot.id, result: 'PASSED', freshnessGrade: 'GRADE_A', qualityScore: 93 });
+
+    const publicAfterInspectionRes = await request(server()).get(`/api/v1/seafood-lots/${lot.id}/public`);
+    const publicLotAfter = data<PublicLotData>(publicAfterInspectionRes);
+    expect(publicLotAfter.qualityScore).toBe(93);
+    expect(publicLotAfter.lastInspectedAt).not.toBeNull();
 
     const mineRes = await request(server())
       .get('/api/v1/seafood-lots/mine')

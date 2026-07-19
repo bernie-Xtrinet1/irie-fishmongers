@@ -48,6 +48,14 @@ jobs:
       WIPAY_API_URL: https://tx.wipayfinancial.com/plugins/payments
       WIPAY_ACCOUNT_NUMBER: ci-test-account-number
       WIPAY_API_KEY: ci-test-wipay-key
+      # Non-secret CI test values for the remaining env-validated vars the e2e
+      # suite needs when it boots the full AppModule (no backend/.env on CI).
+      # CORS_ORIGIN must include the origin cors.e2e-spec asserts (localhost:3002)
+      # and must not be '*' (credentialed CORS).
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3002
+      SENDGRID_API_KEY: SG.ci-test-sendgrid-key
+      SENDGRID_FROM_EMAIL: no-reply@iriefishmongers.test
+      FCM_SERVER_KEY: ci-test-fcm-server-key
 
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +68,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Prisma Client
+        run: npm run prisma:generate -w backend
+
       - name: Lint
         run: npm run lint
 
@@ -68,6 +79,14 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # NEXT_PUBLIC_* are inlined into the client bundle at build time and
+          # are not secrets. apps/admin-dashboard/lib/env.ts throws in a
+          # production build if these are unset; supply non-secret CI values so
+          # `next build` can prerender pages like /login on the clean runner.
+          NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
+          NEXT_PUBLIC_ENVIRONMENT: test
+          NEXT_PUBLIC_APP_URL: http://localhost:3002
 
       - name: Apply database migrations
         run: npx prisma migrate deploy

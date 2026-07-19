@@ -206,4 +206,16 @@ describe('OrdersRepository', () => {
     expect(total).toBeGreaterThanOrEqual(2);
     expect(items).toHaveLength(1);
   });
+
+  describe('count', () => {
+    it('counts every order in the platform', async () => {
+      const total = await repository.count();
+      expect(total).toBeGreaterThanOrEqual(2);
+    });
+
+    it('narrows the count to the given date range', async () => {
+      const future = new Date(Date.now() + 60_000);
+      await expect(repository.count({ from: future })).resolves.toBe(0);
+    });
+  });
 });

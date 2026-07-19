@@ -2,6 +2,12 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { Category, SeafoodLot, Vendor } from '@prisma/client';
 
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
+import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
+import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { MarketplaceConfigService } from '../../marketplace/services/marketplace-config.service';
+import { ReviewsQueryService } from '../../reviews/services/reviews-query.service';
+import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CategoriesRepository } from '../repositories/categories.repository';
@@ -21,7 +27,9 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     status: 'APPROVED',
     tier: 'COMMUNITY_FISHER',
     complianceScore: null,
+    complianceScoreUpdatedAt: null,
     termsAcceptedAt: new Date(),
+    primaryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -53,6 +61,7 @@ function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
     currency: 'JMD',
     quantityAvailable: 10,
     imageUrl: 'https://cdn.example.com/snapper.jpg',
+    weightLbs: null,
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -64,8 +73,11 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
   return {
     id: 'lot-1',
     lotNumber: 'LOT-2026-000001',
+    publicTraceToken: 'trace-token-1',
     vendorId: 'vendor-1',
+    catchItemId: null,
     species: 'Snapper',
+    speciesId: null,
     storageType: 'FRESH',
     catchDate: new Date(),
     catchLocation: null,
@@ -87,9 +99,17 @@ describe('ProductsService', () => {
     Pick<ProductsRepository, 'create' | 'findById' | 'update' | 'setActive' | 'findMany' | 'adjustStock'>
   >;
   let categoriesRepository: jest.Mocked<Pick<CategoriesRepository, 'findById'>>;
-  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId'>>;
+  let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findByUserId' | 'findById'>>;
   let seafoodLotsRepository: jest.Mocked<Pick<SeafoodLotsRepository, 'findById'>>;
-  let vendorPermissionsService: jest.Mocked<Pick<VendorPermissionsService, 'assertListingLimitNotExceeded'>>;
+  let seafoodLotsService: jest.Mocked<Pick<SeafoodLotsService, 'getPublicById' | 'assertSellable'>>;
+  let vendorPermissionsService: jest.Mocked<
+    Pick<VendorPermissionsService, 'assertListingLimitNotExceeded' | 'getPermissions'>
+  >;
+  let vendorDocumentsService: jest.Mocked<Pick<VendorDocumentsService, 'assertCanSell'>>;
+  let marketplaceConfigService: jest.Mocked<Pick<MarketplaceConfigService, 'getCurrentModeConfig'>>;
+  let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
+  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'getAvailableToPurchase'>>;
+  let reviewsQueryService: jest.Mocked<Pick<ReviewsQueryService, 'getVendorRatingSummary'>>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -102,10 +122,19 @@ describe('ProductsService', () => {
       adjustStock: jest.fn(),
     };
     categoriesRepository = { findById: jest.fn() };
-    vendorsRepository = { findByUserId: jest.fn() };
+    vendorsRepository = { findByUserId: jest.fn(), findById: jest.fn() };
     seafoodLotsRepository = { findById: jest.fn() };
+    seafoodLotsService = { getPublicById: jest.fn(), assertSellable: jest.fn() };
     vendorPermissionsService = {
       assertListingLimitNotExceeded: jest.fn().mockResolvedValue(undefined),
+      getPermissions: jest.fn(),
+    };
+    vendorDocumentsService = { assertCanSell: jest.fn().mockResolvedValue(undefined) };
+    marketplaceConfigService = { getCurrentModeConfig: jest.fn() };
+    inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
+    inventoryReservations = { getAvailableToPurchase: jest.fn().mockResolvedValue(10) };
+    reviewsQueryService = {
+      getVendorRatingSummary: jest.fn().mockResolvedValue({ averageRating: null, reviewCount: 0 }),
     };
 
     service = new ProductsService(
@@ -113,7 +142,13 @@ describe('ProductsService', () => {
       categoriesRepository as unknown as CategoriesRepository,
       vendorsRepository as unknown as VendorsRepository,
       seafoodLotsRepository as unknown as SeafoodLotsRepository,
+      seafoodLotsService as unknown as SeafoodLotsService,
       vendorPermissionsService as unknown as VendorPermissionsService,
+      vendorDocumentsService as unknown as VendorDocumentsService,
+      marketplaceConfigService as unknown as MarketplaceConfigService,
+      inventoryEventsRepository as unknown as InventoryEventsRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
+      reviewsQueryService as unknown as ReviewsQueryService,
     );
   });
 
@@ -153,6 +188,22 @@ describe('ProductsService', () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       categoriesRepository.findById.mockResolvedValue(null);
       await expect(service.create('user-1', dto)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('throws when the vendor is missing required compliance documents', async () => {
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      vendorDocumentsService.assertCanSell.mockRejectedValue(
+        new ForbiddenException(
+          'This vendor is missing required, approved compliance documents for their tier',
+        ),
+      );
+
+      await expect(service.create('user-1', dto)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(vendorDocumentsService.assertCanSell).toHaveBeenCalledWith(
+        'vendor-1',
+        'COMMUNITY_FISHER',
+      );
+      expect(categoriesRepository.findById).not.toHaveBeenCalled();
     });
 
     it('creates a product linked to a SAFE lot owned by the same vendor', async () => {
@@ -225,13 +276,19 @@ describe('ProductsService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('adjusts stock for an owned product', async () => {
+    it('adjusts stock for an owned product and writes a MANUAL_ADJUSTMENT inventory event', async () => {
       vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
       productsRepository.findById.mockResolvedValue(buildProduct());
       productsRepository.adjustStock.mockResolvedValue(buildProduct({ quantityAvailable: 7 }));
 
       const result = await service.adjustStock('user-1', 'product-1', -3);
       expect(result.quantityAvailable).toBe(7);
+      expect(inventoryEventsRepository.create).toHaveBeenCalledWith({
+        productId: 'product-1',
+        eventType: 'MANUAL_ADJUSTMENT',
+        quantityDelta: -3,
+        triggeredById: 'user-1',
+      });
     });
 
     it('deactivates and reactivates an owned product', async () => {
@@ -259,6 +316,82 @@ describe('ProductsService', () => {
     it('throws when the product does not exist', async () => {
       productsRepository.findById.mockResolvedValue(null);
       await expect(service.findPublicById('missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getPublicDetail', () => {
+    const permissions = {
+      tier: 'COMMUNITY_FISHER' as const,
+      badge: '🐟 Community Fisher',
+      dailySalesLimit: null,
+      monthlySalesLimit: null,
+      maxActiveListings: null,
+      canSellRetail: true,
+      canSellWholesale: false,
+      canAcceptHotelOrders: false,
+      canAcceptRestaurantOrders: false,
+      canAcceptGovernmentOrders: false,
+      canExportProducts: false,
+      canAccessAnalytics: false,
+      canAccessPromotions: false,
+      canUseApiAccess: false,
+      canOperateMultipleZones: false,
+    };
+    const modeConfig = {
+      id: 'mode-config-1',
+      customerSelectedEnabled: true,
+      bestAvailableEnabled: false,
+      createdAt: new Date(),
+    };
+
+    it('composes product, vendor, and marketplace mode data when there is no lot', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.getPermissions.mockResolvedValue(permissions);
+      marketplaceConfigService.getCurrentModeConfig.mockResolvedValue(modeConfig);
+
+      const result = await service.getPublicDetail('product-1');
+
+      expect(result.lot).toBeNull();
+      expect(result.vendor.badge).toBe('🐟 Community Fisher');
+      expect(result.marketplaceModes.bestAvailableEnabled).toBe(false);
+      expect(seafoodLotsService.getPublicById).not.toHaveBeenCalled();
+    });
+
+    it('includes traceability data when the product is linked to a lot', async () => {
+      const publicLot = {
+        lotNumber: 'LOT-2026-000001',
+        species: 'Snapper',
+        storageType: 'FRESH' as const,
+        catchDate: new Date(),
+        catchLocation: 'North Coast',
+        landingSite: 'Falmouth Landing Site',
+        freshnessGrade: null,
+        qualityScore: null,
+        lastInspectedAt: null,
+        vendorBusinessName: "Vera's Catch",
+        temperatureVerified: true,
+      };
+      productsRepository.findById.mockResolvedValue(buildProduct({ lotId: 'lot-1' }));
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.getPermissions.mockResolvedValue(permissions);
+      marketplaceConfigService.getCurrentModeConfig.mockResolvedValue(modeConfig);
+      seafoodLotsService.getPublicById.mockResolvedValue(publicLot);
+
+      const result = await service.getPublicDetail('product-1');
+
+      expect(result.lot?.catchLocation).toBe('North Coast');
+      expect(seafoodLotsService.getPublicById).toHaveBeenCalledWith('lot-1');
+    });
+
+    it('throws for an inactive product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ isActive: false }));
+      await expect(service.getPublicDetail('product-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('throws when the product does not exist', async () => {
+      productsRepository.findById.mockResolvedValue(null);
+      await expect(service.getPublicDetail('missing')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
@@ -314,6 +447,39 @@ describe('ProductsService', () => {
       await expect(
         service.findOwnProducts('user-1', { page: 1, pageSize: 20 }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getAvailability', () => {
+    it('returns quantity, reserved, and availableToPurchase for an active product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ quantityAvailable: 10 }));
+      inventoryReservations.getAvailableToPurchase.mockResolvedValue(6);
+
+      const result = await service.getAvailability('product-1');
+
+      expect(result).toEqual({
+        productId: 'product-1',
+        quantityAvailable: 10,
+        reserved: 4,
+        availableToPurchase: 6,
+      });
+      expect(inventoryReservations.getAvailableToPurchase).toHaveBeenCalledWith(
+        'product-1',
+        10,
+        '',
+      );
+    });
+
+    it('throws for an inactive product', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct({ isActive: false }));
+      await expect(service.getAvailability('product-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('throws when the product does not exist', async () => {
+      productsRepository.findById.mockResolvedValue(null);
+      await expect(service.getAvailability('missing')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });
