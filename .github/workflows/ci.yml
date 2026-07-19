@@ -71,6 +71,14 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # NEXT_PUBLIC_* are inlined into the client bundle at build time and
+          # are not secrets. apps/admin-dashboard/lib/env.ts throws in a
+          # production build if these are unset; supply non-secret CI values so
+          # `next build` can prerender pages like /login on the clean runner.
+          NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
+          NEXT_PUBLIC_ENVIRONMENT: test
+          NEXT_PUBLIC_APP_URL: http://localhost:3002
 
       - name: Apply database migrations
         run: npx prisma migrate deploy
