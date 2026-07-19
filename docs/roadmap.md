@@ -41,8 +41,17 @@ operations center, SLA breach tracking, vehicle sanitation + driver
 cold-chain certs)
 
 Phase 13
-Customer Trust — FEATURE-COMPLETE; full e2e green locally, CI sign-off
-pending (marketplace transparency)
+Customer Trust — DONE; CI green (Actions Run #9), merged to main, tagged
+v1.0.0-rc.1 (marketplace transparency)
+
+Phase 17
+UAT & Production Readiness — PLANNING (no new features). Stand up a UAT
+environment, validate the full workflow with realistic data, prove
+operational readiness (backup/restore, monitoring, rollback), and obtain
+acceptance sign-off before production. Plan:
+docs/uat/phase-17-uat-production-readiness.md. Branch:
+feature/uat-production-readiness. Production is gated on the §17G approval
+checklist; promote rc.1 → v1.0.0 (or cut rc.2) only after UAT.
 
 Status precisely:
 - Features + isolated verification: complete (typecheck, lint, unit,
