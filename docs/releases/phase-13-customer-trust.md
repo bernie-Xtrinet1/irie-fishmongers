@@ -3,13 +3,17 @@
 _Release notes. Convention: one file per release/phase under `docs/releases/`;
 this doubles as the source for the GitHub PR body and GitHub Release text._
 
-> ⚠️ **DO NOT MERGE TO `main` YET.** Final regression sign-off is blocked on
-> backend e2e DB isolation (see "Known gate" below). Safe to review now.
+> ✅ **Local gate passed; awaiting CI.** The backend e2e DB-isolation flakiness
+> that previously blocked sign-off is **resolved locally** (commits `76b7907` /
+> `8ec3892` / `c1299f9`): 3 consecutive clean full-suite runs, zero P2025 across
+> the last 6 runs, deliberate-failure test exits non-zero. The only remaining
+> gate is a green run in GitHub Actions (which runs e2e in **parallel** — pin
+> `maxWorkers: 1` in `jest-e2e.json` if parallel CI proves flaky). Do not merge
+> to `main` until CI is green. Safe to review now.
 >
-> **Scope note:** a `develop → main` PR currently spans **75 commits** (the
-> whole platform release since the last `main` push), not Phase 13 alone. If a
-> Phase-13-scoped review target is wanted, cut `release/phase-13` from
-> `develop` and PR that instead. `git log --oneline main..develop` /
+> **Scope note:** this branch (`release/platform-v1`, cut from `develop`) spans
+> **81 commits** — the whole platform release since the last `main` push, not
+> Phase 13 alone. `git log --oneline main..develop` /
 > `git diff --stat main...develop` shows exactly what would be promoted.
 
 ## Summary
