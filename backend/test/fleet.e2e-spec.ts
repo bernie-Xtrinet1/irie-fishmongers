@@ -89,7 +89,9 @@ describe('Fleet (e2e)', () => {
     if (adminEmails.length > 0) {
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {

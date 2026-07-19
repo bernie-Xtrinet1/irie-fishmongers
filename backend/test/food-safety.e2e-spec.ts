@@ -144,7 +144,9 @@ describe('Food Safety / Compliance (e2e)', () => {
       await prisma.complianceAuditLog.deleteMany({ where: { user: { email: { in: adminEmails } } } });
       await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {

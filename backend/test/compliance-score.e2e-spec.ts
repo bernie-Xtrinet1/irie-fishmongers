@@ -187,7 +187,9 @@ describe('Compliance score (e2e)', () => {
     await prisma.seafoodLot.deleteMany({ where: { id: { in: lotIds } } });
     await prisma.vendor.deleteMany({ where: { id: vendorId } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {
