@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { compareByLocaleName } from '../../../common/utils/locale-name.util';
 import { PrismaService } from '../../../database/prisma.service';
 import { CategoriesRepository } from './categories.repository';
 
@@ -41,7 +42,9 @@ describe('CategoriesRepository', () => {
   it('lists categories ordered by name, including the seeded defaults', async () => {
     const categories = await repository.findAll();
     const names = categories.map((category) => category.name);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    // Same comparator the repository sorts with, so ordering is asserted against
+    // the exact production rule rather than the database's collation.
+    expect(names).toEqual([...names].sort(compareByLocaleName));
     expect(names).toEqual(expect.arrayContaining(['Fish', 'Shellfish']));
   });
 });
