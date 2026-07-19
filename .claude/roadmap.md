@@ -1,9 +1,15 @@
 # IRIE FISHMONGERS PLATFORM
 # IMPLEMENTATION ROADMAP
 
-Version: 2.2
+Version: 2.3
 
-Last reviewed: 2026-07-12 - Phases 10A-10E (Fleet Dispatch Engine,
+Last reviewed: 2026-07-19 - Phase 13 (Customer Trust) marked ✓ Complete:
+CI green (Actions Run #9), merged to main, tagged v1.0.0-rc.1. Added
+Phase 17 (UAT & Production Readiness) as a stabilization/validation phase
+gating production - plan in docs/uat/phase-17-uat-production-readiness.md,
+in Planning, no new features. Prior review below.
+
+Earlier review: 2026-07-12 - Phases 10A-10E (Fleet Dispatch Engine,
 Delivery Operations Center, Advanced Route Optimization, Delivery
 Analytics & SLA, Advanced Cold Chain & Fleet Sanitation) all completed
 and marked ✓ Complete, closing every gap Phase 12B.0's verification
@@ -1146,10 +1152,17 @@ Customer Trust
 
 STATUS
 
-Not Started - no Review or Rating model exists anywhere in the schema;
-VendorProfile's recentReviews field is a permanently-empty placeholder.
-Blocked on Phase 12B (see that phase's Acceptance criteria) before
-starting, per this document's own "never skip dependencies" rule.
+✓ Complete (2026-07-19) - Review/Rating model, moderation + immutable
+ReviewAuditLog, the first-ever writer of Vendor.complianceScore (composite
+signal engine + write-through cache + nightly cron + backfill CLI),
+freshness/quality score surfaced publicly, and the accessible StarRating +
+storefront/admin review surfaces all built. Sub-phases 13D/13A/13B/13C/13E
+each shipped with tests. Full CI pipeline green (GitHub Actions Run #9:
+lint, typecheck, build, migrate, seed, unit coverage 96.7%, full backend
+e2e). Merged to main and tagged v1.0.0-rc.1. Deferred (recorded, not
+forgotten): customer web review-submission UI (backend CRUD API complete;
+needs a logged-in customer session + order-history surface) and admin
+restore / customer appeal workflow - both out of Phase 13 scope.
 
 Deliverables
 
@@ -1261,6 +1274,55 @@ Customer Recommendations
 Acceptance
 
 AI modules operational.
+
+------------------------------------------------------------
+
+PHASE 17
+
+UAT & Production Readiness
+
+STATUS
+
+~ Planning (2026-07-19) - NO new marketplace features. Stabilization and
+validation phase gating production. Full plan (17A-17G) with measurable
+deliverables and acceptance criteria lives in
+docs/uat/phase-17-uat-production-readiness.md; branch
+phase-17-uat-production-readiness. Baseline v1.0.0-rc.1. Execution of 17A
+is blocked until the hosting provider, UAT domain, region, and sandbox
+integrations are confirmed by the business owner.
+
+Deliverables
+
+17A UAT infrastructure (dedicated UAT Postgres + Redis, storage, secrets
+    via secret manager, HTTPS/domain, deploy pipeline)
+
+17B External-service sandbox config (WiPay sandbox, COD, SendGrid, FCM) -
+    no live financial or customer-facing production actions
+
+17C Demo users + seed data (admin/customer/2 vendor tiers/2 driver types;
+    products, lots, zones, fleet, orders, temperature readings, reviews,
+    compliance records) - NO real customer PII
+
+17D Role-based UAT scripts (test-case template: id/role/preconditions/
+    steps/expected/actual/pass-fail/evidence/tester/date)
+
+17E Operational readiness (backup+restore test, migration rehearsal,
+    logging/monitoring/alerting, health checks, incident + rollback
+    procedures, data-retention/privacy review, access-control review)
+
+17F UAT issue management (severity Critical/High/Medium/Low/Cosmetic;
+    template, owner, SLA, retest, sign-off)
+
+17G Production approval gate (all Critical+High closed; required Medium
+    resolved/accepted; backup restore verified; payment testing passed;
+    security review complete; business-owner sign-off; RC promoted)
+
+Acceptance
+
+Platform validated in UAT with a signed acceptance record; production
+approval gate (17G) fully satisfied; v1.0.0-rc.1 promoted to v1.0.0 (or a
+new immutable rc.2 cut for release-changing fixes). Tags are immutable -
+never move a published tag.
 
 ------------------------------------------------------------
 

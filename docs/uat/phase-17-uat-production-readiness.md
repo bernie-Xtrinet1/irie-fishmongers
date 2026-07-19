@@ -13,6 +13,17 @@ rollback), and produce a signed acceptance record before any production ship.
 **Guiding rule:** production remains blocked until the Production Approval gate
 (§17G) is fully satisfied. RC1 is a *release candidate*, not a production build.
 
+## Secrets & credentials policy (mandatory)
+
+**No credential of any kind may be committed to git** — not UAT test-account
+passwords, not API keys, not connection strings, not sandbox tokens. This
+applies to source, config, seed files, docs, and CI. All secrets are supplied
+at runtime from a **secret manager** (the host's secret store for the running
+env; **GitHub Secrets** for CI) using the variable names the app already
+validates. Seed fixtures reference secrets by env-var name, never by literal
+value. Any credential accidentally committed must be treated as compromised and
+rotated. This is a hard gate: a PR that adds a secret does not merge.
+
 ## Sequence
 
 ```
@@ -86,6 +97,13 @@ set rather than hand-entering data.
 **Do not use real customer personal information.** Use synthetic names, emails
 (`+uat` aliases), and Jamaica-format but fictitious addresses/phones.
 
+**Acceptance:** all 6 role accounts authenticate successfully against the UAT
+API; the seed yields ≥10 products across ≥3 categories, ≥1 lot in a CRITICAL
+temperature-breach state, ≥1 order in each status of the order workflow, and
+vendor compliance scores rendering across ≥3 public bands; a reviewer confirms
+no seeded field contains real PII; all account passwords come from the secret
+manager, none from git.
+
 ## 17D — Role-based UAT scripts
 
 Prepare test cases covering: customer registration & purchasing; vendor
@@ -116,6 +134,11 @@ e2e coverage (auth, orders, delivery, payments, food-safety, reviews, vendor
 tiers, analytics, passport). UAT validates them *as a human operator through the
 real UI*, not as a replacement for the automated suite.
 
+**Acceptance:** a test-case catalogue exists under `docs/uat/scripts/` covering
+all 9 flow areas above, ≥1 case per role; every case has its
+preconditions/steps/expected-result fields populated before execution begins;
+the catalogue is reviewed and approved before an execution run starts.
+
 ## 17E — Operational readiness
 
 - **Backup & restore test** — take a UAT DB backup, restore to a scratch
@@ -136,6 +159,13 @@ real UI*, not as a replacement for the automated suite.
 - **Access-control review** — spot-check role guards and cross-tenant isolation
   (vendor/driver/customer data separation) in the running environment.
 
+**Acceptance:** a backup is taken and restored to a scratch instance with
+row-count and referential-integrity parity to the source (evidence recorded);
+`prisma migrate status` reports no drift on the UAT DB; a simulated health-check
+failure fires an alert to the configured channel; a rollback to the prior
+release image is rehearsed and documented; retention/privacy and access-control
+reviews are signed off with findings logged.
+
 ## 17F — UAT issue management
 
 Severity levels: **Critical · High · Medium · Low · Cosmetic**.
@@ -144,6 +174,11 @@ Agree on: issue template (id, severity, role, steps, expected/actual, evidence,
 owner, target date, retest status), assigned owner, target resolution SLAs,
 retest process, and the acceptance sign-off record. Track under
 `docs/uat/issues/`.
+
+**Acceptance:** the issue template and per-severity resolution SLAs are agreed
+and committed under `docs/uat/`; at least one issue is taken end-to-end through
+the workflow (open → fix → retest → close) as a process dry-run; the acceptance
+sign-off record template exists and names the business-owner signatory.
 
 ## 17G — Production approval gate
 
