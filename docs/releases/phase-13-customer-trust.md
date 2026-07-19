@@ -3,13 +3,14 @@
 _Release notes. Convention: one file per release/phase under `docs/releases/`;
 this doubles as the source for the GitHub PR body and GitHub Release text._
 
-> ✅ **Local gate passed; awaiting CI.** The backend e2e DB-isolation flakiness
-> that previously blocked sign-off is **resolved locally** (commits `76b7907` /
-> `8ec3892` / `c1299f9`): 3 consecutive clean full-suite runs, zero P2025 across
-> the last 6 runs, deliberate-failure test exits non-zero. The only remaining
-> gate is a green run in GitHub Actions (which runs e2e in **parallel** — pin
-> `maxWorkers: 1` in `jest-e2e.json` if parallel CI proves flaky). Do not merge
-> to `main` until CI is green. Safe to review now.
+> ✅ **CI green — ready to merge (pending UAT).** GitHub Actions **Run #9** on
+> `release/platform-v1` passed end to end: lint, typecheck, build, migrate, seed,
+> unit coverage (96.7%), and the full backend e2e suite (132 tests) in parallel.
+> The e2e DB-isolation flakiness that previously blocked sign-off is resolved
+> (commits `76b7907` / `8ec3892` / `c1299f9`); parallel CI did **not** flake, so
+> `jest-e2e.json` keeps its default worker count (pin `maxWorkers: 1` only if a
+> future run shows a P2025/shared-DB race). This is a **release candidate** —
+> merge to `main` and tag `v1.0.0-rc.x`; production ship is gated on UAT.
 >
 > **Scope note:** this branch (`release/platform-v1`, cut from `develop`) spans
 > **81 commits** — the whole platform release since the last `main` push, not
@@ -94,17 +95,41 @@ Verified: **3 consecutive clean full-suite runs** (19 suites / 132 tests, exit
 exits non-zero (no wrapper swallows Jest's code; CI's `npm run test:e2e -w
 backend` doesn't either).
 
-**Remaining sign-off step:** confirm green in GitHub Actions (which runs the
-suite in parallel — `jest-e2e.json` still sets no `maxWorkers`; consider
-pinning `maxWorkers: 1` if parallel CI proves flaky).
+## CI pipeline hardening (what it took to get Run #9 green)
+
+The local gate passed, but CI is a clean runner and surfaced several
+environment/config gaps (each fixed in `ci.yml` / `turbo.json` / test config —
+no business logic or e2e assertions changed):
+
+1. **Prisma client not generated** (`d605e19`) — added a `prisma generate` step
+   before lint/typecheck; type-aware ESLint couldn't resolve `@prisma/client`.
+2. **admin-dashboard prerender env** (`7e04303`) — supplied non-secret
+   `NEXT_PUBLIC_*` build vars so `next build` can prerender `/login`.
+3. **Turbo strict env** (`2c22958`) — `globalPassThroughEnv` forwards
+   `DATABASE_URL`/`REDIS_URL` etc. to turbo-run tasks (backend repo specs need a
+   real DB); `NEXT_PUBLIC_*` survived only via framework inference.
+4. **Coverage scope + gaps** (`2991465`) — the 90% gate applied to unit-owned
+   layers (excluded e2e/integration-covered controllers/DTOs/entities/events/
+   repositories); added unit specs for 6 previously-untested services
+   (catches ×5 + temperature-thresholds). Backend coverage 96.7%.
+5. **Category ordering** (`9ec82ea`) — sort in-app with an explicit-locale
+   comparator instead of DB collation (Postgres vs JS `localeCompare` diverged).
+6. **e2e AppModule env** (`83d109b`) — supplied `CORS_ORIGIN`/`SENDGRID_*`/
+   `FCM_SERVER_KEY` CI test values (unit tests never boot AppModule, so only e2e
+   needed them); guarded `app.close()` with `if (app)`.
+
+**Non-blocking follow-up:** GitHub Actions warns that Node.js 20 is deprecated
+for `actions/checkout@v4` / `actions/setup-node@v4` (the runner forces Node 24).
+This is a GitHub runner-image concern, not our code, and does not affect the
+build. Bump those actions to their Node-24 majors (`@v5`) in a later CI-only PR.
 
 ## Pre-Merge Gate
 
-- [ ] Confirm the E2E isolation fix commit and inspect its diff.
-- [ ] Cherry-pick the confirmed fix into the release branch.
-- [ ] Run the complete backend E2E suite twice successfully.
-- [ ] Confirm a failing Jest test produces a non-zero process exit code.
-- [ ] Run full monorepo typecheck, lint, unit and frontend test suites.
-- [ ] Confirm migrations and the compliance-score backfill procedure.
-- [ ] Confirm the working tree is clean.
-- [ ] Push the release branch and wait for GitHub Actions to pass.
+- [x] Confirm the E2E isolation fix commit and inspect its diff.
+- [x] Cherry-pick the confirmed fix into the release branch.
+- [x] Run the complete backend E2E suite twice successfully (CI Run #9 green).
+- [x] Confirm a failing Jest test produces a non-zero process exit code.
+- [x] Run full monorepo typecheck, lint, unit and frontend test suites (CI).
+- [x] Confirm migrations and the compliance-score backfill procedure.
+- [x] Confirm the working tree is clean.
+- [x] Push the release branch and wait for GitHub Actions to pass (Run #9 ✓).
