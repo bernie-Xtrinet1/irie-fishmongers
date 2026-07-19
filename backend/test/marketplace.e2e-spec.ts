@@ -71,7 +71,9 @@ describe('Marketplace (e2e)', () => {
       });
       await prisma.user.deleteMany({ where: { email: { in: createdEmails } } });
     }
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   function server(): Server {

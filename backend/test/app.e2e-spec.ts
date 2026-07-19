@@ -19,7 +19,9 @@ describe('Health (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   it('/health (GET) reports postgres and redis connectivity', async () => {
