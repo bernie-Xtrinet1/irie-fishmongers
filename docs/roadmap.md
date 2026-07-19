@@ -41,18 +41,20 @@ operations center, SLA breach tracking, vehicle sanitation + driver
 cold-chain certs)
 
 Phase 13
-Customer Trust — FEATURE-COMPLETE; final regression sign-off PENDING
-(marketplace transparency)
+Customer Trust — FEATURE-COMPLETE; full e2e green locally, CI sign-off
+pending (marketplace transparency)
 
 Status precisely:
 - Features + isolated verification: complete (typecheck, lint, unit,
   component, and each e2e spec pass on its own).
-- Full backend e2e regression: NOT yet reliably green. The whole suite
-  run together produces nondeterministic cross-suite failures (shared
-  Postgres). CI runs these specs in PARALLEL with no maxWorkers cap, so
-  this must be fixed before the phase is signed off as regression-green.
-  Blocked on the "Fix backend e2e cross-suite DB isolation" task.
-  Sign-off bar: two consecutive clean full-suite runs locally AND in CI.
+- Full backend e2e regression: NOW green locally — 3 consecutive clean
+  full-suite runs (19 suites / 132 tests) after the isolation fix
+  (ENABLE_SCHEDULER scheduler-disable + awaited fleet emit + 60s e2e
+  timeout). The nondeterministic cross-suite P2025 was two unhandled
+  async DB writes outliving their request (a wall-clock @Cron tick and a
+  fire-and-forget event emit) racing another suite's teardown. Remaining:
+  confirm green in GitHub Actions (runs e2e in PARALLEL; jest-e2e.json
+  still has no maxWorkers cap — pin maxWorkers:1 if parallel CI flakes).
 - Customer review SUBMISSION UI: deferred (see below). The backend
   create/edit/delete/restore API and all read/moderation surfaces are
   complete; ordinary customers cannot yet submit a review through the web
@@ -83,16 +85,15 @@ Deferred / follow-ups (recorded, not forgotten):
 - Admin restore of an admin-removed review + customer appeal workflow —
   explicitly out of Phase 13 scope; the audit trail already captures the
   data a future restore/appeal feature needs.
-- Backend e2e cross-suite DB isolation (HIGH priority; blocks Phase 13
-  regression sign-off) — the full suite flakes on a shared Postgres (each
-  spec passes in isolation; failures vary run to run with the signature
-  "No record was found for an update"). CI runs `test:e2e` in PARALLEL
-  (jest-e2e.json sets no maxWorkers) against one DB, so this surfaces as
-  nondeterministic CI red. Tracked as its own task. Acceptance criteria:
-  every spec uses isolated data / no suite mutates another's records /
-  async event listeners settle before cleanup / the full suite exits
-  non-zero on any failure / two consecutive full-suite runs pass locally
-  AND in GitHub Actions. Note: the CI command itself does NOT mask the
-  exit code (`npm run test:e2e -w backend`, no tail/`|| true`); the
-  earlier "exit 0 with failures" was an artifact of ad-hoc local command
-  wrappers, not a CI or Jest defect.
+- Backend e2e cross-suite DB isolation — RESOLVED locally (commits
+  76b7907 / 8ec3892 / c1299f9): the shared-Postgres P2025 flakiness came
+  from two unhandled async DB writes outliving their request (a wall-clock
+  @Cron tick; a fire-and-forget event emit) racing another suite's
+  teardown, plus a 20s timeout too tight for heavy workflow tests. 3
+  consecutive clean full-suite runs; zero P2025 across 6 runs. Remaining:
+  (a) confirm green in GitHub Actions, which runs e2e in PARALLEL — if
+  parallel CI flakes, pin `maxWorkers: 1` in jest-e2e.json (or move to
+  per-worker DBs); (b) the broader per-worker-DB isolation task remains a
+  nice-to-have for defense in depth, not a blocker. The CI command does
+  NOT mask the exit code; the earlier "exit 0 with failures" was an
+  artifact of ad-hoc local command wrappers (tail / trailing echo).

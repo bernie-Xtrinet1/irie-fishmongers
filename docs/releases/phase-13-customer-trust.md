@@ -49,7 +49,7 @@ storefront (apps/web), and the admin dashboard:
 | apps/admin-dashboard | typecheck ✓ lint ✓ 96 tests ✓ |
 | backend unit | typecheck ✓ lint ✓ **1348 tests ✓** |
 | backend e2e (each spec in isolation) | ✓ (Phase 13 specs 8/8) |
-| backend e2e (full suite together) | ❌ nondeterministic — see gate |
+| backend e2e (full suite together) | ✓ 3 consecutive clean runs (19 suites / 132 tests) after the isolation fix |
 
 ## Privacy / accessibility / security
 - Public + admin review responses mask the author (`First L.`); no
@@ -65,30 +65,34 @@ storefront (apps/web), and the admin dashboard:
 - **Admin restore / customer appeal workflow** — out of Phase 13 scope; the
   audit trail already holds the data a future feature needs.
 
-## Known gate (blocks merge to main)
-The full backend e2e suite is not reliably green: the global `@Cron` jobs
-registered by `ScheduleModule.forRoot()` fire on a wall-clock timer during the
-multi-minute run and race suite teardown → Prisma P2025 ("No record was found
-for an update"). CI runs `test:e2e` **in parallel** (`jest-e2e.json` sets no
-`maxWorkers`) on one shared Postgres, so this surfaces as nondeterministic red.
+## E2E isolation fix (LANDED on develop)
+The full backend e2e suite was nondeterministic: unhandled async DB writes
+outlived their request and raced a later suite's teardown on the shared
+Postgres → Prisma P2025 ("No record was found for an update"), attributed to
+whichever suite was mid-run. Two independent sources were found and fixed,
+plus a timeout-margin flake:
 
-**The fix is NOT yet committed to any branch in this repository.** A fix was
-investigated in a separate working session, but no local branch here carries a
-`ScheduleModule` test-guard (verified: a search of every ref for the guard
-came up empty; `claude/competent-darwin-38ccfa` @ `d9058ad` is a Phase 12B
-passport e2e test, not the fix). It must be integrated and re-verified in this
-tree before sign-off. When integrating, review it against:
-- prefer an explicit `ENABLE_SCHEDULER=false` switch over a blanket
-  `NODE_ENV==='test'` disable;
-- keep dedicated tests that exercise the scheduled services directly (SLA
-  breach detection, nightly compliance recompute) so silencing the timer in
-  the default e2e run does not drop that coverage;
-- confirm the full suite exits **non-zero** on a deliberately failing test
-  (no pipeline/wrapper swallows Jest's code — the CI command
-  `npm run test:e2e -w backend` does not).
+1. `76b7907` — the global `@Cron` jobs (`ScheduleModule.forRoot()`, the
+   every-5-min SLA sweep) fired on a wall-clock timer mid-run. Gated behind
+   an explicit `ENABLE_SCHEDULER` switch (not `NODE_ENV`-derived); e2e sets it
+   `false` via jest `setupFiles`. Cron logic stays covered by the services'
+   own unit specs (direct handler invocation).
+2. `8ec3892` — `FleetMaintenanceService` emitted `FleetMaintenanceOverdueEvent`
+   with fire-and-forget `emit()` instead of `await emitAsync()`, detaching the
+   notification dispatch (`notification.update`). Now awaited; it was the only
+   non-awaited emit in the codebase.
+3. `c1299f9` — heavy workflow tests (8-10 sequential HTTP steps) occasionally
+   exceeded the hardcoded 20s per-test cap under load; raised e2e timeouts to
+   60s + a `jest-e2e.json` backstop. Test-config only, no source change.
 
-**Sign-off requires:** two consecutive clean full-suite runs locally AND in
-GitHub Actions.
+Verified: **3 consecutive clean full-suite runs** (19 suites / 132 tests, exit
+0), zero P2025 across the last 6 runs, and a deliberately failing test still
+exits non-zero (no wrapper swallows Jest's code; CI's `npm run test:e2e -w
+backend` doesn't either).
+
+**Remaining sign-off step:** confirm green in GitHub Actions (which runs the
+suite in parallel — `jest-e2e.json` still sets no `maxWorkers`; consider
+pinning `maxWorkers: 1` if parallel CI proves flaky).
 
 ## Pre-Merge Gate
 
