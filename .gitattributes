@@ -1,0 +1,2 @@
+# Shell scripts must use LF so they run in Linux containers / Codespaces.
+*.sh text eol=lf
