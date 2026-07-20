@@ -33,6 +33,14 @@ only you can reach them unless you change visibility):
 | Backend API | **3001** | base `/api/v1`; Swagger at `/api/v1/docs` |
 | Admin Dashboard | **3002** | log in with the admin account below |
 
+**Browser vs. VS Code Desktop:** in a browser Codespace the apps are served at
+forwarded `https://<name>-<port>.app.github.dev` URLs, so `start.sh` detects the
+Codespace and automatically points the storefront's API calls (`NEXT_PUBLIC_API_URL`)
+and the API's CORS allow-list at those URLs. In VS Code Desktop, `localhost`
+forwarding is transparent and nothing is rewritten. If the storefront can't reach
+the API in a **browser** Codespace, set port **3001** (and **3002**) to **Public**
+in the Ports tab — cross-origin calls to a private forwarded port can be blocked.
+
 ## Demo logins
 
 All accounts use the password **`DemoPass!23`** (demonstration only):
