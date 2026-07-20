@@ -1,0 +1,84 @@
+# Devcontainer / GitHub Codespaces demo stack for Irie Fishmongers v1.0.0-rc.1.
+#
+# NOT for production. All values here are safe, non-secret DEMONSTRATION values
+# for an ephemeral Codespace:
+#  - the JWT secrets are throwaway demo strings (they only sign demo tokens in a
+#    disposable environment),
+#  - SENDGRID / FCM keys are intentionally invalid so no real email/push is ever
+#    delivered (the providers reject them),
+#  - WiPay points at the sandbox host with placeholder credentials; the demo
+#    payment path is Cash On Delivery, which makes no external call.
+# Real production secrets live in a secret manager and are never committed.
+services:
+  app:
+    image: mcr.microsoft.com/devcontainers/typescript-node:1-20-bookworm
+    command: sleep infinity
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace
+    networks:
+      - iriefishmongers
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      # --- backend ---
+      PORT: '3001'
+      API_PREFIX: api/v1
+      DATABASE_URL: postgresql://iriefishmongers:iriefishmongers@db:5432/iriefishmongers?schema=public
+      REDIS_URL: redis://redis:6379
+      ENABLE_SCHEDULER: 'true'
+      JWT_ACCESS_SECRET: demo-access-secret-not-for-production-min-32-chars
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_SECRET: demo-refresh-secret-not-for-production-min-32-chars
+      JWT_REFRESH_EXPIRES_IN: 7d
+      APP_BASE_URL: http://localhost:3001
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3002
+      # External integrations disabled for the demo (see file header).
+      WIPAY_API_URL: https://tx.wipayfinancial.com/plugins/payments
+      WIPAY_ACCOUNT_NUMBER: demo-disabled
+      WIPAY_API_KEY: demo-disabled
+      SENDGRID_API_KEY: demo-disabled
+      SENDGRID_FROM_EMAIL: demo@demo.iriefishmongers.test
+      FCM_SERVER_KEY: demo-disabled
+      # --- frontends (inlined into the client bundle at dev time) ---
+      NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
+      NEXT_PUBLIC_ENVIRONMENT: development
+      NEXT_PUBLIC_APP_URL: http://localhost:3002
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks:
+      - iriefishmongers
+    environment:
+      POSTGRES_USER: iriefishmongers
+      POSTGRES_PASSWORD: iriefishmongers
+      POSTGRES_DB: iriefishmongers
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U iriefishmongers']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - iriefishmongers
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+networks:
+  iriefishmongers:
+
+volumes:
+  pgdata:
