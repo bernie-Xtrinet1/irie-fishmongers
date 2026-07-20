@@ -42,8 +42,15 @@ Publish GitHub prerelease (v1.0.0-rc.1)
 
 ## 17A — UAT infrastructure
 
-- Select hosting provider (target: same topology as intended production, smaller
-  tier). Record the decision in `docs/decisions/`.
+> **Production cloud: Azure** (decided 2026-07-19). Azure account setup and
+> credentials are **not yet available** — 17A execution is blocked until the
+> architecture is approved *and* Azure credentials are provided. Claude will not
+> provision resources, add cloud credentials, or modify infrastructure before
+> then. UAT hosting provider is TBD (Azure or an interim provider); confirm with
+> the business owner.
+
+- Select hosting provider (target: same topology as intended production —
+  **Azure** — smaller tier). Record the decision in `docs/decisions/`.
 - Provision a **dedicated UAT PostgreSQL** instance and **dedicated Redis** —
   never share the production or a developer's local DB.
 - Configure object/file storage for uploads (vendor documents, product images,
