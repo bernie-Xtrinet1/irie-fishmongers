@@ -12,14 +12,22 @@ npm ci
 echo "==> Generating Prisma client"
 npm run prisma:generate -w backend
 
-echo "==> Waiting for PostgreSQL"
-for i in $(seq 1 30); do
-  if pg_isready -h db -U iriefishmongers >/dev/null 2>&1; then
-    echo "    database is ready"
-    break
-  fi
-  sleep 2
-done
+echo "==> Waiting for PostgreSQL (db:5432)"
+# Portable TCP check - the typescript-node image has no postgres client.
+# (compose already gates this container on the db healthcheck, so this is fast.)
+node -e '
+const net = require("net");
+const deadline = Date.now() + 60000;
+(function attempt() {
+  const s = net.connect(5432, "db");
+  s.on("connect", () => { s.end(); console.log("    database is ready"); process.exit(0); });
+  s.on("error", () => {
+    s.destroy();
+    if (Date.now() > deadline) { console.error("    timed out waiting for db"); process.exit(1); }
+    setTimeout(attempt, 1500);
+  });
+})();
+'
 
 echo "==> Applying database migrations"
 npm run prisma:deploy -w backend
