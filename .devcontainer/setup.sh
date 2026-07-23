@@ -40,7 +40,7 @@ npm run demo:seed -w backend
 
 echo ""
 echo "============================================================"
-echo " Setup complete. Start the apps with:  npm run dev"
-echo " (they also start automatically when you attach)"
+echo " Setup complete. Apps start automatically on attach, or run:"
+echo "   bash scripts/start-codespaces-demo.sh"
 echo " See .devcontainer/README.md for URLs, logins, and reset."
 echo "============================================================"
