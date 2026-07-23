@@ -30,6 +30,11 @@ if [[ -n "${CODESPACE_NAME:-}" ]]; then
   WEB_URL="https://${CODESPACE_NAME}-3000.${DOMAIN}"
   API_ROOT="https://${CODESPACE_NAME}-3001.${DOMAIN}"
   ADMIN_URL="https://${CODESPACE_NAME}-3002.${DOMAIN}"
+  # Each forwarded *.app.github.dev port is its own SITE (Public Suffix
+  # List), so the refresh cookie is cross-site here and needs SameSite=None
+  # (which forces Secure - fine, Codespaces forwarding is HTTPS). Local
+  # devcontainers keep the strict default: localhost ports share a site.
+  export REFRESH_COOKIE_SAMESITE="${REFRESH_COOKIE_SAMESITE:-none}"
 else
   WEB_URL="http://localhost:3000"
   API_ROOT="http://localhost:3001"

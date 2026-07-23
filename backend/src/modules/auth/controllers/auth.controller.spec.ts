@@ -84,7 +84,34 @@ describe('AuthController', () => {
     expect(res.cookie).toHaveBeenCalledWith(
       REFRESH_TOKEN_COOKIE_NAME,
       'refresh-token',
-      expect.objectContaining({ httpOnly: true, path: REFRESH_TOKEN_COOKIE_PATH }),
+      expect.objectContaining({
+        httpOnly: true,
+        secure: false,
+        sameSite: 'strict',
+        path: REFRESH_TOKEN_COOKIE_PATH,
+      }),
+    );
+  });
+
+  it('sets a cross-site cookie (SameSite=None + Secure) when configured', async () => {
+    // REFRESH_COOKIE_SAMESITE=none is the cross-site deployment mode (e.g.
+    // the Codespaces demo). Secure must be forced on even outside production
+    // - browsers reject SameSite=None cookies without it.
+    configService.get.mockImplementation((key: string) =>
+      key === 'REFRESH_COOKIE_SAMESITE' ? 'none' : 'development',
+    );
+    authService.login.mockResolvedValue(session);
+    const res = createResponse();
+
+    await controller.login(
+      { email: 'jane@example.com', password: 'StrongPass1' },
+      res as unknown as Response,
+    );
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      REFRESH_TOKEN_COOKIE_NAME,
+      'refresh-token',
+      expect.objectContaining({ sameSite: 'none', secure: true }),
     );
   });
 
@@ -95,7 +122,12 @@ describe('AuthController', () => {
     const result = await controller.logout({}, req, res as unknown as Response);
 
     expect(authService.logout).toHaveBeenCalledWith('cookie-token');
+    // Clearing sends the same attributes the cookie was set with (default
+    // posture: strict, non-secure outside production).
     expect(res.clearCookie).toHaveBeenCalledWith(REFRESH_TOKEN_COOKIE_NAME, {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'strict',
       path: REFRESH_TOKEN_COOKIE_PATH,
     });
     expect(result).toEqual({ success: true });

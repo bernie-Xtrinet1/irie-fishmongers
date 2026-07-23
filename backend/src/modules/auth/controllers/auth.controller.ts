@@ -138,22 +138,40 @@ export class AuthController {
     return cookieToken ?? dto.refreshToken;
   }
 
-  private setRefreshTokenCookie(res: Response, refreshToken: string): void {
+  // 'strict' is the default and the production posture (frontend and API on
+  // the same site). REFRESH_COOKIE_SAMESITE=none exists for deployments where
+  // the admin/web origins are CROSS-SITE from the API - e.g. the Codespaces
+  // demo, where *-3001/*-3002.app.github.dev are separate sites because
+  // *.app.github.dev is on the Public Suffix List, so a Strict cookie is
+  // never stored or sent. Browsers only accept SameSite=None with Secure,
+  // hence secure is forced on for that mode regardless of NODE_ENV.
+  private refreshCookieOptions(): { secure: boolean; sameSite: 'strict' | 'lax' | 'none' } {
+    const configured = this.configService.get<string>('REFRESH_COOKIE_SAMESITE');
+    const sameSite = configured === 'lax' || configured === 'none' ? configured : 'strict';
     const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+    return { secure: sameSite === 'none' ? true : isProduction, sameSite };
+  }
+
+  private setRefreshTokenCookie(res: Response, refreshToken: string): void {
     const maxAge = parseDurationToMs(
       this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_IN'),
     );
 
     res.cookie(REFRESH_TOKEN_COOKIE_NAME, refreshToken, {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: 'strict',
+      ...this.refreshCookieOptions(),
       path: REFRESH_TOKEN_COOKIE_PATH,
       maxAge,
     });
   }
 
   private clearRefreshTokenCookie(res: Response): void {
-    res.clearCookie(REFRESH_TOKEN_COOKIE_NAME, { path: REFRESH_TOKEN_COOKIE_PATH });
+    // Clearing must use the same attributes the cookie was set with, or
+    // browsers may treat it as a different cookie and leave the original.
+    res.clearCookie(REFRESH_TOKEN_COOKIE_NAME, {
+      httpOnly: true,
+      ...this.refreshCookieOptions(),
+      path: REFRESH_TOKEN_COOKIE_PATH,
+    });
   }
 }

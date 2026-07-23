@@ -22,6 +22,16 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   ENABLE_SCHEDULER?: string;
 
+  // SameSite for the refresh-token cookie. Default (absent) = 'strict', the
+  // production posture where the frontends and API share a site. 'none' is
+  // for deployments where the frontend origins are cross-SITE from the API
+  // (e.g. the Codespaces demo: *.app.github.dev is on the Public Suffix
+  // List, so each forwarded port is its own site and a Strict cookie is
+  // never stored). 'none' forces Secure on the cookie, per browser rules.
+  @IsOptional()
+  @IsIn(['strict', 'lax', 'none'])
+  REFRESH_COOKIE_SAMESITE?: string;
+
   @IsInt()
   @Min(1)
   @Max(65535)

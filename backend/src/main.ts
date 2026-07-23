@@ -46,7 +46,9 @@ async function bootstrap(): Promise<void> {
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup(`${apiPrefix}/docs`, app, swaggerDocument);
 
-  await app.listen(port);
+  // Explicitly bind all interfaces so the API is reachable through container
+  // and Codespaces port forwarding, not only from the container's loopback.
+  await app.listen(port, '0.0.0.0');
 }
 
 void bootstrap();
