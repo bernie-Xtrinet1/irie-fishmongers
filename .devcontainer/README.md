@@ -43,19 +43,10 @@ sign in with GitHub); Public is acceptable for this demo because all data and
 credentials are fictitious. First visit to a public port shows GitHub's
 "development port" warning — click **Continue** once per port.
 
-**The storefront has no home page** — its routes are `/products/[id]` and
-`/vendors/[id]` only (the root `/` 404s by design). Print clickable deep links
-for the seeded products and vendor:
-
-```bash
-node -e "
-const base=process.env.CODESPACE_NAME?'https://'+process.env.CODESPACE_NAME+'-3000.'+(process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN||'app.github.dev'):'http://localhost:3000';
-fetch('http://localhost:3001/api/v1/products').then(r=>r.json()).then(j=>{
-  const items=j.data?.items??j.data??[];
-  items.forEach(p=>console.log(base+'/products/'+p.id+'   <-- '+p.name));
-  if(items[0]?.vendorId)console.log(base+'/vendors/'+items[0].vendorId+'   <-- vendor profile');
-});"
-```
+The storefront **home page** (`/`) lists the seeded product catalog; each card
+links to its `/products/[id]` detail page (freshness score, vendor rating,
+compliance band, reviews, add-to-cart), and each product links on to the
+vendor's `/vendors/[id]` profile. Start at the storefront root.
 
 **Browser vs. VS Code Desktop:** in a browser Codespace the apps are served at
 forwarded `https://<name>-<port>.app.github.dev` URLs, so `start.sh` detects the
