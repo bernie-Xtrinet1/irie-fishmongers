@@ -59,25 +59,25 @@ else
   bad "GET /products returned $prod_code (expected 200) - the catalog endpoint itself is the problem"
 fi
 
-echo "== 5b. CORS allow-origin for BOTH the customer and admin origins =="
-check_cors() { # $1 = origin
-  curl -s -D - -o /dev/null --max-time 5 -H "Origin: $1" \
-    http://localhost:3001/api/v1/products 2>/dev/null \
-    | grep -i '^access-control-allow-origin:' | tr -d '\r'
-}
-if [[ -n "${WEB_ORIGIN:-}" ]]; then
-  a="$(check_cors "$WEB_ORIGIN")"; [[ "$a" == *"$WEB_ORIGIN"* ]] && ok "customer origin allowed ($a)" || bad "customer origin NOT allowed (got: '${a:-none}') - add it to CORS_ORIGIN"
+if [[ "${API_URL:-}" == /* ]]; then
+  echo "== 5b. Same-origin proxy path (the browser calls the app's own origin) =="
+  # In Codespaces the frontends call /api/v1 on THEIR own origin and Next
+  # forwards to the backend server-side - so the decisive check is that the
+  # storefront's own port serves the catalog through the proxy.
+  wc="$(code 'http://localhost:3000/api/v1/products?pageSize=1')"
+  [[ "$wc" == "200" ]] && ok "storefront proxy GET :3000/api/v1/products 200 (no cross-origin needed)" || bad "storefront proxy returned $wc - check API_PROXY_TARGET in apps/web/.env.local + rewrites"
+  ac="$(code 'http://localhost:3002/api/v1/health')"
+  [[ "$ac" == "200" ]] && ok "admin proxy GET :3002/api/v1/health 200" || bad "admin proxy returned $ac"
+  note "same-origin proxy means NO cross-port GitHub interstitial / CORS in the browser - just set 3000/3001/3002 Public and refresh"
+else
+  echo "== 5b. CORS allow-origin for BOTH the customer and admin origins =="
+  check_cors() { curl -s -D - -o /dev/null --max-time 5 -H "Origin: $1" http://localhost:3001/api/v1/products 2>/dev/null | grep -i '^access-control-allow-origin:' | tr -d '\r'; }
+  [[ -n "${WEB_ORIGIN:-}" ]] && { a="$(check_cors "$WEB_ORIGIN")"; [[ "$a" == *"$WEB_ORIGIN"* ]] && ok "customer origin allowed ($a)" || bad "customer origin NOT allowed (got: '${a:-none}')"; }
+  [[ -n "${ADMIN_URL:-}" ]] && { a="$(check_cors "$ADMIN_URL")"; [[ "$a" == *"$ADMIN_URL"* ]] && ok "admin origin allowed ($a)" || bad "admin origin NOT allowed (got: '${a:-none}')"; }
 fi
-if [[ -n "${ADMIN_URL:-}" ]]; then
-  a="$(check_cors "$ADMIN_URL")"; [[ "$a" == *"$ADMIN_URL"* ]] && ok "admin origin allowed ($a)" || bad "admin origin NOT allowed (got: '${a:-none}')"
-fi
-note "these pass INSIDE the Codespace; if the BROWSER still fails, port 3001 visibility is private - set 3001 (and 3000/3002) to Public in the Ports tab"
 
-echo "== 6. Compiled admin bundle uses the forwarded API host =="
-# Positive proof (per the runbook): the ACTIVE backend host should appear in
-# the compiled client chunks. Grepping for localhost can false-positive on
-# source maps, so it is informational only.
-if [[ -n "${API_URL:-}" ]]; then
+echo "== 6. Compiled admin bundle host (absolute-URL mode only) =="
+if [[ -n "${API_URL:-}" && "${API_URL}" == http* ]]; then
   HOST="$(echo "$API_URL" | sed -E 's#https?://([^/]+).*#\1#')"
   if grep -rlq "$HOST" apps/admin-dashboard/.next/static 2>/dev/null; then
     ok "forwarded host '$HOST' found in the compiled bundle"

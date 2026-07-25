@@ -48,13 +48,17 @@ links to its `/products/[id]` detail page (freshness score, vendor rating,
 compliance band, reviews, add-to-cart), and each product links on to the
 vendor's `/vendors/[id]` profile. Start at the storefront root.
 
-**Browser vs. VS Code Desktop:** in a browser Codespace the apps are served at
-forwarded `https://<name>-<port>.app.github.dev` URLs, so `start.sh` detects the
-Codespace and automatically points the storefront's API calls (`NEXT_PUBLIC_API_URL`)
-and the API's CORS allow-list at those URLs. In VS Code Desktop, `localhost`
-forwarding is transparent and nothing is rewritten. If the storefront can't reach
-the API in a **browser** Codespace, set port **3001** (and **3002**) to **Public**
-in the Ports tab — cross-origin calls to a private forwarded port can be blocked.
+**Same-origin API proxy (why only 3000 + 3002 need to be public).** In a browser
+Codespace each forwarded `*.app.github.dev` port is its own *site*, so a direct
+cross-port fetch from the storefront (3000) to the API (3001) hits GitHub's
+per-port interstitial and a cross-site cookie. To avoid that entirely, in
+Codespaces the frontends call the API on **their own origin** (`/api/v1/...`)
+and Next forwards it to the backend **inside the container** (`localhost:3001`)
+via a `rewrites()` rule (`start.sh` sets `API_PROXY_TARGET`). The browser never
+makes a cross-port request — no interstitial, no CORS, and the login cookie is
+same-site. **Only ports 3000 and 3002 need to be Public**; 3001 stays internal.
+(Locally / VS Code Desktop, `localhost` ports share a site, so the apps call the
+API directly with no proxy.)
 
 ## Demo logins
 

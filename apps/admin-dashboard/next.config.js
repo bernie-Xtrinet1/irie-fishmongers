@@ -1,6 +1,14 @@
 const isDev = process.env.NODE_ENV !== 'production';
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1';
-const apiOrigin = new URL(apiUrl).origin;
+// A relative apiUrl ("/api/v1") means the app calls its OWN origin via the
+// dev proxy (see API_PROXY_TARGET below), which connect-src 'self' already
+// covers; only an absolute URL needs an explicit connect-src origin.
+const apiOrigin = apiUrl.startsWith('http') ? new URL(apiUrl).origin : '';
+
+// When set (the Codespaces demo), serve the API from this app's own origin and
+// forward /api/v1/* to the backend server-side - keeps the browser same-origin
+// (no cross-port GitHub interstitial, no CORS, no SameSite cookie hop).
+const apiProxyTarget = process.env.API_PROXY_TARGET;
 
 // Even with the httpOnly refresh cookie (ADR-004), the in-memory access
 // token is only as safe as this page is from XSS - these headers are the
@@ -12,7 +20,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
-  `connect-src 'self' ${apiOrigin}`,
+  `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ''}`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -28,6 +36,13 @@ const nextConfig = {
     // source for now, narrow this once a production image host exists.
     remotePatterns: [{ protocol: 'https', hostname: '**' }],
   },
+  ...(apiProxyTarget
+    ? {
+        async rewrites() {
+          return [{ source: '/api/v1/:path*', destination: `${apiProxyTarget}/api/v1/:path*` }];
+        },
+      }
+    : {}),
   async headers() {
     return [
       {
