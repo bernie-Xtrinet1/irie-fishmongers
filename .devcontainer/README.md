@@ -104,6 +104,10 @@ npm run demo:seed                  # re-creates demo accounts + showcase data
   the frontends' `.env.local`, clears stale `.next` caches when the API URL
   changed, verifies Postgres/Redis, starts the stack once, and polls real
   HTTP health endpoints before printing the final URLs.
+- **Verify it end to end:** `bash scripts/verify-codespaces-demo.sh` — checks
+  branch, the generated `.env.local`, live health on all three ports, a real
+  CORS preflight from the admin origin, and whether the compiled admin bundle
+  uses the forwarded API host. Read-only; run it after starting.
 - **Stop the whole Codespace:** GitHub **Codespaces → … → Stop** (keeps the
   volume so data persists on restart).
 
