@@ -21,17 +21,27 @@ echo "== 2. Demo scripts present =="
 [[ -f scripts/start-codespaces-demo.sh && -f scripts/stop-codespaces-demo.sh ]] \
   && ok "start/stop scripts present" || bad "start/stop scripts missing - this branch lacks the fixes"
 
-echo "== 3. Generated admin .env.local =="
+echo "== 3. Generated .env.local (customer + admin) =="
 ENVFILE=apps/admin-dashboard/.env.local
+WEBENV=apps/web/.env.local
 if [[ -f "$ENVFILE" ]]; then
-  cat "$ENVFILE" | sed 's/^/    /'
+  cat "$ENVFILE" | sed 's/^/    admin  /'
   API_URL="$(grep -h '^NEXT_PUBLIC_API_URL=' "$ENVFILE" | cut -d= -f2-)"
   ADMIN_URL="$(grep -h '^NEXT_PUBLIC_APP_URL=' "$ENVFILE" | cut -d= -f2-)"
-  [[ "$API_URL" == *localhost:3001* ]] && bad "NEXT_PUBLIC_API_URL still points at localhost:3001" || ok "API URL is not localhost"
-  [[ "$API_URL" == *"..."* ]] && bad "NEXT_PUBLIC_API_URL contains a literal '...'" || ok "no placeholder in API URL"
+  [[ "$API_URL" == *localhost:3001* ]] && bad "admin NEXT_PUBLIC_API_URL still points at localhost:3001" || ok "admin API URL is not localhost"
+  [[ "$API_URL" == *"..."* ]] && bad "admin NEXT_PUBLIC_API_URL contains a literal '...'" || ok "no placeholder in admin API URL"
 else
   bad "$ENVFILE does not exist - run scripts/start-codespaces-demo.sh first"
   API_URL=""; ADMIN_URL=""
+fi
+if [[ -f "$WEBENV" ]]; then
+  cat "$WEBENV" | sed 's/^/    web    /'
+  WEB_API_URL="$(grep -h '^NEXT_PUBLIC_API_URL=' "$WEBENV" | cut -d= -f2-)"
+  WEB_ORIGIN="$(echo "$WEB_API_URL" | sed -E 's#(https?://[^/]+).*#\1#')"
+  [[ "$WEB_API_URL" == *localhost:3001* ]] && bad "customer NEXT_PUBLIC_API_URL still points at localhost:3001 (the catalog fetch will fail)" || ok "customer API URL is not localhost"
+else
+  bad "$WEBENV does not exist - the storefront catalog fetch has no API URL"
+  WEB_ORIGIN=""
 fi
 
 echo "== 4. Live health (localhost is correct INSIDE the Codespace) =="
@@ -40,18 +50,28 @@ code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null ||
 c3002="$(code http://localhost:3002/login)"; [[ "$c3002" =~ ^(200|3..)$ ]] && ok "admin /login $c3002" || bad "admin /login $c3002"
 c3000="$(code http://localhost:3000)";       [[ "$c3000" =~ ^(200|3..)$ ]] && ok "storefront / $c3000" || bad "storefront / $c3000"
 
-echo "== 5. CORS preflight from the admin origin =="
-if [[ -n "${ADMIN_URL:-}" ]]; then
-  acao="$(curl -s -D - -o /dev/null --max-time 5 -X OPTIONS \
-    -H "Origin: ${ADMIN_URL}" \
-    -H 'Access-Control-Request-Method: POST' \
-    -H 'Access-Control-Request-Headers: content-type' \
-    http://localhost:3001/api/v1/auth/login 2>/dev/null \
-    | grep -i '^access-control-allow-origin:' | tr -d '\r')"
-  if [[ "$acao" == *"$ADMIN_URL"* ]]; then ok "preflight allows admin origin ($acao)"; else bad "preflight did not echo the admin origin (got: '${acao:-none}')"; fi
+echo "== 5a. Public catalog GET /products (what the storefront calls) =="
+prod_code="$(code 'http://localhost:3001/api/v1/products?pageSize=1')"
+if [[ "$prod_code" == "200" ]]; then
+  n="$(curl -s --max-time 5 'http://localhost:3001/api/v1/products' | grep -o '"id"' | wc -l | tr -d ' ')"
+  ok "GET /products 200 (public, no auth) - ~$n items"
 else
-  note "skipped - no admin origin resolved"
+  bad "GET /products returned $prod_code (expected 200) - the catalog endpoint itself is the problem"
 fi
+
+echo "== 5b. CORS allow-origin for BOTH the customer and admin origins =="
+check_cors() { # $1 = origin
+  curl -s -D - -o /dev/null --max-time 5 -H "Origin: $1" \
+    http://localhost:3001/api/v1/products 2>/dev/null \
+    | grep -i '^access-control-allow-origin:' | tr -d '\r'
+}
+if [[ -n "${WEB_ORIGIN:-}" ]]; then
+  a="$(check_cors "$WEB_ORIGIN")"; [[ "$a" == *"$WEB_ORIGIN"* ]] && ok "customer origin allowed ($a)" || bad "customer origin NOT allowed (got: '${a:-none}') - add it to CORS_ORIGIN"
+fi
+if [[ -n "${ADMIN_URL:-}" ]]; then
+  a="$(check_cors "$ADMIN_URL")"; [[ "$a" == *"$ADMIN_URL"* ]] && ok "admin origin allowed ($a)" || bad "admin origin NOT allowed (got: '${a:-none}')"
+fi
+note "these pass INSIDE the Codespace; if the BROWSER still fails, port 3001 visibility is private - set 3001 (and 3000/3002) to Public in the Ports tab"
 
 echo "== 6. Compiled admin bundle uses the forwarded API host =="
 # Positive proof (per the runbook): the ACTIVE backend host should appear in
