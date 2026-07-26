@@ -93,12 +93,15 @@ ENV
 # .env.local we just wrote and re-inject a wrong API URL into the compiled bundle
 # - the failure mode that looks like a "stale cache" but survives every rebuild.
 #
-# Scope matters: we only UNSET inside the managed demo container (Codespaces or a
-# devcontainer), where .env.local is unambiguously owned by this script. Anywhere
-# else (e.g. run on a bare host) a NEXT_PUBLIC_* may be deliberate developer
-# config, so we WARN but never silently erase it. The durable fix in-container is
-# to remove the source and REBUILD (a running container keeps exporting it).
-if [[ "${CODESPACES:-}" == "true" || -n "${CODESPACE_NAME:-}" || -f /.dockerenv ]]; then
+# Scope matters: we only UNSET inside THIS managed demo container - GitHub
+# Codespaces (CODESPACES=true), or a devcontainer that sets the project marker
+# IRIE_DEMO_CONTAINER=true in .devcontainer/docker-compose.yml - where .env.local
+# is unambiguously owned by this script. We deliberately do NOT use a broad
+# /.dockerenv probe (it would match any unrelated container). Anywhere else (e.g.
+# a bare host) a NEXT_PUBLIC_* may be deliberate developer config, so we WARN but
+# never silently erase it. The durable in-container fix is to remove the source
+# and REBUILD (a running container keeps exporting the variable to every shell).
+if [[ "${CODESPACES:-}" == "true" || "${IRIE_DEMO_CONTAINER:-}" == "true" ]]; then
   for _pub in NEXT_PUBLIC_API_URL NEXT_PUBLIC_ENVIRONMENT NEXT_PUBLIC_APP_URL; do
     if [[ -n "${!_pub:-}" ]]; then
       echo "==> WARNING: ${_pub}=${!_pub} is set in the container environment - unsetting" >&2

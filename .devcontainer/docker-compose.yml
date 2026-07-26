@@ -44,6 +44,12 @@ services:
       SENDGRID_API_KEY: demo-disabled
       SENDGRID_FROM_EMAIL: demo@demo.iriefishmongers.test
       FCM_SERVER_KEY: demo-disabled
+      # Explicit marker read by scripts/start-codespaces-demo.sh so it knows it is
+      # running inside THIS managed demo container - and may therefore safely unset
+      # a stray NEXT_PUBLIC_* that would override .env.local. Preferred over a broad
+      # /.dockerenv probe (which matches any unrelated container). Not a
+      # NEXT_PUBLIC_* itself, so it is never inlined into a client bundle.
+      IRIE_DEMO_CONTAINER: 'true'
       # --- frontends ---
       # NEXT_PUBLIC_* are intentionally NOT set here. Next.js inlines them into
       # the client bundle at build time, and a value in this container's

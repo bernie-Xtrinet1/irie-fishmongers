@@ -21,6 +21,24 @@ echo "== 2. Demo scripts present =="
 [[ -f scripts/start-codespaces-demo.sh && -f scripts/stop-codespaces-demo.sh ]] \
   && ok "start/stop scripts present" || bad "start/stop scripts missing - this branch lacks the fixes"
 
+echo "== 2b. Docker Compose has no frontend NEXT_PUBLIC_* assignments =="
+# A NEXT_PUBLIC_* assigned in the container environment takes precedence over
+# .env.local and gets inlined into the bundle - the override bug. Match only real
+# YAML assignments ('  KEY:'), so the explanatory comment in the compose file
+# does not trip this check.
+COMPOSE=.devcontainer/docker-compose.yml
+PUB_ASSIGN='^[[:space:]]+(NEXT_PUBLIC_API_URL|NEXT_PUBLIC_ENVIRONMENT|NEXT_PUBLIC_APP_URL):'
+if [[ -f "$COMPOSE" ]]; then
+  if grep -qE "$PUB_ASSIGN" "$COMPOSE"; then
+    bad "$COMPOSE assigns a frontend NEXT_PUBLIC_* (overrides .env.local in-container) - remove it and REBUILD the container:"
+    grep -nE "$PUB_ASSIGN" "$COMPOSE" | sed 's/^/          /'
+  else
+    ok "no frontend NEXT_PUBLIC_* assignments in $COMPOSE"
+  fi
+else
+  note "$COMPOSE not found - skipping compose override check"
+fi
+
 echo "== 3. Generated .env.local (customer + admin) =="
 ENVFILE=apps/admin-dashboard/.env.local
 WEBENV=apps/web/.env.local
