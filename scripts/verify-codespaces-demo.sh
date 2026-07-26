@@ -94,6 +94,28 @@ else
   [[ -n "${ADMIN_URL:-}" ]] && { a="$(check_cors "$ADMIN_URL")"; [[ "$a" == *"$ADMIN_URL"* ]] && ok "admin origin allowed ($a)" || bad "admin origin NOT allowed (got: '${a:-none}')"; }
 fi
 
+echo "== 5c. Seeded product images load through the Next optimizer =="
+# Regression guard for the broken-images bug: next/image rejects SVG with HTTP
+# 400 ("image type is not allowed"), so seeded product images must be raster.
+# Pull the first product's imageUrl from the live catalog, run it through the
+# storefront's /_next/image optimizer, and require 200. node (present in the
+# devcontainer image) does the JSON parse + URL-encode - no python dependency.
+FIRST_IMG="$(curl -s --max-time 5 'http://localhost:3001/api/v1/products?page=1&pageSize=1' \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).data?.items?.[0]?.imageUrl||"")}catch{process.stdout.write("")}})' 2>/dev/null || true)"
+if [[ -z "$FIRST_IMG" ]]; then
+  note "no product imageUrl in the catalog - skipping optimizer check (seed data?)"
+elif [[ "$FIRST_IMG" != http* ]]; then
+  note "first product imageUrl is not absolute ('$FIRST_IMG') - skipping optimizer check"
+else
+  ENC="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$FIRST_IMG" 2>/dev/null || true)"
+  img_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://localhost:3000/_next/image?url=${ENC}&w=640&q=75" 2>/dev/null || echo 000)"
+  if [[ "$img_code" == "200" ]]; then
+    ok "storefront optimizer served the seeded image 200 ($FIRST_IMG)"
+  else
+    bad "storefront optimizer returned $img_code for '$FIRST_IMG' - product images are broken (SVG placeholder? next/image rejects SVG - use a raster /png URL and re-seed)"
+  fi
+fi
+
 echo "== 6. No forbidden localhost API URL in the executable client bundles =="
 # The frontends must reach the API via the same-origin proxy ("/api/v1"); the
 # literal backend host must NEVER be compiled into a client chunk. If it is, a

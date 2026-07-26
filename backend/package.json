@@ -72,6 +72,10 @@
       "ts"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../prisma"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "setupFiles": [
       "<rootDir>/../jest.setup.ts"

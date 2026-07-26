@@ -16,7 +16,7 @@
  * (`npm run prisma:seed -w backend`) has populated roles/categories/zones.
  */
 import * as bcrypt from 'bcrypt';
-import { PrismaClient, RoleName, UserStatus } from '@prisma/client';
+import { PrismaClient, ProductUnit, RoleName, UserStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -60,6 +60,36 @@ async function upsertAccount(account: DemoAccount, passwordHash: string): Promis
   return user.id;
 }
 
+// Exported so a unit test can assert the placeholders stay raster: next/image
+// rejects SVG (HTTP 400 "image type is not allowed"), and placehold.co serves
+// SVG unless the path includes "/png". Keep every imageUrl a raster URL.
+export const DEMO_PRODUCTS = [
+  {
+    name: 'Fresh Red Snapper',
+    description: 'Whole red snapper, landed this morning.',
+    unit: ProductUnit.PER_POUND,
+    price: 950,
+    quantityAvailable: 40,
+    imageUrl: 'https://placehold.co/600x400/png?text=Red+Snapper',
+  },
+  {
+    name: 'Jumbo Shrimp',
+    description: 'Peeled and deveined jumbo shrimp.',
+    unit: ProductUnit.PER_POUND,
+    price: 1650,
+    quantityAvailable: 25,
+    imageUrl: 'https://placehold.co/600x400/png?text=Jumbo+Shrimp',
+  },
+  {
+    name: 'Fresh Lobster',
+    description: 'Live Caribbean spiny lobster.',
+    unit: ProductUnit.PER_ITEM,
+    price: 2800,
+    quantityAvailable: 12,
+    imageUrl: 'https://placehold.co/600x400/png?text=Lobster',
+  },
+];
+
 async function seedVendor(userId: string): Promise<void> {
   const vendor = await prisma.vendor.upsert({
     where: { userId },
@@ -75,50 +105,34 @@ async function seedVendor(userId: string): Promise<void> {
     },
   });
 
-  const existingProducts = await prisma.product.count({ where: { vendorId: vendor.id } });
-  if (existingProducts > 0) {
-    return;
-  }
-
   const category = await prisma.category.findFirst({ orderBy: { name: 'asc' } });
   if (!category) {
     throw new Error('No category found - run the reference seed (prisma:seed) before the demo seed.');
   }
 
-  await prisma.product.createMany({
-    data: [
-      {
-        vendorId: vendor.id,
-        categoryId: category.id,
-        name: 'Fresh Red Snapper',
-        description: 'Whole red snapper, landed this morning.',
-        unit: 'PER_POUND',
-        price: 950,
-        quantityAvailable: 40,
-        imageUrl: 'https://placehold.co/600x400?text=Red+Snapper',
-      },
-      {
-        vendorId: vendor.id,
-        categoryId: category.id,
-        name: 'Jumbo Shrimp',
-        description: 'Peeled and deveined jumbo shrimp.',
-        unit: 'PER_POUND',
-        price: 1650,
-        quantityAvailable: 25,
-        imageUrl: 'https://placehold.co/600x400?text=Jumbo+Shrimp',
-      },
-      {
-        vendorId: vendor.id,
-        categoryId: category.id,
-        name: 'Fresh Lobster',
-        description: 'Live Caribbean spiny lobster.',
-        unit: 'PER_ITEM',
-        price: 2800,
-        quantityAvailable: 12,
-        imageUrl: 'https://placehold.co/600x400?text=Lobster',
-      },
-    ],
-  });
+  // Idempotent PER PRODUCT: refresh the existing row (so re-seeding updates
+  // fields like imageUrl on demo databases that already contain these products)
+  // or create it if missing. The previous "skip if any product exists" guard
+  // meant a re-seed silently left stale values in place - e.g. an old SVG
+  // placeholder that the Next image optimizer rejects with HTTP 400. Keyed on
+  // (vendorId, name); there is no unique constraint on that pair, so this uses
+  // findFirst + update/create rather than a single upsert.
+  for (const product of DEMO_PRODUCTS) {
+    const existing = await prisma.product.findFirst({
+      where: { vendorId: vendor.id, name: product.name },
+      select: { id: true },
+    });
+    if (existing) {
+      await prisma.product.update({
+        where: { id: existing.id },
+        data: { ...product, categoryId: category.id },
+      });
+    } else {
+      await prisma.product.create({
+        data: { ...product, vendorId: vendor.id, categoryId: category.id },
+      });
+    }
+  }
 }
 
 async function seedDriver(userId: string): Promise<void> {
@@ -157,12 +171,16 @@ async function main(): Promise<void> {
   );
 }
 
-main()
-  .catch((error) => {
-    // eslint-disable-next-line no-console
-    console.error(error);
-    process.exit(1);
-  })
-  .finally(() => {
-    void prisma.$disconnect();
-  });
+// Only auto-run when invoked directly (ts-node prisma/demo-seed.ts). Guarding
+// this lets a unit test import DEMO_PRODUCTS without connecting to a database.
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error(error);
+      process.exit(1);
+    })
+    .finally(() => {
+      void prisma.$disconnect();
+    });
+}
