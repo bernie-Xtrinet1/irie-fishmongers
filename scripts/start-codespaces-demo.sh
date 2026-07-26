@@ -9,9 +9,9 @@
 #   loads and watches these natively, so they survive restarts, reach
 #   next.config.js (the admin CSP derives connect-src from the API URL),
 #   and are not subject to Turbo's strict-env filtering. When the API URL
-#   changes, stale .next build caches are cleared - NEXT_PUBLIC_* values
-#   are inlined at compile time and cached, so a restart alone is not
-#   enough to pick up a new value.
+#   OR an app's source changes, stale .next build caches are cleared -
+#   NEXT_PUBLIC_* values are inlined at compile time and cached, so a
+#   restart alone is not enough to pick up a new value.
 # - Startup is verified by polling real HTTP endpoints, not log text.
 #
 # This is a DEMO/smoke-test environment, not formal UAT (that is Azure,
@@ -86,14 +86,47 @@ NEXT_PUBLIC_APP_URL=${ADMIN_URL}
 ${PROXY_LINE}
 ENV
 
-# --- 4. Clear stale Next build caches when the compiled API URL changed ---
+# --- 4. Clear stale Next build caches (compiled API URL OR source changed) ---
 # NEXT_PUBLIC_* is inlined at compile time and cached, so a restart alone does
-# not pick up a new value. Clear when the URL changed OR a .next exists with no
-# record of what it was built from (a bundle from an earlier run/branch).
-if [[ "$OLD_API_URL" != "$NEW_API_URL" ]]; then
-  echo "==> API URL changed (was: ${OLD_API_URL:-none}) - clearing Next.js build caches"
-  rm -rf apps/web/.next apps/admin-dashboard/.next
-fi
+# not pick up a new value. Two independent things can make a cached .next stale:
+#   (a) the compiled API URL changed - a .env.local value, tracked in step 3; or
+#   (b) the app's own SOURCE changed - e.g. a `git pull` that edits lib/env.ts
+#       or next.config.js - while the URL stayed the same. The URL heuristic
+#       alone misses (b), so a rebuilt bundle keeps serving old inlined values
+#       (exactly how the env.ts inlining fix could go unnoticed after a pull).
+# Guard both, per app. The source fingerprint is the git tree hash of the app's
+# committed files plus a hash of any uncommitted tracked changes, so ANY source
+# edit - a pulled commit or a local diff - invalidates the cache. It is stamped
+# inside .next itself: .next lives on the same persistent volume and is wiped
+# exactly when we clear, so a missing stamp always forces a safe rebuild.
+STAMP=".next/.build-source"
+# Stable fingerprint of an app's tracked source ("" segments if git is absent).
+source_fingerprint() {
+  local app="$1" tree diff
+  tree="$(git rev-parse "HEAD:$app" 2>/dev/null || true)"
+  diff="$(git diff -- "$app" 2>/dev/null | git hash-object --stdin 2>/dev/null || true)"
+  printf '%s:%s' "$tree" "$diff"
+}
+clear_next_if_stale() {
+  local app="$1" fp prev reason=''
+  fp="$(source_fingerprint "$app")"
+  prev="$([[ -f "$app/$STAMP" ]] && cat "$app/$STAMP" 2>/dev/null || true)"
+  if [[ "$OLD_API_URL" != "$NEW_API_URL" ]]; then
+    reason="API URL changed (was: ${OLD_API_URL:-none})"
+  elif [[ -z "$prev" ]]; then
+    reason='no prior build record'
+  elif [[ "$fp" != "$prev" ]]; then
+    reason='source changed since last build'
+  fi
+  if [[ -n "$reason" ]]; then
+    echo "==> ${app}: ${reason} - clearing Next.js build cache"
+    rm -rf "$app/.next"
+  fi
+  mkdir -p "$app/.next"
+  printf '%s' "$fp" >"$app/$STAMP"
+}
+clear_next_if_stale apps/web
+clear_next_if_stale apps/admin-dashboard
 
 # --- 5. Preconditions: deps installed, database and redis reachable ---
 if [[ ! -d node_modules ]]; then
