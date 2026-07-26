@@ -1,4 +1,9 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1';
+// Fallback is the RELATIVE same-origin path, never an absolute localhost URL:
+// the real value comes from NEXT_PUBLIC_API_URL (written to .env.local by
+// scripts/start-codespaces-demo.sh). If that is ever missing, a relative
+// "/api/v1" degrades safely (same-origin, proxied) instead of hard-coding a
+// backend host into the shipped bundle - which must never contain localhost.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
 // Every backend response is wrapped in this envelope by ResponseInterceptor/
 // HttpExceptionFilter (see backend/src/common/http) - CLAUDE.md's API RULES

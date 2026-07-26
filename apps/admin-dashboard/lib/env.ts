@@ -30,7 +30,7 @@ function required(name: string, raw: string | undefined, devFallback: string): s
 }
 
 export const env = {
-  apiUrl: required('NEXT_PUBLIC_API_URL', process.env.NEXT_PUBLIC_API_URL, 'http://localhost:3001/api/v1'),
+  apiUrl: required('NEXT_PUBLIC_API_URL', process.env.NEXT_PUBLIC_API_URL, '/api/v1'),
   environment: required('NEXT_PUBLIC_ENVIRONMENT', process.env.NEXT_PUBLIC_ENVIRONMENT, 'development'),
   appUrl: required('NEXT_PUBLIC_APP_URL', process.env.NEXT_PUBLIC_APP_URL, 'http://localhost:3002'),
 };

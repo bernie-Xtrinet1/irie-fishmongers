@@ -44,10 +44,16 @@ services:
       SENDGRID_API_KEY: demo-disabled
       SENDGRID_FROM_EMAIL: demo@demo.iriefishmongers.test
       FCM_SERVER_KEY: demo-disabled
-      # --- frontends (inlined into the client bundle at dev time) ---
-      NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
-      NEXT_PUBLIC_ENVIRONMENT: development
-      NEXT_PUBLIC_APP_URL: http://localhost:3002
+      # --- frontends ---
+      # NEXT_PUBLIC_* are intentionally NOT set here. Next.js inlines them into
+      # the client bundle at build time, and a value in this container's
+      # environment takes PRECEDENCE over apps/*/.env.local. Setting them here
+      # would therefore override the per-environment values that
+      # scripts/start-codespaces-demo.sh writes to each app's .env.local -
+      # relative "/api/v1" in Codespaces (so the same-origin proxy works) or an
+      # absolute localhost URL for a local devcontainer - and silently re-inject
+      # a broken API URL into the compiled bundle. The start script is the single
+      # source of truth for frontend env; see .devcontainer/README.md.
 
   db:
     image: postgres:16-alpine

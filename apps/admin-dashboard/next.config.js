@@ -1,5 +1,5 @@
 const isDev = process.env.NODE_ENV !== 'production';
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1';
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 // A relative apiUrl ("/api/v1") means the app calls its OWN origin via the
 // dev proxy (see API_PROXY_TARGET below), which connect-src 'self' already
 // covers; only an absolute URL needs an explicit connect-src origin.

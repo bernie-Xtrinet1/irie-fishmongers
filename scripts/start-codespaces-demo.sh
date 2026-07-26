@@ -86,6 +86,25 @@ NEXT_PUBLIC_APP_URL=${ADMIN_URL}
 ${PROXY_LINE}
 ENV
 
+# --- 3b. Neutralize any shell-level NEXT_PUBLIC_* override ---
+# Next.js gives process.env PRECEDENCE over .env.local, so a NEXT_PUBLIC_*
+# exported into this shell (e.g. still declared in .devcontainer/docker-compose.yml,
+# or a shell profile / Codespaces secret) would silently override the per-app
+# .env.local we just wrote and re-inject a wrong API URL into the compiled bundle
+# - the failure mode that looks like a "stale cache" but survives every rebuild.
+# Unset them so the dev servers this script launches read .env.local instead, and
+# warn: the durable fix is to remove the source and REBUILD the container (a
+# running container keeps exporting the variable to every new shell).
+for _pub in NEXT_PUBLIC_API_URL NEXT_PUBLIC_ENVIRONMENT NEXT_PUBLIC_APP_URL; do
+  if [[ -n "${!_pub:-}" ]]; then
+    echo "==> WARNING: ${_pub}=${!_pub} is set in the environment - unsetting it so the" >&2
+    echo "    generated apps/*/.env.local takes effect. Remove it from" >&2
+    echo "    .devcontainer/docker-compose.yml and rebuild the container to fix this permanently." >&2
+    unset "$_pub"
+  fi
+done
+unset _pub
+
 # --- 4. Clear stale Next build caches (compiled API URL OR source changed) ---
 # NEXT_PUBLIC_* is inlined at compile time and cached, so a restart alone does
 # not pick up a new value. Two independent things can make a cached .next stale:

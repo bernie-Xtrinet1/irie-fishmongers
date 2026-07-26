@@ -76,17 +76,30 @@ else
   [[ -n "${ADMIN_URL:-}" ]] && { a="$(check_cors "$ADMIN_URL")"; [[ "$a" == *"$ADMIN_URL"* ]] && ok "admin origin allowed ($a)" || bad "admin origin NOT allowed (got: '${a:-none}')"; }
 fi
 
-echo "== 6. Compiled admin bundle host (absolute-URL mode only) =="
-if [[ -n "${API_URL:-}" && "${API_URL}" == http* ]]; then
-  HOST="$(echo "$API_URL" | sed -E 's#https?://([^/]+).*#\1#')"
-  if grep -rlq "$HOST" apps/admin-dashboard/.next/static 2>/dev/null; then
-    ok "forwarded host '$HOST' found in the compiled bundle"
-  else
-    note "'$HOST' not yet in .next/static - next dev compiles on first page load; open the admin URL once, then re-run"
+echo "== 6. No forbidden localhost API URL in the executable client bundles =="
+# The frontends must reach the API via the same-origin proxy ("/api/v1"); the
+# literal backend host must NEVER be compiled into a client chunk. If it is, a
+# shell/container NEXT_PUBLIC_API_URL is overriding .env.local (see
+# .devcontainer/README.md) - and clearing .next will NOT fix it. Scan executable
+# JS only (*.js, not .map source maps). An empty .next/static just means next dev
+# has not compiled a page yet - open each app once, then re-run.
+FORBIDDEN='localhost:3001'
+scan_bundle() {
+  local app="$1" dir="apps/$1/.next/static"
+  if [[ ! -d "$dir" ]]; then
+    note "$app: $dir not built yet - open the app once so next dev compiles a page, then re-run"
+    return
   fi
-  grep -rlq "localhost:3001" apps/admin-dashboard/.next/static 2>/dev/null \
-    && note "localhost:3001 also present (often a source-map fallback - the browser Network tab is authoritative)" || true
-fi
+  local hit
+  hit="$(grep -rl --include='*.js' "$FORBIDDEN" "$dir" 2>/dev/null | head -1)"
+  if [[ -n "$hit" ]]; then
+    bad "$app: forbidden '$FORBIDDEN' compiled into a client bundle ($hit) - a shell/container NEXT_PUBLIC_API_URL is overriding .env.local; remove it from .devcontainer/docker-compose.yml and REBUILD the container (clearing .next alone will not fix it)"
+  else
+    ok "$app: no '$FORBIDDEN' in executable client chunks"
+  fi
+}
+scan_bundle web
+scan_bundle admin-dashboard
 
 echo ""
 if [[ "$fail" == "0" ]]; then

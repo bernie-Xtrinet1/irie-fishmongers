@@ -105,13 +105,14 @@ npm run demo:seed                  # re-creates demo accounts + showcase data
   process tree (turbo + next + nest), not just the top npm process.
 - **Start / restart apps:** `bash scripts/start-codespaces-demo.sh` — derives
   the public URLs from the Codespaces env (no hard-coded hostnames), writes
-  the frontends' `.env.local`, clears stale `.next` caches when the API URL
-  changed, verifies Postgres/Redis, starts the stack once, and polls real
-  HTTP health endpoints before printing the final URLs.
+  the frontends' `.env.local`, unsets any stray shell-level `NEXT_PUBLIC_*` that
+  would override it, clears stale `.next` caches when the API URL **or app
+  source** changed, verifies Postgres/Redis, starts the stack once, and polls
+  real HTTP health endpoints before printing the final URLs.
 - **Verify it end to end:** `bash scripts/verify-codespaces-demo.sh` — checks
-  branch, the generated `.env.local`, live health on all three ports, a real
-  CORS preflight from the admin origin, and whether the compiled admin bundle
-  uses the forwarded API host. Read-only; run it after starting.
+  branch, the generated `.env.local`, live health on all three ports, the
+  same-origin proxy (or CORS) path, and that **no forbidden `localhost:3001` API
+  URL is compiled into either client bundle**. Read-only; run it after starting.
 - **Stop the whole Codespace:** GitHub **Codespaces → … → Stop** (keeps the
   volume so data persists on restart).
 
@@ -120,12 +121,51 @@ npm run demo:seed                  # re-creates demo accounts + showcase data
 | Symptom | Fix |
 |---|---|
 | Storefront/admin can't reach the API | Re-run `bash scripts/start-codespaces-demo.sh` (rewrites `.env.local` + clears stale caches), confirm port **3001** visibility matches the frontends, and click through GitHub's port warning on `…-3001…/api/v1/health` once. |
-| Login POST goes to `localhost:3001` (F12 Network) | The frontends were compiled with stale URLs — `bash scripts/start-codespaces-demo.sh` fixes this (it clears `.next` when the API URL changes). |
+| Login POST / catalog fetch goes to `localhost:3001` (F12 Network) | A `NEXT_PUBLIC_API_URL` in the container environment is **overriding** the generated `.env.local` — see **"How frontend env is resolved"** below. Clearing `.next` will **not** fix it. Remove the override and **rebuild the container**. |
 | `Environment validation failed` on API start | The container env is set in `docker-compose.yml`; rebuild the container (*Dev Containers: Rebuild Container*). |
 | Prisma "Environment variable not found: DATABASE_URL" | Same as above — env comes from the compose `app` service; rebuild. |
 | Migrations didn't run / empty DB | Re-run `bash .devcontainer/setup.sh`. |
 | Login fails | Re-seed: `npm run demo:seed -w backend`. Password is `DemoPass!23`. |
 | Ports not appearing | Start the apps: `npm run dev`; ports forward once each server binds. |
+
+## How frontend env is resolved (read this before "clearing the cache")
+
+`NEXT_PUBLIC_*` values are **inlined into the client bundle at build time**, so
+the value the browser uses is whatever was in the environment **when Next
+compiled** — not what a running server "reads" later.
+
+Next.js resolves these with a fixed precedence (first match wins):
+
+```
+process.env  ›  .env.$(NODE_ENV).local  ›  .env.local  ›  .env.$(NODE_ENV)  ›  .env
+```
+
+**`process.env` (a shell/container variable) wins over `.env.local`.** So if
+`NEXT_PUBLIC_API_URL` is exported into the container — e.g. declared in
+`docker-compose.yml` under the `app` service's `environment:` — Next compiles
+**that** value into the bundle and completely ignores the `/api/v1` that
+`scripts/start-codespaces-demo.sh` writes to each app's `.env.local`. The bundle
+then calls `http://localhost:3001/...` from the browser (the *user's* machine),
+which fails, and **no amount of `rm -rf .next` fixes it** — every rebuild
+re-inlines the same overriding value.
+
+Because of this, frontend env here is arranged so there is a single source of
+truth and a hard failure if it is bypassed:
+
+- `docker-compose.yml` does **not** set any `NEXT_PUBLIC_*` (only backend vars).
+- `scripts/start-codespaces-demo.sh` writes each app's `.env.local`
+  per-environment (relative `/api/v1` in Codespaces so the same-origin proxy
+  works; an absolute localhost URL for a local devcontainer) and **unsets** any
+  stray shell-level `NEXT_PUBLIC_*` before starting the dev servers.
+- The source fallback in `api-client.ts` / `lib/env.ts` is the relative
+  `/api/v1`, never an absolute host — so a misconfiguration degrades to a
+  same-origin path, and a localhost host can never be shipped in a bundle.
+- `scripts/verify-codespaces-demo.sh` **fails** if `localhost:3001` is found in
+  any compiled client chunk.
+
+If you re-introduce a `NEXT_PUBLIC_*` in `docker-compose.yml`, you must
+**rebuild the container** (*Dev Containers: Rebuild Container*) for the change to
+take effect — a running container keeps exporting the old value to every shell.
 
 ## Cost & usage notes
 
