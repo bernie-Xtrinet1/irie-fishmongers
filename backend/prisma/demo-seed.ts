@@ -60,9 +60,12 @@ async function upsertAccount(account: DemoAccount, passwordHash: string): Promis
   return user.id;
 }
 
-// Exported so a unit test can assert the placeholders stay raster: next/image
-// rejects SVG (HTTP 400 "image type is not allowed"), and placehold.co serves
-// SVG unless the path includes "/png". Keep every imageUrl a raster URL.
+// Local raster images served from apps/web/public/demo-products/. Deliberately
+// NOT a remote placeholder service: that introduced avoidable demo instability
+// (external downtime, outbound-network restrictions, and - the bug we hit -
+// SVG responses that next/image rejects with HTTP 400). Local files are
+// same-origin, need no next.config remotePatterns entry, and never touch the
+// network. Exported so a unit test can assert they stay local raster paths.
 export const DEMO_PRODUCTS = [
   {
     name: 'Fresh Red Snapper',
@@ -70,7 +73,7 @@ export const DEMO_PRODUCTS = [
     unit: ProductUnit.PER_POUND,
     price: 950,
     quantityAvailable: 40,
-    imageUrl: 'https://placehold.co/600x400/png?text=Red+Snapper',
+    imageUrl: '/demo-products/red-snapper.png',
   },
   {
     name: 'Jumbo Shrimp',
@@ -78,7 +81,7 @@ export const DEMO_PRODUCTS = [
     unit: ProductUnit.PER_POUND,
     price: 1650,
     quantityAvailable: 25,
-    imageUrl: 'https://placehold.co/600x400/png?text=Jumbo+Shrimp',
+    imageUrl: '/demo-products/jumbo-shrimp.png',
   },
   {
     name: 'Fresh Lobster',
@@ -86,7 +89,7 @@ export const DEMO_PRODUCTS = [
     unit: ProductUnit.PER_ITEM,
     price: 2800,
     quantityAvailable: 12,
-    imageUrl: 'https://placehold.co/600x400/png?text=Lobster',
+    imageUrl: '/demo-products/lobster.png',
   },
 ];
 

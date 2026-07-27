@@ -104,15 +104,15 @@ FIRST_IMG="$(curl -s --max-time 5 'http://localhost:3001/api/v1/products?page=1&
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).data?.items?.[0]?.imageUrl||"")}catch{process.stdout.write("")}})' 2>/dev/null || true)"
 if [[ -z "$FIRST_IMG" ]]; then
   note "no product imageUrl in the catalog - skipping optimizer check (seed data?)"
-elif [[ "$FIRST_IMG" != http* ]]; then
-  note "first product imageUrl is not absolute ('$FIRST_IMG') - skipping optimizer check"
 else
+  # Works for both a local path (/demo-products/x.png) and an absolute URL -
+  # /_next/image takes either in its url param.
   ENC="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$FIRST_IMG" 2>/dev/null || true)"
   img_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://localhost:3000/_next/image?url=${ENC}&w=640&q=75" 2>/dev/null || echo 000)"
   if [[ "$img_code" == "200" ]]; then
     ok "storefront optimizer served the seeded image 200 ($FIRST_IMG)"
   else
-    bad "storefront optimizer returned $img_code for '$FIRST_IMG' - product images are broken (SVG placeholder? next/image rejects SVG - use a raster /png URL and re-seed)"
+    bad "storefront optimizer returned $img_code for '$FIRST_IMG' - product images are broken (SVG rejected by next/image, missing local file, or unreachable remote host)"
   fi
 fi
 
