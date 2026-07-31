@@ -462,4 +462,18 @@ an immediate recompute, returns the same explanation shape)
 Product detail (GET /products/:id/detail) and vendor profile (GET
 /vendors/:id/profile) now also return the vendor rating, recentReviews, and
 customer-facing compliance band; product detail additionally exposes the lot
+
+# Known Documentation Gaps
+
+Analytics (Phase 15) — COMPLETE in code (see `docs/roadmap.md`), but these
+five endpoints are not yet transcribed into this file. Each already has
+Swagger decoration in `backend/src/modules/analytics/controllers/`, so the
+source of truth exists at `/api/v1/docs`; this is purely a doc-authoring
+close-out, not an application gap:
+
+- GET /analytics/dashboard-summary
+- GET /analytics/vendor-dashboard
+- GET /analytics/sales-analytics
+- GET /analytics/delivery-analytics
+- GET /analytics/inventory-analytics
 quality/freshness score + last-inspected date.
