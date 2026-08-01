@@ -145,10 +145,12 @@
   **Superseded/final**: the ADR-005 summary above describes the *first*
   round of that design, before four further rounds of correction. **ADR-005
   is now Accepted** (commit `d22afe4`) with a materially different final
-  shape: a new `SeafoodCatalogueItem`, joined to `Species` via a
-  `CatalogueItemSpecies` **join table** (not a direct `Species` extension -
-  a single-species FK cannot represent a mixed pack, and a regulated
-  component could hide inside one undetected); `Product` unchanged in shape
+  shape: a new `SeafoodCatalogueItem` is the catalogue identity, joined to
+  `Species` via a `CatalogueItemSpecies` **join table** (not a direct
+  `Species` extension - a single-species FK cannot represent a mixed pack,
+  and a regulated component could hide inside one undetected); **`Species`
+  remains the sole biological and regulatory authority**, unchanged by this
+  ADR; `Product` unchanged in shape
   and vendor scope, gaining a nullable `catalogueItemId` and a three-state
   `inventoryMode`; a new `VendorDailyListing` (not `Product` itself) as the
   actual dated, priced, expiring stock, with multiple simultaneously active
