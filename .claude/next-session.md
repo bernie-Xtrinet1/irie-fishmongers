@@ -2,52 +2,53 @@
 
 ## Entry point
 
-The `phase-17-uat-production-readiness` branch decision is made (re-draft,
-not merge) and the roadmap is resequenced: **Phase 16 = Jamaican Seafood
-Marketplace Operating Model, Phase 17 = UAT & Production Readiness, Phase
-18 = AI Marketplace**. A documentation-only change set implementing this is
-staged locally but **not yet committed** - the user asked to review
-`git status`/`git diff --stat`/the proposed commits first. See
-`.claude/current-task.md` and `.claude/decisions.md` for what changed and
-why.
+**ADR-005 is Accepted**, committed as `d22afe4` (`docs(architecture): accept
+catalogue and daily listing design`) on top of the earlier roadmap-
+resequencing commits (`e2ba223`, `e60a743`, `516d207`). No Prisma schema,
+migration, or application code has been written for any part of Phase 16 -
+this entire arc has been design documentation only. See
+`.claude/decisions.md` for the corrected final-architecture summary and
+`.claude/worklog.md` for the full round-by-round correction history.
 
-## First question to ask the user
+## Next session must begin with
 
-**Does the user approve committing and pushing the staged documentation
-change set?** If yes: commit as the three planned commits (see
-`.claude/worklog.md`'s 2026-07-31 entry for the exact file list per
-commit) and push to `develop`. If the user wants changes first, make them
-before committing - do not commit partway through a requested revision.
+**Phase 16A.0 - Cart Price Integrity - planning and gap analysis only.**
 
-## After that decision
+Per ADR-005's "Migration stages" table, this is the *first* roadmap unit -
+before 16A.1 (Catalogue Foundation) - because it fixes an already-live
+defect (`cart.service.ts` reads `item.product.price` live at cart-read time
+today, with no lock at all) and is designed to ship independently of the
+catalogue/listing work that follows it.
 
-- Once committed and pushed: the next actual implementation work is
-  **Phase 16A (Catalogue and Regulatory Foundation)**, starting with
-  ADR-005's decision (extend `Species` with `alternativeNames`,
-  `referenceImageUrl`, typical weight range; add `Product.speciesId`) -
-  migration + DTO validation + tests, per `.claude/CLAUDE.md`'s Database/
-  API Rules.
-- Do not start Phase 16B or later sub-phases before 16A's own acceptance
-  criteria (in `docs/product/jamaican-seafood-marketplace-requirements.md`)
-  are met - each sub-phase builds on the previous one's data model.
+1. Gap analysis: current `CartItem`/`cart.service.ts` behavior vs. ADR-005's
+   "Pricing authority" and "Existing cart migration" sections -
+   `lockedUnitPrice`, `lockedCurrency`, `priceLockedAt`, the explicit
+   `PRICE_RECONFIRMATION_REQUIRED` flow for pre-existing cart rows (no
+   silent backfill), checkout validation, and the reservation-TTL tie-in.
+2. Present the analysis plus an implementation plan for approval.
+3. **No code changes are authorized until that Phase 16A.0 implementation
+   plan is reviewed and approved.**
+
+## After the 16A.0 plan is approved
+
+- Only then: the actual `CartItem` schema change, migration, service logic,
+  and tests for 16A.0, per `.claude/CLAUDE.md`'s Database/API Rules.
+- Phase 16A.1 (Catalogue Foundation) follows only after 16A.0 ships - do not
+  start catalogue work first.
 - Azure credentials are still pending (see prior memory:
-  azure-production-target). This blocks only the [AZ]-tagged tasks in
-  `docs/uat/phase-17-uat-production-readiness.md` - it does not block
-  Phase 16 implementation, which has no Azure dependency.
+  azure-production-target) - blocks only the [AZ]-tagged tasks in
+  `docs/uat/phase-17-uat-production-readiness.md`, not Phase 16 work.
 - Phase 17 (UAT) cannot meaningfully begin until Phase 16 passes
-  `docs/testing/marketplace-fulfilment-acceptance-plan.md`'s 20 scenarios.
-- Before relying on CI e2e as a gate for anything, consider pinning
-  `maxWorkers: 1` in `backend/test/jest-e2e.json` - still an open,
-  unmitigated risk flagged in `docs/roadmap.md`'s Phase 13 notes.
+  `docs/testing/marketplace-fulfilment-acceptance-plan.md`'s scenarios.
 
 ## Do NOT do
 
-- Do not begin Phase 16 (or any) application/schema implementation before
-  the documentation commit above is approved and landed - the roadmap and
-  ADRs are the reference Phase 16 work should be built against.
+- Do not write Prisma schema changes, migrations, or application code for
+  Phase 16A.0 (or any Phase 16 unit) before its own implementation plan is
+  presented and approved.
+- Do not say ADR-005 is "awaiting approval," "not yet written," or "not yet
+  committed" - it is Accepted and committed (`d22afe4`).
 - Do not treat `.claude/roadmap.md` or `.claude/project-status.md` as
-  authoritative even after this session - both are now permanent short
-  pointers to `docs/roadmap.md` by design; do not add phase/status content
-  back into them.
+  authoritative - both are permanent short pointers to `docs/roadmap.md`.
 - Do not re-open the resolved Codespaces items (proxy, env override, image
   pipeline) without a new concrete symptom report.

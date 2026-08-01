@@ -172,8 +172,111 @@ next. All commits below are on `develop` and `origin/develop`.
    `worklog.md`, `decisions.md`, `next-session.md`) that were previously
    untracked.
 
-5. **Not yet committed** - awaiting user review of the full diff before
-   any `git commit`/`git push`, per explicit instruction.
+5. **Committed as three separate commits, then pushed to `develop`**,
+   after two housekeeping rounds requested by the user: removing the
+   (never-in-repo) `renumber.py`/`renumber.js` scratchpad scripts, fixing
+   one pre-existing trailing-whitespace line in
+   `.claude/pending-documentation-audit.md` (content unchanged), and a
+   targeted audit of the retired `.claude/roadmap.md`/`project-status.md`
+   for any still-valid unique content before finalizing - see the next
+   entry.
+
+## Final commit + push (2026-07-31)
+
+- `e2ba223` `chore(docs): consolidate roadmap and session planning files`
+  (7 files: the 4 session files, the renamed
+  `pending-documentation-audit.md`, and both `.claude` files reduced to
+  pointers).
+- `e60a743` `docs(roadmap): schedule marketplace operations before
+  production UAT` (3 files: `docs/roadmap.md`, `docs/api-spec.md`,
+  `docs/uat/phase-17-uat-production-readiness.md`).
+- `516d207` `docs(marketplace): define daily listings purchasing and
+  managed pickup` (9 files: the seven Phase 16 design docs + ADR-005 +
+  ADR-006).
+- Retired-content audit before finalizing: cross-checked every flagged
+  gap in the old `.claude/roadmap.md` against current code. Most were
+  already closed (`Product.weightLbs` now exists and dispatch scoring
+  enforces it against `Driver.capacityLbs`; `DeliveryRejectedEvent` now
+  reaches `NotificationEventsListener`; the mobile driver app exists at
+  `apps/driver-app`) and were correctly NOT carried forward.
+  Three were still genuinely current and were added to `docs/roadmap.md`
+  as a "Carried-forward technical notes" section: `OrderItem` has no
+  weight field though `Product` does (relevant to Phase 16D); no
+  role-wide "notify all administrators" recipient lookup exists in
+  Notifications (relevant to Phase 16F); `VendorStatus`/`DriverStatus`/
+  `FishermanStatus` remain three deliberately-unconsolidated identical
+  enums. `.claude/project-status.md` was confirmed to hold nothing
+  unique beyond what is now in `docs/roadmap.md` Phase 13-15.
+- Pushed: `a3fc043..516d207 develop -> develop`. Post-push fetch confirmed
+  `origin/develop` at `516d207`, 0 ahead / 0 behind, working tree clean.
+
+## 2026-07-31 (cont.) - ADR-005 design correction and acceptance
+
+Following the roadmap-resequencing push, ADR-005 (master catalogue vs.
+vendor daily listing) went through five rounds of correction based on direct
+research against the actual codebase, then was accepted:
+
+1. Mapped every relationship to `Product` (Cart, Order, Review, Inventory,
+   FulfillmentDecision, VendorScore, VendorAssignment) and proved, by
+   reading the actual scoring code, that "Best Available Vendor" picks
+   exactly one winner today (`pickWinner()` returns a single object via
+   `.reduce()`; `VendorAssignment` is schema-enforced one-to-one with
+   `FulfillmentDecision`) - true multi-vendor split fulfilment is unbuilt,
+   not merely incomplete.
+2. Revised the catalogue model from "extend `Species` directly" to a new
+   `SeafoodCatalogueItem` joined to `Species` via a `CatalogueItemSpecies`
+   join table, after establishing a single optional FK cannot represent a
+   mixed seafood pack and could let a regulated species hide undetected
+   inside a composite item.
+3. Established `Product` stays the persistent, one-vendor offer (unchanged
+   shape); a new `VendorDailyListing` (not `Product` itself) is the actual
+   dated, priced, photographed, expiring stock - multiple simultaneously
+   active per `Product` (separate lots/grades/sources landing the same day).
+4. Corrected an inventory-authority design that initially let a stored
+   `Product.quantityAvailable` cache be defined by predicates that changed
+   merely because time passed or regulatory status changed elsewhere -
+   settled on a strict split between a durable, event-driven projection
+   (compatibility/search only, never authoritative) and a dynamically
+   computed purchasable quantity (always live, per listing, gates every
+   real sale).
+5. Found and fixed a real, currently-live defect in the process:
+   `cart.service.ts` reads `item.product.price` live at cart-read time with
+   no lock at all - moved the fix into its own first-shipped stage,
+   Phase 16A.0, ahead of any catalogue/listing work.
+6. Corrected a customer-aggregation design that conflated "2 sellers" with
+   a single `Product`'s several listings - since `Product.vendorId` means
+   one product is always exactly one vendor, cross-vendor aggregation must
+   happen at the `SeafoodCatalogueItem` level, not the `Product` level.
+7. Walked back an overclaimed reservation-atomicity guarantee ("no visible
+   partial state") to an honestly-stated one (conservative under-reporting
+   possible, overselling never possible) after being pushed to prove every
+   read path actually consulted the orchestration record - it hadn't been
+   proven, so the claim was withdrawn.
+8. Left the compliance-approval mechanism (new role vs. existing permission
+   model) as an explicit open question for Phase 16A.3, rather than
+   committing to a new `RoleName` value in the design record - confirmed no
+   `ComplianceOfficer` role exists in the current `RoleName` enum before
+   even considering that framing.
+
+**ADR-005 status: Accepted.** Committed separately from the design docs, as
+its own commit:
+
+- `d22afe4` `docs(architecture): accept catalogue and daily listing design`
+  (1 file: the ADR itself, 704 insertions / 142 deletions against the
+  originally-committed first-round draft in `516d207`).
+
+`.claude/decisions.md` corrected in the same pass - its existing ADR-005
+summary described the superseded first-round design (extend `Species`
+directly); added a note pointing to the actual accepted shape.
+
+Verified before committing: `git diff --check` clean; all 24 `##` section
+headers in the assembled ADR unique (no duplicate replaced sections); no
+`.ts`/`.tsx`/`.js`/`.jsx`/`.prisma`/migration file in the diff; `ADR-006`
+untouched; the implementation prohibition section retained verbatim.
+
+**No Prisma schema, migration, or application code has been written for any
+part of Phase 16.** Next roadmap unit: Phase 16A.0 (Cart Price Integrity),
+gap analysis and plan only - see `.claude/next-session.md`.
 
 ## Verification tooling added along the way
 
