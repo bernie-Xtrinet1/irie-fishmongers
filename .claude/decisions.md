@@ -190,7 +190,20 @@
   sufficient to authorize checkout - reservation existence, cart ownership,
   and reserved-quantity match are checked as their own, independent gates.
 
-The proposed 60-minute absolute maximum reservation/lock lifetime is **not
-yet approved as a permanent decision** - it is tracked in
-`.claude/current-task.md` and `.claude/next-session.md` pending explicit
-approval, not recorded here.
+## Phase 16A.0 (Cart Price Integrity) - reservation timing (2026-07-31, approved)
+
+- **Rolling reservation TTL is 15 minutes** (`RESERVATION_TTL_SECONDS = 900`),
+  renewed on quantity-changing operations, never on a plain cart view.
+- **Absolute maximum reservation lifetime for ordinary retail is 60 minutes**
+  (`MAX_RESERVATION_LIFETIME_SECONDS = 3600`), measured from the
+  reservation's original creation and never extended by renewal:
+  `expiresAt = min(now + 900, absoluteExpiresAt)`.
+- **No wholesale exception exists in Phase 16A.0.** No current
+  classification distinguishes a wholesale/bulk order from an ordinary
+  retail one; a longer-hold exception is deferred until such a
+  classification is confirmed, not built speculatively now.
+- **Price locks never renew automatically.** Only creation or explicit
+  customer reconfirmation writes `priceLockedAt` - a quantity change alone
+  never touches it. Because the reservation renews independently of the
+  lock, a valid reservation can temporarily coexist with an expired lock;
+  checkout treats the two as independent, both-required conditions.

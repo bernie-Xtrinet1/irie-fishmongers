@@ -365,3 +365,45 @@ began.)
   either app's compiled client bundle.
 - `backend/prisma/demo-seed.spec.ts`: regression guard - local raster
   paths only, referenced files exist on disk.
+
+## 2026-07-31 (cont.) - Phase 16A.0 operational policy Accepted
+
+The full Phase 16A.0 reservation/lock timing policy was reviewed, corrected
+across several rounds, and **Accepted** - recorded in `.claude/decisions.md`:
+15-minute rolling reservation TTL, 60-minute absolute ordinary-retail
+maximum (`expiresAt = min(now + 900, absoluteExpiresAt)`, never extended by
+renewal), no wholesale exception in this phase, price locks never auto-renew,
+one-cart-one-currency, and checkout requiring both a valid lock and a valid
+Redis reservation as independent conditions.
+
+Five further implementation-plan corrections were resolved before any
+source work begins:
+
+- **Cart-level atomic checkout marking**: replaced per-item preflight reads
+  with one Redis Lua script validating every reservation the checkout needs
+  and marking them all `CHECKOUT_PENDING` atomically, or none - closing a
+  real concurrent-checkout race the preflight-only design couldn't prevent.
+- **Idempotency model**: rejected one shared mutable `idempotencyKey` field
+  on the reservation entry - cart mutation, reconfirmation, and checkout
+  consumption get separate idempotency semantics; the reservation entry
+  itself carries only what reservation/checkout consumption actually needs.
+- **Item removal**: compared three designs (release-then-delete,
+  delete-then-outbox-cleanup, a removal-pending state) and selected
+  release-Redis-first-then-delete - an invisible leaked reservation is a
+  worse failure mode than a briefly-still-visible cart row with released
+  stock; compensation is a bounded, idempotent delete retry, never a
+  re-reservation.
+- **Deployment gate**: tightened from an open-ended "compatibility window
+  where unlocked carts silently use live `Product.price`" to a short,
+  scheduled checkout **maintenance window** around the enforcement flip -
+  bounded duration, an accountable owner, monitoring, and automatic
+  expiry/removal of the compatibility code, not an indefinite fallback.
+- **Durable decrement proof**: confirmed in the execution plan that
+  checkout performs exactly one Postgres stock decrement per successful
+  order; Redis reservation deletion is never itself inventory consumption -
+  with explicit test scenarios for the successful/failed/retried cases.
+
+**No Prisma schema, migration, TypeScript, JavaScript, or test file has been
+changed.** No implementation has started. `.claude/current-task.md`,
+`.claude/next-session.md`, and `.claude/decisions.md` were updated to
+reflect the Accepted policy; not yet committed, pending approval.

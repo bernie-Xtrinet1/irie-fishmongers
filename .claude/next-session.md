@@ -16,51 +16,47 @@
 - Local `develop` and `origin/develop` are synchronized (0 ahead / 0
   behind).
 - ADR-005 status is `Accepted`.
+- Phase 16A.0's operational policy is `Accepted` in `.claude/decisions.md`
+  (15-minute rolling TTL, 60-minute absolute maximum, no wholesale
+  exception, locks never auto-renew, one-cart-one-currency, checkout
+  requires both lock and reservation).
 
-## Continue only with the final Phase 16A.0 design correction
+## Status: policy Accepted, implementation not yet started
 
-Do not begin implementation. Resolve, in one final specification:
+The full Phase 16A.0 execution plan (schema/migration sequence, backend
+work units, Redis Lua interfaces, idempotency model, operation-specific
+compensation, API contracts, storefront work units, deployment sequence,
+test suites, commit boundaries, rollback plan, acceptance criteria) has
+been produced and presented for review. **No Prisma schema, migration,
+TypeScript, JavaScript, or test file has been touched.**
 
-- `GET /cart` never renews a reservation or a price lock.
-- Rolling reservation TTL stays 15 minutes.
-- Ordinary retail's **absolute maximum** hold is 60 minutes (proposed, not
-  yet a permanent decision - confirm/approve this explicitly this session).
-- Quantity-changing operations may renew the reservation, capped by that
-  maximum - the price lock never renews merely because quantity changed.
-- Checkout validates, per item: lock present and valid; the Redis
-  reservation exists; it belongs to this cart; reserved quantity matches
-  cart quantity; durable stock is sufficient; the product remains
-  purchasable; currency matches `Cart.currency`. A valid lock alone must
-  never be sufficient to authorize checkout.
-- Reconfirmation reacquires/renews the reservation and checks inventory
-  **before** writing a new lock - never after.
-- Redis/PostgreSQL compensation and idempotency for add/update/
-  reconfirmation operations - no leaked reservation, ever.
-- `Cart.currency` (nullable) as the one-cart-one-currency authority.
-- Rollback stays fail-closed - never falls back to silent live-price
-  charging under any circumstance.
-- Structured, per-item API error codes.
-- Customer-facing UX language that is accurate about *why* an item needs
-  attention (expired lock with unchanged price vs. an actual price change
-  vs. an expired reservation vs. an unavailable product) - never a blanket
-  "price changed."
+## Next session must
 
-## Produce only
-
-- Corrected lifecycle rules.
-- Corrected sequence diagrams.
-- Exact schema proposal.
-- `Cart.currency` decision.
-- Compensation strategy.
-- Structured API error examples.
-- Corrected rollback plan.
-- Revised/affected test cases.
+1. Confirm whether the execution plan itself has been approved (check for
+   an explicit approval message before assuming so - do not infer approval
+   from silence or from the plan simply existing).
+2. If approved: begin implementation strictly in the commit-boundary order
+   the plan defines - additive schema first, then backend work units, then
+   storefront, per the deployment sequence (schema -> lock-capable backend
+   -> cart/reconfirmation UI -> short checkout maintenance window -> strict
+   enforcement enabled -> checkout reopened -> compatibility code removed).
+3. Do not skip ahead to enforcement before the storefront cart/
+   reconfirmation UI exists and has been operationally verified - the
+   deployment gate is a hard sequencing requirement, not a suggestion.
+4. Do not treat the Redis Lua checkout-marking script, the idempotency
+   model, or the item-removal compensation design as open questions - all
+   three were resolved this session; implement exactly what was specified,
+   or flag a concrete conflict if the real code reveals one.
 
 ## Do NOT do
 
-- Do not edit any Prisma schema, migration, TypeScript, JavaScript, or test
-  file until the specification above is presented and explicitly approved.
-- Do not treat the 60-minute maximum-hold figure as settled until it is
-  approved and moved into `.claude/decisions.md`.
-- Do not say Phase 16A.0 implementation has begun, or that the design is
-  fully approved for coding - neither is true as of this handoff.
+- Do not begin any source-code edit before this session's execution plan is
+  explicitly approved in a subsequent message.
+- Do not reintroduce a "silent live-price charging" fallback at any stage,
+  including during the short checkout maintenance window - that window is
+  a scheduled pause, not a permissive fallback.
+- Do not treat the deployment gate's temporary compatibility step (if one
+  is used) as indefinite - it has a hard maximum duration, an accountable
+  owner, monitoring, and automatic removal, per the execution plan.
+- Do not say Phase 16A.0 implementation has begun until source files have
+  actually been edited.

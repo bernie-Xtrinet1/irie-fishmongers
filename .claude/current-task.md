@@ -1,7 +1,7 @@
 # Current Task
 
 Current phase: **Phase 16A.0 - Cart Price Integrity**
-Status: **Planning and design refinement in progress. No implementation
+Status: **Operational policy Accepted. Source implementation has not yet
 started.**
 
 ## Repository gap analysis: complete
@@ -25,42 +25,42 @@ storefront code confirmed the following current defects:
 - **No customer-facing cart page exists in the storefront today** - only an
   API client wrapper (`apps/web/lib/api/cart.ts`) with a single
   `addCartItem` call. The reconfirmation UX has no existing page to retrofit.
+- Current `addItem` writes the `CartItem` row before calling `reserve()` -
+  the opposite of the required order for a valid-lock quantity increment.
 
-## Architecture approved in principle
+## Operational policy: Accepted (see `.claude/decisions.md`)
 
-- Lock price and currency on `CartItem` at add-to-cart time (new items) or
-  explicit reconfirmation (legacy/expired items).
-- No silent backfill of pre-existing unlocked cart items - explicit customer
-  reconfirmation only.
-- One-cart-one-currency.
-- `OrderItem` remains the final, immutable transaction snapshot (already
-  true today for price/name/unit/subtotal; needs `currency` added to be
-  complete).
+- Rolling reservation TTL 15 minutes; absolute ordinary-retail maximum 60
+  minutes, never extended by renewal.
+- `GET /cart` never renews anything; quantity-changing operations may renew
+  the reservation, capped at the 60-minute ceiling.
+- Price locks never renew automatically - only creation or explicit
+  reconfirmation writes `priceLockedAt`.
+- No wholesale exception in Phase 16A.0.
+- One-cart-one-currency (`Cart.currency`, nullable).
+- Checkout requires both a valid price lock **and** a valid Redis
+  reservation, independently - a valid lock alone is never sufficient.
 
-## Outstanding design corrections required before any coding
+## Final implementation-plan corrections resolved (this session)
 
-- Coherent reservation/price-lock timing policy (they are independent
-  timers, not one shared clock).
-- **60-minute retail absolute maximum hold** (not yet approved as permanent -
-  see `.claude/next-session.md`), on top of the existing 15-minute rolling
-  TTL.
-- Checkout must verify the Redis reservation **exists, belongs to this
-  cart, and matches quantity** - not just that the price lock is valid.
-- Reconfirmation must reacquire/renew the reservation **and** check
-  inventory availability before writing a new lock - not price-only.
-- Redis/PostgreSQL compensation strategy (release a leaked reservation if
-  the DB write fails; roll back the DB write if reservation reacquisition
-  fails) plus idempotency keys and bounded retries.
-- `Cart.currency` (nullable) as the authority - established by the first
-  locked item, must match on every later add, clears when the cart empties.
-- A rollback plan that never falls back to silent live-price charging -
-  fail-closed, not fail-open.
-- Structured, machine-readable per-item API error codes.
-- Precise customer-facing UX language that never says "price changed" when
-  only a lock/reservation expired with no actual price difference.
+- Cart-level atomic Redis Lua checkout marking (not per-item preflight
+  reads) - one script validating every reservation in the cart's plan and
+  marking all `CHECKOUT_PENDING` atomically, or none.
+- Separate idempotency semantics for cart mutation, reconfirmation, and
+  checkout consumption - not one shared mutable field.
+- Item-removal consistency model chosen (release Redis first, then delete
+  `CartItem`, with bounded idempotent retry - never a re-reservation as
+  compensation).
+- Deployment gate tightened to a short checkout **maintenance window**
+  around the enforcement flip, rather than an open-ended compatibility
+  period silently using live `Product.price`.
+- Proven (in the execution plan) that checkout performs exactly one durable
+  Postgres stock decrement; Redis reservation deletion is never itself
+  treated as inventory consumption.
 
 ## Next task
 
-Produce the corrected, final Phase 16A.0 operational specification
-resolving the items above, then wait for approval before touching any
-Prisma schema, migration, or application code.
+**No source implementation has begun.** Next session begins the actual
+Prisma schema/migration and backend work, in the commit-boundary order
+defined in the execution plan, starting only after this plan's STEP 4
+documentation commit is separately approved.
