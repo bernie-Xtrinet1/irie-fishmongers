@@ -142,6 +142,22 @@
   abstraction for a benefit (unified reporting) Phase 15's existing
   Analytics can already achieve via a query-time join.
 
+  **Superseded/final**: the ADR-005 summary above describes the *first*
+  round of that design, before four further rounds of correction. **ADR-005
+  is now Accepted** (commit `d22afe4`) with a materially different final
+  shape: a new `SeafoodCatalogueItem`, joined to `Species` via a
+  `CatalogueItemSpecies` **join table** (not a direct `Species` extension -
+  a single-species FK cannot represent a mixed pack, and a regulated
+  component could hide inside one undetected); `Product` unchanged in shape
+  and vendor scope, gaining a nullable `catalogueItemId` and a three-state
+  `inventoryMode`; a new `VendorDailyListing` (not `Product` itself) as the
+  actual dated, priced, expiring stock, with multiple simultaneously active
+  per `Product` supported; `Product.quantityAvailable` demoted to a
+  best-effort, non-authoritative compatibility projection; customer-facing
+  aggregation corrected to the catalogue-item level (cross-vendor), never
+  the product level (one vendor per `Product`, so it can never represent
+  multiple sellers). See the ADR itself for the full accepted design.
+
 - **This was a documentation-only change set.** No application code, no
   Prisma schema, no migrations were touched. See [[current-task]] and
   [[next-session]] for what is queued once these docs are committed.
