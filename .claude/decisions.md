@@ -163,3 +163,34 @@
 - **This was a documentation-only change set.** No application code, no
   Prisma schema, no migrations were touched. See [[current-task]] and
   [[next-session]] for what is queued once these docs are committed.
+
+## Phase 16A.0 (Cart Price Integrity) - permanent decisions (2026-07-31)
+
+- **One cart uses one currency.** `Cart.currency` (nullable) is established
+  by the first item to acquire a price lock and must match on every later
+  add; a mixed-currency add is rejected outright, not merged or converted.
+  Rejected supporting genuine multi-currency carts as a materially larger
+  problem (conversion, split payment capture, mixed-currency totals) than
+  this phase's scope - a customer can use separate carts/sessions per
+  currency/region if that's ever needed instead.
+- **A valid customer price lock survives an ordinary vendor price change
+  until the lock's own expiry.** A vendor changing `Product.price` never
+  invalidates an already-issued, still-valid lock - that protection is the
+  entire purpose of locking. The customer only sees a different price once
+  their own lock naturally expires and they return to the cart.
+- **Price locking never guarantees stock availability.** Locking concerns
+  price only. Purchasability (active, food-safety-clear, vendor approved)
+  and durable stock sufficiency are always checked live at checkout
+  regardless of lock state - a locked price is not a promise the item is
+  still purchasable.
+- **Checkout must validate both the price lock and the Redis reservation
+  independently.** They are separate timers (reservation renews on
+  quantity-change, the lock does not), so a valid reservation can coexist
+  with an expired lock and vice versa. A valid lock alone must never be
+  sufficient to authorize checkout - reservation existence, cart ownership,
+  and reserved-quantity match are checked as their own, independent gates.
+
+The proposed 60-minute absolute maximum reservation/lock lifetime is **not
+yet approved as a permanent decision** - it is tracked in
+`.claude/current-task.md` and `.claude/next-session.md` pending explicit
+approval, not recorded here.

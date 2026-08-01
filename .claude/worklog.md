@@ -278,6 +278,85 @@ untouched; the implementation prohibition section retained verbatim.
 part of Phase 16.** Next roadmap unit: Phase 16A.0 (Cart Price Integrity),
 gap analysis and plan only - see `.claude/next-session.md`.
 
+## 2026-07-31 (cont.) - Phase 16A.0 (Cart Price Integrity) planning session
+
+Verified repository state at session start: `develop` at `8d928e1`, in sync
+with `origin/develop`, working tree clean, `ADR-005` status confirmed
+`Accepted`.
+
+**Completed a read-only inspection** of the cart, reservation, order,
+payment, `Product` price/currency, `OrderItem`, and storefront code -
+no file was modified. Findings:
+
+- `CartItem` has no price/currency columns; `CartService.toResponse()`
+  reads `item.product.price` live on every cart fetch.
+- `OrdersService.checkout()` re-reads `item.product.price` live a second
+  time inside the transaction, and **hardcodes `currency: 'JMD'**` when
+  calling `paymentsService.initiatePayment()` - `Product.currency` is never
+  actually consulted at checkout, a previously-unconfirmed gap.
+- `InventoryReservationsService`: confirmed 15-minute rolling TTL
+  (`RESERVATION_TTL_SECONDS = 900`), lazy-expiry-on-read, no proactive
+  sweep, `reserve()` overwrites the expiry on every add/quantity-update -
+  no existing maximum lifetime cap.
+- `OrderItem` has no `currency` column; `VendorOrder`/`Order` have none
+  either; `Payment` **already has** `currency` (default `"JMD"`) but its
+  value is never sourced from anywhere real.
+- No customer-facing cart page exists anywhere in `apps/web` - only an API
+  client wrapper. Any cart UX work in this phase is new construction, not
+  a modification.
+- Zero existing test coverage for a price change occurring between
+  add-to-cart and checkout.
+
+**Produced a first Phase 16A.0 implementation specification** (schema
+changes, reconfirmation flow, checkout validation, sequence/state diagrams,
+API examples, migration timeline, rollback procedure, test matrix) -
+reviewed and found materially correct in direction, but with real
+operational gaps.
+
+**Review surfaced further design corrections, now resolved in a revised
+specification**:
+
+- Reservation and price-lock timers are independent, not shared - a valid
+  reservation can coexist with an expired lock, and vice versa; checkout
+  must check both.
+- Maximum reservation lifetime corrected from an initially-proposed 24
+  hours down to **60 minutes** for ordinary retail - flagged as not yet
+  approved as a permanent decision (see `.claude/decisions.md`).
+- Checkout invariants expanded to 8 explicit per-item checks (lock present
+  and valid; Redis reservation exists; belongs to this cart; reserved
+  quantity matches cart quantity; durable stock sufficient; product
+  purchasable; currency matches cart currency) - a valid lock alone was
+  established as never sufficient on its own.
+- Reconfirmation sequence corrected: inventory availability must be checked
+  **before** a new lock is written, not after - an unchecked reconfirmation
+  could otherwise re-lock a price for stock that no longer exists.
+- Added an explicit Redis/PostgreSQL compensation strategy (release a
+  leaked reservation if the DB write fails; roll back the DB write if
+  reservation reacquisition fails), idempotency keys, and bounded retries.
+- `Cart.currency` (nullable) adopted as the one-cart-one-currency source of
+  truth; verified via direct schema inspection that `Order`/`OrderItem`
+  need new currency columns, `VendorOrder` does not, and `Payment`'s
+  existing column just needs its value source fixed.
+- The original rollback plan ("revert to today's live-read behavior") was
+  explicitly withdrawn - it silently reinstated the exact defect this phase
+  exists to fix. Replaced with a fail-closed rollback (block checkout
+  rather than fall back to live pricing) and an explicit maintenance-mode
+  response for if the reconfirmation flow itself breaks.
+- Defined 7 structured, machine-readable error codes
+  (`PRICE_LOCK_MISSING`, `PRICE_LOCK_EXPIRED`, `RESERVATION_EXPIRED`,
+  `PRICE_CHANGED_AGAIN`, `OUT_OF_STOCK`, `PRODUCT_UNAVAILABLE`,
+  `CURRENCY_MISMATCH`) and differentiated customer-facing UX language so
+  "lock/reservation expired, price unchanged" is never phrased as "price
+  changed."
+
+**No Prisma schema, migration, TypeScript, JavaScript, or test file was
+changed at any point today.** No implementation has begun.
+
+**Commits or pushes performed today: none.** (The `d22afe4`/`b880cf2`/
+`e668a1e`/`8d928e1` commits referenced above were made and pushed in the
+prior session, already reflected in `origin/develop` before today's work
+began.)
+
 ## Verification tooling added along the way
 
 - `scripts/verify-codespaces-demo.sh`: now checks (2b) no frontend
