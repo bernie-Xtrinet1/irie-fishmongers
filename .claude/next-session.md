@@ -4,6 +4,7 @@
 
 - `docs/roadmap.md`
 - `docs/integrations/ADR-005-master-catalogue-vs-vendor-daily-listing.md`
+- `docs/architecture/reservation-lifecycle.md`
 - `.claude/current-task.md`
 - `.claude/next-session.md` (this file)
 - `.claude/decisions.md`
@@ -15,48 +16,48 @@
 - Working tree is clean.
 - Local `develop` and `origin/develop` are synchronized (0 ahead / 0
   behind).
-- ADR-005 status is `Accepted`.
-- Phase 16A.0's operational policy is `Accepted` in `.claude/decisions.md`
-  (15-minute rolling TTL, 60-minute absolute maximum, no wholesale
-  exception, locks never auto-renew, one-cart-one-currency, checkout
-  requires both lock and reservation).
+- Commit Unit 1 (`57c73b4`) and the reservation-lifecycle architecture
+  document (`2068d9f`) are both present on `origin/develop`.
 
-## Status: policy Accepted, implementation not yet started
+## The next session must begin with repository confirmation, then Unit 2.1 only
 
-The full Phase 16A.0 execution plan (schema/migration sequence, backend
-work units, Redis Lua interfaces, idempotency model, operation-specific
-compensation, API contracts, storefront work units, deployment sequence,
-test suites, commit boundaries, rollback plan, acceptance criteria) has
-been produced and presented for review. **No Prisma schema, migration,
-TypeScript, JavaScript, or test file has been touched.**
+Do not begin the reservation business scripts yet. Unit 2.1 is narrowly
+scoped:
 
-## Next session must
+- `RedisService.eval()`
+- `RedisService.loadScript()`
+- `RedisService.evalsha()`
+- `NOSCRIPT` reload-and-retry (a blind `evalsha` call is not correct - see
+  `reservation-lifecycle.md` §11)
+- Focused `RedisService` unit tests for all of the above
 
-1. Confirm whether the execution plan itself has been approved (check for
-   an explicit approval message before assuming so - do not infer approval
-   from silence or from the plan simply existing).
-2. If approved: begin implementation strictly in the commit-boundary order
-   the plan defines - additive schema first, then backend work units, then
-   storefront, per the deployment sequence (schema -> lock-capable backend
-   -> cart/reconfirmation UI -> short checkout maintenance window -> strict
-   enforcement enabled -> checkout reopened -> compatibility code removed).
-3. Do not skip ahead to enforcement before the storefront cart/
-   reconfirmation UI exists and has been operationally verified - the
-   deployment gate is a hard sequencing requirement, not a suggestion.
-4. Do not treat the Redis Lua checkout-marking script, the idempotency
-   model, or the item-removal compensation design as open questions - all
-   three were resolved this session; implement exactly what was specified,
-   or flag a concrete conflict if the real code reveals one.
+**Explicitly excluded from Unit 2.1** (later, separate commits per
+`reservation-lifecycle.md`'s commit-boundary plan):
+
+- Reservation-key changes
+- `ReservationEntry` implementation
+- Lua business scripts (`reserveOrRenew`, `release`, `checkoutMark`,
+  `checkoutRevert`, `extendCheckoutLease`, `finalizeCheckoutConsumption`,
+  `reconcileExpiredCheckoutPending`, `reconcileProductReservedTotal`)
+- Product index / cart index
+- Product reserved-total projection
+- `CartService`
+- `OrdersService`
+- Payment services
+- Controllers
+- Frontend
 
 ## Do NOT do
 
-- Do not begin any source-code edit before this session's execution plan is
-  explicitly approved in a subsequent message.
-- Do not reintroduce a "silent live-price charging" fallback at any stage,
-  including during the short checkout maintenance window - that window is
-  a scheduled pause, not a permissive fallback.
-- Do not treat the deployment gate's temporary compatibility step (if one
-  is used) as indefinite - it has a hard maximum duration, an accountable
-  owner, monitoring, and automatic removal, per the execution plan.
-- Do not say Phase 16A.0 implementation has begun until source files have
-  actually been edited.
+- Do not begin any Unit 2 source-code edit beyond the Unit 2.1 scope above
+  without a subsequent, explicit approval message.
+- Do not say Commit Unit 2 implementation has begun in any broader sense
+  than Unit 2.1 until the corresponding files have actually been edited.
+- Do not duplicate `docs/architecture/reservation-lifecycle.md`'s content
+  into session files - reference it, don't restate it.
+- Do not treat the reservation lifecycle document's design (key format,
+  `ReservationEntry` shape, atomic mutation contracts, underflow handling,
+  reconciliation, Cluster limitation) as open questions - all were
+  resolved and approved this session; implement exactly what is specified
+  when the corresponding later commit begins, or flag a concrete conflict
+  if the real code reveals one.

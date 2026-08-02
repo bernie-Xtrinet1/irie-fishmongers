@@ -207,3 +207,31 @@
   never touches it. Because the reservation renews independently of the
   lock, a valid reservation can temporarily coexist with an expired lock;
   checkout treats the two as independent, both-required conditions.
+
+## Phase 16A.0 (Cart Price Integrity) - product reservation accounting (2026-08-02, approved)
+
+- **Product reserved-total underflow must never be silently clamped.** If
+  a release/consumption-type Redis mutation would subtract more than the
+  stored product reserved-total currently holds, this is an invariant
+  violation, not a number to round to zero. The specific reservation
+  mutation still succeeds; the aggregate total's arithmetic is skipped;
+  the product is flagged for urgent reconciliation. See
+  `docs/architecture/reservation-lifecycle.md` §5 for the full
+  `RESERVATION_TOTAL_UNDERFLOW` contract.
+- **Undercount drift is fail-closed until reconciliation repairs and
+  verifies the total.** A reconciled product reserved-total found lower
+  than the true calculated total is a live overselling risk, not a
+  harmless discrepancy - `getAvailableToPurchase` returns `0` for that
+  product from the moment underflow or undercount is detected until a
+  reconciliation run repairs the value and confirms it matches before
+  clearing the suspension. Overcount drift (stored higher than true) is
+  the opposite, safe direction and is repaired routinely without
+  suspending admission. See `docs/architecture/reservation-lifecycle.md`
+  §7.
+- **Redis Cluster migration is prohibited until a separately approved
+  reservation-sharding/orchestration design exists.** Phase 16A.0's Lua
+  scripts atomically combine cart-tagged and product-tagged keys, which is
+  only valid because the current deployment is a single, non-cluster
+  Redis instance. See `docs/architecture/reservation-lifecycle.md` §12 for
+  the four named alternatives a future Cluster migration would need to
+  choose between.

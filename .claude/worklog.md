@@ -407,3 +407,68 @@ source work begins:
 changed.** No implementation has started. `.claude/current-task.md`,
 `.claude/next-session.md`, and `.claude/decisions.md` were updated to
 reflect the Accepted policy; not yet committed, pending approval.
+
+## 2026-08-02 - Commit Unit 1 shipped; reservation lifecycle architecture finalized
+
+**Commit Unit 1** (`feat(schema): add cart price locks and checkout
+attempts`, `57c73b4`) shipped and pushed: additive Prisma schema only
+(`Cart.currency`, `CartItem.lockedUnitPrice`/`lockedCurrency`/
+`priceLockedAt`, `Order.currency`, `OrderItem.currency`, new
+`CheckoutAttempt` model + `CheckoutAttemptStatus` enum, all foreign keys
+`ON DELETE RESTRICT` so checkout-attempt audit history can never be
+silently cascade-erased). Six pre-existing spec files needed fixture-only
+updates (new nullable fields added to typed object literals) to keep
+`develop` typechecking green - no test assertion, mock, or application
+logic was touched in any of them. Migration drift verified empty against
+the shadow database both before and after the fixture fixes.
+
+**Reservation lifecycle architecture** was then designed, corrected across
+several rounds, and finalized as `docs/architecture/reservation-lifecycle.md`
+(`docs(architecture): define reservation lifecycle and recovery`,
+`2068d9f`):
+
+- Finalized the cart-scoped Redis key format (`inv:reserved:{cartId}:{productId}`),
+  the `ReservationEntry` shape (including a `version: 1` field), and the
+  whole-cart atomic `checkoutMark` Lua contract.
+- **Corrected an initial design flaw**: the first draft treated the
+  product-side reservation index/total as a best-effort, eventually-
+  consistent step, justified by preserving Redis Cluster compatibility.
+  This was wrong - `getAvailableToPurchase`/`getReservedByOthers`
+  participate directly in reservation admission (`CartService`,
+  `ProductsService`), so the product-side projection cannot tolerate
+  missing updates. Revised to make the reservation entry, cart index,
+  product index, and product reserved-total all atomically maintained by
+  one Lua script on the current single (non-cluster) Redis instance.
+- **Removed silent total clamping.** A `RESERVATION_TOTAL_UNDERFLOW`
+  invariant-violation path was defined instead: the specific reservation
+  mutation still succeeds (never blocking a customer/checkout action),
+  but the total's arithmetic is skipped (not clamped), a suspect flag is
+  set on the product, and new reservation admission fails closed
+  (`getAvailableToPurchase` returns `0`) until reconciliation repairs and
+  verifies the total.
+- **Documented both reconciliation drift directions**, correcting an
+  earlier overclaim that drift could only ever be conservative: OVERCOUNT
+  (stored higher than reality - conservative, repaired routinely) versus
+  UNDERCOUNT (stored lower than reality - a live overselling risk, fails
+  closed via the same suspect flag until repaired and verified).
+- **Verified the availability formula against the real callers**, not by
+  assumption: `CartService.assertQuantityAvailable` already holds a real
+  `cart.id`; `ProductsService.getAvailability` already passes `''` to mean
+  "exclude no cart's own hold," which the new add-back formula
+  (`Product.quantityAvailable - productReservedTotal +
+  requestingCartActiveReservationQuantity`) preserves by construction. No
+  caller signature change is required in Commit Unit 2.
+- Restated the Redis Cluster position explicitly and narrowly: valid only
+  because the current deployment is a single non-cluster instance; Cluster
+  migration is prohibited until a separate, approved design exists for
+  orchestration, co-location, product-based sharding, or Postgres-durable
+  accounting.
+- Established the document's own authority scope (§13): defers to
+  `docs/roadmap.md` for the roadmap, ADR-005 for catalogue/listing/
+  inventory domain boundaries, and `.claude/decisions.md` for approved
+  operating decisions - this file is the technical reference for Redis
+  reservation lifecycle and recovery only.
+
+**No TypeScript, Redis, Lua, or test implementation for Commit Unit 2 has
+begun.** Both commits (`57c73b4`, `2068d9f`) are pushed and present on
+`origin/develop`.
