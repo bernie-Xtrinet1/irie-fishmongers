@@ -90,7 +90,7 @@ function buildDelivery(overrides: Partial<DeliveryForSettlement> = {}): Delivery
     driver: buildDriver(),
     vendorOrder: { ...buildVendorOrder(), items: [{
       id: 'item-1', vendorOrderId: 'vo-1', productId: 'product-1', productName: 'Snapper',
-      unitPrice: new Prisma.Decimal(500), unit: 'PER_POUND', quantity: 2, subtotal: new Prisma.Decimal(1000), createdAt: new Date(),
+      unitPrice: new Prisma.Decimal(500), unit: 'PER_POUND', quantity: 2, subtotal: new Prisma.Decimal(1000), currency: null, createdAt: new Date(),
     }] },
     ...overrides,
   };

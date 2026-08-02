@@ -86,6 +86,7 @@ function buildOrder(overrides: Partial<Order> = {}): Order {
     deliveryParish: 'KINGSTON',
     deliveryPhone: '+18765551234',
     deliveryZoneId: null,
+    currency: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -102,6 +103,7 @@ function buildItem(overrides: Partial<OrderItem> = {}): OrderItem {
     unit: 'PER_POUND',
     quantity: 2,
     subtotal: { toString: () => '1000' } as OrderItem['subtotal'],
+    currency: null,
     createdAt: new Date(),
     ...overrides,
   };

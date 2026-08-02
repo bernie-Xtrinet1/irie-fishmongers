@@ -62,6 +62,7 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
     unit: 'PER_POUND',
     quantity: 2,
     subtotal: { toString: () => '1000' } as unknown as Prisma.Decimal,
+    currency: null,
     createdAt: new Date(),
     product: {
       id: 'product-1',
@@ -96,6 +97,7 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
         deliveryParish: 'KINGSTON',
         deliveryPhone: '+18765551234',
         deliveryZoneId: null,
+        currency: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         customer: {

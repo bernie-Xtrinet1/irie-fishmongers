@@ -45,6 +45,7 @@ model User {
   fisherman                    Fisherman?
   cart                         Cart?
   orders                       Order[]
+  checkoutAttempts             CheckoutAttempt[]
   temperatureReadings          TemperatureReading[]
   qualityInspections           QualityInspection[]
   reportedIncidents            FoodSafetyIncident[]
@@ -241,22 +242,27 @@ model Product {
 model Cart {
   id         String   @id @default(uuid())
   customerId String   @unique
+  currency   String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  customer User       @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  items    CartItem[]
+  customer         User              @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items            CartItem[]
+  checkoutAttempts CheckoutAttempt[]
 
   @@map("carts")
 }
 
 model CartItem {
-  id        String   @id @default(uuid())
-  cartId    String
-  productId String
-  quantity  Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String    @id @default(uuid())
+  cartId          String
+  productId       String
+  quantity        Int
+  lockedUnitPrice Decimal?  @db.Decimal(10, 2)
+  lockedCurrency  String?
+  priceLockedAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -286,13 +292,15 @@ model Order {
   deliveryParish       Parish
   deliveryPhone        String
   deliveryZoneId       String?
+  currency             String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  customer     User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  deliveryZone DeliveryZone? @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
-  vendorOrders VendorOrder[]
-  payment      Payment?
+  customer        User             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  deliveryZone    DeliveryZone?    @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
+  vendorOrders    VendorOrder[]
+  payment         Payment?
+  checkoutAttempt CheckoutAttempt?
 
   @@index([customerId])
   @@map("orders")
@@ -329,12 +337,42 @@ model OrderItem {
   unit          ProductUnit
   quantity      Int
   subtotal      Decimal     @db.Decimal(10, 2)
+  currency      String?
   createdAt     DateTime    @default(now())
 
   vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
   product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@map("order_items")
+}
+
+enum CheckoutAttemptStatus {
+  PROCESSING
+  COMMITTED
+  FAILED
+}
+
+model CheckoutAttempt {
+  id              String                @id @default(uuid())
+  idempotencyKey  String                @unique
+  cartId          String
+  customerId      String
+  status          CheckoutAttemptStatus @default(PROCESSING)
+  orderId         String?               @unique
+  failureCode     String?
+  failureMessage  String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  lastHeartbeatAt DateTime              @default(now())
+
+  cart     Cart   @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  customer User   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  order    Order? @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([cartId])
+  @@index([customerId])
+  @@index([status, lastHeartbeatAt])
+  @@map("checkout_attempts")
 }
 
 enum ReviewModerationStatus {
