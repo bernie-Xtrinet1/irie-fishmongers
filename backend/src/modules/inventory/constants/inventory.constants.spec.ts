@@ -5,8 +5,12 @@ import {
   RESERVATION_ENTRY_VERSION,
   RESERVATION_HASH_TTL_SECONDS,
   RESERVATION_TTL_SECONDS,
+  cartIndexKey,
   isCurrentReservationKey,
   isLegacyReservationKey,
+  productIndexKey,
+  productSuspectKey,
+  productTotalKey,
   reservationKey,
 } from './inventory.constants';
 
@@ -103,6 +107,36 @@ describe('isLegacyReservationKey / isCurrentReservationKey', () => {
     'not:reserved:product-1',
   ])('never recognizes %s as both legacy and current at once', (key) => {
     expect(isLegacyReservationKey(key) && isCurrentReservationKey(key)).toBe(false);
+  });
+});
+
+describe('cartIndexKey / productIndexKey / productTotalKey / productSuspectKey', () => {
+  it('generates the exact expected keys', () => {
+    expect(cartIndexKey('cart-1')).toBe('inv:reserved:cart-index:{cart-1}');
+    expect(productIndexKey('product-1')).toBe('inv:reserved:product-index:{product-1}');
+    expect(productTotalKey('product-1')).toBe('inv:reserved:product-total:{product-1}');
+    expect(productSuspectKey('product-1')).toBe('inv:reserved:product-total-suspect:{product-1}');
+  });
+
+  it('rejects an empty identifier', () => {
+    expect(() => cartIndexKey('')).toThrow('cartId cannot be empty');
+    expect(() => productIndexKey('')).toThrow('productId cannot be empty');
+    expect(() => productTotalKey('')).toThrow('productId cannot be empty');
+    expect(() => productSuspectKey('')).toThrow('productId cannot be empty');
+  });
+
+  it.each(['{', '}', ':'])('rejects an identifier containing %s', (delimiter) => {
+    expect(() => cartIndexKey(`cart${delimiter}1`)).toThrow(
+      "cartId cannot contain '{', '}', or ':'",
+    );
+    expect(() => productIndexKey(`product${delimiter}1`)).toThrow(
+      "productId cannot contain '{', '}', or ':'",
+    );
+  });
+
+  it('rejects whitespace in an identifier', () => {
+    expect(() => cartIndexKey(' cart-1 ')).toThrow('cartId cannot contain whitespace');
+    expect(() => productIndexKey('product 1')).toThrow('productId cannot contain whitespace');
   });
 });
 

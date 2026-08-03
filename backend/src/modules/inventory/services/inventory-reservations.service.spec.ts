@@ -2,6 +2,12 @@ import { RedisService } from '../../../common/redis/redis.service';
 import { RESERVATION_HASH_TTL_SECONDS } from '../constants/inventory.constants';
 import { InventoryReservationsService } from './inventory-reservations.service';
 
+// Legacy per-product-hash reservation model only. Cart-scoped reservation
+// model tests (reserveOrRenew, releaseReservation, getActiveReservation,
+// getReservedTotalExcludingCart, computeAvailableToPurchase,
+// reconcileProductReservedTotal) live in
+// cart-scoped-reservations.service.spec.ts.
+
 function entryJson(quantity: number, expiresAt: number): string {
   return JSON.stringify({ quantity, expiresAt });
 }

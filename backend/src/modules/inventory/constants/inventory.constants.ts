@@ -53,3 +53,25 @@ export function isLegacyReservationKey(key: string): boolean {
 export function isCurrentReservationKey(key: string): boolean {
   return CURRENT_RESERVATION_KEY_PATTERN.test(key);
 }
+
+// Secondary structures maintained atomically alongside every cart-scoped
+// reservation entry (see docs/architecture/reservation-lifecycle.md §4).
+export function cartIndexKey(cartId: string): string {
+  assertValidReservationKeySegment(cartId, 'cartId');
+  return `inv:reserved:cart-index:{${cartId}}`;
+}
+
+export function productIndexKey(productId: string): string {
+  assertValidReservationKeySegment(productId, 'productId');
+  return `inv:reserved:product-index:{${productId}}`;
+}
+
+export function productTotalKey(productId: string): string {
+  assertValidReservationKeySegment(productId, 'productId');
+  return `inv:reserved:product-total:{${productId}}`;
+}
+
+export function productSuspectKey(productId: string): string {
+  assertValidReservationKeySegment(productId, 'productId');
+  return `inv:reserved:product-total-suspect:{${productId}}`;
+}
