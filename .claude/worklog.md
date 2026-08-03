@@ -472,3 +472,91 @@ several rounds, and finalized as `docs/architecture/reservation-lifecycle.md`
 **No TypeScript, Redis, Lua, or test implementation for Commit Unit 2 has
 begun.** Both commits (`57c73b4`, `2068d9f`) are pushed and present on
 `origin/develop`.
+
+## 2026-08-02/03 - Units 2.1, 2.2, and 2.3 shipped
+
+**Unit 2.1** (`feat(redis): add Lua script execution support`, `c757bdd`):
+`RedisService.eval()`/`loadScript()`/`evalsha()`/`runScript()`, with a
+NOSCRIPT reload-and-retry that uses the freshly-returned SHA on retry
+(never the stale one) and never falls back to a plain `EVAL`. First Lua
+usage anywhere in this codebase.
+
+**Unit 2.2** (`feat(inventory): add cart-scoped reservation key helpers`,
+`393c970`): `reservationKey`/`isLegacyReservationKey`/
+`isCurrentReservationKey` (rejecting empty, whitespace-containing, and
+delimiter-containing identifiers) plus `RESERVATION_ENTRY_VERSION`,
+`MAX_RESERVATION_LIFETIME_SECONDS`, `CHECKOUT_PENDING_INITIAL_LEASE_SECONDS`,
+`MAX_CHECKOUT_PENDING_SECONDS` - additive to `inventory.constants.ts`,
+reusing the existing `RESERVATION_TTL_SECONDS` unchanged.
+
+**Unit 2.3** (`feat(inventory): add cart-scoped reservation accounting`,
+`a27cb65`) - the largest unit so far:
+
+- Implemented the additive cart-scoped reservation structures: the
+  reservation entry itself, a cart index, a product index, a product
+  reserved-total projection, and a product suspect flag - all four
+  secondary structures added to `inventory.constants.ts` alongside the
+  Unit 2.2 key helpers.
+- Implemented `ReservationEntry` version 1 (`version`, `quantity`,
+  `cartId`, `customerId`, `status`, `createdAt`, `lastRenewedAt`,
+  `expiresAt`, `absoluteExpiresAt`, `checkoutIdempotencyKey`,
+  `checkoutPendingAt`, `checkoutPendingExpiresAt`).
+- Implemented atomic `reserveOrRenew` and `releaseReservation` as Lua
+  scripts (`inventory/lua/reservation-lua-scripts.ts`) - each atomically
+  updates the reservation entry, both indexes, and the product
+  reserved-total together on the current single Redis instance.
+- Implemented fail-closed underflow handling: before any negative
+  adjustment, the stored total must already be `>=` the reservation
+  quantity being subtracted (not merely `>= abs(delta)`) - if not, the
+  entry mutation still completes (never blocking the customer) but the
+  total's arithmetic is skipped (never clamped), the suspect flag is set,
+  and `RESERVATION_TOTAL_UNDERFLOW` with structured details is returned.
+- Implemented cart-aware availability (`getReservedTotalExcludingCart`/
+  `computeAvailableToPurchase`): the fast-path product total minus the
+  requesting cart's own active quantity, with an empty/falsy cartId
+  correctly treated as "exclude nothing" without ever constructing a
+  reservation key with an empty segment.
+- Implemented atomic `reconcileProductReservedTotal` as a single Lua
+  script (not a client-side SMEMBERS-then-GET-loop-then-SET, which could
+  overwrite a concurrent mutation) - classifies NO_DRIFT/OVERCOUNT/
+  UNDERCOUNT, sets the suspect flag before repairing an UNDERCOUNT, writes
+  the repaired total, and clears the flag only after verifying the write.
+- Malformed/version-mismatched entries are never treated as "no
+  reservation" - they set the suspect flag, are excluded from calculated
+  totals without guessing a quantity, and are preserved (not deleted) for
+  diagnostics, distinct from a genuinely expired entry's self-heal path.
+- Split the test files to comply with the repository's 400-line file
+  limit: `inventory-reservations.service.spec.ts` (legacy-only, reverted to
+  its original content), `cart-scoped-reservations.service.spec.ts`
+  (reserveOrRenew/releaseReservation/getActiveReservation),
+  `cart-scoped-availability-reconciliation.service.spec.ts`
+  (getReservedTotalExcludingCart/computeAvailableToPurchase/
+  reconcileProductReservedTotal), `inventory-reservations.redis.integration.spec.ts`
+  (lifecycle/accounting, real Redis), `inventory-reservations-reconciliation.redis.integration.spec.ts`
+  (malformed/version-mismatch/reconciliation/concurrency, real Redis), and
+  a small shared `inventory-reservations.redis-test-helpers.ts` (ID
+  generation, client construction, key tracking/cleanup, raw-state access
+  helpers only - no assertions).
+- Executed the Lua scripts against a real Redis 8.8.0 instance (no
+  ioredis-mock exists in this repo) after the mocked unit suite could only
+  validate the TypeScript-to-Lua calling contract, not the scripts' actual
+  arithmetic. Found zero Lua defects; one test-assertion bug in the
+  integration spec itself, fixed.
+- **Passed 18/18 real-Redis scenarios** covering first-reservation,
+  increase/decrease/no-op renewal, the 60-minute absolute cap, release/
+  duplicate-release, underflow, suspect fail-closed admission, own-cart/
+  global availability, expired-entry self-heal, malformed JSON, version
+  mismatch, OVERCOUNT/UNDERCOUNT reconciliation, stale-index cleanup, and
+  two concurrency scenarios (concurrent reserves converging correctly;
+  concurrent reconciliation + mutation never losing an update).
+- **Passed the full backend suite: 192/192 test suites, 1501/1501 tests.**
+- **Passed CI-equivalent coverage** (`npm run test:cov -w backend` with
+  `NODE_ENV=test` and the same env-var names/Redis/Postgres services CI
+  uses): 96.79% statements, 91.83% branches, 96.64% functions, 96.68%
+  lines - all above the 80/90/90/90 threshold, exit 0.
+- **Confirmed no caller cutover occurred**: `grep` across the cart, orders,
+  and products modules found zero references to any of the six new
+  methods; the legacy methods remain byte-for-byte unchanged.
+
+Commit hashes: Unit 2.1 `c757bdd`, Unit 2.2 `393c970`, Unit 2.3 `a27cb65` -
+all pushed and present on `origin/develop`.

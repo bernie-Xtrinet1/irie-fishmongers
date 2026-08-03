@@ -210,6 +210,19 @@
 
 ## Phase 16A.0 (Cart Price Integrity) - product reservation accounting (2026-08-02, approved)
 
+- **Cart-scoped reservation accounting (Commit Unit 2.3) remains additive
+  and unwired until a separately approved, coordinated cutover.**
+  `reserveOrRenew`, `releaseReservation`, `getActiveReservation`,
+  `getReservedTotalExcludingCart`, `computeAvailableToPurchase`, and
+  `reconcileProductReservedTotal` exist and are fully tested (including
+  against real Redis), but no production caller (`CartService`,
+  `OrdersService`, `ProductsService`) references them - the legacy
+  per-product-hash methods (`reserve`, `release`, `getReservedByOthers`,
+  `getAvailableToPurchase`) remain the only code path actually exercised in
+  production. Cutover happens in its own later commit, gated by the
+  checkout maintenance window already described in
+  `docs/architecture/reservation-lifecycle.md` §8, not silently as a side
+  effect of building the new engine.
 - **Product reserved-total underflow must never be silently clamped.** If
   a release/consumption-type Redis mutation would subtract more than the
   stored product reserved-total currently holds, this is an invariant

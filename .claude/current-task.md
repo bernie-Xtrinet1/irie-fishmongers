@@ -1,57 +1,49 @@
 # Current Task
 
-Current phase: **Phase 16A.0 - Cart Price Integrity**
+Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
 
 ## Status
 
-- **Commit Unit 1 is complete and pushed** at `57c73b4` (additive Prisma
-  schema: `Cart.currency`, `CartItem.lockedUnitPrice`/`lockedCurrency`/
-  `priceLockedAt`, `Order.currency`, `OrderItem.currency`, the new
-  `CheckoutAttempt` model/enum - plus the six fixture-only spec updates
-  needed to keep `develop` typechecking green).
-- **Reservation lifecycle architecture is finalized and pushed** at
-  `2068d9f` (`docs/architecture/reservation-lifecycle.md`) - the durable
-  technical reference for the Redis reservation model, atomic mutation
-  contracts, product reserved-total accounting (including
-  `RESERVATION_TOTAL_UNDERFLOW` and OVERCOUNT/UNDERCOUNT reconciliation),
-  checkout recovery, and the explicit Redis Cluster limitation.
-- **Commit Unit 2 (Redis reservation model, Lua scripts, isolated tests)
-  implementation has not begun.** No TypeScript, Lua, or test file for
-  this unit has been written.
+- **Commit Unit 1 completed and pushed** at `57c73b4` - additive Prisma
+  schema (`Cart.currency`, `CartItem.lockedUnitPrice`/`lockedCurrency`/
+  `priceLockedAt`, `Order.currency`, `OrderItem.currency`) and the new
+  `CheckoutAttempt` model/enum.
+- **Unit 2.1 completed and pushed** at `c757bdd` - `RedisService.eval()`/
+  `loadScript()`/`evalsha()`/`runScript()` (NOSCRIPT reload-and-retry).
+- **Unit 2.2 completed and pushed** at `393c970` - cart-scoped reservation
+  key helpers (`reservationKey`, `isLegacyReservationKey`/
+  `isCurrentReservationKey`, `cartIndexKey`/`productIndexKey`/
+  `productTotalKey`/`productSuspectKey`) and timing/version constants.
+- **Unit 2.3 completed and pushed** at `a27cb65` - additive cart-scoped
+  reservation accounting: `ReservationEntry` (version 1), atomic
+  `reserveOrRenew`/`releaseReservation` Lua scripts (cart index + product
+  index + product reserved-total maintained together, fail-closed
+  underflow handling - never clamped), `getActiveReservation` (malformed/
+  version-mismatch handling, expired-entry self-heal), cart-aware
+  availability (`getReservedTotalExcludingCart`/`computeAvailableToPurchase`,
+  correct empty-cart-context handling), and atomic
+  `reconcileProductReservedTotal` (NO_DRIFT/OVERCOUNT/UNDERCOUNT, suspend-
+  before-repair-verify-before-clear). Validated against real Redis 8.8.0
+  (18/18 scenarios) and the full backend suite (192/192 suites, 1501/1501
+  tests, CI-equivalent coverage 96.79/91.83/96.64/96.68 against an
+  80/90/90/90 threshold).
+- **The new reservation engine remains unwired from production callers.**
+  `CartService`, `OrdersService`, and `ProductsService` are untouched and
+  still call the legacy per-product-hash methods (`reserve`, `release`,
+  `getReservedByOthers`, `getAvailableToPurchase`), which remain fully
+  active and behaviorally unchanged. See `.claude/decisions.md` for the
+  explicit approved decision that this stays additive/unwired until a
+  separately approved, coordinated cutover.
+- **Unit 2.4 has not begun.** No checkout-related Lua script or Redis
+  pending-state code has been written.
 
-## Next work unit: Commit Unit 2.1
+## Next work unit: Unit 2.4 - whole-cart checkout reservation state operations
 
-**RedisService `eval`/`loadScript`/`evalsha`/NOSCRIPT reload-and-retry, and
-their isolated unit tests.** See
-`docs/architecture/reservation-lifecycle.md` §11 for the exact contract.
-Explicitly excluded from 2.1 (later, separate commits per the same
-document): reservation-key changes, `ReservationEntry` implementation, the
-Lua business scripts (`reserveOrRenew`/`release`/`checkoutMark`/etc.),
-product/cart indexes, the product reserved-total projection, and any
-change to `CartService`, `OrdersService`, payments, controllers, or
-frontend code.
-
-## Repository gap analysis (complete, from earlier sessions)
-
-A read-only inspection of the cart, reservation, order, payment, and
-storefront code confirmed the following current defects, which Phase
-16A.0 exists to fix:
-
-- `CartItem` stores no price or currency at all (fixed additively in
-  Commit Unit 1 - not yet consumed by any service).
-- Cart totals are always computed from **live** `Product.price`.
-- Checkout silently uses whatever `Product.price` is live at checkout
-  time, and **hardcodes `currency: 'JMD'`** (`orders.service.ts:184`).
-- `OrderItem` had no `currency` column (fixed additively in Commit Unit 1).
-- Reservation expiry (Redis) has no connection to cart/price display.
-- No customer-facing cart page exists in the storefront today.
-- Current `addItem` writes the `CartItem` row before calling `reserve()` -
-  the opposite of the required order for a valid-lock quantity increment.
-
-None of these application-level defects have been fixed yet - Commit Unit
-1 only added the additive schema; Commit Unit 2 only builds the Redis
-layer. Both remain unconsumed by `CartService`/`OrdersService` until later
-commits.
+Scope: `checkoutMark` (whole-cart atomic mark), `checkoutRevert`,
+`extendCheckoutLease`, `finalizeCheckoutConsumption`, and Redis pending-
+state reconciliation primitives - per
+`docs/architecture/reservation-lifecycle.md` §7-10. Begins with read-only
+inspection and a presented implementation plan, per `.claude/next-session.md`.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 
@@ -66,8 +58,10 @@ commits.
   undercount drift is fail-closed until reconciliation repairs and
   verifies the total; Redis Cluster migration is prohibited until a
   separately approved design exists.
+- Cart-scoped reservation accounting remains additive and unwired until a
+  separately approved, coordinated cutover.
 
 ## Next task
 
-Begin Commit Unit 2.1 only, after this session's repository-state
+Begin Unit 2.4 planning only, after this session's repository-state
 confirmation, per `.claude/next-session.md`.
