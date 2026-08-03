@@ -31,15 +31,31 @@ export function reservationKey(cartId: string, productId: string): string {
   return `inv:reserved:{${cartId}}:${productId}`;
 }
 
-function assertValidReservationKeySegment(value: string, label: string): void {
+// Non-throwing form, shared by the throwing helper below and by callers
+// (e.g. CheckoutReservationStateService's input validation) that need a
+// typed failure instead of an exception. Exact message strings are the
+// existing, unchanged wording - preserved for callers that already depend
+// on them via the throwing wrapper.
+export function getReservationKeySegmentValidationError(
+  value: string,
+  label: string,
+): string | null {
   if (value.length === 0) {
-    throw new Error(`${label} cannot be empty`);
+    return `${label} cannot be empty`;
   }
   if (/\s/.test(value)) {
-    throw new Error(`${label} cannot contain whitespace`);
+    return `${label} cannot contain whitespace`;
   }
   if (value.includes('{') || value.includes('}') || value.includes(':')) {
-    throw new Error(`${label} cannot contain '{', '}', or ':'`);
+    return `${label} cannot contain '{', '}', or ':'`;
+  }
+  return null;
+}
+
+function assertValidReservationKeySegment(value: string, label: string): void {
+  const error = getReservationKeySegmentValidationError(value, label);
+  if (error) {
+    throw new Error(error);
   }
 }
 
