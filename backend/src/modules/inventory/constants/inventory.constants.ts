@@ -21,6 +21,14 @@ export const MAX_RESERVATION_LIFETIME_SECONDS = 3600;
 export const CHECKOUT_PENDING_INITIAL_LEASE_SECONDS = 180;
 export const MAX_CHECKOUT_PENDING_SECONDS = 600;
 
+// How recent a CheckoutAttempt.lastHeartbeatAt must be for the (later,
+// separate) recovery service to treat a durable PROCESSING attempt as
+// still alive and worth resyncing via extendCheckoutLease, rather than
+// abandoned. Defined here now so that later unit has an unambiguous
+// constant to build against (see reservation-lifecycle.md §10) - Unit
+// 2.4.2 itself never reads this value.
+export const CHECKOUT_HEARTBEAT_FRESHNESS_SECONDS = 180;
+
 // The `{cartId}` hash tag groups every reservation key for one cart onto
 // the same Redis Cluster slot (see reservation-lifecycle.md §1) - the
 // current deployment is a single non-cluster instance, so this has no

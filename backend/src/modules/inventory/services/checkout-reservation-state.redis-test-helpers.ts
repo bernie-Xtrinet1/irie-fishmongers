@@ -7,10 +7,12 @@ import { CheckoutReservationPlanItem } from './checkout-reservation-state.types'
 // Checkout-specific real-Redis test plumbing only. Real Redis client
 // setup/teardown (connectRealRedis/cleanupKeys) is reused directly from
 // inventory-reservations.redis-test-helpers.ts, not duplicated here - this
-// file adds only what checkoutMark's integration tests need beyond that:
-// unique checkout ids, plan construction, checkout-field readers, and raw
-// seeding for malformed/version-mismatch scenarios that InventoryReservationsService
-// itself cannot produce. No assertions or business scenarios belong here.
+// file adds only what checkoutMark's and the Unit 2.4.2 lease tests' real-
+// Redis integration tests need beyond that: unique checkout ids, plan
+// construction, checkout-field readers, and raw seeding for malformed/
+// version-mismatch/staggered-timestamp scenarios that
+// InventoryReservationsService itself cannot produce. No assertions or
+// business scenarios belong here.
 
 export interface CheckoutTestIds {
   cartId: string;
@@ -96,4 +98,40 @@ export async function seedRawReservation(
 
 export async function setSuspectFlag(client: Redis, productId: string): Promise<void> {
   await client.set(productSuspectKey(productId), '1');
+}
+
+export interface ReservationEntryOverrides {
+  cartId: string;
+  customerId: string;
+  version?: number;
+  quantity?: number;
+  status?: 'ACTIVE' | 'CHECKOUT_PENDING';
+  createdAt?: number;
+  lastRenewedAt?: number;
+  expiresAt?: number;
+  absoluteExpiresAt?: number;
+  checkoutIdempotencyKey?: string | null;
+  checkoutPendingAt?: number | null;
+  checkoutPendingExpiresAt?: number | null;
+}
+
+// Builds a JSON-serialized ReservationEntry with full control over every
+// field, for lease tests that need staggered/independent timestamps or
+// deliberately inconsistent state that seeding through
+// InventoryReservationsService/checkoutMark cannot produce directly.
+export function buildReservationEntryJson(now: number, overrides: ReservationEntryOverrides): string {
+  return JSON.stringify({
+    version: overrides.version ?? 1,
+    quantity: overrides.quantity ?? 1,
+    cartId: overrides.cartId,
+    customerId: overrides.customerId,
+    status: overrides.status ?? 'ACTIVE',
+    createdAt: overrides.createdAt ?? now,
+    lastRenewedAt: overrides.lastRenewedAt ?? now,
+    expiresAt: overrides.expiresAt ?? now + 900_000,
+    absoluteExpiresAt: overrides.absoluteExpiresAt ?? now + 3_600_000,
+    checkoutIdempotencyKey: overrides.checkoutIdempotencyKey ?? null,
+    checkoutPendingAt: overrides.checkoutPendingAt ?? null,
+    checkoutPendingExpiresAt: overrides.checkoutPendingExpiresAt ?? null,
+  });
 }
