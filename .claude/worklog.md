@@ -560,3 +560,57 @@ reusing the existing `RESERVATION_TTL_SECONDS` unchanged.
 
 Commit hashes: Unit 2.1 `c757bdd`, Unit 2.2 `393c970`, Unit 2.3 `a27cb65` -
 all pushed and present on `origin/develop`.
+
+## 2026-08-05 - Unit 2.4.3: checkout reservation recovery (`e907998`)
+
+- Moved `ReservationUnderflowDetails` into the neutral
+  `reservation-accounting.types.ts` file, so `InventoryReservationsService`
+  no longer depends on a checkout-specific types module.
+- Implemented `CheckoutReservationRecoveryService` (sibling of
+  `CheckoutReservationStateService`/`CheckoutLeaseStateService`, not a
+  method addition to either).
+- Implemented `CHECKOUT_REVERT_SCRIPT`.
+- Implemented `FINALIZE_CHECKOUT_CONSUMPTION_SCRIPT`.
+- Implemented two-pass classify-then-mutate recovery for both operations -
+  Pass 1 classifies every cart-index member with zero writes, Pass 2
+  mutates each classified bucket independently.
+- Preserved malformed and unsupported-version evidence (never guessed,
+  never deleted) and set the product suspect flag on each.
+- Implemented stale cart-index cleanup for missing reservations - internal
+  only, never reported in any result array.
+- Implemented exact reservation-accounting decrement matching Unit 2.3's
+  rule.
+- Implemented no-clamp underflow behavior: skip the arithmetic, set
+  suspect, report the underflow - never round to zero, never guess.
+- Implemented product suspect flags and `admissionSuspended` semantics:
+  true whenever malformed, version-mismatch, or underflow handling sets
+  suspect state - not calculated from `underflow.length` alone (verified
+  by dedicated tests where `admissionSuspended: true` occurs alongside an
+  empty `underflow` array).
+- Implemented naturally idempotent duplicate revert/finalize behavior - no
+  explicit duplicate-detection branch; a repeat call's Pass 1 simply finds
+  nothing left to act on.
+- Added mixed-corruption chaos-cart testing proving one bad entry never
+  blocks another product's independently-resolvable outcome in the same
+  call.
+- Executed both recovery Lua scripts against real Redis 8.8.0 - zero Lua
+  defects found. One test-fixture bug found and fixed in-session
+  (lexicographic- vs numeric-sort confusion in a unit-test expectation,
+  not a service defect).
+- **Passed 48 Unit 2.4.3 targeted tests** (31 unit + 17 real-Redis, across
+  `checkout-reservation-recovery.service.spec.ts`,
+  `checkout-revert.redis.integration.spec.ts`,
+  `checkout-revert-corruption.redis.integration.spec.ts`,
+  `checkout-finalize.redis.integration.spec.ts`).
+- **Passed 275 inventory tests across 21 suites.**
+- **Passed the full backend suite: 204/204 test suites, 1675/1675 tests.**
+- **Passed CI-equivalent coverage**: 96.98% statements, 92.61% branches,
+  96.86% functions, 96.87% lines - all above the 80/90/90/90 threshold,
+  exit 0. Both new Lua scripts and `CheckoutReservationRecoveryService`
+  itself at 100/100/100/100.
+- **Confirmed no caller or module wiring**: `CheckoutReservationRecoveryService`
+  is referenced nowhere outside the inventory module and is not registered
+  in `inventory.module.ts`; `checkoutMark` and lease inspection/extension
+  (Units 2.4.1-2.4.2) remain byte-for-byte untouched.
+- Commit `e907998` (`feat(inventory): add checkout reservation recovery`),
+  pushed to `origin/develop`.

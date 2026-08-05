@@ -27,23 +27,41 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   (18/18 scenarios) and the full backend suite (192/192 suites, 1501/1501
   tests, CI-equivalent coverage 96.79/91.83/96.64/96.68 against an
   80/90/90/90 threshold).
-- **The new reservation engine remains unwired from production callers.**
-  `CartService`, `OrdersService`, and `ProductsService` are untouched and
-  still call the legacy per-product-hash methods (`reserve`, `release`,
-  `getReservedByOthers`, `getAvailableToPurchase`), which remain fully
-  active and behaviorally unchanged. See `.claude/decisions.md` for the
-  explicit approved decision that this stays additive/unwired until a
-  separately approved, coordinated cutover.
-- **Unit 2.4 has not begun.** No checkout-related Lua script or Redis
-  pending-state code has been written.
+- **Unit 2.4.1 completed and pushed** at `4db6018` - atomic checkout
+  reservation marking (`checkoutMark`, `CHECKOUT_MARK_SCRIPT`, whole-cart
+  validate-all-then-mutate-all).
+- **Unit 2.4.2 completed and pushed** at `8c68f3b` - whole-cart
+  checkout-pending lease inspection and extension
+  (`getCheckoutPendingLeaseState`, `extendCheckoutLease`,
+  `CheckoutLeaseStateService`).
+- **Unit 2.4.3 completed and pushed** at `e907998` - checkout revert and
+  final reservation consumption (`checkoutRevert`,
+  `finalizeCheckoutConsumption`, `CheckoutReservationRecoveryService`,
+  `CHECKOUT_REVERT_SCRIPT`, `FINALIZE_CHECKOUT_CONSUMPTION_SCRIPT`);
+  relocated `ReservationUnderflowDetails` into the neutral
+  `reservation-accounting.types.ts` so `InventoryReservationsService`
+  never depends on a checkout-specific types module.
+- **The complete checkout reservation engine (Units 2.4.1-2.4.3) remains
+  additive and unwired.** `CartService`, `OrdersService`, and
+  `ProductsService` are untouched and still call the legacy
+  per-product-hash methods (`reserve`, `release`, `getReservedByOthers`,
+  `getAvailableToPurchase`), which remain fully active and behaviorally
+  unchanged. See `.claude/decisions.md` for the explicit approved decision
+  that this stays additive/unwired until a separately approved,
+  coordinated cutover.
+- **Unit 2.4.4 has not begun.** No durable-reconciliation-orchestration
+  code has been written.
 
-## Next work unit: Unit 2.4 - whole-cart checkout reservation state operations
+## Next work unit: Unit 2.4.4 - durable checkout-pending reconciliation orchestration
 
-Scope: `checkoutMark` (whole-cart atomic mark), `checkoutRevert`,
-`extendCheckoutLease`, `finalizeCheckoutConsumption`, and Redis pending-
-state reconciliation primitives - per
-`docs/architecture/reservation-lifecycle.md` §7-10. Begins with read-only
-inspection and a presented implementation plan, per `.claude/next-session.md`.
+Scope: reuse `getCheckoutPendingLeaseState`, implement
+`reconcileExpiredCheckoutPending` taking durable `CheckoutAttempt` state
+(`PROCESSING`/`COMMITTED`/`FAILED`/not-found) as input, durable heartbeat
+freshness, the 600-second hard pending ceiling, and calling
+`checkoutRevert`/`finalizeCheckoutConsumption`/`extendCheckoutLease` as
+appropriate - per `docs/architecture/reservation-lifecycle.md` §10. Begins
+with read-only inspection and a presented implementation plan, per
+`.claude/next-session.md`.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 
@@ -63,5 +81,5 @@ inspection and a presented implementation plan, per `.claude/next-session.md`.
 
 ## Next task
 
-Begin Unit 2.4 planning only, after this session's repository-state
+Begin Unit 2.4.4 planning only, after this session's repository-state
 confirmation, per `.claude/next-session.md`.

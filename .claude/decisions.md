@@ -248,3 +248,33 @@
   Redis instance. See `docs/architecture/reservation-lifecycle.md` §12 for
   the four named alternatives a future Cluster migration would need to
   choose between.
+
+## Phase 16A.0 (Cart Price Integrity) - checkout reservation recovery (2026-08-05, approved)
+
+- **`ReservationUnderflowDetails` is an inventory-accounting shared type,
+  not a checkout-specific type.** It lives in the neutral
+  `reservation-accounting.types.ts`, not in
+  `checkout-reservation-state.types.ts` - `InventoryReservationsService`
+  must never depend on a checkout-specific types module.
+- **`checkoutRevert` and `finalizeCheckoutConsumption` use two-pass,
+  best-effort per-item recovery.** Pass 1 classifies every cart-index
+  member with zero writes; Pass 2 mutates each classified bucket
+  independently - one corrupted/unresolvable entry never blocks another
+  product's independently-resolvable outcome in the same call.
+- **Malformed and unsupported-version entries preserve evidence and set
+  suspect state.** Never guessed, never deleted, never silently repaired.
+- **Missing reservation entries are silent stale-index cleanup.** A
+  cart-index member with no backing reservation key has its membership
+  removed but is never reported in any result array or exposed in any
+  API.
+- **`underflow` is an array (`ReservationUnderflowDetails[]`), never a
+  single nullable object**, because multiple products may independently
+  underflow within one whole-cart recovery call - a single-object shape
+  would silently drop all but one occurrence.
+- **`admissionSuspended` is true whenever malformed, version-mismatch, or
+  underflow handling sets suspect state** - computed as the OR of all
+  three conditions, never from `underflow.length` alone.
+- **Duplicate `checkoutRevert`/`finalizeCheckoutConsumption` calls are
+  naturally idempotent by construction.** No explicit duplicate-detection
+  branch exists; a repeat call's Pass 1 simply finds nothing left in the
+  matching-key-pending bucket to act on.
