@@ -1,11 +1,16 @@
 // Public result/type contracts for the checkout reservation-state services
-// (CheckoutReservationStateService, CheckoutLeaseStateService).
+// (CheckoutReservationStateService, CheckoutLeaseStateService,
+// CheckoutReservationRecoveryService).
 //
-// Unit 2.4.1 added checkoutMark's types. Unit 2.4.2 adds
-// getCheckoutPendingLeaseState/extendCheckoutLease's types below.
-// checkoutRevert, finalizeCheckoutConsumption, and reconciliation each add
-// their own types in their own later sub-units - nothing for those
-// operations is defined here ahead of need.
+// Unit 2.4.1 added checkoutMark's types. Unit 2.4.2 added
+// getCheckoutPendingLeaseState/extendCheckoutLease's types. Unit 2.4.3 adds
+// checkoutRevert/finalizeCheckoutConsumption's types below.
+// ReservationUnderflowDetails is NOT defined here - it lives in the
+// neutral reservation-accounting.types.ts so InventoryReservationsService
+// never has to depend on a checkout-specific types module. Reconciliation
+// adds its own types in its own later sub-unit.
+
+import { ReservationUnderflowDetails } from './reservation-accounting.types';
 
 export interface CheckoutReservationPlanItem {
   productId: string;
@@ -88,4 +93,37 @@ export type CheckoutExtendLeaseResult =
   | { ok: false; code: 'RESERVATION_NOT_PENDING' }
   | { ok: false; code: 'CHECKOUT_STATE_INCOMPLETE'; pendingProductIds: string[]; activeProductIds: string[] }
   | { ok: false; code: CheckoutExtendLeaseErrorCode; productIds: string[] }
+  | CheckoutInputValidationFailure;
+
+// checkoutRevert / finalizeCheckoutConsumption (whole-cart, two-pass
+// classify-then-best-effort-mutate - never a whole-operation failure code
+// beyond input validation; one corrupted entry never blocks another
+// product's independently-resolvable outcome). Missing reservations are
+// pure internal cart-index cleanup and are never reported in any array
+// here - see the Unit 2.4.3 decisions.
+export interface CheckoutRevertResult {
+  ok: true;
+  restoredProductIds: string[];
+  deletedProductIds: string[];
+  skippedProductIds: string[];
+  malformedProductIds: string[];
+  versionMismatchedProductIds: string[];
+  underflow: ReservationUnderflowDetails[];
+  admissionSuspended: boolean;
+}
+
+export type CheckoutRevertOutcome = CheckoutRevertResult | CheckoutInputValidationFailure;
+
+export interface FinalizeCheckoutConsumptionResult {
+  ok: true;
+  finalizedProductIds: string[];
+  skippedProductIds: string[];
+  malformedProductIds: string[];
+  versionMismatchedProductIds: string[];
+  underflow: ReservationUnderflowDetails[];
+  admissionSuspended: boolean;
+}
+
+export type FinalizeCheckoutConsumptionOutcome =
+  | FinalizeCheckoutConsumptionResult
   | CheckoutInputValidationFailure;

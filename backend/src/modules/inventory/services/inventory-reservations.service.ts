@@ -18,6 +18,7 @@ import {
   RELEASE_RESERVATION_SCRIPT,
   RESERVE_OR_RENEW_SCRIPT,
 } from '../lua/reservation-lua-scripts';
+import { ReservationUnderflowDetails } from './reservation-accounting.types';
 
 interface ReservationEntry {
   quantity: number;
@@ -44,15 +45,6 @@ export interface CartScopedReservationEntry {
   checkoutIdempotencyKey: string | null;
   checkoutPendingAt: number | null;
   checkoutPendingExpiresAt: number | null;
-}
-
-export interface ReservationUnderflowDetails {
-  productId: string;
-  cartId: string;
-  reservationQuantity: number;
-  storedTotal: number;
-  operationName: 'reserveOrRenew' | 'releaseReservation';
-  timestamp: number;
 }
 
 export interface ReserveOrRenewSuccess {
