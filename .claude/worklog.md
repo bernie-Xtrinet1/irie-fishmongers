@@ -614,3 +614,64 @@ all pushed and present on `origin/develop`.
   (Units 2.4.1-2.4.2) remain byte-for-byte untouched.
 - Commit `e907998` (`feat(inventory): add checkout reservation recovery`),
   pushed to `origin/develop`.
+
+## 2026-08-06 - Unit 2.4.4: durable checkout-pending reconciliation orchestration (`ad89219`)
+
+- Created `CheckoutPendingReconciliationService`
+  (`reconcileExpiredCheckoutPending`) - a pure orchestrator over
+  `CheckoutLeaseStateService`/`CheckoutReservationRecoveryService`, no
+  Redis calls of its own, no Prisma dependency.
+- Implemented durable-state branching: `PROCESSING` / `COMMITTED` /
+  `FAILED` / `NOT_FOUND`, each mapped to its own action.
+- Implemented hard-ceiling-first recovery for `PROCESSING`: checked before
+  any other condition, using both `hardLimitViolationProductIds` and an
+  independent `earliestCheckoutPendingAt`-based cart-wide check.
+- Implemented active Redis lease -> `NONE` (structurally complete, not
+  expired).
+- Implemented fresh durable heartbeat -> `RESYNC_LEASE` (the one case
+  that calls `extendCheckoutLease`, at exactly
+  `CHECKOUT_PENDING_INITIAL_LEASE_SECONDS` = 180s).
+- Implemented unsafe/incomplete Redis state (missing/malformed/
+  version-mismatch/active/conflicting-key members, or `found: false`) ->
+  direct revert, never attempting an extension that would be guaranteed to
+  fail.
+- Implemented stale/missing durable heartbeat -> revert.
+- Implemented extension-failure fallback to `checkoutRevert`, preserving
+  the exact `extensionFailureCode` for every one of `extendCheckoutLease`'s
+  seven possible failure codes.
+- Implemented future-heartbeat input rejection
+  (`durableLastHeartbeatAt > now` -> `INVALID_INPUT`), validated after
+  `now` itself to avoid an `NaN`-masking correctness bug.
+- Implemented strict dependency-contract-error handling: an unexpected
+  `INVALID_INPUT` from any sibling service throws (never mapped to
+  `REVERTED`, never retried); infrastructure exceptions propagate
+  unchanged.
+- Defined the result as a true discriminated union on `action`/`reason` -
+  each branch requires exactly its matching nested result, no optional
+  fields standing in for a missing one.
+- Added real-Redis corruption and concurrency coverage: a corrupted
+  stored deadline alone, the cart-wide earliest-timestamp ceiling alone,
+  every unsafe-state category, and four race scenarios (resync-vs-revert,
+  duplicate reconciliation, reconciliation-vs-finalize,
+  reconciliation-vs-revert) - each asserting a single consistent final
+  Redis state, never a partial one.
+- **Passed 58 Unit 2.4.4 targeted tests** (40 unit across
+  `checkout-pending-reconciliation.service.spec.ts` (33) and
+  `checkout-pending-reconciliation-contract.service.spec.ts` (7); 18
+  real-Redis across `checkout-pending-reconciliation.redis.integration.spec.ts`
+  (6), `checkout-pending-reconciliation-corruption.redis.integration.spec.ts`
+  (7), and `checkout-pending-reconciliation-concurrency.redis.integration.spec.ts`
+  (5) - each file's count independently re-verified in isolation after an
+  earlier report mislabeled the contract file's count, before any commit).
+- **Passed the full backend suite: 209/209 test suites, 1733/1733 tests**
+  (1675 prior baseline + 58 new, exactly accounted for).
+- **Passed CI-equivalent coverage**: 97.04% statements, 92.84% branches,
+  96.88% functions, 96.93% lines - all above the 80/90/90/90 threshold,
+  exit 0. `CheckoutPendingReconciliationService` itself at
+  100/100/100/100.
+- **Confirmed no caller, scheduler, Prisma, or module wiring**:
+  `CheckoutPendingReconciliationService` is referenced nowhere outside the
+  inventory module, is not registered in `inventory.module.ts`, imports no
+  `PrismaService`/`@prisma/client`, and contains no `@Cron`.
+- Commit `ad89219` (`feat(inventory): add checkout pending reconciliation`),
+  pushed to `origin/develop`.

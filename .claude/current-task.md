@@ -41,7 +41,15 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   relocated `ReservationUnderflowDetails` into the neutral
   `reservation-accounting.types.ts` so `InventoryReservationsService`
   never depends on a checkout-specific types module.
-- **The complete checkout reservation engine (Units 2.4.1-2.4.3) remains
+- **Unit 2.4.4 completed and pushed** at `ad89219` - durable
+  checkout-pending reconciliation orchestration
+  (`CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending`):
+  durable `PROCESSING`/`COMMITTED`/`FAILED`/`NOT_FOUND` state handling,
+  hard-ceiling-first recovery, active-lease/resync/revert branching, and
+  strict dependency-contract-error handling. Pure orchestration over
+  `CheckoutLeaseStateService`/`CheckoutReservationRecoveryService` - no
+  Redis calls of its own, no Prisma dependency.
+- **The complete checkout reservation engine (Units 2.4.1-2.4.4) remains
   additive and unwired.** `CartService`, `OrdersService`, and
   `ProductsService` are untouched and still call the legacy
   per-product-hash methods (`reserve`, `release`, `getReservedByOthers`,
@@ -49,19 +57,21 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   unchanged. See `.claude/decisions.md` for the explicit approved decision
   that this stays additive/unwired until a separately approved,
   coordinated cutover.
-- **Unit 2.4.4 has not begun.** No durable-reconciliation-orchestration
-  code has been written.
+- **No scheduler or Prisma integration exists yet.**
+  `CheckoutPendingReconciliationService` takes durable state as plain
+  input parameters; nothing reads or writes `CheckoutAttempt`, and no
+  `@Cron` caller exists anywhere in the checkout reservation engine.
 
-## Next work unit: Unit 2.4.4 - durable checkout-pending reconciliation orchestration
+## Next task: read-only caller-cutover and operational-integration review
 
-Scope: reuse `getCheckoutPendingLeaseState`, implement
-`reconcileExpiredCheckoutPending` taking durable `CheckoutAttempt` state
-(`PROCESSING`/`COMMITTED`/`FAILED`/not-found) as input, durable heartbeat
-freshness, the 600-second hard pending ceiling, and calling
-`checkoutRevert`/`finalizeCheckoutConsumption`/`extendCheckoutLease` as
-appropriate - per `docs/architecture/reservation-lifecycle.md` §10. Begins
-with read-only inspection and a presented implementation plan, per
-`.claude/next-session.md`.
+Not an implementation unit. Inspect and plan (do not implement) how
+`CartService` will call `reserveOrRenew`, how checkout will call
+`checkoutMark`, how `CheckoutAttempt` rows get created/updated, when
+`finalizeCheckoutConsumption`/`checkoutRevert` run, how durable heartbeats
+are written, how a future scheduler calls
+`CheckoutPendingReconciliationService`, the maintenance-window cutover,
+legacy Redis drain, rollback, staged-rollout strategy, and production
+observability - per `.claude/next-session.md`.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 
@@ -79,7 +89,4 @@ with read-only inspection and a presented implementation plan, per
 - Cart-scoped reservation accounting remains additive and unwired until a
   separately approved, coordinated cutover.
 
-## Next task
-
-Begin Unit 2.4.4 planning only, after this session's repository-state
-confirmation, per `.claude/next-session.md`.
+See "Next task" above for the exact scope of the next session's work.

@@ -278,3 +278,42 @@
   naturally idempotent by construction.** No explicit duplicate-detection
   branch exists; a repeat call's Pass 1 simply finds nothing left in the
   matching-key-pending bucket to act on.
+
+## Phase 16A.0 (Cart Price Integrity) - checkout-pending reconciliation orchestration (2026-08-06, approved)
+
+- **A durable `COMMITTED` attempt finalizes without inspecting Redis lease
+  state.** `finalizeCheckoutConsumption` is called unconditionally - the
+  durable record is already the authority that the checkout succeeded.
+- **A durable `FAILED` or `NOT_FOUND` attempt reverts without inspecting
+  Redis lease state.** `checkoutRevert` is called unconditionally in both
+  cases - there is nothing a Redis read could add to that decision.
+- **`PROCESSING` applies hard-ceiling-first recovery.** The 600-second
+  hard pending ceiling is checked before any other `PROCESSING` condition,
+  using both the Lua-detected `hardLimitViolationProductIds` and an
+  independent cart-wide check against the earliest `checkoutPendingAt`
+  across the complete cart - neither signal alone is trusted exclusively.
+- **Only a complete, uniformly owned cart with an expired Redis lease and
+  a fresh durable heartbeat may be resynchronized.** `extendCheckoutLease`
+  is the one dependency call attempted only when lease-state already
+  indicates a realistic chance of success; every other condition reverts
+  directly.
+- **Unsafe or incomplete Redis state reverts directly, without attempting
+  an extension.** Missing/malformed/version-mismatched/active/
+  conflicting-key members, or `found: false`, are never resynchronized -
+  `extendCheckoutLease` would reject all of them deterministically anyway,
+  so reconciliation skips the guaranteed-to-fail round trip and reverts
+  immediately.
+- **An unexpected `INVALID_INPUT` from a sibling service is an internal
+  contract failure, not a normal outcome.** `CheckoutPendingReconciliationService`
+  always validates its own arguments before calling a dependency, so a
+  dependency rejecting them anyway signals a bug in this service's own
+  argument construction - it throws, is never mapped to `REVERTED`, and is
+  never retried.
+- **A future durable heartbeat timestamp is invalid input**
+  (`durableLastHeartbeatAt > now` -> `INVALID_INPUT`), rejected before any
+  dependency call.
+- **`CheckoutPendingReconciliationService` remains unwired and
+  scheduler-free until a separately approved integration unit.** It takes
+  durable state as plain input parameters; nothing in the checkout
+  reservation engine reads or writes `CheckoutAttempt`, and no `@Cron`
+  caller exists yet.
