@@ -317,3 +317,39 @@
   durable state as plain input parameters; nothing in the checkout
   reservation engine reads or writes `CheckoutAttempt`, and no `@Cron`
   caller exists yet.
+
+## Phase 16A.0 (Cart Price Integrity) - caller-cutover architecture (2026-08-06, approved; see `ADR-007`)
+
+Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational-integration.md`
+- not restated here. Concise, permanent decisions only:
+
+- **`CheckoutAttempt` access is owned exclusively by `CheckoutAttemptRepository`,
+  wrapped by `CheckoutAttemptService`.** No other code queries
+  `prisma.checkoutAttempt.*` directly.
+- **`CheckoutCoordinatorService` never queries Prisma directly** for
+  `CheckoutAttempt` state - it depends only on `CheckoutAttemptService`.
+- **`CheckoutReservationFacade` isolates checkout orchestration from the
+  inventory reservation services.** `CheckoutCoordinatorService` depends
+  only on the facade, never directly on `CheckoutReservationStateService`,
+  `CheckoutLeaseStateService`, `CheckoutReservationRecoveryService`,
+  `CheckoutPendingReconciliationService`, or `InventoryReservationsService`.
+- **`PriceLockService` owns price-lock behavior** (creation, expiry,
+  reconfirmation, one-cart/one-currency enforcement) - not embedded in
+  `CartService`.
+- **Dual-write between the legacy and cart-scoped reservation systems is
+  rejected.** The two totals are independently maintained with no
+  cross-reference; a partial rollout under dual-write would let each
+  system undercount the other's holds, a genuine overselling risk. Staged
+  rollout instead uses an allowlist plus a combined-availability read.
+- **Combined availability subtracts both legacy and cart-scoped
+  reservations, stated exactly**: `Available = Product.quantityAvailable -
+  LegacyReserved - NewReserved`. Authoritative for the entire partial-
+  rollout window, until the legacy term is removed at full cutover.
+- **Payment integration remains separately planned.** The identified
+  payment shortcomings (no duplicate-callback protection, no automatic
+  compensation on payment failure, no rollback path) are confirmed real
+  but explicitly not designed by `ADR-007` - they require their own
+  dedicated planning session before any payment-module code changes.
+- **PostgreSQL advisory locking is the approved scheduler-lock direction**,
+  not a Redis distributed lock - the project already depends on Postgres;
+  a second distributed-locking subsystem for one job is not justified.

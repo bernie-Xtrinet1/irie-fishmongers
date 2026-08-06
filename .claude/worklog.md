@@ -675,3 +675,42 @@ all pushed and present on `origin/develop`.
   `PrismaService`/`@prisma/client`, and contains no `@Cron`.
 - Commit `ad89219` (`feat(inventory): add checkout pending reconciliation`),
   pushed to `origin/develop`.
+
+## 2026-08-06 - Caller-cutover architecture review and ADR-007 (`15bbacf`)
+
+- Completed a repository review of the current cart, checkout, payment,
+  scheduler, module, and Redis transition flows - `CartService`,
+  `OrdersService`, `PaymentsService`/`WiPayAdapter`/`CashOnDeliveryAdapter`,
+  the two existing crons (`sla-breach-detection.service.ts`,
+  `compliance-score-cron.service.ts`), `isSchedulerEnabled()`,
+  `InventoryReconciliationService`, and every module's provider/export
+  list - confirming the checkout reservation engine (Units 2.4.1-2.4.4) is
+  still fully unwired and `CheckoutAttempt` is still schema-only.
+- Created `ADR-007` recording the caller-cutover architecture, revised
+  after review.
+- Recorded the service boundary: `CheckoutAttemptRepository` ->
+  `CheckoutAttemptService` -> `CheckoutCoordinatorService`, with
+  `CheckoutAttempt` access owned exclusively by the repository layer.
+- Recorded `CheckoutReservationFacade` (isolating `CheckoutCoordinatorService`
+  from the four checkout-state services plus `InventoryReservationsService`)
+  and `PriceLockService` (dedicated price-lock ownership, not embedded in
+  `CartService`).
+- Recorded PostgreSQL advisory locking as the approved scheduler-lock
+  direction, rejecting a Redis distributed lock.
+- Recorded the combined-availability formula exactly:
+  `Available = Product.quantityAvailable - LegacyReserved - NewReserved`.
+- Recorded the phased rollout A-H, with `CartService`'s own cutover
+  deferred behind a feature flag, shadow mode, and an old-vs-new
+  reservation-total comparison before any legacy call is replaced.
+- Carried every open decision forward as an explicit phase gate - 11
+  items, each marked OPEN (with the phase it blocks) or RESOLVED (with its
+  resolution and source decision), including two gaps a validation pass
+  surfaced before commit: the rollout-flag *mechanism* (direction
+  approved, exact implementation still open) and the combined-availability-
+  bridge ownership (resolved, but had gone unrecorded as such).
+- Confirmed no production implementation began - `ADR-007` is a design
+  record only; its own Implementation Prohibition section states this
+  explicitly, item by item.
+- Commit `15bbacf`
+  (`docs(architecture): define checkout cutover and integration boundaries`),
+  pushed to `origin/develop`.

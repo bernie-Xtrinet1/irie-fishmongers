@@ -62,16 +62,33 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   input parameters; nothing reads or writes `CheckoutAttempt`, and no
   `@Cron` caller exists anywhere in the checkout reservation engine.
 
-## Next task: read-only caller-cutover and operational-integration review
+- **Caller-cutover planning is complete.** A read-only investigation
+  mapped the current `CartService`/`OrdersService`/payment/scheduler/module
+  flows in full and produced a 19-section cutover plan, since revised after
+  review.
+- **ADR-007 is committed and pushed** at `15bbacf`
+  (`docs/integrations/ADR-007-checkout-cutover-and-operational-integration.md`)
+  - records the approved architecture (`CheckoutAttemptRepository` ->
+  `CheckoutAttemptService` -> `CheckoutCoordinatorService`,
+  `CheckoutReservationFacade`, `PriceLockService`, PostgreSQL advisory
+  locking for the future scheduler, the combined-availability formula) and
+  the phased sequence A-H, with 11 open decisions each explicitly marked
+  OPEN (with the phase it blocks) or RESOLVED.
+- **Phase 16A.0-A has not begun.** No `CheckoutAttemptRepository` or
+  `CheckoutAttemptService` code exists yet - ADR-007 approval is not
+  implementation approval; Phase A still requires its own separate
+  go-ahead per the ADR's Implementation Prohibition section.
 
-Not an implementation unit. Inspect and plan (do not implement) how
-`CartService` will call `reserveOrRenew`, how checkout will call
-`checkoutMark`, how `CheckoutAttempt` rows get created/updated, when
-`finalizeCheckoutConsumption`/`checkoutRevert` run, how durable heartbeats
-are written, how a future scheduler calls
-`CheckoutPendingReconciliationService`, the maintenance-window cutover,
-legacy Redis drain, rollback, staged-rollout strategy, and production
-observability - per `.claude/next-session.md`.
+## Next task: read-only implementation planning for Phase 16A.0-A
+
+Not an implementation unit yet. Inspect and plan (do not implement)
+`CheckoutAttemptRepository` and `CheckoutAttemptService` - the
+`CheckoutAttempt` Prisma model, repository conventions, `createOrResume`
+atomicity, customer/cart/key ownership validation, COMMITTED/FAILED/
+PROCESSING semantics, heartbeat updates, the transaction-aware COMMITTED
+update with `orderId` (per ADR-007's hard requirement), the stale-candidate
+keyset query, exact result types, and test plan - per
+`.claude/next-session.md`.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 
