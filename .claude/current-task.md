@@ -74,21 +74,48 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   locking for the future scheduler, the combined-availability formula) and
   the phased sequence A-H, with 11 open decisions each explicitly marked
   OPEN (with the phase it blocks) or RESOLVED.
-- **Phase 16A.0-A has not begun.** No `CheckoutAttemptRepository` or
-  `CheckoutAttemptService` code exists yet - ADR-007 approval is not
-  implementation approval; Phase A still requires its own separate
-  go-ahead per the ADR's Implementation Prohibition section.
+- **Phase 16A.0-A is complete**, committed locally at `5acbb4b`
+  (`feat(checkout): add checkout attempt persistence`) with a follow-up
+  docs commit at `c8ccdf3`
+  (`docs(architecture): record failure-message sanitization contract in
+  ADR-007`). **Neither commit is pushed yet** - `git push origin develop`
+  failed with `Could not resolve host: github.com` (no network access from
+  the implementing environment). Push these two commits before starting
+  any further work.
+  - Delivered: `CheckoutAttemptRepository` (`createOrGetByIdempotencyKey`
+    with target-validated P2002 handling, `findById`, conditional
+    `updateHeartbeatIfProcessing`/`markCommitted`/`markFailed`, keyset
+    `findStaleProcessing`), `CheckoutAttemptService` (`createOrResume`,
+    `updateHeartbeat`, `markCommittedInTransaction` - `tx` required, never
+    defaulted, `markFailed` - sanitizes `failureMessage` rather than
+    rejecting it, `findStalePage`), the narrow `CheckoutAttemptSummary`
+    projection (excludes `failureMessage`), and the additive
+    `[status, lastHeartbeatAt, id]` index (old two-column index untouched -
+    confirmed via `pg_indexes`).
+  - 66 new tests across 7 files (6 service/repository unit files + 1
+    module-boundary structural file), full backend suite 1733 -> 1799,
+    216 suites passing, `checkout-attempt.service.ts` at 100%
+    lines/functions/branches.
+  - Zero production wiring: confirmed via `git grep` that
+    `CheckoutAttemptService`/`Repository`/`Module` appear nowhere outside
+    `backend/src/modules/checkout-attempt/` except in documentation
+    (`ADR-007`, `.claude/*.md`).
 
-## Next task: read-only implementation planning for Phase 16A.0-A
+## Next task: Phase 16A.0-B - see the phase-sequence note below before picking scope
 
-Not an implementation unit yet. Inspect and plan (do not implement)
-`CheckoutAttemptRepository` and `CheckoutAttemptService` - the
-`CheckoutAttempt` Prisma model, repository conventions, `createOrResume`
-atomicity, customer/cart/key ownership validation, COMMITTED/FAILED/
-PROCESSING semantics, heartbeat updates, the transaction-aware COMMITTED
-update with `orderId` (per ADR-007's hard requirement), the stale-candidate
-keyset query, exact result types, and test plan - per
-`.claude/next-session.md`.
+**Do not default to "CheckoutCoordinatorService + CheckoutReservationFacade"
+without re-checking ADR-007's own gates first.** ADR-007's Implementation
+sequence table blocks Phase C (`CheckoutReservationFacade`) on open
+decisions 1, 9, 10, and Phase D (`CheckoutCoordinatorService`) on both A
+*and* C - none of decisions 1/9/10 have been resolved. The only phases
+Phase A alone unblocks are:
+- **Phase F** (scheduler, heartbeat recovery, Postgres advisory lock) -
+  blocked only on A, which is now done.
+- **Phase B** (`PriceLockService`) - blocked on open decisions 4 (price-
+  lock TTL value) and 8 (`Product` currency field), both still open.
+
+Confirm with the user which phase to start (most likely F, or resolving
+open decisions 4/8 first to unblock B) rather than assuming C/D are ready.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

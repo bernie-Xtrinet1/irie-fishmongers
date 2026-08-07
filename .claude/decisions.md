@@ -353,3 +353,38 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
 - **PostgreSQL advisory locking is the approved scheduler-lock direction**,
   not a Redis distributed lock - the project already depends on Postgres;
   a second distributed-locking subsystem for one job is not justified.
+
+## Phase 16A.0-A (CheckoutAttempt persistence) - implemented (2026-08-07, `5acbb4b`/`c8ccdf3`)
+
+- **`markFailed`'s `failureMessage` is sanitized, never rejected.** The
+  original design (reject over-500-char or stack-trace-containing messages
+  with a typed `INVALID_INPUT`) was overridden during implementation:
+  unsafe or oversized message content must never block the `PROCESSING`
+  -> `FAILED` transition. Exact order, now also recorded in `ADR-007`:
+  strip stack-trace frame lines -> redact JWT/Bearer/password/secret/
+  token/api-key patterns -> trim -> truncate to 500 chars, truncation
+  always last (truncating first risks preserving an unredacted sensitive
+  fragment). A message that sanitizes to empty is stored as `null`.
+  Repeated-failure `detailsMatched` compares sanitized-vs-sanitized.
+- **`CheckoutAttemptSummary` (not the raw Prisma row) is the only shape
+  `CheckoutAttemptService` returns publicly.** It deliberately excludes
+  `failureMessage` - no customer-safe message contract exists. Any future
+  caller needing the raw stored value needs its own dedicated,
+  explicitly-scoped method.
+- **P2002 handling is target-validated, not code-only.** Only a P2002
+  whose `error.meta.target` includes `idempotencyKey` is treated as the
+  expected create-race; any other P2002 target, and any other Prisma or
+  non-Prisma error, rethrows unchanged. A non-idempotencyKey P2002 cannot
+  be manufactured through genuine concurrent Postgres calls against this
+  schema, so this branch is covered by a dedicated mocked-Prisma spec
+  (`checkout-attempt.repository.unit.spec.ts`) - the one deliberate
+  exception to this codebase's real-Postgres repository-spec convention.
+- **The additive `[status, lastHeartbeatAt, id]` index coexists with the
+  pre-existing `[status, lastHeartbeatAt]` index** - confirmed directly
+  via `pg_indexes`, not just via the migration diff, to rule out an
+  accidental replacement.
+- **Phase 16A.0-A remains completely unwired**, same standing as every
+  prior unit in this phase: no controller, DTO, `CartService`,
+  `OrdersService`, payment, scheduler, or module registration references
+  `CheckoutAttemptRepository`/`CheckoutAttemptService`/`CheckoutAttemptModule`
+  - confirmed via `git grep` across the full repository.

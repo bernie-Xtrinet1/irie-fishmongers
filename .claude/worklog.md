@@ -714,3 +714,55 @@ all pushed and present on `origin/develop`.
 - Commit `15bbacf`
   (`docs(architecture): define checkout cutover and integration boundaries`),
   pushed to `origin/develop`.
+
+## 2026-08-07 - Phase 16A.0-A: CheckoutAttempt persistence (`5acbb4b`, `c8ccdf3`)
+
+- Implemented `CheckoutAttemptRepository` and `CheckoutAttemptService` per
+  ADR-007's Decision 1 layering, exactly one repository owning
+  `prisma.checkoutAttempt.*` access.
+- `createOrGetByIdempotencyKey`: unique-constraint-as-concurrency-authority
+  (plain `create()` first, P2002-then-reread on race) - confirmed the
+  P2002 handling only treats a violation whose `meta.target` includes
+  `idempotencyKey` as the expected race; any other P2002 target or Prisma
+  error code rethrows unchanged. Added a dedicated mocked-Prisma spec
+  (`checkout-attempt.repository.unit.spec.ts`) for this branch, since a
+  non-idempotencyKey P2002 cannot be manufactured through genuine
+  concurrent Postgres calls against this schema - the one deliberate
+  exception to this codebase's real-Postgres repository-spec convention.
+- `markCommittedInTransaction` requires a caller-owned
+  `Prisma.TransactionClient` - never defaulted - per ADR-007's hard
+  transactional-write requirement.
+- `markFailed`'s `failureMessage` handling was corrected mid-round from
+  reject-based validation to sanitize-then-store: unsafe message content
+  (stack traces, bearer tokens, JWTs, password/secret/token/api-key
+  key-value pairs) must never block the `PROCESSING` -> `FAILED`
+  transition. Sanitization order (stack-frame strip -> secret redaction ->
+  trim -> truncate to 500, truncation always last) is now recorded in
+  ADR-007 itself, not just in code comments.
+- Introduced `CheckoutAttemptSummary`, a narrow projection returned by
+  `createOrResume` that deliberately excludes `failureMessage` - proven by
+  a test that an `ALREADY_FAILED` result never exposes the raw stored
+  message.
+- `findStalePage`: keyset pagination on the new additive
+  `[status, lastHeartbeatAt, id]` index, confirmed via `pg_indexes` to
+  coexist with the pre-existing `[status, lastHeartbeatAt]` index (no
+  accidental replacement).
+- Split the spec suite into 4 files to respect the 400-line cap:
+  `checkout-attempt.service.spec.ts` (createOrResume),
+  `checkout-attempt-transitions.service.spec.ts` (heartbeat + commit),
+  `checkout-attempt-failure-pagination.service.spec.ts` (markFailed +
+  findStalePage), `checkout-attempt-module-boundary.spec.ts` (structural:
+  no Prisma access outside the repository, no production-module
+  references) - the last one split out when closing two coverage gaps
+  pushed the failure/pagination file over 400 lines.
+- 66 new tests; full backend suite 1733 -> 1799 (216 suites, all passing);
+  `checkout-attempt.service.ts` at 100% lines/functions/branches.
+  Confirmed via `git grep` that `CheckoutAttemptService`/`Repository`/
+  `Module` are referenced nowhere outside the module itself except in
+  documentation - zero production wiring.
+- Commit `5acbb4b` (`feat(checkout): add checkout attempt persistence`),
+  followed by `c8ccdf3`
+  (`docs(architecture): record failure-message sanitization contract in
+  ADR-007`). **Neither is pushed** - `git push origin develop` failed with
+  `Could not resolve host: github.com` from the implementing environment;
+  push manually before continuing.

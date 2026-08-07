@@ -15,75 +15,67 @@
 
 - Branch is `develop`.
 - Working tree is clean.
-- Local `develop` and `origin/develop` are synchronized (0 ahead / 0
-  behind).
-- Commit Unit 1 (`57c73b4`), Unit 2.1 (`c757bdd`), Unit 2.2 (`393c970`),
-  Unit 2.3 (`a27cb65`), Unit 2.4.1 (`4db6018`), Unit 2.4.2 (`8c68f3b`),
-  Unit 2.4.3 (`e907998`), Unit 2.4.4 (`ad89219`), and `ADR-007` (`15bbacf`)
-  are all present on `origin/develop`.
+- **Local `develop` is 2 commits ahead of `origin/develop`**: `5acbb4b`
+  (`feat(checkout): add checkout attempt persistence`) and `c8ccdf3`
+  (`docs(architecture): record failure-message sanitization contract in
+  ADR-007`). These were committed but never pushed - the implementing
+  environment had no network access (`git push` failed with
+  `Could not resolve host: github.com`). **Push these first**, before any
+  new work, and confirm `origin/develop` matches local `develop` (0 ahead
+  / 0 behind) before proceeding.
+- Commit Unit 1 (`57c73b4`) through Unit 2.4.4 (`ad89219`) and `ADR-007`
+  (`15bbacf`, plus the `c8ccdf3` amendment above) are all present on
+  `origin/develop` once the push above completes.
 
-## The next session must begin with repository confirmation, then Phase 16A.0-A planning only
+## Phase 16A.0-A is complete
 
-**PHASE 16A.0-A - CHECKOUTATTEMPT REPOSITORY AND SERVICE**
+`CheckoutAttemptRepository` and `CheckoutAttemptService` exist, are fully
+tested (66 tests, `checkout-attempt.service.ts` at 100%
+lines/functions/branches), and remain completely unwired - see
+`.claude/current-task.md` for the full delivery summary.
 
-This is read-only planning only. Per `ADR-007`'s Implementation
-Prohibition section, ADR approval is not implementation approval - Phase A
-still needs its own separate go-ahead before any source file is edited.
+## Choosing Phase 16A.0-B - re-check ADR-007's gates, do not assume C/D
 
-Inspect and plan:
+A prior review of the Phase A completion report recommended starting the
+next session with `CheckoutCoordinatorService` and
+`CheckoutReservationFacade`. **Do not do this without re-confirming the
+gates first** - those are ADR-007's Phase C and Phase D, and per the
+ADR's own "Implementation sequence" table:
 
-- The `CheckoutAttempt` Prisma model and its `CheckoutAttemptStatus` enum
-  (`PROCESSING`/`COMMITTED`/`FAILED` - `NOT_FOUND` is a synthesized query
-  result, not a stored enum value, confirmed during the caller-cutover
-  review).
-- Existing repository conventions in this codebase (`CartRepository`,
-  `OrdersRepository`) for the shape a new `CheckoutAttemptRepository`
-  should follow.
-- `createOrResume` atomicity - `ADR-007` recommends an atomic
-  `prisma.checkoutAttempt.upsert` keyed on `idempotencyKey`, stronger than
-  `CartRepository`'s existing find-then-create idiom, justified by the
-  higher stakes of a duplicate checkout.
-- Customer/cart/idempotency-key ownership validation - every lookup must
-  cross-check `customerId`, never key-only (per `ADR-007` §Decision 1 and
-  the security section of the original cutover plan).
-- COMMITTED/FAILED/PROCESSING semantics and transitions.
-- Heartbeat updates - one write, immediately after `checkoutMark` succeeds,
-  not a periodic background ping.
-- **The transaction-aware COMMITTED update with `orderId`** -
-  `ADR-007`'s hard, non-negotiable requirement: this write must share the
-  same Postgres transaction as order creation, never a separate
-  post-transaction write.
-- The stale-candidate keyset query for the future scheduler - paginated on
-  `(lastHeartbeatAt, id)`, per `reservation-lifecycle.md` §10, not
-  offset-based.
-- Exact `CheckoutAttemptRepository`/`CheckoutAttemptService` result types.
-- Unit test plan.
-- Database integration test plan.
-- Module placement (`CheckoutAttemptModule`, per `ADR-007`'s module
-  architecture) and dependency direction.
+- **Phase C** (`CheckoutReservationFacade`) is blocked on open decisions
+  1 (Redis-first vs. Postgres-first cart writes), 9 (`addItem` idempotency,
+  dependent on 1), and 10 (rollout-flag mechanism) - **none resolved**.
+- **Phase D** (`CheckoutCoordinatorService`) is blocked on **both** A and
+  C - C is not done, so D cannot start either.
 
-**Explicitly excluded from Phase 16A.0-A**:
+Phases actually unblocked by Phase A alone:
 
-- `CheckoutCoordinatorService` implementation.
-- `CartService` cutover.
-- `PriceLockService`.
-- Payment changes.
-- Scheduler.
-- Module registration into any production call path.
-- Rollout flags.
-- Legacy Redis drain.
+- **Phase F** (scheduler, heartbeat recovery, Postgres advisory lock) -
+  blocked only on A. Ready now.
+- **Phase B** (`PriceLockService`, cart currency enforcement) - blocked on
+  open decisions 4 (price-lock TTL value - no business-supplied value
+  exists yet) and 8 (does `Product` carry its own currency field?). Needs
+  those answered first.
+
+**Ask the user which to start** - most likely Phase F (no open decisions
+block it), or resolving open decisions 4/8 to unblock Phase B. Do not
+silently begin Phase C/D work.
 
 ## Do NOT do
 
-- Do not begin any Phase 16A.0-A source-code edit before a plan is
-  presented and explicitly approved.
-- Do not say Phase 16A.0-A implementation has begun until the
-  corresponding files have actually been edited.
+- Do not push assuming network access is available - confirm connectivity
+  first (the previous session's `git push` failed outright).
+- Do not begin Phase C/D (`CheckoutReservationFacade`/
+  `CheckoutCoordinatorService`) implementation while open decisions 1, 9,
+  10 remain unresolved - re-read ADR-007's "Open decisions" section before
+  scoping any new work.
+- Do not begin any new phase's source-code edit before a plan is presented
+  and explicitly approved, matching the discipline used through Phase
+  16A.0-A.
 - Do not duplicate `docs/architecture/reservation-lifecycle.md`'s or
   `ADR-007`'s content into session files - reference them, don't restate
   them.
-- Do not treat the checkout reservation engine (Units 2.4.1-2.4.4), the
-  cart-scoped reservation engine (Units 2.1-2.3), or `ADR-007` itself as
-  authorizing any caller wiring - all three remain fully additive and
-  untouched by any production caller; do not assume otherwise or begin
-  implementation without a separate, explicit approval.
+- Do not treat `CheckoutAttemptRepository`/`CheckoutAttemptService`
+  (Phase A) as authorizing any caller wiring - they remain fully additive
+  and unwired; do not assume otherwise or begin implementation without a
+  separate, explicit approval.
