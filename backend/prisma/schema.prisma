@@ -372,6 +372,7 @@ model CheckoutAttempt {
   @@index([cartId])
   @@index([customerId])
   @@index([status, lastHeartbeatAt])
+  @@index([status, lastHeartbeatAt, id])
   @@map("checkout_attempts")
 }
 
