@@ -87,6 +87,32 @@ no amount of scheduler logic can safely resolve after the fact. This is
 non-negotiable, not a style preference, and applies regardless of which
 service ends up calling the transaction.
 
+**Failure message handling (Phase A, implemented)**: `markFailed`'s
+`failureMessage` is sanitized, never rejected - unsafe or oversized message
+content must never block the `PROCESSING` -> `FAILED` transition itself.
+`CheckoutAttemptService.sanitizeFailureMessage` applies, in this exact
+order:
+
+1. Strip stack-trace frame lines (`/^\s*at\s/` per line).
+2. Redact JWT-shaped tokens (`/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g`
+   -> `[REDACTED]`), `Bearer` tokens (`/Bearer\s+\S+/gi` -> `Bearer [REDACTED]`),
+   and `password`/`secret`/`token`/`api[_-]?key` key-value pairs
+   (`/(password|secret|token|api[_-]?key)\s*[:=]\s*\S+/gi` -> `$1=[REDACTED]`).
+3. Trim. A message that sanitizes to the empty string is stored as `null`,
+   never an empty string.
+4. Truncate to 500 characters - **last**, after all redaction, never
+   before. Truncating before redaction risks preserving a sensitive
+   fragment that a later pass would otherwise have caught.
+
+The stored value is always the sanitized representation; repeated-failure
+duplicate-detection (`detailsMatched`) compares sanitized-vs-sanitized, not
+raw-vs-sanitized. `CheckoutAttemptSummary` (the public projection returned
+by `createOrResume`) never includes `failureMessage` in any form, sanitized
+or not - no customer-safe message contract has been approved. Any future
+consumer needing the raw stored `failureMessage` for internal/operational
+purposes must go through a dedicated, explicitly-scoped method - none
+exists yet.
+
 ### 2. CartService change is deferred, not immediate
 
 The original plan's recommendation to move `CartService` to a
