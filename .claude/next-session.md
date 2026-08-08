@@ -17,84 +17,68 @@
 - Working tree is clean.
 - Local `develop` and `origin/develop` are synchronized (0 ahead / 0
   behind).
-- Commit history through `357e35b` (C0) and `8978f03` (C1), plus this
-  session's docs closeout, are all present on `origin/develop`.
+- Commit history through `357e35b` (C0), `8978f03` (C1), `a89aff8` (C2),
+  plus this session's docs closeout, are all present on `origin/develop`.
 
-## Phase 16A.0-C, Units C0 and C1 are complete
+## Phase 16A.0-C, Units C0, C1, and C2 are complete
 
-`InventoryModule` now registers/exports the four checkout-state services
-(C0). `ReservationEngineModeConfig`/`ReservationEngineModeService`/
-`ReservationEngineModeConfigRepository` exist in a standalone, unwired
-`ReservationEngineModeModule` (C1) - the full `LEGACY`/`MIRROR`/
-`CART_SCOPED`/`DRAINING` transition graph, the Postgres-advisory-lock-
-serialized append-only concurrency guard, and the dual-signal
-(`product-total` + cart-index) rollback gate distinguishing
-`ROLLBACK_BLOCKED` from `ROLLBACK_STRUCTURE_DRIFT` are all implemented and
-tested. **Nothing calls any of it yet** - see `.claude/current-task.md`
-for the full delivery summary.
+C0: `InventoryModule` registers/exports the four checkout-state services.
+C1: the full `LEGACY`/`MIRROR`/`CART_SCOPED`/`DRAINING` transition graph,
+the Postgres-advisory-lock-serialized append-only concurrency guard, and
+the dual-signal rollback gate. C2: `ReservationAvailabilityService`
+(`getGeneralAvailability`/`getCartAdmissionAvailability`), implementing
+the corrected per-mode availability authority matrix (ADR-007 Decision
+6) - `LEGACY`/`MIRROR` admit via legacy only, `CART_SCOPED` via the new
+engine only, `DRAINING` never admits. **Nothing calls any of it yet** -
+see `.claude/current-task.md` for the full delivery summary of all three
+units.
 
-## The next session begins READ-ONLY: Phase 16A.0-C2 - combined-availability bridge
+## The next session begins READ-ONLY: Phase 16A.0-C3 - checkout reservation facade / reservation gateway
 
-**Do not implement C2 yet.** Inspect and define, in detail, before writing
-any code:
+**Do not implement C3 yet.** Inspect and design:
 
-```
-Available = Product.quantityAvailable - LegacyReserved - NewReserved
-```
-
-Resolve:
-
-1. Exact ownership of `getAvailability` (ADR-007 Decision 6 already names
-   `CheckoutReservationFacade.getAvailability` as the intended home - confirm
-   this is still correct, or whether C2 can deliver the bridge logic
-   itself first, with the facade wrapping it later in C3).
-2. How `LegacyReserved` is read (`InventoryReservationsService.getReservedByOthers`,
-   existing, unchanged).
-3. How `NewReserved` (the cart-scoped product-total) is read - and
-   whether it needs the same suspect-flag fail-closed check
-   `computeAvailableToPurchase` already implements.
-4. Own-cart exclusion semantics (matching the existing
-   `excludingCartId`/`requestingCartActiveReservationQuantity` pattern).
-5. Suspect-flag fail-closed behavior when combining two systems' signals.
-6. Zero-floor behavior (`Math.max(0, ...)`, matching every existing
-   availability calculation in this codebase).
-7. Per-mode routing: what the bridge returns in each of `LEGACY`/
-   `MIRROR`/`CART_SCOPED`/`DRAINING` - in particular, whether `MIRROR`
-   subtracts `NewReserved` at all (it's not yet authoritative) or only
-   observes it for comparison.
-8. `ProductsService.getAvailability` and `CartService.assertQuantityAvailable`
-   caller impact - read-only analysis, no edits.
-9. Whether C2 can remain fully unwired (no caller change) while still
-   being fully tested - matching the discipline of every prior unit in
-   this phase.
-10. Unit test plan and real-Redis test plan.
+1. `ReservationGateway` abstraction.
+2. `CheckoutReservationFacade`.
+3. Mode-aware write routing: `LEGACY`, `MIRROR`, `CART_SCOPED`, `DRAINING`.
+4. `reserveForCart`.
+5. `releaseForCart`.
+6. Clear/release-cart behavior.
+7. Use of `ReservationAvailabilityService` (its `getGeneralAvailability`/
+   `getCartAdmissionAvailability` split from C2 - the facade's own
+   `getAvailability` is expected to delegate to it, not reimplement it;
+   confirm or revise).
+8. `MIRROR` write semantics.
+9. Non-blocking mirror failures.
+10. Compensation boundary (design only - the ledger itself is C4).
+11. Operation/idempotency inputs required by later C5.
+12. Relationship to `CartService`.
+13. Relationship to `PriceLockService`.
+14. No production `CartService` wiring yet.
 
 ## Explicitly prohibited this session
 
-- `CheckoutReservationFacade` implementation, unless the C2 plan
-  genuinely requires it to exist rather than deferring the wrapper to C3
-  - state which, don't assume.
-- `CartService` edits.
+- `CartService` source edits.
 - `ProductsService` edits.
-- Reservation writes (C2 is a read-only availability calculation, not a
-  mutation).
-- The compensation ledger (C4 - separate, later unit).
-- Idempotency DTOs (C5 - separate, later unit).
-- Any of C3/C4/C5/C6/C7/C8.
-- Production mode changes (`ReservationEngineModeService.setMode` stays
+- `OrdersService` edits.
+- Compensation ledger implementation (C4).
+- `addItem` idempotency implementation (C5).
+- Payment.
+- Scheduler.
+- Production mode switching (`ReservationEngineModeService.setMode` stays
   uncalled by anything outside its own tests).
+- C4+ implementation.
 
 ## Do NOT do
 
-- Do not begin any C2 source-code edit before a plan is presented and
+- Do not begin any C3 source-code edit before a plan is presented and
   explicitly approved, matching the discipline used through every prior
   unit in this phase.
 - Do not duplicate `docs/architecture/reservation-lifecycle.md`'s,
   `ADR-007`'s, or `.claude/current-task.md`'s content into new session
   files - reference them, don't restate them.
-- Do not treat C0/C1 as authorizing any caller wiring - they remain fully
-  additive and unwired; do not assume otherwise or begin implementation
-  without a separate, explicit approval.
+- Do not treat C0/C1/C2 as authorizing any caller wiring - they remain
+  fully additive and unwired; do not assume otherwise or begin
+  implementation without a separate, explicit approval.
 
 The session must return a read-only plan and wait for approval before any
 implementation begins.

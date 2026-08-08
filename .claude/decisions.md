@@ -441,3 +441,43 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   production caller (`CartService`, `ProductsService`, `OrdersService`,
   any controller) calls `getCurrentMode()`/`setMode()`; confirmed via
   `git grep` across the full repository.
+
+## Phase 16A.0-C, Unit C2 (mode-aware reservation availability) - implemented (2026-08-08, `a89aff8`)
+
+- **Availability is mode-specific, never one global legacy+new formula.**
+  ADR-007 Decision 6's original `Available = Product.quantityAvailable -
+  LegacyReserved - NewReserved` assumed disjoint reservation populations;
+  `MIRROR`'s actual 100%-of-traffic dual-write breaks that assumption and
+  double-subtracts the same logical hold. Any future change to
+  availability calculation must preserve a per-mode authority table, not
+  reintroduce a single summed formula.
+- **`MIRROR` uses legacy for admission and the new engine only for
+  comparison.** The new-engine read (`mirrorComparison`) is strictly
+  diagnostic - it must never alter or block the customer-facing
+  `available` value, and a failure reading it must never propagate and
+  abort the real (legacy) calculation.
+- **`CART_SCOPED` never subtracts legacy holds, even transitionally.**
+  Its availability is the new engine's own accounting only
+  (`computeAvailableToPurchase`/`getAvailabilityWithSuspectStatus`). This
+  is only safe because entering `CART_SCOPED` is contingent on a future
+  cutover gate (not yet implemented) proving legacy reservations are
+  drained first - do not add a legacy-subtraction fallback to
+  `CART_SCOPED` without revisiting that cutover-gate design.
+- **`DRAINING` is non-admitting, permanently.** No legacy, mirrored, or
+  cart-scoped admission of any kind while `DRAINING` - checked first,
+  before any other read, returning a typed `MODE_NOT_ADMITTING`, never a
+  numeric `0` (which would be indistinguishable from genuinely sold out).
+- **Mirror telemetry/comparison state never affects customer admission.**
+  `STRUCTURE_DRIFT_CONFIRMED` and `COMPARISON_UNAVAILABLE` are both
+  informational only; neither may ever change the real `available` value
+  or block a `MIRROR`-mode request. Confirmed by a dedicated test proving
+  identical legacy input produces identical customer-facing `available`
+  regardless of which of the three comparison states occurs.
+- **C2 (`ReservationAvailabilityService`) is read-only and remains
+  completely unwired** - no production caller (`CartService`,
+  `ProductsService`, `OrdersService`, any controller, or the not-yet-built
+  `CheckoutReservationFacade`) calls `getGeneralAvailability`/
+  `getCartAdmissionAvailability`; confirmed via `git grep` across the
+  full repository. It performs no reservation writes of any kind -
+  proven structurally (mocked write methods rejecting if called) and
+  against real Redis (before/after keyspace snapshot, byte-identical).

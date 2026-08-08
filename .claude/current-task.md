@@ -181,21 +181,82 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     (80/90/90/90 threshold), exit 0. `reservation-engine-mode.service.ts`
     at 100/100/100/100. `AppModule` bootstrap 4/4. Prisma validate/
     generate/migrate-status/drift all clean.
-  - **No C2 work exists** - no `CheckoutReservationFacade`,
-    `ReservationGateway`, combined-availability bridge, or any
-    `CartService`/`ProductsService`/`OrdersService` file was touched.
+- **Phase 16A.0-C, Unit C2 is complete and pushed** at `a89aff8`
+  (`feat(checkout): add mode-aware reservation availability`), on
+  `origin/develop`.
+  - **`ReservationAvailabilityService` is implemented and exported by
+    `ReservationEngineModeModule`, but remains unwired** - no caller
+    consumes it yet. Public surface: `getGeneralAvailability(productId,
+    quantityAvailable)` (no cart context) and
+    `getCartAdmissionAvailability(productId, quantityAvailable, cartId)`
+    (own-cart add-back per mode). Depends only on
+    `ReservationEngineModeService.getCurrentMode()` and
+    `InventoryReservationsService`.
+  - Corrected ADR-007 Decision 6's global `Available =
+    Product.quantityAvailable - LegacyReserved - NewReserved` formula
+    (unsafe under `MIRROR`'s dual-write, which double-subtracted the same
+    logical hold) into a per-mode authority matrix: **`LEGACY` and
+    `MIRROR` both admit via legacy only** (`MIRROR`'s new-engine read is a
+    separate, non-blocking comparison that can never alter or block
+    customer admission); **`CART_SCOPED` admits via the new engine only**
+    (no legacy subtraction, own-cart add-back active, suspect-flag-gated);
+    **`DRAINING` never admits** - returns a typed `MODE_NOT_ADMITTING`,
+    never a numeric `0`, reading neither system.
+  - `InventoryReservationsService` gained
+    `getAvailabilityWithSuspectStatus(productId, quantityAvailable,
+    excludingCartId)`, returning `{status:'OK', available} |
+    {status:'SUSPECT'}`, sharing one private calculation path with the
+    pre-existing `computeAvailableToPurchase` - whose contract is
+    byte-for-byte unchanged (still collapses `SUSPECT` to `0`); no
+    existing caller needed to change.
+  - `MIRROR`'s comparison states: `AVAILABLE`, `COMPARISON_UNAVAILABLE`
+    (the comparison read itself threw), `STRUCTURE_DRIFT_CONFIRMED` (the
+    existing, already-persisted product suspect flag is set). C2 performs
+    no synchronous per-request structural scan of its own.
+  - Mechanical split: `inventory-reservations.service.ts` (380 lines)
+    exceeded the 400-line cap after the refactor above; its three
+    private, non-public-API script-result helpers
+    (`flagMalformedReservation`, `toUnderflowDetails`,
+    `parseScriptResult`) were extracted unchanged to
+    `inventory-reservations-script-helpers.ts` (76 lines) - no behavior
+    change, confirmed by the complete pre-existing test set (5 suites, 56
+    tests) still passing.
+  - 34 new tests across 2 new files (`reservation-availability.service.spec.ts`,
+    `reservation-availability.redis.integration.spec.ts`) plus 5 new
+    compatibility tests added to the existing
+    `cart-scoped-availability-reconciliation.service.spec.ts`. Full
+    backend suite 226 -> 228 suites, 1892 -> 1926 tests, exit 0. Coverage
+    97.30%/93.75%/97.03%/97.22% (80/90/90/90 threshold), exit 0.
+    `reservation-availability.service.ts` and
+    `inventory-reservations.service.ts` both at 100/100/100/100.
+  - Real-Redis proof: a genuinely mirrored duplicate hold (same quantity
+    written to both the legacy hash and the cart-scoped model) is
+    subtracted exactly once for customer-facing admission; a before/after
+    keyspace snapshot proves the service performs no writes across any
+    mode.
+  - **No C3 work exists** - no `CheckoutReservationFacade`,
+    `ReservationGateway`, or any `CartService`/`ProductsService`/
+    `OrdersService` file was touched.
+  - ADR-007 Decision 6 (formula) and Decision 8 (`DRAINING` wording) were
+    corrected in the same session, in a separate docs-only commit; a new
+    §9 records the C2 implementation. ADR-007 `Status` remains
+    `Proposed`, unchanged.
 
-## Next task: Phase 16A.0-C2 - combined-availability bridge, read-only planning first
+## Next task: Phase 16A.0-C3 - checkout reservation facade / reservation gateway, read-only planning first
 
-Per the approved sequencing, the next session inspects and defines the
-combined-availability formula's exact implementation (`Available =
-Product.quantityAvailable - LegacyReserved - NewReserved`) - ownership,
-read paths, own-cart exclusion, suspect-flag fail-closed behavior,
-zero-floor behavior, per-mode routing (`LEGACY`/`MIRROR`/`CART_SCOPED`/
-`DRAINING`), caller impact, and whether C2 can remain fully unwired. It
-does not implement `CheckoutReservationFacade` unless the C2 plan actually
-needs it, and does not touch `CartService`/`ProductsService`. See
-`.claude/next-session.md` for the exact scope and explicit prohibitions.
+Per the approved sequencing, the next session inspects and designs (does
+not implement) the `ReservationGateway` abstraction and
+`CheckoutReservationFacade`'s mode-aware write routing
+(`reserveForCart`/`releaseForCart`/clear-cart behavior across `LEGACY`/
+`MIRROR`/`CART_SCOPED`/`DRAINING`), how the facade uses
+`ReservationAvailabilityService`, `MIRROR` write semantics and
+non-blocking mirror-failure handling, the compensation boundary, the
+operation/idempotency inputs a later C5 will need, and the facade's
+relationship to `CartService`/`PriceLockService` - without touching
+`CartService`/`ProductsService`/`OrdersService`, without implementing the
+compensation ledger or `addItem` idempotency, and without any production
+mode switching. See `.claude/next-session.md` for the exact scope and
+explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

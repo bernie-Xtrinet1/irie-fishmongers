@@ -179,23 +179,47 @@ lock. The project already depends on Postgres; introducing a second
 distributed-locking subsystem for one job is not justified. No schema
 migration is required.
 
-### 6. Combined-availability formula - stated exactly, zero ambiguity
+### 6. Combined-availability formula - corrected to a mode-specific authority matrix (superseded during C2)
 
-For the duration of any partial rollout (Phase C shadow mode through Phase
-G's allowlist/percentage rollout), availability is:
+The original single global formula below is **obsolete and no longer
+authoritative**:
 
 ```
 Available = Product.quantityAvailable - LegacyReserved - NewReserved
 ```
 
-Where `LegacyReserved` is the existing per-product hash sum
-(`InventoryReservationsService.getReservedByOthers`) and `NewReserved` is
-the cart-scoped product-total projection
-(`InventoryReservationsService.getReservedTotalExcludingCart`). Both terms
-are read and summed by `CheckoutReservationFacade.getAvailability` - no
-other call site computes availability during the transition window. This
-formula, and this formula alone, is authoritative until Phase H removes
-the legacy term.
+It assumed the legacy and new-engine reservation populations are disjoint
+- true only for a customer-split rollout. `MIRROR` mode, as actually
+built in C1/C2, dual-writes the *same logical hold* into both systems for
+100% of traffic, so summing both terms double-subtracts one real hold.
+This was discovered and corrected during Phase 16A.0-C2 planning, before
+`ReservationAvailabilityService` was implemented against it. Each mode
+now owns exactly one admission authority - never a sum of two systems'
+signals:
+
+| Mode | Admission authority | Availability | New engine read? |
+|---|---|---|---|
+| `LEGACY` | Legacy | `Product.quantityAvailable - LegacyReservedByOthers` | No - never read |
+| `MIRROR` | Legacy | Identical to `LEGACY` - `Product.quantityAvailable - LegacyReservedByOthers` | Only for a separate, non-blocking comparison (see §9) - legacy and new totals are **never summed** for admission, and the comparison can never alter or block customer admission |
+| `CART_SCOPED` | New (cart-scoped) engine | `computeAvailableToPurchase`/`getAvailabilityWithSuspectStatus` (own-cart add-back active, suspect-flag-gated) | Yes, exclusively - legacy is **not** subtracted, even transitionally |
+| `DRAINING` | Neither | No availability calculation at all - `MODE_NOT_ADMITTING` | No |
+
+`CART_SCOPED` never subtracting legacy holds is only safe because
+entering `CART_SCOPED` is contingent on a future cutover gate (not yet
+implemented) proving legacy reservations are drained first: `MIRROR`
+validated -> pause cart mutations/checkouts -> disable legacy reservation
+creation/renewal -> wait the approved bounded drain window -> verify zero
+valid legacy reservations remain -> only then transition to
+`CART_SCOPED`. A legacy hold unexpectedly observed after `CART_SCOPED` is
+entered is an operational/cutover invariant violation, not something
+availability computation silently compensates for.
+
+`LegacyReserved` above is read via the existing, unchanged
+`InventoryReservationsService.getReservedByOthers`; the new-engine reads
+are `InventoryReservationsService.computeAvailableToPurchase` and
+`getAvailabilityWithSuspectStatus` (added in C2, see §9) - not
+`getReservedTotalExcludingCart` directly. This table, not the formula
+above, is authoritative until Phase H removes the legacy term entirely.
 
 ### 7. `PriceLockService` - dedicated ownership
 
@@ -285,15 +309,34 @@ approved.
 
 `DRAINING` is a 4th explicit mode, not a boolean layered on top of another
 mode (preferring one finite-state field over multiple booleans, per the
-existing Decision 10 direction). It is structurally close to `MIRROR`
-(legacy is authoritative for every admission decision) but differs in one
-critical way: `DRAINING` sends the new engine **zero new writes of any
-kind** - no admissions, no mirroring - so its existing holds can only
-shrink (via their own TTL/absolute-cap expiry or explicit release), never
-grow. `MIRROR` would keep adding new mirrored holds, which is exactly
-wrong for a rollback in progress. The combined-availability bridge
-(`Available = Product.quantityAvailable - LegacyReserved - NewReserved`)
-stays active through every state above except plain `LEGACY`.
+existing Decision 10 direction).
+
+**Corrected during C2** (this paragraph previously stated that legacy
+remains authoritative for admission during `DRAINING`, matching
+`MIRROR`'s behavior - that was wrong and is corrected here):
+`DRAINING` is an operational maintenance/rollback mode, not a variant of
+`MIRROR`. While `DRAINING`:
+
+- No legacy reservation admissions.
+- No mirrored admissions.
+- No cart-scoped admissions.
+- No reservation renewal/extension through any future admission caller.
+- Existing holds may only expire, reconcile, or drain - never grow, and
+  never be renewed.
+
+`ReservationAvailabilityService` (see §9) enforces this by checking mode
+*before* any other call: on `DRAINING` it returns a typed
+`{ ok: false, mode: 'DRAINING', code: 'MODE_NOT_ADMITTING' }` immediately,
+reading neither the legacy hash nor the new engine at all - never a
+numeric `0`, which would be indistinguishable from genuinely sold out.
+`MIRROR` would keep adding new mirrored holds, which is exactly wrong for
+a rollback in progress; `DRAINING` sends the new engine **zero new writes
+of any kind**, so its existing holds can only shrink (via their own
+TTL/absolute-cap expiry or explicit release). The mode-specific
+availability matrix in Decision 6 replaces the old global
+combined-availability bridge for every mode, including `DRAINING`, which
+now has no availability calculation at all rather than a formula that
+happens to still run.
 
 **Rollback invariants**:
 
@@ -351,6 +394,71 @@ Sequence diagrams for the mutation-order and crash-recovery paths, and the
 full `CartReservationCompensation` schema, are deferred to when C4's flows
 are actually implemented and can be verified against real code, rather
 than committed here as still-provisional design sketches.
+
+### 9. Phase C, Unit C2: `ReservationAvailabilityService` - implemented, unwired
+
+Implements the Decision 6 authority matrix. Lives inside the existing
+`ReservationEngineModeModule` (not a new module, not
+`CheckoutReservationFacade`), depending only on
+`ReservationEngineModeService.getCurrentMode()` and
+`InventoryReservationsService`. Public surface:
+
+- `getGeneralAvailability(productId, quantityAvailable)` - no cart
+  context, no own-cart add-back; for product-browsing use.
+- `getCartAdmissionAvailability(productId, quantityAvailable, cartId)` -
+  applies the requesting cart's own-cart add-back per mode; for
+  cart-admission use.
+
+Neither is wired to any caller. `CartService`, `ProductsService`, and
+`CheckoutReservationFacade` (which does not yet exist) are all untouched
+by C2; C3 is expected to have the future facade's own availability method
+delegate to this service rather than duplicate its logic.
+
+`InventoryReservationsService` gained
+`getAvailabilityWithSuspectStatus(productId, quantityAvailable,
+excludingCartId)`, returning `{ status: 'OK'; available: number } |
+{ status: 'SUSPECT' }`. It shares one private calculation path
+(suspect-flag read, product-total read, own-cart add-back, zero-floor)
+with the pre-existing `computeAvailableToPurchase`, whose contract is
+byte-for-byte unchanged (`SUSPECT` still collapses to a plain `0`) - no
+existing caller needed to change.
+
+**MIRROR comparison states** (`mirrorComparison`, informational only,
+never able to alter or block the legacy-derived customer-facing
+`available` value):
+
+- `AVAILABLE` - the new engine's `getAvailabilityWithSuspectStatus` read
+  succeeded and was not suspect.
+- `COMPARISON_UNAVAILABLE` - the comparison read itself threw (a
+  transient infrastructure failure). Deliberately never conflated with a
+  confirmed data problem.
+- `STRUCTURE_DRIFT_CONFIRMED` - the read succeeded but returned
+  `SUSPECT`: the existing, persisted product suspect flag
+  (`productSuspectKey`) is already set, meaning either
+  `flagMalformedReservation` (write-time) or
+  `reconcileProductReservedTotal` finding `UNDERCOUNT` (a completed
+  reconciliation pass) has already recorded a concrete
+  reservation-integrity problem for this product. **C2 does not perform
+  a synchronous per-request `SMEMBERS` drift walk** - that full-catalog-
+  or even per-product-scoped structural scan is deliberately reserved for
+  `ReservationEngineModeService.verifyRollbackSafe()`'s rare,
+  manually-triggered rollback gate (Decision 8). `STRUCTURE_DRIFT_CONFIRMED`
+  reflects only the already-persisted suspect signal, never a fresh
+  computation on the request path.
+
+`CART_SCOPED` uses the same `getAvailabilityWithSuspectStatus` read for
+admission: `OK` returns normal availability, `SUSPECT` fails closed with
+a top-level `{ ok: false, code: 'RESERVATION_STRUCTURE_DRIFT' }` - never
+a numeric `0` that could be mistaken for a legitimate sold-out
+calculation.
+
+Validated with 228 backend suites / 1926 tests passing (97.30%
+statements / 93.75% branches / 97.03% functions / 97.22% lines coverage),
+including a real-Redis test proving a genuinely mirrored duplicate hold
+(the same quantity written to both the legacy hash and the cart-scoped
+model) is subtracted exactly once for customer-facing admission, and a
+real-Redis before/after keyspace snapshot proving the service performs no
+writes.
 
 ## Module architecture (revised)
 
@@ -412,7 +520,7 @@ resolved.
 8. Does `Product` carry its own currency field, or is currency purely cart-level? - **RESOLVED: yes** - `Product.currency` (`String @default("JMD")`) is a real per-row column, confirmed by direct schema inspection, and is the authoritative source `PriceLockService` reads from (see Decision 7, item 2).
 9. **`addItem`'s non-idempotent increment semantics** - **OPEN**, blocks Phase C/D. Depends on open decision 1's outcome (the write-order/idempotency redesign); not resolved separately from it.
 10. **Rollout-flag mechanism (exact implementation)** - **OPEN**, blocks Phase C. Decision 2 above settles the *direction* (allowlist-based, evaluated per-request, not a bootstrap-level toggle) but not the *mechanism* - env var, DB-backed allowlist table (following the `MarketplaceModeConfig` precedent), or something else. This is a new pattern for this codebase with no existing precedent (`ENABLE_SCHEDULER` is the only prior art, and it is bootstrap-level/all-or-nothing, which this explicitly is not) and needs its own explicit sign-off before Phase C begins.
-11. Ownership of the combined-availability bridge - **RESOLVED**: assigned to `CheckoutReservationFacade.getAvailability` in Phase C (see Decision 6). This closes what was open decision 9 in the original read-only plan; recorded here so it is traceable rather than silently dropped.
+11. Ownership of the combined-availability bridge - **RESOLVED, corrected during C2**: originally assigned to `CheckoutReservationFacade.getAvailability` computing one global formula (see the superseded text in Decision 6); actually implemented as the standalone `ReservationAvailabilityService` (Decision 6's mode-specific authority matrix, §9) inside `ReservationEngineModeModule`. `CheckoutReservationFacade` does not yet exist; when C3 builds it, its `getAvailability` is expected to delegate to `ReservationAvailabilityService` rather than reimplement the calculation. This closes what was open decision 9 in the original read-only plan; recorded here so it is traceable rather than silently dropped.
 
 ## Document authority
 

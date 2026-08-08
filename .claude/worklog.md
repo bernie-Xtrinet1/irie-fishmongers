@@ -926,3 +926,96 @@ all pushed and present on `origin/develop`.
   services`), followed by `8978f03` (`feat(checkout): add reservation
   engine mode control`) - both pushed to `origin/develop` as two separate
   commits, exactly as proposed.
+
+## 2026-08-08 (cont.) - Phase 16A.0-C, Unit C2: mode-aware reservation availability (`a89aff8`)
+
+- Introduced `ReservationAvailabilityService` inside the existing
+  `ReservationEngineModeModule` - depends only on
+  `ReservationEngineModeService.getCurrentMode()` and
+  `InventoryReservationsService`; no new module, no
+  `CheckoutReservationFacade`. Two public methods:
+  `getGeneralAvailability(productId, quantityAvailable)` (no cart
+  context, no own-cart add-back) and
+  `getCartAdmissionAvailability(productId, quantityAvailable, cartId)`
+  (own-cart add-back per mode) - both delegate to one private
+  `computeAvailability`, with `null` (never an empty-string sentinel) at
+  the public boundary for "no cart".
+- Introduced mode-specific availability routing, correcting ADR-007
+  Decision 6's global `Available = Product.quantityAvailable -
+  LegacyReserved - NewReserved` formula: it assumed disjoint legacy/
+  new-engine reservation populations, which `MIRROR`'s actual 100%
+  dual-write breaks. **`LEGACY`/`MIRROR` both admit via legacy only**
+  (`getReservedByOthers`); **`CART_SCOPED` admits via the new engine
+  only** (no legacy subtraction at all, even transitionally);
+  **`DRAINING` never admits** - checked first, before any other call, and
+  short-circuits to a typed `{ok:false, mode:'DRAINING',
+  code:'MODE_NOT_ADMITTING'}` with zero reads of
+  `InventoryReservationsService`.
+- This closes the double-counting bug the corrected formula existed to
+  fix: a genuinely mirrored duplicate hold (same quantity in both
+  systems) is now subtracted exactly once for customer-facing admission,
+  proven against real Redis, not just reasoned about.
+- Added suspect-aware inventory availability read:
+  `InventoryReservationsService.getAvailabilityWithSuspectStatus(productId,
+  quantityAvailable, excludingCartId)` returns `{status:'OK', available}
+  | {status:'SUSPECT'}` instead of collapsing straight to a number.
+- Preserved `computeAvailableToPurchase` compatibility exactly - per
+  explicit instruction, no independent reimplementation of its
+  arithmetic. Both methods now share one private
+  `computeAvailabilityInternal` (suspect-flag read, product-total read,
+  own-cart add-back, zero-floor in exactly one place);
+  `computeAvailableToPurchase` is a thin wrapper (`SUSPECT` -> `0`, `OK`
+  -> `available`) with a byte-for-byte unchanged contract - proven by 4
+  new compatibility tests. No existing caller required any change.
+- `CART_SCOPED`'s admission path uses the same richer read: `SUSPECT` ->
+  top-level `{ok:false, code:'RESERVATION_STRUCTURE_DRIFT'}`, never a
+  bare `available:0` that could be mistaken for a legitimate sold-out
+  result.
+- `MIRROR`'s comparison (`mirrorComparison`, strictly diagnostic, wrapped
+  in its own try/catch so a failure there can never propagate and abort
+  the real availability calculation) reports three states: `AVAILABLE`,
+  `COMPARISON_UNAVAILABLE` (the comparison read threw - a transient
+  infra failure), `STRUCTURE_DRIFT_CONFIRMED` (the existing, already-
+  persisted product suspect flag is set). Per explicit correction during
+  this session: **no synchronous per-request `SMEMBERS` drift walk** -
+  that stays exclusively C1's rare, manually-triggered
+  `verifyRollbackSafe()` gate; `STRUCTURE_DRIFT_CONFIRMED` only ever
+  reflects the already-persisted suspect signal.
+- Extracted `inventory-reservations.service.ts`'s three private,
+  non-public-API script-result helpers (`flagMalformedReservation`,
+  `toUnderflowDetails`, `parseScriptResult`) to a new sibling
+  `inventory-reservations-script-helpers.ts` - purely mechanical (moved
+  unchanged, `redis`/`logger` now explicit params instead of `this`),
+  required because the C2 refactor above pushed the file to 425 lines,
+  over the 400-line cap; final split is 380 + 76 lines. No new public
+  API, no new Redis key, no changed exception/result semantics -
+  confirmed by the complete pre-existing inventory-reservations test set
+  (5 suites, 56 tests, including the real-Redis malformed/version-
+  mismatch/underflow scenarios) still passing unchanged.
+- Real-Redis proofs (10 scenarios, isolated logical Redis DB 1,
+  `FLUSHDB`'d per test - same convention C1 established): legacy-only
+  hold; genuinely mirrored duplicate hold subtracted once; `MIRROR`
+  comparison `AVAILABLE`; `MIRROR` `STRUCTURE_DRIFT_CONFIRMED` from a
+  real suspect-flag write; `MIRROR` `COMPARISON_UNAVAILABLE` from a
+  spied-in read failure; `CART_SCOPED` new-only hold; `CART_SCOPED`
+  own-cart add-back; `CART_SCOPED` suspect -> `RESERVATION_STRUCTURE_
+  DRIFT`; `DRAINING` -> `MODE_NOT_ADMITTING` with zero reservation reads
+  (spy-verified); a before/after full-keyspace snapshot across all four
+  modes proving zero writes.
+- 34 new tests across 2 new files
+  (`reservation-availability.service.spec.ts`,
+  `reservation-availability.redis.integration.spec.ts`) plus 5 new
+  compatibility tests added to the existing
+  `cart-scoped-availability-reconciliation.service.spec.ts`. Full backend
+  suite 226 -> 228 suites, 1892 -> 1926 tests, exit 0. CI-equivalent
+  coverage 97.30%/93.75%/97.03%/97.22% (80/90/90/90 threshold), exit 0 -
+  `reservation-availability.service.ts` and
+  `inventory-reservations.service.ts` both at 100/100/100/100.
+  `AppModule` bootstrap 4/4.
+- Confirmed no C3 work exists: no `CheckoutReservationFacade`,
+  `ReservationGateway`, or any `CartService`/`ProductsService`/
+  `OrdersService` file was touched; `ReservationAvailabilityService`
+  referenced nowhere except its own two spec files and
+  `reservation-engine-mode.module.ts`'s provider/export list.
+- Commit `a89aff8` (`feat(checkout): add mode-aware reservation
+  availability`), pushed to `origin/develop`.
