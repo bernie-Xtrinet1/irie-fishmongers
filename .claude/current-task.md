@@ -234,29 +234,86 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     subtracted exactly once for customer-facing admission; a before/after
     keyspace snapshot proves the service performs no writes across any
     mode.
-  - **No C3 work exists** - no `CheckoutReservationFacade`,
-    `ReservationGateway`, or any `CartService`/`ProductsService`/
-    `OrdersService` file was touched.
   - ADR-007 Decision 6 (formula) and Decision 8 (`DRAINING` wording) were
     corrected in the same session, in a separate docs-only commit; a new
     §9 records the C2 implementation. ADR-007 `Status` remains
     `Proposed`, unchanged.
 
-## Next task: Phase 16A.0-C3 - checkout reservation facade / reservation gateway, read-only planning first
+- **Phase 16A.0-C, Unit C3 is complete and pushed** at `7fddac0`
+  (`feat(checkout): add reservation gateway facade`), on `origin/develop`.
+  - **`ReservationGateway` is now the stable, cart-facing reservation
+    abstraction** - a genuine TypeScript interface (`reserveForCart`,
+    `releaseForCart`, `releaseCart`, `getCartAdmissionAvailability`), the
+    first interface-typed DI seam in this codebase.
+    `CheckoutReservationFacade implements ReservationGateway` and is the
+    sole implementation. `RESERVATION_GATEWAY` (a `Symbol` token, bound
+    via `useExisting`) is the **only** export from
+    `CheckoutReservationModule` - the concrete `CheckoutReservationFacade`
+    class is a provider but not exported, unreachable by any module that
+    only imports `CheckoutReservationModule`.
+  - **`CheckoutReservationModule` remains completely unwired** - not
+    imported by `CartModule`, `AppModule`, or any other production
+    module; `CartService` still calls `InventoryReservationsService`'s
+    legacy methods directly, unchanged.
+  - Reserve routing: `LEGACY`/`MIRROR` admit via legacy first (a thrown
+    legacy exception propagates untouched, mirror never attempted);
+    `CART_SCOPED` via the new engine only; `DRAINING` rejects all
+    admission (reserve/increase/renew/any desired-quantity decrease)
+    uniformly, with zero reads of current reservation quantity - no
+    special-casing. Release routing: `LEGACY`/`MIRROR` release legacy
+    first (mirror release best-effort, non-blocking); `CART_SCOPED` and
+    `DRAINING` both release via the new engine only - **full cleanup
+    stays allowed while `DRAINING`**, "no admission" and "no cleanup" are
+    deliberately different rules.
+  - `MirrorDiagnostic` (`SYNCED`/`NOT_ATTEMPTED`/`FAILED`) with a fixed
+    `MirrorFailureReasonCode` union (`PRODUCT_SUSPENDED`,
+    `CHECKOUT_IN_PROGRESS`, `ACCOUNTING_UNDERFLOW`,
+    `UNKNOWN_INFRA_FAILURE` - no `REDIS_ERROR`, nothing in `RedisService`
+    can produce one reliably today). `ACCOUNTING_UNDERFLOW` is
+    structurally impossible to report as `SYNCED` - the underflow check
+    runs before that branch. A thrown mirror exception never exposes the
+    raw `Error`/message, only a structured log line.
+  - `releaseCart(cartId, productIds)` takes caller-supplied product ids
+    only (no Redis/catalog scan), deduplicates, preserves first-seen
+    order, and resolves `ReservationEngineMode` **exactly once** for the
+    whole call - every item uses identical routing semantics even if mode
+    changes mid-call.
+  - `getCartAdmissionAvailability` is a pure, unmodified delegation to
+    `ReservationAvailabilityService` (C2) - no new arithmetic, no general
+    (no-cart) availability method on this interface.
+  - No `Cart`/`Product`/`PriceLock`/`CheckoutAttempt` persistence, no
+    compensation ledger, no `operationId`/idempotency anywhere in the
+    gateway/facade/diagnostic types - all deferred to later units.
+    `customerId`/`cartId` ownership is documented as a caller
+    precondition; C3 has no `CartRepository`/`ProductsRepository`/
+    `PrismaService` dependency.
+  - 43 new unit tests across 2 files (split to stay under the 400-line
+    cap) plus 10 real-Redis tests (isolated logical DB 1). Full backend
+    suite 228 -> 231 suites, 1926 -> 1971 tests, exit 0. Coverage
+    97.36%/93.90%/97.08%/97.28% (80/90/90/90 threshold), exit 0.
+    `checkout-reservation-facade.service.ts` and
+    `reservation-gateway.types.ts` both at 100/100/100/100.
+  - Real-Redis proof: a `MIRROR` accounting-underflow write (manufactured
+    via the same stored-total-corruption technique Unit 2.3's own tests
+    already use) leaves the legacy reservation correct and the customer
+    result successful; `DRAINING` permits a full release to drain a
+    genuine `CART_SCOPED`-era hold to zero.
+  - ADR-007 gained a new §10 recording this implementation in the same
+    session, in a separate docs-only commit. ADR-007 `Status` remains
+    `Proposed`, unchanged.
+
+## Next task: Phase 16A.0-C4 - durable mirror compensation, read-only planning first
 
 Per the approved sequencing, the next session inspects and designs (does
-not implement) the `ReservationGateway` abstraction and
-`CheckoutReservationFacade`'s mode-aware write routing
-(`reserveForCart`/`releaseForCart`/clear-cart behavior across `LEGACY`/
-`MIRROR`/`CART_SCOPED`/`DRAINING`), how the facade uses
-`ReservationAvailabilityService`, `MIRROR` write semantics and
-non-blocking mirror-failure handling, the compensation boundary, the
-operation/idempotency inputs a later C5 will need, and the facade's
-relationship to `CartService`/`PriceLockService` - without touching
-`CartService`/`ProductsService`/`OrdersService`, without implementing the
-compensation ledger or `addItem` idempotency, and without any production
-mode switching. See `.claude/next-session.md` for the exact scope and
-explicit prohibitions.
+not implement) the `CartReservationCompensation` schema, a
+`CompensationRepository`, and compensation-service/reconciler ownership -
+the durable recovery path for the two divergence cases C3's
+`MirrorDiagnostic` can already report (legacy reserve succeeded / mirror
+reserve failed; legacy release succeeded / mirror release failed).
+Without implementing `CartService` caller cutover, `ProductsService`,
+`OrdersService`, C5 idempotency, payment, production mode switching, the
+checkout coordinator, or scheduler wiring. See `.claude/next-session.md`
+for the exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

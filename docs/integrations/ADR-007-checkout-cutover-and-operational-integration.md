@@ -460,6 +460,115 @@ model) is subtracted exactly once for customer-facing admission, and a
 real-Redis before/after keyspace snapshot proving the service performs no
 writes.
 
+### 10. Phase C, Unit C3: `ReservationGateway` / `CheckoutReservationFacade` - implemented, unwired
+
+`ReservationGateway` is the stable, cart-facing reservation abstraction -
+a genuine TypeScript interface (`reserveForCart`, `releaseForCart`,
+`releaseCart`, `getCartAdmissionAvailability`), the first interface-typed
+DI seam in this codebase. `CheckoutReservationFacade implements
+ReservationGateway` and is the sole implementation. The module binds both:
+
+```ts
+providers: [
+  CheckoutReservationFacade,
+  { provide: RESERVATION_GATEWAY, useExisting: CheckoutReservationFacade },
+],
+exports: [RESERVATION_GATEWAY],
+```
+
+`RESERVATION_GATEWAY` (a `Symbol` token) is the **only** exported
+dependency boundary from `CheckoutReservationModule` - `useExisting`
+guarantees exactly one instance, addressable two ways: the concrete class
+for internal use, the token for every future external consumer (a future
+`CartService` integration, C4, C5, C6). `CheckoutReservationFacade`
+itself is not exported; a module that only imports
+`CheckoutReservationModule` cannot resolve it directly.
+`CheckoutReservationModule` remains unwired - not imported by
+`CartModule`, `AppModule`, or any other production module.
+
+**Reserve routing** (per `ReservationEngineMode`):
+- `LEGACY`: legacy `reserve` only.
+- `MIRROR`: legacy write first, unwrapped - a thrown legacy exception
+  propagates untouched and the mirror write is never reached, so the
+  customer can never receive a false success. Once legacy succeeds, a
+  cart-scoped mirror write is attempted best-effort; its outcome never
+  changes the customer-facing result.
+- `CART_SCOPED`: cart-scoped `reserveOrRenew` only, legacy never called.
+- `DRAINING`: immediate `{ok:false, mode:'DRAINING',
+  code:'MODE_NOT_ADMITTING'}` - reserve, increase, renew, and any
+  desired-quantity decrease are all uniformly rejected; the facade never
+  reads current reservation quantity to special-case a decrease. A full
+  release remains the only supported C3 drainage mechanism (see below) -
+  partial non-renewing quantity reduction during `DRAINING` is explicitly
+  deferred to a future unit, and must not reuse `reserveOrRenew` if ever
+  built (`reserveOrRenew` can renew reservation lifetime, which conflicts
+  with `DRAINING`'s no-renewal invariant); it would need a dedicated
+  operation that never creates or increases a hold, never changes
+  `expiresAt`/`absoluteExpiresAt`/`lastRenewedAt`, and only atomically
+  reduces the product-total by the exact delta.
+
+**Release routing**:
+- `LEGACY`: legacy `release` only.
+- `MIRROR`: legacy release first, then a best-effort cart-scoped mirror
+  release; mirror cleanup failure is non-blocking to the customer result.
+- `CART_SCOPED` and `DRAINING`: cart-scoped `releaseReservation` only -
+  **full cleanup remains allowed while `DRAINING`**, since the entire
+  point of a rollback in progress is for existing holds to shrink toward
+  zero. "No new admission" and "no cleanup" are deliberately not the same
+  rule.
+
+**Mirror diagnostics** (`MirrorDiagnostic`, strictly informational, never
+able to alter or block the customer result): `SYNCED`, `NOT_ATTEMPTED`,
+or `FAILED` with a reason code from a fixed union -
+`PRODUCT_SUSPENDED` | `CHECKOUT_IN_PROGRESS` | `ACCOUNTING_UNDERFLOW` |
+`UNKNOWN_INFRA_FAILURE`. No `REDIS_ERROR` - nothing in `RedisService`
+exposes a typed transport/error classification that could produce one
+reliably today. `ACCOUNTING_UNDERFLOW` is reported whenever the
+cart-scoped write's own `underflow` field (from the existing, unchanged
+`ReserveOrRenewSuccess`/`ReleaseReservationResult` shapes) is non-null -
+**`SYNCED` is structurally unreachable on an underflowed write**, the
+check runs before that branch. A thrown mirror exception always maps to
+`UNKNOWN_INFRA_FAILURE`; the caught `Error`/its message is never exposed,
+only a structured `{cartId, productId, mode, operation, reasonCode}` log
+line.
+
+**`releaseCart(cartId, productIds)`**: caller-supplied product ids only -
+no Redis/catalog scan (legacy storage has no cart-wide index at all;
+matches `OrdersService.checkout`'s existing precedent of deriving the
+product list from durable `cart.items`). Deduplicates, preserves
+first-seen order, and resolves `ReservationEngineMode` **exactly once**
+for the whole call (`releaseForCartInMode`, the private routing helper,
+never re-reads mode) - every item in one `releaseCart` operation is
+guaranteed the same routing semantics even if an administrator changes
+mode mid-call. No new whole-cart Lua script - implemented as a loop over
+the same per-item release path `releaseForCart` itself uses.
+
+**`getCartAdmissionAvailability`** is a pure, unmodified delegation to
+`ReservationAvailabilityService.getCartAdmissionAvailability` (C2) - no
+new arithmetic, no mode logic, no suspect handling, and no general
+(no-cart) availability method on this interface at all - `CartService` is
+the only intended consumer of this narrow, cart-admission-only surface.
+
+**Explicitly out of scope for C3** (deferred to later units): `Cart`/
+`Product`/`PriceLock`/`CheckoutAttempt` persistence, the compensation
+ledger's actual persistence, idempotency (no `operationId` or correlation
+field exists anywhere in `ReservationGateway`/`CheckoutReservationFacade`/
+`MirrorDiagnostic` - C5 owns that contract and may extend the gateway
+signature when it actually exists), payment, and the scheduler.
+`customerId`/`cartId` ownership remains a **caller precondition** -
+`reserveForCart`'s `customerId` is trusted only after the future caller
+(a `CartService` integration, not yet built) has already proven the
+authenticated customer owns `cartId`; C3 performs syntactic identifier
+validation only and has no `CartRepository`/`ProductsRepository`/
+`PrismaService` dependency of any kind.
+
+Validated with 231 backend suites / 1971 tests passing (97.36%
+statements / 93.90% branches / 97.08% functions / 97.28% lines coverage),
+including real-Redis proof that a `MIRROR` accounting-underflow write
+still leaves the legacy reservation correct and the customer result
+successful, and that `DRAINING` permits a full release to drain a
+genuine `CART_SCOPED`-era hold to zero.
+
 ## Module architecture (revised)
 
 ```

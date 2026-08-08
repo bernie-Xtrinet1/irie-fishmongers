@@ -481,3 +481,55 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   full repository. It performs no reservation writes of any kind -
   proven structurally (mocked write methods rejecting if called) and
   against real Redis (before/after keyspace snapshot, byte-identical).
+
+## Phase 16A.0-C, Unit C3 (reservation gateway facade) - implemented (2026-08-08, `7fddac0`)
+
+- **`ReservationGateway` is a real TypeScript interface, not a
+  concrete-facade-only surface** - the first interface-typed DI seam in
+  this codebase, deliberately introduced (reversing an earlier
+  recommendation against it) so later C4/C5/C6 work, and any eventual
+  `CartService` integration, depends on a small stable contract rather
+  than one large facade class. Bound via `useExisting` (one instance, two
+  access paths), never a second implementation. Any future genuinely
+  second implementation should still be rare - this pattern is for a
+  narrow, deliberately-chosen seam, not a default to reach for elsewhere.
+- **A module may export only an injection token while keeping the
+  concrete provider unexported.** `CheckoutReservationModule` exports
+  `RESERVATION_GATEWAY` only; `CheckoutReservationFacade` is a provider
+  but not exported, unreachable by any module that only imports
+  `CheckoutReservationModule`. This is now the established pattern for
+  "stable narrow contract over a larger internal class" in this
+  codebase - reuse it before inventing a different mechanism.
+- **`MIRROR` writes are always legacy-first and always best-effort on the
+  new-engine side, permanently.** A thrown legacy exception must
+  propagate untouched (mirror never attempted, customer never receives a
+  false success); a mirror-side failure (typed business failure,
+  accounting underflow, or thrown exception) must never change the
+  customer-facing result once legacy has succeeded. Do not weaken this to
+  make mirror failures blocking, even temporarily - it would defeat the
+  entire purpose of `MIRROR` as a non-disruptive shadow-comparison mode.
+- **`DRAINING` permits full release/cleanup but never a partial
+  desired-quantity decrease, permanently, unless a dedicated non-renewing
+  operation is built.** `reserveOrRenew` can renew reservation lifetime,
+  which conflicts with `DRAINING`'s no-renewal invariant - a future
+  partial-decrease-during-`DRAINING` feature must use a dedicated
+  operation that never creates/increases a hold, never touches
+  `expiresAt`/`absoluteExpiresAt`/`lastRenewedAt`, and only atomically
+  reduces the product-total by the exact delta. Do not implement partial
+  decrease by reusing `reserveOrRenew` with a lower quantity.
+- **`releaseCart` must resolve `ReservationEngineMode` exactly once per
+  call, never per item.** The private routing helper
+  (`releaseForCartInMode`) must never itself query mode - only the public
+  entry points (`releaseForCart`, `releaseCart`) may. This guarantees
+  every item in one logical `releaseCart` operation uses identical
+  routing semantics even if mode changes mid-call.
+- **No `operationId`/correlation field exists anywhere in C3's public or
+  private surface.** C5 owns the idempotency/correlation contract and may
+  extend `ReservationGateway`'s signature when it actually exists - do
+  not add a speculative correlation parameter before that unit is
+  designed.
+- **`CheckoutReservationModule` remains completely unwired** - no
+  production caller (`CartService`, `ProductsService`, `OrdersService`,
+  any controller) imports it or resolves `RESERVATION_GATEWAY`; confirmed
+  via `git grep` across the full repository. `CartService` continues to
+  call `InventoryReservationsService`'s legacy methods directly.

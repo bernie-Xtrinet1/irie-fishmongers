@@ -1019,3 +1019,79 @@ all pushed and present on `origin/develop`.
   `reservation-engine-mode.module.ts`'s provider/export list.
 - Commit `a89aff8` (`feat(checkout): add mode-aware reservation
   availability`), pushed to `origin/develop`.
+
+## 2026-08-08 (cont.) - Phase 16A.0-C, Unit C3: reservation gateway facade (`7fddac0`)
+
+- Six new files under `backend/src/modules/checkout-reservation/`:
+  `checkout-reservation.module.ts`, `types/reservation-gateway.types.ts`,
+  `services/checkout-reservation-facade.service.ts` and three spec files
+  (`checkout-reservation-facade.service.spec.ts`,
+  `checkout-reservation-facade-mirror.service.spec.ts`,
+  `checkout-reservation-facade.redis.integration.spec.ts` - the unit spec
+  split proactively to stay under the 400-line cap).
+- Introduced a real `ReservationGateway` TypeScript interface
+  (`reserveForCart`/`releaseForCart`/`releaseCart`/
+  `getCartAdmissionAvailability`) - the first interface-typed DI seam in
+  this codebase, deliberately chosen over a concrete-facade-only surface
+  so later C4/C5/C6 work depends on a narrow, stable contract rather than
+  one large facade class. `RESERVATION_GATEWAY` (`Symbol`) is the
+  injection token.
+- `CheckoutReservationFacade implements ReservationGateway`, wired via
+  `useExisting` - one instance, two access paths (concrete class for
+  internal use, token for every external consumer). Module exports only
+  `RESERVATION_GATEWAY`; the concrete class is a provider but not
+  exported, proven by a metadata-reflection test
+  (`Reflect.getMetadata(MODULE_METADATA.EXPORTS, ...)` equals exactly
+  `[RESERVATION_GATEWAY]`) and a same-instance-via-token test.
+- LEGACY/MIRROR/CART_SCOPED/DRAINING write routing implemented exactly
+  per the approved contract - MIRROR is legacy-first with a thrown legacy
+  exception propagating untouched (mirror never attempted, no false
+  success possible); DRAINING rejects all reserve-shaped calls uniformly,
+  with zero reads of current reservation quantity, and explicitly does
+  NOT attempt a partial-decrease special case (reserveOrRenew can renew
+  reservation lifetime, which would conflict with DRAINING's no-renewal
+  invariant - deferred to a future dedicated operation if ever needed,
+  never built by reusing reserveOrRenew).
+- `ACCOUNTING_UNDERFLOW` added to `MirrorFailureReasonCode` after
+  reviewer feedback identified that mirror synchronization needs to
+  inspect the underlying `underflow` field
+  (`ReserveOrRenewSuccess`/`ReleaseReservationResult`), not just
+  ok/not-ok - `SYNCED` is structurally unreachable on an underflowed
+  write since the check runs before that branch.
+- `releaseCart` resolves `ReservationEngineMode` exactly once via a
+  private `releaseForCartInMode(mode, ...)` helper that never re-queries
+  mode - refactored after reviewer feedback flagged that calling the
+  public `releaseForCart` repeatedly inside the loop would have re-read
+  mode per item, risking inconsistent routing if mode changed
+  mid-operation.
+- `getCartAdmissionAvailability` is a pure delegation to
+  `ReservationAvailabilityService` (C2) - confirmed by a byte-for-byte
+  result-equality test; no general (no-cart) availability method exists
+  on this interface, since `CartService` is the only intended consumer
+  and only ever needs cart-admission semantics.
+- No `operationId` anywhere (removed after reviewer feedback - C5 owns
+  idempotency/correlation and may extend the gateway signature when that
+  contract actually exists). No compensation ledger persistence. No
+  Prisma/`CartRepository`/`ProductsRepository`/`PriceLockService`
+  dependency - confirmed via constructor-arity check and the fact that
+  every test in the suite only ever provides the three expected mocks.
+- 43 new unit tests (25 + 18 across the two split files) plus 10 new
+  real-Redis tests (isolated logical DB 1, `FLUSHDB` per test - same
+  convention as C1/C2). Real-Redis coverage includes a genuine `MIRROR`
+  accounting-underflow scenario, manufactured via the same
+  stored-total-corruption technique already established by Unit 2.3's
+  own tests (write a real hold, then directly `SET` the product-total
+  key below what the next operation will subtract) - confirms the legacy
+  side stays correct and the customer result stays successful even when
+  the new-engine write underflows.
+- Full backend suite 228 -> 231 suites, 1926 -> 1971 tests, exit 0.
+  CI-equivalent coverage 97.36%/93.90%/97.08%/97.28% (80/90/90/90
+  threshold), exit 0 - `checkout-reservation-facade.service.ts` and
+  `reservation-gateway.types.ts` both at 100/100/100/100. `AppModule`
+  bootstrap 4/4, confirming `CheckoutReservationModule` is still
+  unreachable from the app's real module graph.
+- Confirmed no C4/caller work exists: no existing production file
+  modified (`git status --short` showed only the six new files); no
+  `CartService`/`ProductsService`/`OrdersService`/Prisma change anywhere.
+- Commit `7fddac0` (`feat(checkout): add reservation gateway facade`),
+  pushed to `origin/develop`.
