@@ -411,3 +411,33 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   calls `PriceLockService`; `OrdersService.checkout` still reads
   `item.product.price` live and hardcodes `currency: 'JMD'`. Confirmed via
   `git grep` across the full repository.
+
+## Phase 16A.0-C, Units C0/C1 (reservation-engine mode control) - implemented (2026-08-08, `357e35b`/`8978f03`)
+
+- **`DRAINING` is a dedicated, permanent 4th `ReservationEngineMode` value
+  - never a reuse of `MIRROR` as a rollback-paused state.** `MIRROR`
+  actively mirrors new writes to the cart-scoped engine; a rollback in
+  progress must not keep growing the system being drained. Any future
+  work must not collapse these two states back together.
+- **`CART_SCOPED -> LEGACY` is never a direct transition, permanently.**
+  Rollback must always pass through `DRAINING` first. This is enforced
+  structurally (the pair is absent from `ReservationEngineModeService`'s
+  transition set), not by convention - do not add a shortcut later without
+  revisiting this decision explicitly.
+- **Append-only config-table writes are serialized by a Postgres
+  transaction-scoped advisory lock**
+  (`pg_advisory_xact_lock(hashtext('reservation_engine_mode_transition'))`),
+  not a uniqueness constraint on historical rows - multiple historical
+  rows remain expected and normal; only the read-validate-write sequence
+  is serialized.
+- **The `DRAINING -> LEGACY` rollback gate checks two independent Redis
+  signals (aggregated product-total keys and the cart-scoped reservation
+  index) and must always distinguish a genuine outstanding hold
+  (`ROLLBACK_BLOCKED`) from the two signals disagreeing
+  (`ROLLBACK_STRUCTURE_DRIFT`).** Drift always takes priority and fails
+  closed - it must never be silently folded into "holds outstanding" or
+  auto-resolved by trusting one signal over the other.
+- **`ReservationEngineModeModule` remains completely unwired** - no
+  production caller (`CartService`, `ProductsService`, `OrdersService`,
+  any controller) calls `getCurrentMode()`/`setMode()`; confirmed via
+  `git grep` across the full repository.

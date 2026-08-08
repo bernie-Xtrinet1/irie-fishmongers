@@ -133,16 +133,69 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     and hardcodes `currency: 'JMD'` at the payment-initiation call.
     Neither service was touched by Phase B.
 
-## Next task: Phase 16A.0-C - read-only Phase C gate resolution and cutover planning only
+- **Phase 16A.0-C, Units C0 and C1 are complete and pushed**: `357e35b`
+  (`chore(inventory): register checkout reservation services`), `8978f03`
+  (`feat(checkout): add reservation engine mode control`) - both on
+  `origin/develop`.
+  - **C0**: `InventoryModule` now registers/exports
+    `CheckoutReservationStateService`, `CheckoutLeaseStateService`,
+    `CheckoutReservationRecoveryService`, and
+    `CheckoutPendingReconciliationService` - pure DI wiring, zero
+    behavior change (verified via full `AppModule` bootstrap). **Still no
+    production caller consumes any of them** - this only makes them
+    reachable within `InventoryModule`'s own dependency graph for a
+    future consumer that doesn't exist yet.
+  - **C1**: `ReservationEngineModeConfig` (Postgres, append-only,
+    `MarketplaceModeConfig`-shaped) + `ReservationEngineModeService` +
+    `ReservationEngineModeConfigRepository`, in a standalone, unwired
+    `ReservationEngineModeModule`.
+    - Persisted modes: `LEGACY`, `MIRROR`, `CART_SCOPED`, `DRAINING` -
+      `DRAINING` is a dedicated 4th enum value (never a reuse of
+      `MIRROR`) representing "legacy authoritative, zero new writes to
+      the new engine" during an in-progress rollback.
+    - The full transition graph is enforced in
+      `ReservationEngineModeService` (`VALID_TRANSITIONS`, no self-loops):
+      `LEGACY<->MIRROR`, `MIRROR->CART_SCOPED`, `CART_SCOPED<->DRAINING`,
+      `DRAINING->LEGACY` (gated). `CART_SCOPED->LEGACY` directly is
+      structurally absent - not merely discouraged.
+    - `setMode`'s entire read-validate-write sequence runs inside one
+      Postgres transaction serialized by a transaction-scoped advisory
+      lock (`pg_advisory_xact_lock(hashtext(...))`), closing the
+      append-only-table concurrent-write race - proven with a real
+      Postgres test where two racing transitions from the same starting
+      mode produce exactly one winner and one `INVALID_TRANSITION` loser.
+    - The `DRAINING -> LEGACY` rollback gate checks **two independent
+      Redis signals** - aggregated product-total keys and the cart-scoped
+      reservation index - and distinguishes a genuine outstanding hold
+      (`ROLLBACK_BLOCKED`) from the two signals disagreeing
+      (`ROLLBACK_STRUCTURE_DRIFT`, which takes priority and fails closed
+      until reconciled).
+    - `PrismaService` is injected into the service solely to open
+      `$transaction`; every actual persistence call goes through
+      `ReservationEngineModeConfigRepository` - confirmed via direct
+      inspection.
+  - 39 new tests across 4 files (service unit, repository real-Postgres,
+    rollback gate real-Redis, mode-change real-Postgres concurrency). Full
+    backend suite 226 suites / 1892 tests, exit 0. Coverage 97.26%
+    statements / 93.66% branches / 97.00% functions / 97.18% lines
+    (80/90/90/90 threshold), exit 0. `reservation-engine-mode.service.ts`
+    at 100/100/100/100. `AppModule` bootstrap 4/4. Prisma validate/
+    generate/migrate-status/drift all clean.
+  - **No C2 work exists** - no `CheckoutReservationFacade`,
+    `ReservationGateway`, combined-availability bridge, or any
+    `CartService`/`ProductsService`/`OrdersService` file was touched.
 
-Per ADR-007's Implementation sequence table, Phase C
-(`CheckoutReservationFacade`, feature flags, shadow mode, combined
-availability) remains blocked on open decisions 1 (Redis-first vs.
-Postgres-first cart writes), 9 (`addItem` idempotency, dependent on 1),
-and 10 (rollout-flag mechanism) - **none resolved yet**. The next session
-is read-only planning to resolve these gates and produce an integration
-plan; it does not implement Phase C. See `.claude/next-session.md` for the
-exact scope and explicit prohibitions.
+## Next task: Phase 16A.0-C2 - combined-availability bridge, read-only planning first
+
+Per the approved sequencing, the next session inspects and defines the
+combined-availability formula's exact implementation (`Available =
+Product.quantityAvailable - LegacyReserved - NewReserved`) - ownership,
+read paths, own-cart exclusion, suspect-flag fail-closed behavior,
+zero-floor behavior, per-mode routing (`LEGACY`/`MIRROR`/`CART_SCOPED`/
+`DRAINING`), caller impact, and whether C2 can remain fully unwired. It
+does not implement `CheckoutReservationFacade` unless the C2 plan actually
+needs it, and does not touch `CartService`/`ProductsService`. See
+`.claude/next-session.md` for the exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

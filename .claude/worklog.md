@@ -846,3 +846,83 @@ all pushed and present on `origin/develop`.
   `OrdersService` were not touched.
 - Commit `16fc405` (`feat(checkout): add price lock service`), pushed to
   `origin/develop`.
+
+## 2026-08-08 - Phase 16A.0-C, Units C0 and C1: reservation-engine mode control (`357e35b`, `8978f03`)
+
+- **C0**: registered `CheckoutReservationStateService`/
+  `CheckoutLeaseStateService`/`CheckoutReservationRecoveryService`/
+  `CheckoutPendingReconciliationService` as `InventoryModule` providers/
+  exports - these four classes existed since Units 2.4.1-2.4.4 but were
+  never part of the Nest DI graph, only constructed directly in their own
+  spec files. Pure wiring, verified zero behavior change by running the
+  full `AppModule`/`health.e2e-spec.ts` bootstrap before and after (would
+  fail loudly on any DI resolution error). Still no production caller.
+- **C1**: `ReservationEngineModeConfig` (append-only, `MarketplaceModeConfig`-
+  shaped) + `ReservationEngineModeService`/`ReservationEngineModeConfigRepository`,
+  standalone unwired `ReservationEngineModeModule`.
+  - `ReservationEngineMode` enum: `LEGACY`/`MIRROR`/`CART_SCOPED`/
+    `DRAINING`. `DRAINING` is a dedicated state (never a reuse of
+    `MIRROR`) - legacy stays authoritative, but the new engine receives
+    zero new writes at all during an in-progress rollback, so existing
+    holds can only shrink, never grow.
+  - Full transition graph enforced via an explicit `VALID_TRANSITIONS`
+    set, no self-loops: `LEGACY<->MIRROR`, `MIRROR->CART_SCOPED`,
+    `CART_SCOPED<->DRAINING`, `DRAINING->LEGACY` (gated).
+    `CART_SCOPED->LEGACY` directly is structurally impossible, not merely
+    discouraged - confirmed by both a unit test and a real-Redis
+    integration test.
+  - **Append-only concurrency race closed**: `setMode`'s entire
+    read-validate-write sequence runs inside one Postgres transaction,
+    serialized by a transaction-scoped advisory lock
+    (`pg_advisory_xact_lock(hashtext('reservation_engine_mode_transition'))`) -
+    without it, two concurrent admin calls could both read the same stale
+    "current" mode and both succeed, leaving an ambiguous current state.
+    Proven with a real-Postgres test: two transitions racing from the
+    same starting mode produce exactly one winner and one loser correctly
+    classified `INVALID_TRANSITION` (the loser is serialized behind the
+    winner, re-reads the *new* current mode, and its own stale intent is
+    no longer valid). `PrismaService` is injected into the service solely
+    to open `$transaction` - confirmed via direct inspection that every
+    actual `reservationEngineModeConfig` read/write goes through the
+    repository, never `this.prisma.reservationEngineModeConfig.*`
+    directly.
+  - **Rollback gate checks two independent Redis signals** - aggregated
+    `product-total` keys and the cart-scoped reservation index - reusing
+    `InventoryReservationsService.getActiveReservation` for genuine
+    liveness rather than trusting raw index membership (which can go
+    stale). Distinguishes a genuine outstanding hold (`ROLLBACK_BLOCKED`)
+    from the two signals disagreeing (`ROLLBACK_STRUCTURE_DRIFT` - a
+    distinct, data-integrity-flavored condition that takes priority and
+    fails closed until reconciled, per ADR-007 Decision 8's "outstanding
+    reservations vs. data-structure drift" distinction).
+  - Real-Redis test matrix (5 scenarios, all passing): both structures
+    empty -> allowed; both non-zero and agreeing -> `ROLLBACK_BLOCKED`;
+    total-only non-zero (manufactured) -> `ROLLBACK_STRUCTURE_DRIFT`;
+    index-only live (manufactured) -> `ROLLBACK_STRUCTURE_DRIFT`;
+    `CART_SCOPED->LEGACY` direct -> `INVALID_TRANSITION`. Test isolation
+    uses a dedicated logical Redis DB (index 1, `FLUSHDB`'d per test) -
+    the shared dev/test instance's default DB 0 is known to carry ~1350
+    leftover `inv:reserved:*` keys from unrelated prior test runs across
+    this codebase's history (a pre-existing test-hygiene gap, flagged as
+    its own background task, not fixed here); production code still
+    scans the real `inv:reserved:product-total:{*}`/
+    `inv:reserved:cart-index:{*}` prefixes unchanged.
+  - 39 new tests across 4 files (service unit spec, repository real-
+    Postgres spec, rollback-gate real-Redis spec, mode-change real-
+    Postgres concurrency spec). Full backend suite 226 suites / 1892
+    tests, exit 0. CI-equivalent coverage 97.26%/93.66%/97.00%/97.18%
+    (80/90/90/90 threshold), exit 0 - `reservation-engine-mode.service.ts`
+    itself at 100/100/100/100. `AppModule` bootstrap 4/4. Prisma
+    validate/generate/migrate-status/drift all clean, no drift.
+  - Confirmed no C2 work exists: no `CheckoutReservationFacade`,
+    `ReservationGateway`, or combined-availability bridge file anywhere;
+    `CartService`/`ProductsService`/`OrdersService` untouched.
+- Added a new Decision 8 section to `ADR-007` (state-transition table,
+  rollback invariants, compensation-reconciler ownership intent for the
+  not-yet-built C4, the recovery-idempotency invariant, and the
+  "outstanding reservations vs. data-structure drift" distinction) -
+  written *before* any C0/C1 code, per explicit instruction.
+- Commit `357e35b` (`chore(inventory): register checkout reservation
+  services`), followed by `8978f03` (`feat(checkout): add reservation
+  engine mode control`) - both pushed to `origin/develop` as two separate
+  commits, exactly as proposed.
