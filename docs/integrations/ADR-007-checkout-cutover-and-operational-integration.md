@@ -204,6 +204,62 @@ endpoint, expiry checks, one-cart/one-currency enforcement) lives in a new
 `PriceLockService`, not embedded inside `CartService`. `CartService` calls
 it; it does not reimplement it. This is Phase B.
 
+**Phase B, implemented, unwired**: `PriceLockService`/`PriceLockRepository`
+exist in a standalone `PriceLockModule`, not registered in `AppModule` or
+any other production module - `CartService` does not call it yet; that
+integration is separate, later work. The following are now proven and
+recorded here as implementation fact, not forward-looking design:
+
+1. `PRICE_LOCK_TTL_SECONDS = 900` (900 seconds) - an independent business
+   constant, not aliased to or derived from `RESERVATION_TTL_SECONDS`.
+2. `Product.currency` is authoritative for an item's currency - confirmed
+   to already exist as a real per-row column (`String @default("JMD")`),
+   not merely a global constant.
+3. `Cart.currency` is the cart-wide currency invariant, established
+   atomically (`CartRepository.establishCurrencyIfCompatible`, a single
+   conditional `updateMany` - `id = cartId AND customerId = customerId AND
+   (currency IS NULL OR currency = productCurrency)`) before any
+   `CartItem` lock write, never via a read-then-write.
+4. `CartItem.lockedCurrency` snapshots `Product.currency` at lock creation
+   or explicit reconfirmation time - never client-supplied.
+5. Price locks and Redis stock reservations have fully independent
+   timers, confirmed by construction: `PriceLockService` has no Redis
+   dependency at all.
+6. Ordinary reservation renewal does not renew `priceLockedAt` - only
+   `createPriceLock` (first lock) or explicit `reconfirmPrice` write it.
+7. A valid, complete price lock survives ordinary `Product` price and
+   currency changes until the lock's own `PRICE_LOCK_TTL_SECONDS` expiry -
+   `createPriceLock`'s existing-lock classification never reads `Product`
+   for an already-COMPLETE lock. The lock is instead checked against the
+   stored `Cart.currency` invariant (not current `Product.currency`) -
+   `CART_CURRENCY_MISSING`/`CART_CURRENCY_MISMATCH` take priority over the
+   TTL check, so an existing lock can still fail closed if the cart-wide
+   invariant itself has been violated, without ever consulting the vendor's
+   current price.
+8. Only explicit `reconfirmPrice` may replace a COMPLETE existing lock's
+   values - `createPriceLock` called again against a COMPLETE lock never
+   overwrites it (`ALREADY_LOCKED`, or `PRICE_LOCK_EXPIRED` with zero
+   writes if stale).
+9. A partially-populated lock (any combination of `lockedUnitPrice`/
+   `lockedCurrency`/`priceLockedAt` other than all-null or all-non-null)
+   is `PRICE_LOCK_STATE_INVALID` and fails closed - never silently
+   repaired or treated as a normal state by any of `createPriceLock`,
+   `reconfirmPrice`, `getPriceLockState`, or `validateCartPriceLocks`.
+10. Initial cart-currency establishment uses one atomic conditional
+    database update (item 3 above), verified under real-Postgres
+    concurrency: two `createPriceLock` calls racing different-currency
+    products against the same null-currency cart produce exactly one
+    winner and leave the loser's `CartItem` lock fields untouched.
+11. `PriceLockService` is implemented in a standalone, currently-unwired
+    `PriceLockModule` (importing `CartModule`/`ProductsModule` for their
+    already-exported repositories - no new production-module exports were
+    needed) - confirmed via repository-wide search that nothing outside
+    `PriceLockModule` itself references it.
+12. Final-`CartItem`-removal resetting `Cart.currency` to `null` is a
+    **recorded, approved rule, not yet implemented** - it requires a
+    `CartService` change and belongs to the future `CartService`
+    integration/cutover phase, not Phase B.
+
 ## Module architecture (revised)
 
 ```
@@ -217,8 +273,9 @@ InventoryModule
 CheckoutAttemptModule
   exports: CheckoutAttemptRepository, CheckoutAttemptService
 
-PriceLockModule (or a service within CartModule - decide at Phase B)
-  exports: PriceLockService
+PriceLockModule   <- implemented as standalone (Phase B decision, see
+                       Decision 7); imports CartModule, ProductsModule
+  exports: PriceLockService, PriceLockRepository
 
 CheckoutModule
   imports: AuthModule, CartModule, InventoryModule, CheckoutAttemptModule,
@@ -236,7 +293,7 @@ them import it back.
 | Phase | Scope | Blocked on |
 |---|---|---|
 | A | `CheckoutAttemptRepository`, `CheckoutAttemptService`, repository tests | Nothing - ready now |
-| B | `PriceLockService`, cart currency enforcement, price-lock validation | Open decisions 4 (TTL value), 8 (`Product` currency field) |
+| B | `PriceLockService`, cart currency enforcement, price-lock validation | **Complete** - open decisions 4, 8 resolved |
 | C | `CheckoutReservationFacade`, feature flags, shadow mode, combined availability - **no production cutover** | Open decisions 1 (resolved empirically by C's own shadow comparison, not upfront), 9 (`addItem` idempotency, dependent on 1), 10 (rollout-flag mechanism) |
 | D | `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring, `checkoutMark` integration | A, C |
 | E | Payment review (separate planning session), then payment compensation and duplicate-callback protection | Its own planning session - open decision 5 |
@@ -256,11 +313,11 @@ resolved.
 1. **Redis-first vs. Postgres-first cart writes** - **OPEN**, blocks completion of Phase C (the step that replaces `CartService`'s legacy calls) and, transitively, Phase D. Deferred to Phase C's own shadow-mode comparison rather than decided upfront (see Decision 2 above).
 2. Server-generated vs. client-generated idempotency keys - **RESOLVED: server-generated** (see Decision 1).
 3. Can a `FAILED` `CheckoutAttempt` retry with the same idempotency key? - **RESOLVED: no - a retry after `FAILED` always uses a new idempotency key.**
-4. **Price-lock duration (`PRICE_LOCK_TTL_SECONDS`)** - **OPEN**, blocks Phase B. Needs a business-supplied value; not set anywhere in `decisions.md` today.
+4. Price-lock duration (`PRICE_LOCK_TTL_SECONDS`) - **RESOLVED: 900 seconds** (see Decision 7, item 1), implemented as an independent constant, never derived from `RESERVATION_TTL_SECONDS`.
 5. **Payment-failure compensation behavior** - **OPEN**, blocks Phase E. Explicitly deferred to a dedicated payment-integration planning session (see Decision 4); not designed by this ADR.
 6. Scheduler distributed-lock mechanism - **RESOLVED: PostgreSQL advisory lock, not Redis** (see Decision 5).
 7. **Legacy-drain wait time** - **OPEN**, blocks Phase H. Direct conflict between a prior session's stated 70 minutes and `reservation-lifecycle.md` §8's approved 20 minutes. One authoritative value must be set before Phase H; not resolved by this ADR.
-8. **Does `Product` carry its own currency field**, or is currency purely cart-level (JMD-only today)? - **OPEN**, blocks Phase B. Verify before `PriceLockService` is designed in detail.
+8. Does `Product` carry its own currency field, or is currency purely cart-level? - **RESOLVED: yes** - `Product.currency` (`String @default("JMD")`) is a real per-row column, confirmed by direct schema inspection, and is the authoritative source `PriceLockService` reads from (see Decision 7, item 2).
 9. **`addItem`'s non-idempotent increment semantics** - **OPEN**, blocks Phase C/D. Depends on open decision 1's outcome (the write-order/idempotency redesign); not resolved separately from it.
 10. **Rollout-flag mechanism (exact implementation)** - **OPEN**, blocks Phase C. Decision 2 above settles the *direction* (allowlist-based, evaluated per-request, not a bootstrap-level toggle) but not the *mechanism* - env var, DB-backed allowlist table (following the `MarketplaceModeConfig` precedent), or something else. This is a new pattern for this codebase with no existing precedent (`ENABLE_SCHEDULER` is the only prior art, and it is bootstrap-level/all-or-nothing, which this explicitly is not) and needs its own explicit sign-off before Phase C begins.
 11. Ownership of the combined-availability bridge - **RESOLVED**: assigned to `CheckoutReservationFacade.getAvailability` in Phase C (see Decision 6). This closes what was open decision 9 in the original read-only plan; recorded here so it is traceable rather than silently dropped.

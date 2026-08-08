@@ -388,3 +388,26 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   `OrdersService`, payment, scheduler, or module registration references
   `CheckoutAttemptRepository`/`CheckoutAttemptService`/`CheckoutAttemptModule`
   - confirmed via `git grep` across the full repository.
+
+## Phase 16A.0-B (PriceLockService) - implemented (2026-08-07, `16fc405`)
+
+- **`PRICE_LOCK_TTL_SECONDS = 900`** - an independent business constant,
+  deliberately never aliased to or derived from `RESERVATION_TTL_SECONDS`
+  even though both currently equal 900. Resolves ADR-007 open decision 4.
+- **`Product.currency` is the authoritative source for an item's
+  currency** - confirmed to already exist as a real per-row column
+  (`String @default("JMD")`), not a global constant. `CartItem.
+  lockedCurrency` and `Cart.currency` are both snapshotted/established
+  from it; never client-supplied. Resolves ADR-007 open decision 8.
+- **A partially-populated price lock (`lockedUnitPrice`/`lockedCurrency`/
+  `priceLockedAt` in any combination other than all-null or all-non-null)
+  is `PRICE_LOCK_STATE_INVALID` and fails closed everywhere** -
+  `createPriceLock`, `reconfirmPrice`, `getPriceLockState`, and
+  `validateCartPriceLocks` all treat it as a distinct, never-auto-repaired
+  state - reconfirmation is never used as a corruption-repair mechanism.
+- **`PriceLockModule` remains completely unwired until a separately
+  approved integration unit**, same standing as every other unit in this
+  phase: `CartService` still reads `item.product.price` live and never
+  calls `PriceLockService`; `OrdersService.checkout` still reads
+  `item.product.price` live and hardcodes `currency: 'JMD'`. Confirmed via
+  `git grep` across the full repository.

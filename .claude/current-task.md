@@ -74,14 +74,11 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   locking for the future scheduler, the combined-availability formula) and
   the phased sequence A-H, with 11 open decisions each explicitly marked
   OPEN (with the phase it blocks) or RESOLVED.
-- **Phase 16A.0-A is complete**, committed locally at `5acbb4b`
-  (`feat(checkout): add checkout attempt persistence`) with a follow-up
-  docs commit at `c8ccdf3`
+- **Phase 16A.0-A is complete and pushed**, `5acbb4b`
+  (`feat(checkout): add checkout attempt persistence`), `c8ccdf3`
   (`docs(architecture): record failure-message sanitization contract in
-  ADR-007`). **Neither commit is pushed yet** - `git push origin develop`
-  failed with `Could not resolve host: github.com` (no network access from
-  the implementing environment). Push these two commits before starting
-  any further work.
+  ADR-007`), `b10da0b` (`chore(docs): close Phase 16A.0-A checkout attempt
+  persistence session`) - all present on `origin/develop`.
   - Delivered: `CheckoutAttemptRepository` (`createOrGetByIdempotencyKey`
     with target-validated P2002 handling, `findById`, conditional
     `updateHeartbeatIfProcessing`/`markCommitted`/`markFailed`, keyset
@@ -100,22 +97,52 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     `CheckoutAttemptService`/`Repository`/`Module` appear nowhere outside
     `backend/src/modules/checkout-attempt/` except in documentation
     (`ADR-007`, `.claude/*.md`).
+  - **`CheckoutAttempt` persistence remains completely unwired** -
+    `CartService`/`OrdersService` still write nothing to it.
+- **Phase 16A.0-B is complete and pushed**, `16fc405`
+  (`feat(checkout): add price lock service`), plus this docs-closeout
+  commit - present on `origin/develop`.
+  - Delivered: standalone `PriceLockModule` (`PriceLockService`,
+    `PriceLockRepository`) - `createPriceLock`, `reconfirmPrice`,
+    `getPriceLockState`, `validateCartPriceLocks`. `PRICE_LOCK_TTL_SECONDS
+    = 900` as an independent constant. `Product.currency` confirmed
+    authoritative (a real per-row column). `Cart.currency` established
+    atomically (`CartRepository.establishCurrencyIfCompatible`, one
+    conditional `updateMany`) before any lock write. Existing-lock
+    classification (COMPLETE valid/expired, the `Cart.currency` invariant,
+    `PARTIAL` -> `PRICE_LOCK_STATE_INVALID`) always precedes any `Product`
+    read - a duplicate `createPriceLock` call, or a race-loss winner
+    reclassification, never re-consults vendor pricing. Only explicit
+    `reconfirmPrice` may replace a `COMPLETE` lock.
+  - 54 new tests across 7 files, full backend suite 1799 -> 1853, 222
+    suites passing, `price-lock.service.ts` at 100% lines/functions/
+    branches/statements. Global coverage 97.21/93.55/96.97/97.12 against
+    an 80/90/90/90 threshold.
+  - Real-Postgres concurrency proven: a two-currency race on a
+    null-currency cart produces exactly one winner (loser's `CartItem`
+    lock fields remain `null`); a same-`CartItem` create race produces
+    exactly one `CREATED`/one `ALREADY_LOCKED` (winner's `priceLockedAt`
+    never renewed).
+  - Zero production wiring: confirmed via `git grep` that
+    `PriceLockService`/`Repository`/`Module` appear nowhere outside
+    `backend/src/modules/price-lock/` except a code comment in
+    `cart.repository.ts` and documentation.
+  - **`PriceLockModule` remains completely unwired** - `CartService` still
+    reads `item.product.price` live and never calls `PriceLockService`;
+    `OrdersService.checkout` still reads `item.product.price` live (twice)
+    and hardcodes `currency: 'JMD'` at the payment-initiation call.
+    Neither service was touched by Phase B.
 
-## Next task: Phase 16A.0-B - see the phase-sequence note below before picking scope
+## Next task: Phase 16A.0-C - read-only Phase C gate resolution and cutover planning only
 
-**Do not default to "CheckoutCoordinatorService + CheckoutReservationFacade"
-without re-checking ADR-007's own gates first.** ADR-007's Implementation
-sequence table blocks Phase C (`CheckoutReservationFacade`) on open
-decisions 1, 9, 10, and Phase D (`CheckoutCoordinatorService`) on both A
-*and* C - none of decisions 1/9/10 have been resolved. The only phases
-Phase A alone unblocks are:
-- **Phase F** (scheduler, heartbeat recovery, Postgres advisory lock) -
-  blocked only on A, which is now done.
-- **Phase B** (`PriceLockService`) - blocked on open decisions 4 (price-
-  lock TTL value) and 8 (`Product` currency field), both still open.
-
-Confirm with the user which phase to start (most likely F, or resolving
-open decisions 4/8 first to unblock B) rather than assuming C/D are ready.
+Per ADR-007's Implementation sequence table, Phase C
+(`CheckoutReservationFacade`, feature flags, shadow mode, combined
+availability) remains blocked on open decisions 1 (Redis-first vs.
+Postgres-first cart writes), 9 (`addItem` idempotency, dependent on 1),
+and 10 (rollout-flag mechanism) - **none resolved yet**. The next session
+is read-only planning to resolve these gates and produce an integration
+plan; it does not implement Phase C. See `.claude/next-session.md` for the
+exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

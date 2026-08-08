@@ -763,6 +763,86 @@ all pushed and present on `origin/develop`.
 - Commit `5acbb4b` (`feat(checkout): add checkout attempt persistence`),
   followed by `c8ccdf3`
   (`docs(architecture): record failure-message sanitization contract in
-  ADR-007`). **Neither is pushed** - `git push origin develop` failed with
-  `Could not resolve host: github.com` from the implementing environment;
-  push manually before continuing.
+  ADR-007`), then `b10da0b`
+  (`chore(docs): close Phase 16A.0-A checkout attempt persistence
+  session`). All three pushed to `origin/develop` (the first push attempt
+  failed with `Could not resolve host: github.com`; a retry after the
+  closeout commit succeeded).
+
+## 2026-08-07 (cont.) - Phase 16A.0-B: PriceLockService (`16fc405`)
+
+- Implemented a standalone, unwired `PriceLockModule`
+  (`PriceLockService`, `PriceLockRepository`) per ADR-007 Decision 7 -
+  imports `CartModule`/`ProductsModule` for their already-exported
+  repositories (`CartRepository`, `ProductsRepository`); no new
+  production-module exports were needed, verified by direct inspection
+  before implementation.
+- `PRICE_LOCK_TTL_SECONDS = 900` - an independent constant, deliberately
+  never aliased to or derived from `RESERVATION_TTL_SECONDS`, resolving
+  ADR-007 open decision 4.
+- Confirmed `Product.currency` (`String @default("JMD")`) is a real
+  per-row column, not a global constant - resolving ADR-007 open decision
+  8 and establishing it as the authoritative source for `CartItem.
+  lockedCurrency` and `Cart.currency`.
+- `Cart.currency` established atomically via
+  `CartRepository.establishCurrencyIfCompatible` - one conditional
+  `updateMany` (`id = cartId AND customerId = customerId AND (currency IS
+  NULL OR currency = productCurrency)`) before any `CartItem` lock write,
+  never a read-then-write.
+- `createLockIfMissing` conditions on all three lock fields being null
+  (not `priceLockedAt` alone), so a partially-corrupted row can never be
+  silently treated as missing and overwritten.
+- **Existing-lock classification always precedes any `Product` read** -
+  corrected mid-round: an existing `COMPLETE` lock is not valid merely
+  because all three fields are non-null, it must also agree with the
+  *stored* `Cart.currency` (never current `Product.currency`) -
+  `CART_CURRENCY_MISSING`/`CART_CURRENCY_MISMATCH` take priority over the
+  TTL check, so an existing lock can fail closed on the cart-wide
+  invariant without ever consulting vendor pricing. The identical
+  three-way check applies to race-loss winner reclassification, reusing
+  the already-loaded `product.currency` rather than re-reading `Cart` or
+  `Product`.
+- `reconfirmPrice` is the only operation that may replace a `COMPLETE`
+  lock's values - gates on `Cart.currency` being non-null *before* ever
+  reading `Product` (`CART_CURRENCY_MISMATCH`/`CART_CURRENCY_MISSING`,
+  zero `Product` reads, zero writes for `MISSING`/`PARTIAL`/missing-cart-
+  currency states); never used as an automatic corruption-repair path.
+- A partially-populated lock (any combination other than all-null or
+  all-non-null) is `PRICE_LOCK_STATE_INVALID` and fails closed everywhere
+  - `createPriceLock`, `reconfirmPrice`, `getPriceLockState`,
+  `validateCartPriceLocks` - never silently repaired.
+- `validateCartPriceLocks` never reads `Product.price` to authorize an
+  existing lock - `PriceLockRepository.findCartWideLockState`'s narrow
+  select structurally has no `Product` join.
+- `Prisma.Decimal` used throughout reads/writes/comparisons; string
+  conversion only at result boundaries. Noted `Decimal.toString()`
+  normalizes trailing zeros (`'500.00'` -> `'500'`).
+- Real-Postgres concurrency proven: two `createPriceLock` calls racing
+  different-currency products against a null-currency cart produce
+  exactly one `CREATED`/one `CART_CURRENCY_MISMATCH`, final `Cart.currency`
+  matches the winner, loser's lock fields stay `null`; two concurrent
+  `createPriceLock` calls on the same missing `CartItem` produce exactly
+  one `CREATED`/one `ALREADY_LOCKED`, winner's `priceLockedAt` never
+  renewed; a partial lock is never overwritten under concurrency either.
+- 54 new tests across 7 files (`price-lock-creation.service.spec.ts`,
+  `price-lock-creation-errors.service.spec.ts`,
+  `price-lock-reconfirm.service.spec.ts`,
+  `price-lock-state-validation.service.spec.ts`,
+  `price-lock-concurrency.service.spec.ts` (real Postgres),
+  `price-lock.repository.spec.ts` (real Postgres), plus 4 new
+  `CartRepository.establishCurrencyIfCompatible` tests). Full backend
+  suite 1799 -> 1853 (222 suites, all passing). CI-equivalent parallel
+  coverage: 97.21% statements, 93.55% branches, 96.97% functions, 97.12%
+  lines (80/90/90/90 threshold), exit 0 - passed cleanly on the first
+  attempt this round (an earlier `test:cov` run had flaked in unrelated,
+  untouched `payments.repository.spec.ts`/`orders.repository.spec.ts`
+  under parallel workers; confirmed non-deterministic via two clean
+  retries before this round even began). `price-lock.service.ts` itself
+  at 100% lines/functions/branches/statements.
+- Confirmed no production wiring: `git grep` for
+  `PriceLockService`/`PriceLockRepository`/`PriceLockModule` outside
+  `backend/src/modules/price-lock/` returns only a code comment in
+  `cart.repository.ts` and documentation. `CartService` and
+  `OrdersService` were not touched.
+- Commit `16fc405` (`feat(checkout): add price lock service`), pushed to
+  `origin/develop`.
