@@ -30,8 +30,12 @@ export class CartRepository {
     });
   }
 
-  findItemById(cartId: string, itemId: string): Promise<CartItem | null> {
-    return this.prisma.cartItem.findFirst({ where: { id: itemId, cartId } });
+  findItemById(
+    cartId: string,
+    itemId: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<CartItem | null> {
+    return client.cartItem.findFirst({ where: { id: itemId, cartId } });
   }
 
   async addOrIncrementItem(cartId: string, productId: string, quantity: number): Promise<void> {
@@ -54,7 +58,33 @@ export class CartRepository {
     await client.cartItem.deleteMany({ where: { cartId } });
   }
 
-  findById(id: string): Promise<Cart | null> {
-    return this.prisma.cart.findUnique({ where: { id } });
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<Cart | null> {
+    return client.cart.findUnique({ where: { id } });
+  }
+
+  // Phase 16A.0-B (see PriceLockService): the sole write path for
+  // Cart.currency - a single atomic conditional updateMany, never a
+  // read-then-write. Matches count===1 exactly when currency was already
+  // null (now established) or already equal to productCurrency (a no-op
+  // write, idempotent under concurrent retries). A zero count means the
+  // caller must re-read to classify CART_NOT_FOUND, OWNERSHIP_MISMATCH, or
+  // a genuine currency conflict - this method never performs that
+  // re-read itself, matching every other conditional-transition method in
+  // this codebase (see ProductsRepository.adjustStock,
+  // CheckoutAttemptRepository's conditional updates).
+  establishCurrencyIfCompatible(
+    cartId: string,
+    customerId: string,
+    productCurrency: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cart.updateMany({
+      where: {
+        id: cartId,
+        customerId,
+        OR: [{ currency: null }, { currency: productCurrency }],
+      },
+      data: { currency: productCurrency },
+    });
   }
 }

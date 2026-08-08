@@ -147,4 +147,43 @@ describe('CartRepository', () => {
     await expect(repository.findById(cart.id)).resolves.not.toBeNull();
     await expect(repository.findById(randomUUID())).resolves.toBeNull();
   });
+
+  describe('establishCurrencyIfCompatible', () => {
+    it('establishes currency on a null-currency cart', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+      expect(cart.currency).toBeNull();
+
+      const { count } = await repository.establishCurrencyIfCompatible(cart.id, customerId, 'JMD');
+
+      expect(count).toBe(1);
+      await expect(repository.findById(cart.id)).resolves.toMatchObject({ currency: 'JMD' });
+    });
+
+    it('is a no-op match when the cart already has the same currency', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+      await repository.establishCurrencyIfCompatible(cart.id, customerId, 'JMD');
+
+      const { count } = await repository.establishCurrencyIfCompatible(cart.id, customerId, 'JMD');
+
+      expect(count).toBe(1);
+    });
+
+    it('matches zero rows on a genuine currency conflict', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+      await repository.establishCurrencyIfCompatible(cart.id, customerId, 'JMD');
+
+      const { count } = await repository.establishCurrencyIfCompatible(cart.id, customerId, 'USD');
+
+      expect(count).toBe(0);
+      await expect(repository.findById(cart.id)).resolves.toMatchObject({ currency: 'JMD' });
+    });
+
+    it('matches zero rows for a customerId that does not own the cart', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+
+      const { count } = await repository.establishCurrencyIfCompatible(cart.id, randomUUID(), 'JMD');
+
+      expect(count).toBe(0);
+    });
+  });
 });
