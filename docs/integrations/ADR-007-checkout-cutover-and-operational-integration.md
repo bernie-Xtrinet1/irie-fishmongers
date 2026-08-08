@@ -260,6 +260,98 @@ recorded here as implementation fact, not forward-looking design:
     `CartService` change and belongs to the future `CartService`
     integration/cutover phase, not Phase B.
 
+### 8. Phase C foundation: `ReservationEngineMode` and rollback safety - design only, implementation begins with C0/C1
+
+Resolved during Phase C's read-only gate-resolution planning, before any
+Phase C source file is edited. This section records the design; C0
+(register the four existing checkout-state services as `InventoryModule`
+providers/exports) and C1 (`ReservationEngineModeConfigRepository` +
+`ReservationEngineModeService`) are the only units authorized so far. C2
+onward remain unauthorized until C1 is reviewed, tested, and separately
+approved.
+
+**State-transition table**:
+
+| From | To | Precondition |
+|---|---|---|
+| `LEGACY` | `MIRROR` | None - starts mirrored writes to the new engine; zero admission-decision change |
+| `MIRROR` | `LEGACY` | None - new-engine keys may still exist but are simply never read again; harmless |
+| `MIRROR` | `CART_SCOPED` | Acceptable `MIRROR`-mode comparison evidence (a human decision informed by logged mismatches; C1 builds no automated promotion gate) |
+| `CART_SCOPED` | `DRAINING` | None - the rollback-initiation step must never itself be blockable |
+| `DRAINING` | `CART_SCOPED` | None - abort rollback |
+| `DRAINING` | `LEGACY` | **Gated** - the rollback-verification check (below) must pass |
+| `LEGACY` | `CART_SCOPED` | **Not a valid direct transition** - must pass through `MIRROR` first; no code path grants the new engine admission authority without prior shadow observation |
+| `LEGACY` \| `CART_SCOPED` | `DRAINING` \| `MIRROR` (respectively, skipping the adjacent state) | **Not valid** - every transition passes through its immediate neighbor only |
+
+`DRAINING` is a 4th explicit mode, not a boolean layered on top of another
+mode (preferring one finite-state field over multiple booleans, per the
+existing Decision 10 direction). It is structurally close to `MIRROR`
+(legacy is authoritative for every admission decision) but differs in one
+critical way: `DRAINING` sends the new engine **zero new writes of any
+kind** - no admissions, no mirroring - so its existing holds can only
+shrink (via their own TTL/absolute-cap expiry or explicit release), never
+grow. `MIRROR` would keep adding new mirrored holds, which is exactly
+wrong for a rollback in progress. The combined-availability bridge
+(`Available = Product.quantityAvailable - LegacyReserved - NewReserved`)
+stays active through every state above except plain `LEGACY`.
+
+**Rollback invariants**:
+
+1. The `DRAINING -> LEGACY` transition is **gated**, never a plain flag
+   write - `ReservationEngineModeService` performs the check itself before
+   calling the repository; the repository has no way to write `LEGACY`
+   from `DRAINING` on its own.
+2. The gate checks **both** the aggregated `product-total` keys and the
+   cart-scoped reservation index independently - see "outstanding
+   reservations vs. data-structure drift" below. Either reporting a
+   non-zero/non-empty result rejects the transition.
+3. **Recovery idempotency**: running the compensation reconciler (owned by
+   C4, not yet implemented) any number of times against the same set of
+   `PENDING` ledger rows produces the same final state as running it once.
+   The reconciler never replays "redo the original write" - it always
+   re-derives the *current actual* state of both systems and computes
+   what, if anything, still needs to change. This is a permanent
+   invariant, not an implementation detail that a future change is free to
+   optimize away.
+
+**Compensation reconciler ownership** (design intent for C4, not yet
+built): a dedicated service, distinct from `ReservationEngineModeService`,
+owning read access to both the `CartReservationCompensation` ledger
+(Postgres) and current reservation state (Redis). It depends on neither
+`CartService` nor `OrdersService`, matching every prior reconciliation-
+shaped component in this codebase (`InventoryReconciliationService`'s
+existing on-demand-only convention - no scheduler dependency is assumed,
+since none exists yet). `ReservationEngineModeService` and the reconciler
+are peers, not layered - the mode service never invokes the reconciler
+directly, and the reconciler never changes `ReservationEngineMode`.
+
+**"Outstanding reservations" vs. "data-structure drift"** - a deliberate
+distinction the rollback gate must not conflate:
+
+- **Outstanding reservations**: a genuinely live, unexpired cart-scoped
+  hold in the new engine - a real customer's real claim on stock. This is
+  the only condition that must actually block rollback.
+- **Data-structure drift**: the fast-path `product-total` projection
+  disagreeing with the ground-truth product-index membership - the same
+  OVERCOUNT/UNDERCOUNT phenomenon `reservation-lifecycle.md` §7 already
+  documents for ordinary operation. This is a bookkeeping inconsistency
+  between two representations of the same reservations, not by itself
+  proof that a live hold exists.
+- **Why checking both independently matters**: if the gate trusted only
+  `product-total` and that projection happened to be OVERCOUNT-drifted
+  (stored higher than reality), rollback would be **falsely blocked**
+  even with zero real holds remaining. If it trusted only the cart-scoped
+  index and that were somehow inconsistent with the total, the reverse
+  false signal is possible. Checking both surfaces a disagreement between
+  them as its own, separate problem - repaired by the existing
+  `reconcileProductReservedTotal` path, never silently resolved by the
+  rollback gate simply picking whichever structure it happened to trust.
+
+Sequence diagrams for the mutation-order and crash-recovery paths, and the
+full `CartReservationCompensation` schema, are deferred to when C4's flows
+are actually implemented and can be verified against real code, rather
+than committed here as still-provisional design sketches.
+
 ## Module architecture (revised)
 
 ```

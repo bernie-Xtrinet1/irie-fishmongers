@@ -57,6 +57,7 @@ model User {
   reviewedUpgradeRequests      VendorUpgradeRequest[]        @relation("UpgradeRequestReviewedBy")
   triggeredDowngrades          VendorDowngradeEvent[]        @relation("DowngradeTriggeredBy")
   marketplaceModeUpdates       MarketplaceModeConfig[]
+  reservationEngineModeUpdates ReservationEngineModeConfig[]
   vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
   fulfillmentDecisions         FulfillmentDecision[]
   triggeredInventoryEvents     InventoryEvent[]
@@ -1899,6 +1900,41 @@ model MarketplaceModeConfig {
   updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@map("marketplace_mode_configs")
+}
+
+// Phase 16A.0-C, Unit C1 (see
+// docs/integrations/ADR-007-checkout-cutover-and-operational-integration.md,
+// Decision 8): the state-transition table lives in the ADR, not here.
+// LEGACY = no interaction with the cart-scoped reservation engine.
+// MIRROR = legacy authoritative, cart-scoped engine mirrors writes for
+// comparison, mirror-write failures never block the customer. CART_SCOPED
+// = cart-scoped engine authoritative. DRAINING = rollback in progress -
+// legacy authoritative like MIRROR, but the cart-scoped engine receives no
+// new writes at all, so its existing holds can only shrink. Additive and
+// unwired: nothing reads this table's value yet.
+enum ReservationEngineMode {
+  LEGACY
+  MIRROR
+  CART_SCOPED
+  DRAINING
+}
+
+// Append-only, mirrors MarketplaceModeConfig/SettlementRateConfig: writing a
+// new mode creates a new row rather than mutating the current one.
+// "Current" is always the most recently created row. The DRAINING ->
+// LEGACY transition is gated by ReservationEngineModeService before this
+// table is ever written with mode = LEGACY from a DRAINING state - this
+// model has no way to enforce that gate itself, by design (persistence
+// only, no business rules - see ADR-007 Decision 8).
+model ReservationEngineModeConfig {
+  id          String                @id @default(uuid())
+  mode        ReservationEngineMode @default(LEGACY)
+  updatedById String?
+  createdAt   DateTime              @default(now())
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("reservation_engine_mode_configs")
 }
 
 // Append-only weighted-scoring configuration for the vendor selection engine
