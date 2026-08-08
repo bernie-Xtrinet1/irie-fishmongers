@@ -111,6 +111,73 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
     });
   });
 
+  // Phase 16A.0-C2: computeAvailableToPurchase and getAvailabilityWithSuspectStatus
+  // now share one private calculation path (suspect-flag read, product-total
+  // read, own-cart add-back, zero-floor). These tests prove that refactor
+  // changed nothing observable about computeAvailableToPurchase's existing
+  // contract, and that the two methods agree exactly when status is OK.
+  describe('computeAvailableToPurchase / getAvailabilityWithSuspectStatus compatibility', () => {
+    it('computeAvailableToPurchase still returns the same number as before the split', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'inv:reserved:product-total-suspect:{product-1}') return Promise.resolve(null);
+        if (key === 'inv:reserved:product-total:{product-1}') return Promise.resolve('4');
+        return Promise.resolve(null);
+      });
+
+      const available = await service.computeAvailableToPurchase('product-1', 10, '');
+
+      expect(available).toBe(6);
+    });
+
+    it('computeAvailableToPurchase still returns exactly 0 on suspect, never a different value', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'inv:reserved:product-total-suspect:{product-1}') return Promise.resolve('1');
+        return Promise.resolve(null);
+      });
+
+      const available = await service.computeAvailableToPurchase('product-1', 100, '');
+
+      expect(available).toBe(0);
+    });
+
+    it('getAvailabilityWithSuspectStatus returns a typed SUSPECT result instead of collapsing to 0', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'inv:reserved:product-total-suspect:{product-1}') return Promise.resolve('1');
+        return Promise.resolve(null);
+      });
+
+      const result = await service.getAvailabilityWithSuspectStatus('product-1', 100, '');
+
+      expect(result).toEqual({ status: 'SUSPECT' });
+    });
+
+    it('getAvailabilityWithSuspectStatus returns the same numeric outcome as computeAvailableToPurchase when OK', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'inv:reserved:product-total-suspect:{product-1}') return Promise.resolve(null);
+        if (key === 'inv:reserved:product-total:{product-1}') return Promise.resolve('3');
+        return Promise.resolve(null);
+      });
+
+      const richer = await service.getAvailabilityWithSuspectStatus('product-1', 10, '');
+      expect(richer).toEqual({ status: 'OK', available: 7 });
+
+      const compat = await service.computeAvailableToPurchase('product-1', 10, '');
+      expect(compat).toBe(7);
+    });
+
+    it('getAvailabilityWithSuspectStatus floors at zero exactly like computeAvailableToPurchase', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'inv:reserved:product-total-suspect:{product-1}') return Promise.resolve(null);
+        if (key === 'inv:reserved:product-total:{product-1}') return Promise.resolve('20');
+        return Promise.resolve(null);
+      });
+
+      const richer = await service.getAvailabilityWithSuspectStatus('product-1', 10, '');
+
+      expect(richer).toEqual({ status: 'OK', available: 0 });
+    });
+  });
+
   describe('reconcileProductReservedTotal', () => {
     function reconciliationJson(overrides: Partial<Record<string, unknown>> = {}): string {
       return JSON.stringify({

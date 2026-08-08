@@ -18,6 +18,12 @@ import {
   RELEASE_RESERVATION_SCRIPT,
   RESERVE_OR_RENEW_SCRIPT,
 } from '../lua/reservation-lua-scripts';
+import {
+  RawScriptUnderflow,
+  flagMalformedReservation,
+  parseScriptResult,
+  toUnderflowDetails,
+} from './inventory-reservations-script-helpers';
 import { ReservationUnderflowDetails } from './reservation-accounting.types';
 
 interface ReservationEntry {
@@ -63,11 +69,6 @@ export interface ReleaseReservationResult {
   underflow: ReservationUnderflowDetails | null;
 }
 
-interface RawScriptUnderflow {
-  reservationQuantity: number;
-  storedTotal: number;
-}
-
 interface RawReserveOrRenewResult {
   err?: 'RESERVATION_CHECKOUT_IN_PROGRESS' | 'RESERVATION_PRODUCT_SUSPENDED';
   ok?: true;
@@ -83,6 +84,14 @@ interface RawReleaseReservationResult {
 }
 
 export type ProductTotalDriftDirection = 'NO_DRIFT' | 'OVERCOUNT' | 'UNDERCOUNT';
+
+// The one shared result shape for the suspect-aware availability
+// calculation (see computeAvailabilityInternal below). SUSPECT means
+// productSuspectKey is currently set - the quantity accounting for this
+// product cannot be trusted, so no numeric available value is produced at
+// all here (callers that need a zero-collapsed number use
+// computeAvailableToPurchase instead).
+export type SuspectAwareAvailability = { status: 'OK'; available: number } | { status: 'SUSPECT' };
 
 export interface ProductReservedTotalReconciliation {
   productId: string;
@@ -192,13 +201,13 @@ export class InventoryReservationsService {
     ];
 
     const raw = await this.redis.eval(RESERVE_OR_RENEW_SCRIPT, keys, args);
-    const parsed = InventoryReservationsService.parseScriptResult<RawReserveOrRenewResult>(raw);
+    const parsed = parseScriptResult<RawReserveOrRenewResult>(raw);
 
     if (parsed.err) {
       return { ok: false, code: parsed.err };
     }
 
-    const underflow = this.toUnderflowDetails(parsed.underflow, {
+    const underflow = toUnderflowDetails(this.logger, parsed.underflow, {
       productId,
       cartId,
       operationName: 'reserveOrRenew',
@@ -220,9 +229,9 @@ export class InventoryReservationsService {
     const args = [cartId, productId];
 
     const raw = await this.redis.eval(RELEASE_RESERVATION_SCRIPT, keys, args);
-    const parsed = InventoryReservationsService.parseScriptResult<RawReleaseReservationResult>(raw);
+    const parsed = parseScriptResult<RawReleaseReservationResult>(raw);
 
-    const underflow = this.toUnderflowDetails(parsed.underflow, {
+    const underflow = toUnderflowDetails(this.logger, parsed.underflow, {
       productId,
       cartId,
       operationName: 'releaseReservation',
@@ -254,12 +263,14 @@ export class InventoryReservationsService {
     try {
       entry = JSON.parse(raw) as CartScopedReservationEntry;
     } catch {
-      await this.flagMalformedReservation(productId, cartId, 'JSON parse failure', raw);
+      await flagMalformedReservation(this.redis, this.logger, productId, cartId, 'JSON parse failure', raw);
       return null;
     }
 
     if (entry.version !== RESERVATION_ENTRY_VERSION) {
-      await this.flagMalformedReservation(
+      await flagMalformedReservation(
+        this.redis,
+        this.logger,
         productId,
         cartId,
         'version mismatch',
@@ -270,7 +281,9 @@ export class InventoryReservationsService {
     }
 
     if (typeof entry.quantity !== 'number' || entry.quantity <= 0) {
-      await this.flagMalformedReservation(
+      await flagMalformedReservation(
+        this.redis,
+        this.logger,
         productId,
         cartId,
         'non-positive or missing quantity',
@@ -305,18 +318,45 @@ export class InventoryReservationsService {
     return Math.max(0, total - ownQuantity);
   }
 
+  // Existing compatibility wrapper - behavior is byte-for-byte unchanged
+  // from before this method was split: SUSPECT collapses to a plain 0, OK
+  // returns the computed number. No existing caller needs to change.
   async computeAvailableToPurchase(
     productId: string,
     quantityAvailable: number,
     excludingCartId: string,
   ): Promise<number> {
+    const result = await this.computeAvailabilityInternal(productId, quantityAvailable, excludingCartId);
+    return result.status === 'SUSPECT' ? 0 : result.available;
+  }
+
+  // Richer form of computeAvailableToPurchase for callers (Phase 16A.0-C2's
+  // ReservationAvailabilityService) that must distinguish "genuinely zero"
+  // from "suspect, no trustworthy number available" rather than have both
+  // collapse to the same 0. Shares computeAvailabilityInternal with
+  // computeAvailableToPurchase - the suspect-flag read, product-total read,
+  // own-cart add-back, and zero-floor arithmetic exist in exactly one
+  // place.
+  async getAvailabilityWithSuspectStatus(
+    productId: string,
+    quantityAvailable: number,
+    excludingCartId: string,
+  ): Promise<SuspectAwareAvailability> {
+    return this.computeAvailabilityInternal(productId, quantityAvailable, excludingCartId);
+  }
+
+  private async computeAvailabilityInternal(
+    productId: string,
+    quantityAvailable: number,
+    excludingCartId: string,
+  ): Promise<SuspectAwareAvailability> {
     const suspended = await this.redis.get(productSuspectKey(productId));
     if (suspended !== null) {
-      return 0;
+      return { status: 'SUSPECT' };
     }
 
     const reservedByOthers = await this.getReservedTotalExcludingCart(productId, excludingCartId);
-    return Math.max(0, quantityAvailable - reservedByOthers);
+    return { status: 'OK', available: Math.max(0, quantityAvailable - reservedByOthers) };
   }
 
   async reconcileProductReservedTotal(
@@ -326,8 +366,7 @@ export class InventoryReservationsService {
     const args = [productId, Date.now(), RESERVATION_ENTRY_VERSION];
 
     const raw = await this.redis.eval(RECONCILE_PRODUCT_RESERVED_TOTAL_SCRIPT, keys, args);
-    const result =
-      InventoryReservationsService.parseScriptResult<ProductReservedTotalReconciliation>(raw);
+    const result = parseScriptResult<ProductReservedTotalReconciliation>(raw);
 
     if (result.driftDirection !== 'NO_DRIFT') {
       this.logger.warn(
@@ -337,54 +376,5 @@ export class InventoryReservationsService {
     }
 
     return result;
-  }
-
-  private async flagMalformedReservation(
-    productId: string,
-    cartId: string,
-    reason: string,
-    raw: string,
-    observedVersion?: number,
-  ): Promise<void> {
-    await this.redis.set(productSuspectKey(productId), '1');
-    this.logger.error(`Malformed reservation entry detected (${reason})`, {
-      productId,
-      cartId,
-      reason,
-      observedVersion,
-      raw,
-      timestamp: Date.now(),
-    });
-  }
-
-  private toUnderflowDetails(
-    raw: RawScriptUnderflow | null | undefined,
-    context: {
-      productId: string;
-      cartId: string;
-      operationName: 'reserveOrRenew' | 'releaseReservation';
-      timestamp: number;
-    },
-  ): ReservationUnderflowDetails | null {
-    if (!raw) {
-      return null;
-    }
-    const details: ReservationUnderflowDetails = {
-      productId: context.productId,
-      cartId: context.cartId,
-      reservationQuantity: raw.reservationQuantity,
-      storedTotal: raw.storedTotal,
-      operationName: context.operationName,
-      timestamp: context.timestamp,
-    };
-    this.logger.warn(`RESERVATION_TOTAL_UNDERFLOW during ${context.operationName}`, details);
-    return details;
-  }
-
-  private static parseScriptResult<T>(raw: unknown): T {
-    if (typeof raw !== 'string') {
-      throw new Error('Reservation script did not return a JSON string result');
-    }
-    return JSON.parse(raw) as T;
   }
 }
