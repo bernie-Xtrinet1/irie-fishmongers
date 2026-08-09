@@ -57,6 +57,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
 
     const { count } = await repository.advanceGenerationPreservingStatus(row.id, {
+      operation: 'RELEASE_MIRROR',
+      customerId: null,
+      desiredQuantity: null,
       reasonCode: 'CHECKOUT_IN_PROGRESS',
       lastError: 'newer error',
       now: new Date(),
@@ -66,6 +69,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     const updated = await repository.findById(row.id);
     expect(updated?.generation).toBe(1);
     expect(updated?.status).toBe('PENDING');
+    expect(updated?.operation).toBe('RELEASE_MIRROR');
+    expect(updated?.customerId).toBeNull();
+    expect(updated?.desiredQuantity).toBeNull();
     expect(updated?.reasonCode).toBe('CHECKOUT_IN_PROGRESS');
     expect(updated?.lastError).toBe('newer error');
   });
@@ -78,6 +84,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     await prisma.cartReservationCompensation.update({ where: { id: row.id }, data: { status: 'BLOCKED' } });
 
     const { count } = await repository.advanceGenerationPreservingStatus(row.id, {
+      operation: 'RESERVE_MIRROR',
+      customerId,
+      desiredQuantity: 9,
       reasonCode: 'ACCOUNTING_UNDERFLOW',
       lastError: null,
       now: new Date(),
@@ -87,6 +96,7 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     const updated = await repository.findById(row.id);
     expect(updated?.status).toBe('BLOCKED');
     expect(updated?.generation).toBe(1);
+    expect(updated?.desiredQuantity).toBe(9);
   });
 
   it('advanceGenerationPreservingStatus matches zero rows once the row is RESOLVED', async () => {
@@ -95,6 +105,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     await prisma.cartReservationCompensation.update({ where: { id: row.id }, data: { status: 'RESOLVED' } });
 
     const { count } = await repository.advanceGenerationPreservingStatus(row.id, {
+      operation: 'RESERVE_MIRROR',
+      customerId,
+      desiredQuantity: 5,
       reasonCode: 'UNKNOWN_INFRA_FAILURE',
       lastError: null,
       now: new Date(),
@@ -111,6 +124,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     await prisma.cartReservationCompensation.update({ where: { id: row.id }, data: { status: 'BLOCKED' } });
 
     const { count } = await repository.advanceGenerationAndUnblock(row.id, {
+      operation: 'RELEASE_MIRROR',
+      customerId: null,
+      desiredQuantity: null,
       reasonCode: 'UNKNOWN_INFRA_FAILURE',
       lastError: null,
       now: new Date(),
@@ -120,6 +136,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     const updated = await repository.findById(row.id);
     expect(updated?.status).toBe('PENDING');
     expect(updated?.generation).toBe(1);
+    expect(updated?.operation).toBe('RELEASE_MIRROR');
+    expect(updated?.customerId).toBeNull();
+    expect(updated?.desiredQuantity).toBeNull();
     expect(updated?.reasonCode).toBe('UNKNOWN_INFRA_FAILURE');
   });
 
@@ -128,6 +147,9 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
     const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
 
     const { count } = await repository.advanceGenerationAndUnblock(row.id, {
+      operation: 'RESERVE_MIRROR',
+      customerId,
+      desiredQuantity: 5,
       reasonCode: 'UNKNOWN_INFRA_FAILURE',
       lastError: null,
       now: new Date(),

@@ -21,7 +21,20 @@ export interface CreateCompensationInput {
   lastError: string | null;
 }
 
+// The complete latest-divergence diagnostic snapshot. Deduplication is by
+// (cartId, productId) alone, independent of operation (see the schema
+// comment) - so an accepted new divergence must overwrite every field
+// that describes "what was most recently observed", not just
+// reasonCode/lastError, or the row would end up in a self-contradictory
+// state (e.g. operation:'RESERVE_MIRROR' but desiredQuantity from a since-
+// superseded RELEASE_MIRROR arrival). operation/customerId/desiredQuantity
+// remain historical diagnostic context only - the eventual reconciler
+// (C4.3) never treats them as replay authority, it always re-derives
+// desired state from current CartItem truth.
 export interface DivergenceUpdateInput {
+  operation: CompensationOperation;
+  customerId: string | null;
+  desiredQuantity: number | null;
   reasonCode: CompensationReasonCode;
   lastError: string | null;
   now: Date;
@@ -77,13 +90,16 @@ export class CompensationRepository {
   }
 
   // A new divergence arriving against a still-unresolved row: generation
-  // always advances, reasonCode/lastError/nextAttemptAt are always
-  // latest-wins, status is never touched (PENDING stays PENDING,
-  // PROCESSING stays PROCESSING, BLOCKED+ACCOUNTING_UNDERFLOW stays
-  // BLOCKED). Scoped to the still-unresolved-status guard, never `WHERE id`
-  // alone - the row may have resolved between the caller's read and this
-  // write; a zero-count result means the caller must retry its own
-  // create/dedup sequence, never assume this succeeded.
+  // always advances and the complete latest-divergence snapshot
+  // (operation/customerId/desiredQuantity/reasonCode/lastError/
+  // nextAttemptAt) is always latest-wins, status is never touched
+  // (PENDING stays PENDING, PROCESSING stays PROCESSING,
+  // BLOCKED+ACCOUNTING_UNDERFLOW stays BLOCKED). attemptCount,
+  // blockedCheckCount, and createdAt are never touched by arrival.
+  // Scoped to the still-unresolved-status guard, never `WHERE id` alone -
+  // the row may have resolved between the caller's read and this write;
+  // a zero-count result means the caller must retry its own create/dedup
+  // sequence, never assume this succeeded.
   advanceGenerationPreservingStatus(
     id: string,
     input: DivergenceUpdateInput,
@@ -93,6 +109,9 @@ export class CompensationRepository {
       where: { id, status: { in: UNRESOLVED_STATUSES } },
       data: {
         generation: { increment: 1 },
+        operation: input.operation,
+        customerId: input.customerId,
+        desiredQuantity: input.desiredQuantity,
         reasonCode: input.reasonCode,
         lastError: input.lastError,
         nextAttemptAt: input.now,
@@ -102,11 +121,12 @@ export class CompensationRepository {
 
   // A new divergence arriving against a BLOCKED row with an ordinarily-
   // retryable reasonCode: unblocks atomically in the same write that
-  // advances generation - a row must not stay blocked solely because an
-  // older divergence had a different blocking reason. DRAINING remains
-  // authoritative regardless: if the subsequent recovery attempt
-  // discovers mode is still DRAINING and desired quantity > 0, the row is
-  // placed back into BLOCKED.
+  // advances generation and overwrites the same latest-divergence
+  // snapshot as advanceGenerationPreservingStatus - a row must not stay
+  // blocked solely because an older divergence had a different blocking
+  // reason. DRAINING remains authoritative regardless: if the subsequent
+  // recovery attempt discovers mode is still DRAINING and desired
+  // quantity > 0, the row is placed back into BLOCKED.
   advanceGenerationAndUnblock(
     id: string,
     input: DivergenceUpdateInput,
@@ -116,6 +136,9 @@ export class CompensationRepository {
       where: { id, status: 'BLOCKED' },
       data: {
         generation: { increment: 1 },
+        operation: input.operation,
+        customerId: input.customerId,
+        desiredQuantity: input.desiredQuantity,
         reasonCode: input.reasonCode,
         lastError: input.lastError,
         nextAttemptAt: input.now,
