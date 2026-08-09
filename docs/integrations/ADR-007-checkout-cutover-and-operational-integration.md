@@ -807,6 +807,18 @@ proposal only. `prisma migrate resolve` and any other migration-history-
 mutating command must not be run against the shared dev database without
 that separate, explicit approval.
 
+**Required post-repair verification, once that separate maintenance task
+is approved and executed**: after all 31 `migrate resolve --applied`
+calls, (1) run `prisma migrate status` and confirm it reports the
+database as up to date; (2) run `prisma migrate deploy` against a fresh
+disposable database and (3) compare the migration names recorded in the
+repaired shared dev database's `_prisma_migrations` against both that
+disposable database's table and the `prisma/migrations` directory on
+disk (count and names, not just count). This confirms not only that
+Prisma considers the repaired database current, but that the
+reconstructed history exactly matches source control - not merely that
+the row count looks plausible.
+
 ## Module architecture (revised)
 
 ```
