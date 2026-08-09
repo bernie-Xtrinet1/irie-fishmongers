@@ -302,17 +302,82 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     session, in a separate docs-only commit. ADR-007 `Status` remains
     `Proposed`, unchanged.
 
-## Next task: Phase 16A.0-C4 - durable mirror compensation, read-only planning first
+- **Phase 16A.0-C4.0 is complete and pushed** at `8e2daaf`
+  (`feat(checkout): extract shared error-message sanitizer`), on
+  `origin/develop`.
+  - `CheckoutAttemptService.sanitizeFailureMessage` extracted verbatim
+    into `common/utils/sanitize-error-message.util.ts`
+    (`sanitizeErrorMessage(message, maxLength)`), parameterized rather
+    than hardcoded. `CheckoutAttempt` behavior is byte-for-byte unchanged
+    - its complete pre-existing test suite passes without modification.
+    This is now the approved, sole source for `lastError` sanitization
+    across the codebase, including C4.1's compensation model.
 
-Per the approved sequencing, the next session inspects and designs (does
-not implement) the `CartReservationCompensation` schema, a
-`CompensationRepository`, and compensation-service/reconciler ownership -
-the durable recovery path for the two divergence cases C3's
-`MirrorDiagnostic` can already report (legacy reserve succeeded / mirror
-reserve failed; legacy release succeeded / mirror release failed).
-Without implementing `CartService` caller cutover, `ProductsService`,
-`OrdersService`, C5 idempotency, payment, production mode switching, the
-checkout coordinator, or scheduler wiring. See `.claude/next-session.md`
+- **Phase 16A.0-C4.1 is complete and pushed** at `0e97a5c`
+  (`feat(checkout): add mirror compensation schema and repository`), on
+  `origin/develop`.
+  - **`CartReservationCompensation`**: the durable recovery record for
+    `MIRROR`-mode divergence, created only when the legacy write already
+    succeeded and the mirror write failed (`RESERVE_MIRROR` /
+    `RELEASE_MIRROR`). `generation` is the sole concurrency counter (no
+    separate `version` field) - `PROCESSING -> RESOLVED`/`-> PERMANENT_
+    FAILURE` are conditioned on it matching what the claiming worker
+    observed, so a newer divergence arriving mid-repair defeats a stale
+    resolve and requeues instead of ever being lost.
+    `blockedCheckCount` is tracked entirely separately from
+    `attemptCount` - checking a `BLOCKED` precondition never consumes
+    recovery-attempt budget. `Cart`/`Product` use `onDelete: Restrict`
+    (matching `CheckoutAttempt`). No `correlationId`/`requestId` yet
+    (deferred to C5/C6).
+  - **Partial uniqueness** (one unresolved row per `(cartId, productId)`,
+    independent of `operation`) is enforced **only** via a hand-added
+    migration-SQL index, never a Prisma `@@unique` - verified via
+    `migrate status`/`migrate diff --exit-code` reporting no drift and a
+    real-Postgres `pg_indexes` assertion on the exact predicate.
+    Historical `RESOLVED`/`PERMANENT_FAILURE` rows may coexist without
+    limit for the same pair.
+  - **`CompensationRepository`**: 11 primitive conditional-update
+    methods, each one concrete state transition (matching
+    `CheckoutAttemptRepository`'s convention). `claimForRecoveryAttempt`
+    folds stale-`PROCESSING` reclamation (>5 minutes) into the same
+    conditional update as an ordinary due-`PENDING` claim -
+    contractual, not a fallback; a stale reclaim consumes a real
+    attempt. `MAX_OPTIMISTIC_RETRIES = 3` defined at the repository
+    level for C4.2's bounded `recordDivergence` loop to reuse.
+    Deterministic unresolved-row lookup (`orderBy: createdAt asc`).
+    Repository tests are seed-independent (upsert their own `Role` rows
+    rather than depending on the application seed script).
+  - **A pre-existing environment gap was found and fixed while validating
+    this unit**: the local Postgres `Role` table was empty, which broke
+    not just new C4.1 tests but the unmodified, already-shipped
+    `products.repository.spec.ts` too. Fixed by running the existing,
+    idempotent `npm run prisma:seed` script (no deletes, `role.upsert`
+    only) - not a C4.1 code change, an environment-state fix.
+  - 23 new tests. Full backend suite 231 -> 234 suites, 1971 -> 2003
+    tests (incl. C4.0's 9 sanitizer tests), exit 0. Coverage
+    97.39%/93.83%/97.10%/97.31% (80/90/90/90 threshold), exit 0.
+  - **No `CompensationService`, reconciler, decorator, or scheduler
+    exists yet** - additive and unwired, nothing outside this unit's own
+    tests calls `CompensationRepository`.
+  - ADR-007 gained a new §11 recording both C4.0 and C4.1 in the same
+    session, in a separate docs-only commit. ADR-007 `Status` remains
+    `Proposed`, unchanged.
+
+## Next task: Phase 16A.0-C4.2 - compensation service / divergence recording, read-only planning/contract confirmation first
+
+Per the approved sequencing, the next session begins by reviewing
+`CompensationRepository`, the `CartReservationCompensation` schema, the
+final `recordDivergence` concurrency contract, the shared sanitizer, and
+C3's `MirrorDiagnostic` - then plans/implements only `CompensationService`,
+`recordMirrorDivergence`, the bounded `recordDivergence` retry loop
+(using `MAX_OPTIMISTIC_RETRIES`), latest-wins diagnostics, `BLOCKED`
+arrival-status behavior, the resolve-between-read-and-update race,
+concurrent duplicate-arrival handling, and (if still assigned to this
+unit) `CartRepository.findItemByCartAndProduct` - with service/result
+types and tests. Without starting the desired-state reconciler (C4.3),
+batch orchestrator (C4.4), scheduler (C4.5), the compensation decorator,
+`ReservationGateway` composition, `CartService` integration, C5
+idempotency, or production caller cutover. See `.claude/next-session.md`
 for the exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)

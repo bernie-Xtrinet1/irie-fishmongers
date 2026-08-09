@@ -569,6 +569,135 @@ still leaves the legacy reservation correct and the customer result
 successful, and that `DRAINING` permits a full release to drain a
 genuine `CART_SCOPED`-era hold to zero.
 
+### 11. Phase C4 foundation: durable mirror compensation - schema and repository implemented, unwired (C4.0/C4.1)
+
+**C4.0**: `CheckoutAttemptService`'s failure-message sanitizer (stack-line
+stripping, JWT/Bearer/password-secret-token-apikey redaction, trim,
+length cap) was extracted into a neutral
+`common/utils/sanitize-error-message.util.ts`, parameterized on max
+length rather than hardcoded. `CheckoutAttempt` behavior is unchanged -
+its own full test suite passes without modification. This extracted
+function is now the approved source for `CartReservationCompensation`'s
+`lastError` sanitization - no second copy of these regexes exists
+anywhere in the codebase.
+
+**C4.1**: `CartReservationCompensation` - the durable recovery record for
+`MIRROR`-mode divergence between the authoritative legacy reservation and
+the non-authoritative cart-scoped mirror, created only when the legacy
+write already succeeded and the mirror write failed (C3's
+`MirrorDiagnostic` reporting `FAILED`). Two cases only, per the approved
+C4 scope: `RESERVE_MIRROR` (legacy reserve succeeded, mirror reserve
+failed) and `RELEASE_MIRROR` (legacy release succeeded, mirror release
+failed) - never created for `LEGACY`-only or `CART_SCOPED`-only
+operations (single system, no split state to reconcile).
+
+- **`operation`**: `RESERVE_MIRROR` | `RELEASE_MIRROR` - diagnostic only;
+  recovery always re-derives desired state from current `CartItem` truth,
+  never replays either as a literal command.
+- **`status`**: `PENDING` | `PROCESSING` | `BLOCKED` | `RESOLVED` |
+  `PERMANENT_FAILURE`.
+- **`reasonCode`**: `PRODUCT_SUSPENDED` | `CHECKOUT_IN_PROGRESS` |
+  `ACCOUNTING_UNDERFLOW` | `UNKNOWN_INFRA_FAILURE` - mirrors C3's
+  `MirrorFailureReasonCode` exactly (kept in sync by convention, not a
+  shared TypeScript type across the Prisma boundary).
+- **`generation`** is the sole concurrency counter - no separate
+  `version` field exists. It advances on every new divergence recorded
+  against an unresolved row; `PROCESSING -> RESOLVED` (and `-> PERMANENT_
+  FAILURE`) are conditioned on it matching what the claiming worker
+  observed, so a newer divergence arriving mid-repair defeats a stale
+  resolve/give-up attempt and the row is requeued instead - the newer
+  divergence is never lost, and a worker can never mark stale work
+  resolved.
+- **`blockedCheckCount`** is tracked entirely separately from
+  `attemptCount` - checking whether a `BLOCKED` precondition (product
+  suspect state, or `DRAINING` mode) has cleared is never itself a
+  recovery attempt and never counts toward the attempt-based
+  `PERMANENT_FAILURE` threshold.
+- **`Cart`/`Product`** relations use `onDelete: Restrict`, matching
+  `CheckoutAttempt`'s precedent - a `Cart` or `Product` can never be
+  hard-deleted while any compensation row (resolved or not) still
+  references it; this is enforced by the FK constraint itself, not
+  detected or branched on by application code.
+- **No `correlationId`/`requestId`** - neither has a real source or
+  recovery/operational use yet (both would be constant/always-null); the
+  row's own `id` serves as the correlation key today. Deferred to
+  whichever of C5/C6 introduces a genuine external correlation source.
+- **Partial uniqueness** (at most one unresolved row per `(cartId,
+  productId)`, independent of `operation`) is enforced **only** via a
+  hand-added migration-SQL index
+  (`one_unresolved_compensation_per_cart_product`, `WHERE status IN
+  ('PENDING','PROCESSING','BLOCKED')`) - deliberately not a Prisma-level
+  `@@unique`, which would be a global constraint and incorrectly block a
+  fresh row once any historical `RESOLVED`/`PERMANENT_FAILURE` row exists
+  for the same pair. Verified via `prisma migrate status`/`migrate diff
+  --exit-code` reporting no drift, and a real-Postgres `pg_indexes`
+  assertion on the exact predicate. Historical resolved/permanently-failed
+  rows may coexist without limit for the same `(cartId, productId)`.
+
+**`CompensationRepository`** exposes eleven primitive conditional-update
+methods, each representing exactly one concrete state transition
+(matching `CheckoutAttemptRepository`'s established idiom - no repository
+method decides *which* transition to apply, that is
+`CompensationService`'s job, C4.2 onward):
+
+- Deterministic unresolved lookup (`findUnresolvedByCartAndProduct`,
+  ordered `createdAt asc` - the partial index should guarantee at most
+  one match, but the query stays reproducible rather than
+  database-order-dependent if that invariant is ever violated).
+- `claimForRecoveryAttempt` folds stale-`PROCESSING` reclamation
+  (`lastAttemptAt` older than 5 minutes) into the same conditional update
+  as an ordinary due-`PENDING` claim - contractual, not a fallback path.
+  A stale reclaim consumes a real recovery attempt, identical to any
+  other claim.
+- Generation-gated `resolveIfGenerationMatches` and
+  `markPermanentFailureIfGenerationMatches` - the two transitions that
+  claim "recovery is complete/abandoned for the state I observed."
+- Generation-gated `unblockIfGenerationMatches`/
+  `rescheduleBlockedCheckIfGenerationMatches` - gated not because they
+  claim convergence, but to prevent a slow precondition check (a Redis
+  round trip) from clobbering a fresher arrival's already-correct state
+  with a conclusion computed from stale input.
+- `advanceGenerationPreservingStatus`/`advanceGenerationAndUnblock` - the
+  two arrival-time transitions: a new divergence always advances
+  `generation` and overwrites `reasonCode`/`lastError`/`nextAttemptAt`
+  (latest-wins), and unblocks a `BLOCKED` row only when the newest
+  `reasonCode` is ordinarily retryable (`ACCOUNTING_UNDERFLOW` leaves it
+  `BLOCKED`).
+- `MAX_OPTIMISTIC_RETRIES = 3` is defined at the repository level - the
+  shared budget for C4.2's bounded `recordDivergence` retry loop (and any
+  future bounded optimistic-retry loop in this subsystem), so it is
+  reused rather than each caller hardcoding its own limit.
+
+Repository tests are seed-independent - they upsert their own `Role`
+rows (matching `prisma/seed.ts`'s own idempotent convention) rather than
+depending on the application seed script having been run first.
+
+**Explicitly not yet built**: no `CompensationService`, no reconciler, no
+decorator (`CompensatingReservationGateway` or similar), no scheduler, no
+`CartService`/`ProductsService`/`OrdersService` wiring.
+Additive and unwired - nothing outside this unit's own tests calls
+`CompensationRepository`.
+
+**Deferred, required for C4.2**: `recordDivergence` must implement the
+bounded retry loop using `MAX_OPTIMISTIC_RETRIES`, re-scoping its
+conditional update to the still-unresolved-status guard after every
+`P2002` (never `WHERE id` alone - the row may resolve between the read
+and the write). Required test coverage once `recordDivergence` exists:
+the resolve-between-read-and-update race (create → P2002 → read → row
+resolves before the conditional update → retry → a new unresolved row is
+created → the historical resolved row is untouched), concurrent
+duplicate-arrival behavior (two `recordDivergence` calls racing one
+unresolved row leave exactly one unresolved row, `generation` advances
+once per accepted arrival, latest-committed diagnostics win), and a
+corruption-handling test (deliberately bypassing the partial index inside
+a transaction that always rolls back, proving `recordDivergence` fails
+closed with a plain consistency error rather than silently reporting
+`CREATED`/`GENERATION_ADVANCED` against a corrupted multi-row state).
+
+Validated with 234 backend suites / 2003 tests passing (97.39%
+statements / 93.83% branches / 97.10% functions / 97.31% lines
+coverage).
+
 ## Module architecture (revised)
 
 ```

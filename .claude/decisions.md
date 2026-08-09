@@ -533,3 +533,59 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   any controller) imports it or resolves `RESERVATION_GATEWAY`; confirmed
   via `git grep` across the full repository. `CartService` continues to
   call `InventoryReservationsService`'s legacy methods directly.
+
+## Phase 16A.0-C4.0/C4.1 (shared sanitizer + mirror compensation foundation) - implemented (2026-08-09, `8e2daaf`/`0e97a5c`)
+
+- **A shared, neutral sanitizer is the sole source for redacting
+  error/failure text stored anywhere in this codebase.**
+  `common/utils/sanitize-error-message.util.ts`'s `sanitizeErrorMessage`
+  is now what both `CheckoutAttemptService` and
+  `CartReservationCompensation`'s `lastError` use - do not re-derive the
+  stack-line/JWT/Bearer/password-secret-token-apikey regexes a second
+  time anywhere else; extract to this file's function and parameterize
+  instead.
+- **`generation` is the sole concurrency counter for compensation
+  rows, permanently - no separate `version` field.** A `PROCESSING ->
+  RESOLVED`/`-> PERMANENT_FAILURE` transition must remain conditioned on
+  the `generation` value the claiming worker observed; a mismatch means a
+  newer divergence arrived mid-repair and the row must be requeued, never
+  marked resolved/failed against superseded state.
+- **`blockedCheckCount` is permanently separate from `attemptCount`.**
+  Checking whether a `BLOCKED` precondition has cleared (product suspect
+  state, `DRAINING` mode) must never increment `attemptCount` and must
+  never contribute toward the attempt-based `PERMANENT_FAILURE`
+  threshold - a row that stays `BLOCKED` indefinitely does not become
+  `PERMANENT_FAILURE` merely from repeated checks.
+- **Stale-`PROCESSING` reclaim (>5 minutes) is a contractual part of the
+  normal claim path, not an optional/separate recovery mechanism.**
+  `claimForRecoveryAttempt`'s conditional update matches both a due
+  `PENDING` row and a stale `PROCESSING` row in the same query; a stale
+  reclaim consumes a real attempt.
+- **Compensation arrival diagnostics are latest-wins, permanently.** A
+  new divergence recorded against an already-unresolved row always
+  overwrites `reasonCode`/`lastError`/`nextAttemptAt`, never preserves the
+  first-observed failure - `reasonCode` itself drives the next routing
+  decision (retry vs. stay `BLOCKED`) and must reflect current, not
+  historical, evidence.
+- **Partial uniqueness for compensation rows lives only in migration SQL,
+  never a Prisma `@@unique`.** A global unique constraint on `(cartId,
+  productId)` would incorrectly block a fresh unresolved row once any
+  historical `RESOLVED`/`PERMANENT_FAILURE` row exists for the same pair.
+  Any future schema change to this table's uniqueness must preserve this
+  distinction.
+- **`MAX_OPTIMISTIC_RETRIES` is a repository-level constant, reused by
+  every bounded optimistic-retry loop in this subsystem** - do not let
+  a future unit define its own competing retry-limit constant for the
+  same kind of loop.
+- **Real-Postgres repository tests in this codebase must not depend on
+  the application seed script having been run.** A test helper needing
+  reference data (e.g. `Role` rows) should upsert it itself, matching
+  `prisma/seed.ts`'s own idempotent convention - discovered as a genuine
+  pre-existing gap (the `Role` table was found empty, breaking an
+  unmodified, already-shipped spec too) and fixed by running the
+  existing seed script once (idempotent, no deletes), not by silently
+  depending on it going forward.
+- **`CompensationRepository` remains completely unwired** - no
+  `CompensationService`, reconciler, decorator, or scheduler exists yet;
+  confirmed via file listing and `git diff --stat` showing zero changes
+  to any production caller.

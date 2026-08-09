@@ -1095,3 +1095,115 @@ all pushed and present on `origin/develop`.
   `CartService`/`ProductsService`/`OrdersService`/Prisma change anywhere.
 - Commit `7fddac0` (`feat(checkout): add reservation gateway facade`),
   pushed to `origin/develop`.
+
+## 2026-08-09 - Phase 16A.0-C4.0/C4.1: mirror compensation foundation (`8e2daaf`, `0e97a5c`)
+
+C4.0:
+- Extracted `CheckoutAttemptService.sanitizeFailureMessage` into
+  `common/utils/sanitize-error-message.util.ts`
+  (`sanitizeErrorMessage(message, maxLength)`) - parameterized instead of
+  a hardcoded constant, same stack-line/JWT/Bearer/password-secret-token-
+  apikey regexes, same behavior.
+- `CheckoutAttempt` behavior unchanged - its complete pre-existing test
+  suite passes without modification, proving the extraction was
+  behavior-preserving.
+- 9 new sanitizer tests (null passthrough, stack-line stripping, each
+  redaction pattern, trim, truncate-after-not-before, empty-after-
+  sanitize -> null).
+- Commit `8e2daaf` (`feat(checkout): extract shared error-message
+  sanitizer`).
+
+C4.1:
+- `CartReservationCompensation` model (operation `RESERVE_MIRROR`/
+  `RELEASE_MIRROR`; status `PENDING`/`PROCESSING`/`BLOCKED`/`RESOLVED`/
+  `PERMANENT_FAILURE`; reasonCode `PRODUCT_SUSPENDED`/
+  `CHECKOUT_IN_PROGRESS`/`ACCOUNTING_UNDERFLOW`/`UNKNOWN_INFRA_FAILURE`).
+- `generation` is the sole concurrency counter, replacing an earlier
+  planning-round design that briefly carried both `version` and
+  `generation` - collapsed to one field, one meaning, per explicit
+  correction before implementation began.
+- `blockedCheckCount` tracked separately from `attemptCount` - checking a
+  `BLOCKED` precondition (product suspect state via
+  `reconcileProductReservedTotal`, or `DRAINING` mode) never consumes
+  recovery-attempt budget; a row cannot reach `PERMANENT_FAILURE` merely
+  by staying blocked through repeated checks.
+- `claimForRecoveryAttempt` folds stale-`PROCESSING` reclaim (a worker
+  that crashed after claiming but before resolving, `lastAttemptAt` >5
+  minutes stale) into the same conditional update as an ordinary
+  due-`PENDING` claim - made contractual per explicit correction, not
+  left as an optional recommendation. A stale reclaim consumes a real
+  attempt.
+- `resolveIfGenerationMatches`/`markPermanentFailureIfGenerationMatches`
+  are generation-gated - the two transitions that claim "recovery is
+  complete/abandoned for the state I observed." A newer divergence
+  arriving mid-repair defeats a stale resolve attempt (0 rows matched);
+  the row is requeued via `requeueAfterAttempt` instead, never marked
+  resolved against superseded state.
+- `unblockIfGenerationMatches`/`rescheduleBlockedCheckIfGenerationMatches`
+  are also generation-gated, but for a different reason than resolve -
+  not because they claim convergence, but to stop a slow precondition
+  check (a Redis round trip) from clobbering a fresher arrival's
+  already-correct state with a conclusion computed from stale input.
+  Documented as an explicit invariant so a future contributor doesn't
+  assume all `BLOCKED` transitions need gating for the same reason.
+- Arrival semantics frozen: a new divergence against an unresolved row
+  always advances `generation` and overwrites `reasonCode`/`lastError`/
+  `nextAttemptAt` (latest-wins - chosen over first-failure-preserved
+  because `reasonCode` itself drives the next routing decision, which
+  must react to current, not historical, evidence). `PENDING`/
+  `PROCESSING` stay as they are; `BLOCKED` stays `BLOCKED` only when the
+  newest `reasonCode` is `ACCOUNTING_UNDERFLOW`, otherwise unblocks to
+  `PENDING` atomically in the same write - a row must not stay blocked
+  solely because an older divergence had a different blocking reason
+  (`DRAINING` remains authoritative regardless: a subsequent recovery
+  attempt that finds mode still `DRAINING` and desired quantity >0
+  re-blocks it).
+- Partial uniqueness (one unresolved row per `(cartId, productId)`,
+  independent of `operation`) lives only in hand-added migration SQL
+  (`one_unresolved_compensation_per_cart_product`), never a Prisma
+  `@@unique` - a global constraint would have incorrectly blocked a fresh
+  row once any historical resolved row existed for the same pair.
+  Verified via `prisma migrate status`/`migrate diff --exit-code`
+  reporting no drift, and a real-Postgres `pg_indexes` query asserting
+  the exact `WHERE` predicate.
+- `MAX_OPTIMISTIC_RETRIES = 3` defined at the repository level (not
+  embedded in a future method) so C4.2's bounded `recordDivergence` loop,
+  and any future bounded optimistic-retry loop in this subsystem, reuse
+  one constant rather than each hardcoding its own limit - added per
+  explicit correction before commit.
+- `findUnresolvedByCartAndProduct` given deterministic ordering
+  (`createdAt asc`) - the partial index should guarantee at most one
+  match, but the query stays reproducible rather than database-order-
+  dependent if that invariant is ever violated by manual corruption -
+  added per explicit correction before commit.
+- Repository tests made seed-independent: `compensation-repository-test-
+  helpers.ts` upserts its own `Role` rows (matching `prisma/seed.ts`'s
+  own idempotent convention) instead of depending on the application seed
+  script having been run - added per explicit correction before commit,
+  verified by deleting all `Role` rows and re-running the full C4.1 suite
+  (23/23 still passing) before restoring baseline seed data.
+- **Pre-existing environment gap found and fixed while validating**: the
+  local Postgres `Role` table was completely empty, breaking not just new
+  C4.1 tests but the unmodified, already-shipped
+  `products.repository.spec.ts` too (confirmed by running it in isolation
+  before any C4.1 code existed). Fixed by running the existing, already-
+  idempotent `npm run prisma:seed` script (`role.upsert` only, no
+  deletes anywhere in the script) - an environment-state fix, not a code
+  change.
+- Deferred to C4.2, recorded as required: `recordDivergence`'s bounded
+  retry loop; the resolve-between-read-and-update race test; concurrent
+  duplicate-arrival test; a corruption-handling test (deliberately
+  bypassing the partial index inside a transaction that always rolls
+  back) once `recordDivergence` exists to test against.
+- 23 new tests. Full backend suite 231 -> 234 suites, 1971 -> 2003 tests
+  (incl. C4.0's 9), exit 0. Coverage 97.39%/93.83%/97.10%/97.31%
+  (80/90/90/90 threshold), exit 0. `AppModule` bootstrap 4/4.
+  `.repository.ts` files are excluded from coverage reporting by this
+  codebase's established Jest config (`coveragePathIgnorePatterns`) - not
+  a gap.
+- No `CompensationService`, reconciler, decorator, or scheduler exists -
+  additive and unwired, confirmed via file listing and `git diff --stat`
+  showing zero changes to `CartService`/`ProductsService`/`OrdersService`/
+  `CheckoutReservationModule`/`ReservationEngineModeModule`.
+- Commit `0e97a5c` (`feat(checkout): add mirror compensation schema and
+  repository`), pushed to `origin/develop` together with `8e2daaf`.
