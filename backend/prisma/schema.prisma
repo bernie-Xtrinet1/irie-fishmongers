@@ -222,9 +222,9 @@ model Product {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  vendor                          Vendor                @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  category                        Category              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  lot                             SeafoodLot?           @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  vendor                          Vendor                        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  category                        Category                      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  lot                             SeafoodLot?                   @relation(fields: [lotId], references: [id], onDelete: Restrict)
   cartItems                       CartItem[]
   orderItems                      OrderItem[]
   requestedInFulfillmentDecisions FulfillmentDecision[]
@@ -233,6 +233,7 @@ model Product {
   inventoryEvents                 InventoryEvent[]
   wasteDisposalRecords            WasteDisposalRecord[]
   reviews                         Review[]
+  reservationCompensations        CartReservationCompensation[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -247,9 +248,10 @@ model Cart {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  customer         User              @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer         User                          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items            CartItem[]
   checkoutAttempts CheckoutAttempt[]
+  compensations    CartReservationCompensation[]
 
   @@map("carts")
 }
@@ -1935,6 +1937,87 @@ model ReservationEngineModeConfig {
   updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@map("reservation_engine_mode_configs")
+}
+
+// Phase 16A.0-C4 (see ADR-007). Durable recovery record for MIRROR-mode
+// divergence between the authoritative legacy reservation and the
+// non-authoritative cart-scoped mirror - created only when the legacy
+// write already succeeded and the mirror write failed (reserve or
+// release). Recovery always re-derives desired state from current
+// CartItem truth at repair time; this row is never replayed as a literal
+// command - see CompensationRepository/the reconciler for the full
+// contract.
+enum CompensationOperation {
+  RESERVE_MIRROR
+  RELEASE_MIRROR
+}
+
+enum CompensationStatus {
+  PENDING
+  PROCESSING
+  BLOCKED
+  RESOLVED
+  PERMANENT_FAILURE
+}
+
+enum CompensationReasonCode {
+  PRODUCT_SUSPENDED
+  CHECKOUT_IN_PROGRESS
+  ACCOUNTING_UNDERFLOW
+  UNKNOWN_INFRA_FAILURE
+}
+
+// generation is the sole concurrency counter (no separate "version" field).
+// It advances on every new divergence recorded against an unresolved row,
+// and PROCESSING -> RESOLVED is conditioned on it matching what the
+// claiming worker observed - a resolve attempt against a stale generation
+// is rejected and the row is requeued, never marked RESOLVED against
+// superseded state. blockedCheckCount is entirely separate from
+// attemptCount: checking whether a BLOCKED precondition (product suspect
+// state, or DRAINING mode) has cleared is never itself a recovery attempt
+// and must never count toward the attempt-based permanent-failure
+// threshold.
+//
+// Uniqueness (one unresolved row per (cartId, productId), independent of
+// operation) is enforced by a partial unique index created in migration
+// SQL only - deliberately NOT a Prisma @@unique here, since that would be
+// a global constraint and would incorrectly block a fresh row once any
+// historical RESOLVED/PERMANENT_FAILURE row exists for the same pair.
+model CartReservationCompensation {
+  id                 String                 @id @default(uuid())
+  schemaVersion      Int                    @default(1)
+  operation          CompensationOperation
+  status             CompensationStatus     @default(PENDING)
+  cartId             String
+  productId          String
+  // Known at RESERVE_MIRROR creation (reserveForCart's own input); null at
+  // RELEASE_MIRROR creation (releaseForCart never receives customerId) -
+  // the reconciler re-derives it from Cart.customerId at recovery time
+  // regardless, so this is diagnostic only, never load-bearing.
+  customerId         String?
+  // The quantity being attempted at RESERVE_MIRROR failure time, for
+  // diagnostics only - recovery never replays this value, it always
+  // re-reads current CartItem.quantity. Null for RELEASE_MIRROR, which has
+  // no "desired quantity" concept of its own.
+  desiredQuantity    Int?
+  reasonCode         CompensationReasonCode
+  attemptCount       Int                    @default(0)
+  blockedCheckCount  Int                    @default(0)
+  nextAttemptAt      DateTime               @default(now())
+  lastAttemptAt      DateTime?
+  lastError          String?
+  generation         Int                    @default(0)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  resolvedAt         DateTime?
+  permanentFailureAt DateTime?
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+  @@index([cartId, productId])
+  @@map("cart_reservation_compensations")
 }
 
 // Append-only weighted-scoring configuration for the vendor selection engine
