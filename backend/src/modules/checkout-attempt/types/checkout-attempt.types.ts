@@ -21,8 +21,8 @@ export interface CheckoutAttemptInputValidationFailure {
 // retryable), but failureMessage is never included: no customer-safe
 // message contract has been approved for it, and it may contain
 // diagnostic detail even after sanitization for storage (see
-// CheckoutAttemptService.sanitizeFailureMessage). Callers that need the
-// raw stored failureMessage for internal/operational purposes must read
+// sanitizeErrorMessage in common/utils/sanitize-error-message.util.ts).
+// Callers that need the raw stored failureMessage for internal/operational purposes must read
 // it through a dedicated, explicitly-scoped method - none exists yet.
 export interface CheckoutAttemptSummary {
   id: string;

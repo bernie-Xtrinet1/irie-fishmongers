@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CheckoutAttempt, Prisma } from '@prisma/client';
 
+import { sanitizeErrorMessage } from '../../../common/utils/sanitize-error-message.util';
 import { CheckoutAttemptRepository } from '../repositories/checkout-attempt.repository';
 import {
   CheckoutAttemptInputValidationFailure,
@@ -184,7 +185,7 @@ export class CheckoutAttemptService {
     // failureMessage is sanitized, never rejected - unsafe message content
     // must never prevent the PROCESSING -> FAILED transition itself.
     const trimmedCode = failureCode.trim();
-    const sanitizedMessage = CheckoutAttemptService.sanitizeFailureMessage(failureMessage);
+    const sanitizedMessage = sanitizeErrorMessage(failureMessage, MAX_FAILURE_MESSAGE_LENGTH);
     const { count } = await this.repository.markFailed(
       attemptId,
       customerId,
@@ -266,39 +267,6 @@ export class CheckoutAttemptService {
       return `failureCode must be ${MAX_FAILURE_CODE_LENGTH} characters or fewer`;
     }
     return null;
-  }
-
-  // Sanitizes rather than rejects - unsafe message content must never
-  // block the PROCESSING -> FAILED transition itself. Strips Node/V8
-  // stack-trace frame lines, redacts the most common credential/token
-  // shapes (no prior sanitization convention exists elsewhere in this
-  // codebase to reuse - this is a self-contained, conservative
-  // implementation), trims, and caps the final result to
-  // MAX_FAILURE_MESSAGE_LENGTH. A message that sanitizes down to nothing
-  // is stored as null rather than an empty string.
-  private static sanitizeFailureMessage(failureMessage: string | null): string | null {
-    if (failureMessage === null) {
-      return null;
-    }
-
-    const withoutStackLines = failureMessage
-      .split('\n')
-      .filter((line) => !/^\s*at\s/.test(line))
-      .join('\n');
-
-    const withoutSecrets = withoutStackLines
-      .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED]')
-      .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
-      .replace(/(password|secret|token|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
-
-    const trimmed = withoutSecrets.trim();
-    if (trimmed.length === 0) {
-      return null;
-    }
-
-    return trimmed.length > MAX_FAILURE_MESSAGE_LENGTH
-      ? trimmed.slice(0, MAX_FAILURE_MESSAGE_LENGTH)
-      : trimmed;
   }
 
   private static validateStalePageInput(
