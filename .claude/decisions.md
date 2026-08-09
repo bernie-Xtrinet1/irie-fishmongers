@@ -589,3 +589,59 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   `CompensationService`, reconciler, decorator, or scheduler exists yet;
   confirmed via file listing and `git diff --stat` showing zero changes
   to any production caller.
+
+## Phase 16A.0-C4.2 (mirror compensation divergence service) - implemented (2026-08-09, `943c913`)
+
+- **Compensation arrival latest-wins semantics cover
+  `operation`/`customerId`/`desiredQuantity`, not only
+  `reasonCode`/`lastError`/`nextAttemptAt`, permanently.** Corrected
+  mid-review from the originally-approved narrower contract: since
+  deduplication is keyed on `(cartId, productId)` alone, independent of
+  `operation`, a narrower overwrite could leave a row
+  self-contradictory (stale `operation` paired with a since-superseded
+  operation's now-wrong null/non-null `customerId`/`desiredQuantity`).
+  Any future change to this table's arrival-update contract must keep
+  the full diagnostic snapshot internally consistent, not just the
+  originally-scoped three fields.
+- **Runtime enum/format validation at the service boundary is required
+  even when the input type already looks like a Prisma enum.** TypeScript
+  typing alone was judged insufficient - `CompensationService` checks
+  `operation`/`reasonCode` against `Set`-backed membership lists, and
+  validates `customerId`/`desiredQuantity` presence rules per operation,
+  before any repository call. Applies as precedent to future service
+  boundaries in this subsystem: a value crossing into this layer must be
+  validated as if the type annotation could be wrong.
+- **Result types report only `outcome`, never a raw `generation` value,
+  unless a real caller need is identified.** Rejected adding a follow-up
+  `findById` solely to surface `currentGeneration` in
+  `RecordMirrorDivergenceResult` - `generation` stays an internal
+  recovery-worker/repository concern. Revisit only if C4.3 (or later)
+  demonstrates a genuine caller need, not preemptively.
+- **The compensation decorator (`CompensatingReservationGateway` or
+  similar) stays deferred, permanently until ADR-007 open decision 1 is
+  resolved.** Building it against C4.2 would silently bake in an
+  unreviewed assumption about `CartService`'s Redis-first-vs-Postgres-
+  first write order - explicitly out of scope for every C4 sub-unit until
+  that decision is made in its own review.
+- **A "likely cause" must be reproduced before it is written into an ADR
+  or worklog as a root cause.** Standing precedent for this codebase,
+  established via the `_prisma_migrations` incident: correlation
+  (structural comparison ruling out other explanations) was reported
+  first as "likely," then explicitly upgraded only after the suspected
+  command was reproduced end-to-end against a disposable database and
+  observed to produce the identical symptom. Diagnostic reproduction of
+  a suspected destructive command must always target a disposable
+  database created and dropped for that purpose - never the shared dev
+  database, even read-only-appearing commands like `migrate diff` with a
+  shadow-database flag. See ADR-007 §12 for the full incident account.
+- **The `_prisma_migrations` repair (31x `prisma migrate resolve
+  --applied <name>`) remains a proposal only, permanently deferred to
+  its own separate maintenance task with its own approval and audit
+  trail.** Not bundled into C4.2 or its docs closeout despite the root
+  cause now being confirmed - confirming the cause does not itself
+  authorize the repair.
+- **`CompensationService` remains completely unwired** - no reconciler,
+  decorator, or scheduler exists yet; `MirrorCompensationModule` is
+  imported by `AppModule` for DI reachability only, no production caller
+  calls `CompensationService`, confirmed via `git diff --stat` showing
+  zero changes to `CartService`/`ProductsService`/`OrdersService`.

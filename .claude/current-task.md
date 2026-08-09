@@ -363,22 +363,63 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     session, in a separate docs-only commit. ADR-007 `Status` remains
     `Proposed`, unchanged.
 
-## Next task: Phase 16A.0-C4.2 - compensation service / divergence recording, read-only planning/contract confirmation first
+- **Phase 16A.0-C4.2 is complete and pushed** at `943c913`
+  (`feat(checkout): add mirror compensation divergence service`), on
+  `origin/develop`.
+  - **`CompensationService.recordMirrorDivergence`** is the sole writer of
+    `CartReservationCompensation` rows: runtime-validated input (`Set`-
+    backed `operation`/`reasonCode` membership checks, not just TS
+    typing; `RESERVE_MIRROR` requires a non-null valid `customerId` and a
+    positive-integer `desiredQuantity`; `RELEASE_MIRROR` requires both
+    `null`), `sanitizeErrorMessage`-cleaned `lastError` (500-char cap),
+    and a bounded optimistic-retry loop (`MAX_OPTIMISTIC_RETRIES = 3`)
+    that retries on `P2002`, on a since-resolved existing row, and on a
+    zero-row generation-advance update - exhaustion throws a plain
+    internal-consistency error, never a normal result.
+  - **Latest-wins arrival semantics, widened per correction**: a new
+    divergence against an unresolved row overwrites `operation`,
+    `customerId`, `desiredQuantity`, `reasonCode`, sanitized `lastError`,
+    and `nextAttemptAt` (not just the originally-scoped
+    `reasonCode`/`lastError`/`nextAttemptAt`) - avoids a
+    self-contradictory row since dedup is keyed on `(cartId, productId)`
+    alone, independent of `operation`. `BLOCKED` + `ACCOUNTING_UNDERFLOW`
+    arrival stays `BLOCKED`; any other reason unblocks to `PENDING`.
+  - Result type has no `currentGeneration` field by design - `generation`
+    stays internal to the repository/recovery-worker relationship.
+  - `MirrorCompensationModule` exports only `CompensationService`,
+    declares no `imports` (`PrismaService` is available via the existing
+    `@Global()` `PrismaModule`). `AppModule` imports it; **nothing else
+    calls `CompensationService` yet** - fully additive and unwired.
+  - 22 new tests across 3 files (unit + 2 real-Postgres, split for the
+    400-line cap). Full backend suite 234 -> 237 suites, 2003 -> 2025
+    tests, exit 0. Coverage 97.43%/93.97%/97.12%/97.35% (80/90/90/90
+    threshold), exit 0.
+  - **`_prisma_migrations` incident root-caused and confirmed by
+    reproduction** (not left as correlation): `prisma migrate diff
+    --shadow-database-url` pointed at the same URL as the live target
+    resets/replays that target as scratch space without ever writing
+    `_prisma_migrations`, silently wiping data and migration history
+    while leaving the schema structurally correct. Reproduced against a
+    disposable database only (created and dropped for the test); the
+    shared dev database was never touched during either the original
+    diagnosis or this reproduction. Repair (31x `prisma migrate resolve
+    --applied`) remains a proposal only, explicitly deferred to a
+    separate maintenance task requiring its own approval - not performed
+    in C4.2. Full account in ADR-007 §12.
+  - ADR-007 gained a new §12 recording this implementation and the
+    confirmed incident in the same session, in a separate docs-only
+    commit.
 
-Per the approved sequencing, the next session begins by reviewing
-`CompensationRepository`, the `CartReservationCompensation` schema, the
-final `recordDivergence` concurrency contract, the shared sanitizer, and
-C3's `MirrorDiagnostic` - then plans/implements only `CompensationService`,
-`recordMirrorDivergence`, the bounded `recordDivergence` retry loop
-(using `MAX_OPTIMISTIC_RETRIES`), latest-wins diagnostics, `BLOCKED`
-arrival-status behavior, the resolve-between-read-and-update race,
-concurrent duplicate-arrival handling, and (if still assigned to this
-unit) `CartRepository.findItemByCartAndProduct` - with service/result
-types and tests. Without starting the desired-state reconciler (C4.3),
-batch orchestrator (C4.4), scheduler (C4.5), the compensation decorator,
-`ReservationGateway` composition, `CartService` integration, C5
-idempotency, or production caller cutover. See `.claude/next-session.md`
-for the exact scope and explicit prohibitions.
+## Next task: Phase 16A.0-C4.3 - desired-state reconciler, read-only planning/contract confirmation first
+
+Per the established phase sequence, the next session's likely scope is
+the desired-state recovery reconciler that consumes
+`CartReservationCompensation` rows written by C4.2 and reconciles the
+mirror against current `CartItem` truth. As with every prior unit, begin
+read-only: restate `CompensationService`/`CompensationRepository`'s exact
+current contract, confirm scope boundaries, and produce a plan for
+explicit approval before any implementation begins. See
+`.claude/next-session.md` for the exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

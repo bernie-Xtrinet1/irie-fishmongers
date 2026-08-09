@@ -1207,3 +1207,124 @@ C4.1:
   `CheckoutReservationModule`/`ReservationEngineModeModule`.
 - Commit `0e97a5c` (`feat(checkout): add mirror compensation schema and
   repository`), pushed to `origin/develop` together with `8e2daaf`.
+
+## 2026-08-09 (cont.) - Phase 16A.0-C4.2: compensation divergence service (`943c913`)
+
+- `CompensationService.recordMirrorDivergence` - the sole writer of
+  `CartReservationCompensation` rows. Runtime `Set`-membership validation
+  of `operation`/`reasonCode` (not just TS typing), operation-specific
+  `customerId`/`desiredQuantity` rules (`RESERVE_MIRROR` requires both
+  present and valid; `RELEASE_MIRROR` requires both `null`), and
+  `sanitizeErrorMessage`-cleaned `lastError` (500-char cap) before
+  anything reaches the repository, the result, or a log line.
+- Bounded optimistic-retry loop (`MAX_OPTIMISTIC_RETRIES = 3`, reused from
+  the repository-level constant defined in C4.1): `create` -> on `P2002`,
+  read the unresolved row -> if it already resolved, retry `create`; else
+  apply the appropriate generation-advancing update -> a zero-row result
+  (resolved between read and write) also retries. Exhaustion throws a
+  plain internal-consistency `Error`, never a normal branchable result -
+  this can only happen if the partial index itself is violated, which
+  should be structurally impossible.
+- **Mid-review production correction (widened latest-wins metadata)**:
+  the originally-approved arrival contract overwrote only
+  `reasonCode`/`lastError`/`nextAttemptAt` on a duplicate divergence.
+  Corrected to also overwrite `operation`/`customerId`/`desiredQuantity`,
+  because deduplication is keyed on `(cartId, productId)` alone,
+  independent of `operation` - the narrower contract could leave a row
+  self-contradictory (e.g. `operation: RESERVE_MIRROR` with a
+  since-superseded `RELEASE_MIRROR`'s null `desiredQuantity`). 4 new
+  real-Postgres tests added specifically for this
+  (`compensation-latest-wins.service.spec.ts`): RESERVE_MIRROR-then-
+  RELEASE_MIRROR flips fields to null; RELEASE_MIRROR-then-RESERVE_MIRROR
+  flips back and persists new values; same-operation-new-desiredQuantity
+  (latest wins); deterministic later-arrival-overwrites-earlier-snapshot.
+  `CompensationRepository.advanceGenerationPreservingStatus`/
+  `advanceGenerationAndUnblock`'s `DivergenceUpdateInput` widened to
+  match; 5 existing repository tests updated to assert the new fields
+  persist.
+- `BLOCKED` arrival-status rule unchanged from the approved C4.1 contract:
+  `ACCOUNTING_UNDERFLOW` arrival stays `BLOCKED`; any other reason
+  unblocks to `PENDING`.
+- Result type has no `currentGeneration` field, by explicit design choice
+  during contract review - a follow-up `findById` purely to report a
+  generation value no caller needs was rejected; `generation` stays
+  internal to the repository/recovery-worker relationship.
+- `MirrorCompensationModule` exports only `CompensationService`, declares
+  no `imports` - `PrismaService` is available via `PrismaModule`'s
+  existing `@Global()` registration, confirmed by direct inspection
+  (`backend/src/database/prisma.module.ts`) before writing the module.
+  `AppModule` imports it; nothing else calls `CompensationService` yet.
+- Two spec-file bugs found and fixed during this round: `baseInput()` in
+  both `compensation-concurrency.service.spec.ts` and
+  `compensation-latest-wins.service.spec.ts` hardcoded
+  `operation: 'RESERVE_MIRROR'` instead of reading
+  `overrides.operation ?? 'RESERVE_MIRROR'`. Harmless in the first file
+  (no test there varied `operation`); caused 2 genuine failures in the
+  second (tests needing `RELEASE_MIRROR` were silently sent
+  `RESERVE_MIRROR` with a null `customerId`, correctly triggering the
+  service's own `INVALID_INPUT` validation - which is what surfaced the
+  bug). `compensation.service.spec.ts`'s `baseInput()` used a trailing
+  `...overrides` spread from the start and never had this bug.
+- 22 new tests across 3 files (`compensation.service.spec.ts` - unit,
+  mocked repository, incl. sanitization proof and bounded-retry-
+  exhaustion; `compensation-concurrency.service.spec.ts` and
+  `compensation-latest-wins.service.spec.ts` - real Postgres, split for
+  the 400-line cap). Required races covered: resolve-between-read-and-
+  update (via a spied `findUnresolvedByCartAndProduct` that resolves the
+  row as a side effect of its own read), genuine concurrent duplicate
+  arrivals via `Promise.all`. A corruption-handling test (deliberately
+  bypassing the partial index) was scoped as optional during contract
+  review and not added - no index-bypass technique was exercised against
+  the shared dev database.
+- Full backend suite 234 -> 237 suites, 2003 -> 2025 tests, exit 0.
+  Coverage 97.43%/93.97%/97.12%/97.35% (80/90/90/90 threshold), exit 0.
+  `AppModule` bootstrap clean.
+- No `CartRepository.findItemByCartAndProduct` added - confirmed not
+  genuinely needed by this unit's scope, left for C4.3 per the default
+  stated at contract-approval time.
+- No reconciler, decorator, or scheduler exists - additive and unwired,
+  confirmed via `git diff --stat` showing zero changes to
+  `CartService`/`ProductsService`/`OrdersService`/
+  `CheckoutReservationModule`/`ReservationEngineModeModule`.
+
+### `_prisma_migrations` incident - diagnosis strengthened to a confirmed, reproduced root cause
+
+While validating C4.2, `prisma migrate status`/`migrate diff` revealed the
+shared dev database's `_prisma_migrations` table was missing entirely
+(searched every schema, not just `public`), alongside near-total data loss
+(`products`/`carts`/`vendors` at 0 rows; `users` at 1 row). Per explicit
+instruction, diagnosis proceeded read-only against the shared database
+throughout - no `migrate resolve` or other history-mutating command was
+ever run against it.
+
+- Confirmed database identity and continuity: same `iriefishmongers` DB
+  used by C4.1 (the `Role` rows seeded earlier were still present).
+- Structural comparison against a freshly-migrated disposable database
+  (`iriefishmongers_diag_disposable`, `prisma migrate deploy`, all 31
+  migrations succeeded) via a custom raw-SQL introspection script: exact
+  match on tables/columns/indexes/FKs/enums except `_prisma_migrations`
+  itself and row counts - ruling out drift/partial-migration and pointing
+  at a scratch-space wipe.
+- Initially reported as a *likely* cause (correlation: an earlier session
+  had run `prisma migrate diff --shadow-database-url "$DATABASE_URL"`
+  with the shadow URL mistakenly equal to the live target). Per explicit
+  follow-up instruction, this was then **reproduced** rather than left as
+  inference: created a second disposable database
+  (`iriefishmongers_repro_disposable`), migrated it cleanly, planted a
+  `Role` marker row (count 1), ran the exact suspected command against it
+  with itself as both target and shadow. Result: "No difference detected"
+  (exit 0, matching the original symptom exactly), and immediately after,
+  `_prisma_migrations` no longer existed and the marker row count was 0 -
+  conclusively reproducing the wipe. The disposable database was dropped
+  immediately after; the shared dev database was untouched throughout
+  both the original diagnosis and this reproduction.
+- Root cause is now documented as **confirmed**, not "likely", in
+  ADR-007 §12, per the explicit instruction to strengthen the evidence
+  before writing it permanently into ADRs or worklogs.
+- Repair (31x `prisma migrate resolve --applied <name>`) remains a
+  proposal only, explicitly deferred to a separate maintenance task
+  requiring its own approval and audit trail - not executed as part of
+  C4.2 or this closeout.
+
+Commit `943c913` (`feat(checkout): add mirror compensation divergence
+service`), pushed to `origin/develop`.
