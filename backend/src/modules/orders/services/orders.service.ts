@@ -21,6 +21,8 @@ import {
   VendorOrderInput,
 } from '../repositories/orders.repository';
 import { VendorOrdersRepository } from '../repositories/vendor-orders.repository';
+import { PreparedCheckout, PrepareCheckoutResult } from '../types/checkout-preparation.types';
+import { mapPrepareFailureToHttpException } from './checkout-preparation-http-mapper';
 
 const CANCELLABLE_STATUS = 'PENDING';
 
@@ -41,128 +43,20 @@ export class OrdersService {
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
-    const cart = await this.cartRepository.findOrCreateByCustomerId(userId);
-    if (cart.items.length === 0) {
-      throw new BadRequestException('Cart is empty');
+    const prepareResult = await this.prepareCheckout(userId, dto);
+    if (!prepareResult.ok) {
+      throw mapPrepareFailureToHttpException(prepareResult);
     }
+    const { prepared } = prepareResult;
 
-    const additionalAmountByVendorId = new Map<string, number>();
-
-    for (const item of cart.items) {
-      if (!item.product.isActive) {
-        throw new BadRequestException(`"${item.product.name}" is no longer available`);
-      }
-      if (
-        item.product.lot &&
-        (item.product.lot.foodSafetyStatus !== 'SAFE' ||
-          !SeafoodLotsService.isGradingSellable(item.product.lot))
-      ) {
-        throw new BadRequestException(
-          `"${item.product.name}" is currently on hold pending a food-safety review`,
-        );
-      }
-      const vendor = await this.vendorsRepository.findById(item.product.vendorId);
-      if (!vendor || vendor.status !== 'APPROVED') {
-        throw new BadRequestException(
-          `"${item.product.name}" is not currently sold by an approved vendor`,
-        );
-      }
-
-      const itemSubtotal = item.product.price.times(item.quantity).toNumber();
-      additionalAmountByVendorId.set(
-        vendor.id,
-        (additionalAmountByVendorId.get(vendor.id) ?? 0) + itemSubtotal,
-      );
-    }
-
-    for (const [vendorId, additionalAmount] of additionalAmountByVendorId) {
-      const vendor = await this.vendorsRepository.findById(vendorId);
-      if (vendor) {
-        await this.vendorPermissionsService.assertSalesLimitNotExceeded(
-          vendorId,
-          vendor.tier,
-          additionalAmount,
-        );
-      }
-    }
-
-    // Resolved directly from the global PrismaService, not a DeliveryModule
-    // import: DeliveryModule already imports OrdersModule, so importing it
-    // back here would create a circular dependency. See ZoneResolutionService
-    // for the equivalent lookup used within DeliveryModule itself.
-    const zoneMapping = await this.prisma.deliveryZoneParish.findUnique({
-      where: { parish: dto.deliveryParish },
-      select: { zoneId: true },
-    });
-    const deliveryZoneId = zoneMapping?.zoneId ?? null;
-
-    const order = await this.prisma.$transaction(async (tx) => {
-      const vendorGroups = new Map<string, VendorOrderInput>();
-
-      for (const item of cart.items) {
-        await this.productsRepository.adjustStock(item.productId, -item.quantity, tx);
-
-        const itemSubtotal = item.product.price.times(item.quantity);
-        const existingGroup = vendorGroups.get(item.product.vendorId);
-        const orderItem = {
-          productId: item.productId,
-          productName: item.product.name,
-          unitPrice: item.product.price.toNumber(),
-          unit: item.product.unit,
-          quantity: item.quantity,
-          subtotal: itemSubtotal.toNumber(),
-        };
-
-        if (existingGroup) {
-          existingGroup.items.push(orderItem);
-          existingGroup.subtotal += itemSubtotal.toNumber();
-        } else {
-          vendorGroups.set(item.product.vendorId, {
-            vendorId: item.product.vendorId,
-            subtotal: itemSubtotal.toNumber(),
-            items: [orderItem],
-          });
-        }
-      }
-
-      const created = await this.ordersRepository.create(
-        {
-          customerId: userId,
-          deliveryAddressLine1: dto.deliveryAddressLine1,
-          deliveryAddressLine2: dto.deliveryAddressLine2,
-          deliveryParish: dto.deliveryParish,
-          deliveryPhone: dto.deliveryPhone,
-          deliveryZoneId,
-          vendorOrders: Array.from(vendorGroups.values()),
-        },
-        tx,
-      );
-
-      for (const vendorOrder of created.vendorOrders) {
-        for (const item of vendorOrder.items) {
-          await this.inventoryEventsRepository.create(
-            {
-              productId: item.productId,
-              eventType: 'DECREMENTED',
-              quantityDelta: -item.quantity,
-              vendorOrderId: vendorOrder.id,
-            },
-            tx,
-          );
-        }
-      }
-
-      await this.cartRepository.clear(cart.id, tx);
-
-      return created;
-    });
+    const order = await this.prisma.$transaction((tx) => this.createOrderInTransaction(tx, prepared));
 
     // No longer "reserved", it's actually decremented now - release the
     // soft holds for exactly the products just purchased so they stop
     // counting against other shoppers' availability.
-    const purchasedProductIds = new Set(cart.items.map((item) => item.productId));
+    const purchasedProductIds = new Set(prepared.cart.items.map((item) => item.productId));
     for (const productId of purchasedProductIds) {
-      await this.inventoryReservations.release(productId, cart.id);
+      await this.inventoryReservations.release(productId, prepared.cart.id);
     }
 
     const total = order.vendorOrders.reduce(
@@ -190,6 +84,161 @@ export class OrdersService {
       payment,
       paymentRedirectUrl: redirectUrl,
     };
+  }
+
+  // Phase 16A.0-D, Unit D.1. Every read-only business validation
+  // OrdersService.checkout performs before it ever opens a transaction -
+  // extracted verbatim, only the failure signaling changed (a typed result
+  // instead of a thrown exception), so a second caller (the future
+  // CheckoutCoordinatorService) can react without parsing exception message
+  // text. Legacy checkout() translates a failure back into the exact
+  // exception it has always thrown - see mapPrepareFailureToHttpException.
+  async prepareCheckout(userId: string, dto: CheckoutDto): Promise<PrepareCheckoutResult> {
+    const cart = await this.cartRepository.findOrCreateByCustomerId(userId);
+    if (cart.items.length === 0) {
+      return { ok: false, code: 'CART_EMPTY' };
+    }
+
+    const additionalAmountByVendorId = new Map<string, number>();
+
+    for (const item of cart.items) {
+      if (!item.product.isActive) {
+        return {
+          ok: false,
+          code: 'PRODUCT_NOT_AVAILABLE',
+          productId: item.productId,
+          productName: item.product.name,
+        };
+      }
+      if (
+        item.product.lot &&
+        (item.product.lot.foodSafetyStatus !== 'SAFE' ||
+          !SeafoodLotsService.isGradingSellable(item.product.lot))
+      ) {
+        return {
+          ok: false,
+          code: 'PRODUCT_FOOD_SAFETY_HOLD',
+          productId: item.productId,
+          productName: item.product.name,
+        };
+      }
+      const vendor = await this.vendorsRepository.findById(item.product.vendorId);
+      if (!vendor || vendor.status !== 'APPROVED') {
+        return {
+          ok: false,
+          code: 'VENDOR_NOT_APPROVED',
+          productId: item.productId,
+          productName: item.product.name,
+        };
+      }
+
+      const itemSubtotal = item.product.price.times(item.quantity).toNumber();
+      additionalAmountByVendorId.set(
+        vendor.id,
+        (additionalAmountByVendorId.get(vendor.id) ?? 0) + itemSubtotal,
+      );
+    }
+
+    for (const [vendorId, additionalAmount] of additionalAmountByVendorId) {
+      const vendor = await this.vendorsRepository.findById(vendorId);
+      if (vendor) {
+        try {
+          await this.vendorPermissionsService.assertSalesLimitNotExceeded(
+            vendorId,
+            vendor.tier,
+            additionalAmount,
+          );
+        } catch (error) {
+          if (error instanceof ForbiddenException) {
+            return { ok: false, code: 'VENDOR_SALES_LIMIT_EXCEEDED', vendorId, message: error.message };
+          }
+          throw error;
+        }
+      }
+    }
+
+    // Resolved directly from the global PrismaService, not a DeliveryModule
+    // import: DeliveryModule already imports OrdersModule, so importing it
+    // back here would create a circular dependency. See ZoneResolutionService
+    // for the equivalent lookup used within DeliveryModule itself.
+    const zoneMapping = await this.prisma.deliveryZoneParish.findUnique({
+      where: { parish: dto.deliveryParish },
+      select: { zoneId: true },
+    });
+    const deliveryZoneId = zoneMapping?.zoneId ?? null;
+
+    return { ok: true, prepared: { cart, dto, deliveryZoneId } };
+  }
+
+  // Phase 16A.0-D, Unit D.1. The durable write portion of
+  // OrdersService.checkout - extracted verbatim, requiring an
+  // externally-owned Prisma.TransactionClient rather than opening its own
+  // $transaction, so a future caller (CheckoutCoordinatorService) can
+  // include CheckoutAttempt's PROCESSING -> COMMITTED transition in the
+  // same durable transaction. Never calls $transaction itself.
+  async createOrderInTransaction(
+    tx: Prisma.TransactionClient,
+    prepared: PreparedCheckout,
+  ): Promise<OrderWithDetails> {
+    const { cart, dto, deliveryZoneId } = prepared;
+    const vendorGroups = new Map<string, VendorOrderInput>();
+
+    for (const item of cart.items) {
+      await this.productsRepository.adjustStock(item.productId, -item.quantity, tx);
+
+      const itemSubtotal = item.product.price.times(item.quantity);
+      const existingGroup = vendorGroups.get(item.product.vendorId);
+      const orderItem = {
+        productId: item.productId,
+        productName: item.product.name,
+        unitPrice: item.product.price.toNumber(),
+        unit: item.product.unit,
+        quantity: item.quantity,
+        subtotal: itemSubtotal.toNumber(),
+      };
+
+      if (existingGroup) {
+        existingGroup.items.push(orderItem);
+        existingGroup.subtotal += itemSubtotal.toNumber();
+      } else {
+        vendorGroups.set(item.product.vendorId, {
+          vendorId: item.product.vendorId,
+          subtotal: itemSubtotal.toNumber(),
+          items: [orderItem],
+        });
+      }
+    }
+
+    const created = await this.ordersRepository.create(
+      {
+        customerId: cart.customerId,
+        deliveryAddressLine1: dto.deliveryAddressLine1,
+        deliveryAddressLine2: dto.deliveryAddressLine2,
+        deliveryParish: dto.deliveryParish,
+        deliveryPhone: dto.deliveryPhone,
+        deliveryZoneId,
+        vendorOrders: Array.from(vendorGroups.values()),
+      },
+      tx,
+    );
+
+    for (const vendorOrder of created.vendorOrders) {
+      for (const item of vendorOrder.items) {
+        await this.inventoryEventsRepository.create(
+          {
+            productId: item.productId,
+            eventType: 'DECREMENTED',
+            quantityDelta: -item.quantity,
+            vendorOrderId: vendorOrder.id,
+          },
+          tx,
+        );
+      }
+    }
+
+    await this.cartRepository.clear(cart.id, tx);
+
+    return created;
   }
 
   async getCustomerOrders(

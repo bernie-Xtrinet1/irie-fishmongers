@@ -516,6 +516,107 @@ describe('OrdersService', () => {
       expect(createArg?.deliveryZoneId).toBe('zone-1');
     });
 
+    it('rejects checkout when a vendor sales limit would be exceeded', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 1,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.assertSalesLimitNotExceeded.mockRejectedValue(
+        new ForbiddenException("This vendor's daily sales limit would be exceeded"),
+      );
+
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toMatchObject({
+        message: "This vendor's daily sales limit would be exceeded",
+      });
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('propagates an unexpected error from the sales-limit check unchanged', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 1,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      vendorPermissionsService.assertSalesLimitNotExceeded.mockRejectedValue(
+        new Error('vendor tier config lookup failed'),
+      );
+
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toThrow(
+        'vendor tier config lookup failed',
+      );
+    });
+
+    it('groups multiple items from the same vendor into a single vendor order', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 2,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct({ price: new Prisma.Decimal(500) }),
+          },
+          {
+            id: 'item-2',
+            cartId: 'cart-1',
+            productId: 'product-2',
+            quantity: 1,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct({ id: 'product-2', price: new Prisma.Decimal(300) }),
+          },
+        ],
+      });
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      await service.checkout('user-1', checkoutDto);
+
+      const createArg = ordersRepository.create.mock.calls[0]?.[0];
+      expect(createArg?.vendorOrders).toHaveLength(1);
+      expect(createArg?.vendorOrders[0]?.items).toHaveLength(2);
+      expect(createArg?.vendorOrders[0]?.subtotal).toBe(1300);
+    });
+
     it('stores a null deliveryZoneId when the parish has no zone mapping', async () => {
       const cart = buildCart({
         items: [
