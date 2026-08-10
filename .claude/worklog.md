@@ -1328,3 +1328,134 @@ ever run against it.
 
 Commit `943c913` (`feat(checkout): add mirror compensation divergence
 service`), pushed to `origin/develop`.
+
+## 2026-08-09 (cont.) - Migration-history repair executed (maintenance action, separate from C4.3 feature work)
+
+- The 31x `prisma migrate resolve --applied <name>` repair, previously
+  documented as a proposal-only plan deferred to its own approval, was
+  executed this session as an explicitly-approved maintenance action -
+  triggered when C4.3's schema change (`blockReason`) hit the broken
+  migration history and blocked `migrate dev` from proceeding normally.
+- Full pre-repair verification per the approved protocol: confirmed
+  exactly 31 pre-existing migration directories
+  (`20260705235805_add_auth_tables` -> `20260809060116_add_cart_reservation_compensation`);
+  replayed all 31 against a fresh disposable database via `migrate
+  deploy` (succeeded, 31/31 `_prisma_migrations` rows, 0 unfinished/
+  rolled-back); structurally compared that disposable database against
+  the shared dev database (81 tables/751 columns/199 indexes/136 FKs/300
+  enum labels - zero differences).
+- Ran `prisma migrate resolve --applied <name>` for all 31 names, oldest
+  to newest, against the shared dev database (one tool-timeout
+  interruption after 27/31 - verified via read-only query before
+  continuing with the remaining 4 in the same order).
+- Post-repair verification: 31/31 `_prisma_migrations` records, all
+  finished, 0 rolled back; exact name parity between repo migration
+  directories and DB records; `prisma migrate status` ->
+  **"Database schema is up to date!"**; a second fresh disposable
+  database's structural comparison against the now-repaired shared dev
+  database -> zero differences again; application row counts
+  (`users=1, roles=5, products=0, carts=0, vendors=0,
+  cart_reservation_compensations=0`) exactly matched the pre-repair
+  state, confirming `migrate resolve` never executes migration SQL or
+  touches data.
+- Both disposable verification databases dropped immediately after use;
+  the shared dev database's actual data was never touched by the repair
+  itself (only its `_prisma_migrations` bookkeeping table gained rows).
+- `--shadow-database-url` was never pointed at the live/shared dev
+  database at any point during this session - every shadow role used a
+  disposable database created and dropped for that purpose, matching the
+  standing rule established by the original incident.
+- This repair is now **complete** and should not be repeated. Full
+  account recorded in ADR-007 §12 (updated in the same docs commit as
+  §13's C4.3 record).
+
+## 2026-08-09 (cont.) - Phase 16A.0-C4.3: desired-state reconciler (`4c139b4`)
+
+- **`CompensationReconciliationService.attemptRecovery`** and
+  **`CompensationBlockedRecheckService.recheckBlocked`** - the recovery
+  layer consuming `CartReservationCompensation` rows written by C4.2.
+  Desired state is authoritative from *current* `Cart`/`CartItem` truth
+  (`CartRepository.findById` + the new
+  `CartRepository.findItemByCartAndProduct(cartId, productId)`), never
+  from the row's own `operation`/`customerId`/`desiredQuantity`
+  (historical diagnostics only).
+- **Schema**: `CompensationBlockReason` (`PRODUCT_SUSPECT` |
+  `MODE_NOT_ADMITTING`) added as a new enum, deliberately separate from
+  `CompensationReasonCode` - `reasonCode` is the latest divergence
+  diagnostic, `blockReason` is why the row can't currently proceed.
+  Migration `20260809171336_add_compensation_block_reason` (additive
+  only - one `CREATE TYPE`, one `ADD COLUMN`), drift-verified against a
+  genuinely separate disposable shadow database (`--shadow-database-url`
+  never pointed at the live DB) both immediately after generation and
+  again in final validation.
+- **`CompensationRepository` gained**: `blockIfGenerationMatches`
+  (establishes `BLOCKED` for the first time, generation-gated, writes
+  `reasonCode` only when the live attempt produced a new diagnostic - a
+  mode-block never overwrites the existing mirror diagnostic);
+  `requeueAfterAttemptIfGenerationMatches` (replaces an earlier ungated
+  `requeueAfterAttempt` - ordinary retry scheduling, now generation-gated
+  so a stale worker can never delay a newer generation's backoff); and
+  `releaseStaleClaim`, added back after an initial over-correction
+  removed the ungated form entirely - this primitive is *intentionally*
+  ungated (it releases a claim a generation-gated write has just proven
+  stale, asserting nothing about convergence) and must stay distinct from
+  the generation-gated retry primitive. `unblockIfGenerationMatches`/
+  `advanceGenerationAndUnblock` both clear `blockReason` to `null`.
+- **Mode matrix**: `MIRROR`/`CART_SCOPED` converge to current durable
+  state identically (`CART_SCOPED` additionally logs an invariant
+  warning - a clean cutover should leave zero unresolved compensation);
+  `DRAINING` never attempts a write for a reserve-shaped desired state
+  (blocks directly, `blockReason: MODE_NOT_ADMITTING`) but allows release
+  normally; `LEGACY` never recreates a reservation regardless of desired
+  quantity, always releases, resolving as `RESOLVED_NO_LONGER_NEEDED_LEGACY`
+  (distinct from `RESOLVED_CONVERGED` - the mirror system is retired, not
+  merely satisfied).
+- **Failure classification**: `ACCOUNTING_UNDERFLOW` and
+  `RESERVATION_PRODUCT_SUSPENDED` both -> `BLOCKED_PRODUCT_SUSPECT`;
+  `RESERVATION_CHECKOUT_IN_PROGRESS` and any unexpected infrastructure
+  exception both use the normal retry schedule and are never routed
+  through the product-suspect BLOCKED checker.
+- **Retry budget**: `MAX_RECOVERY_ATTEMPTS = 5`, fixed backoff 30s/120s/
+  600s/1800s before attempts 2-5, then `PERMANENT_FAILURE`. `BLOCKED`
+  rechecks (`rescheduleBlockedCheckIfGenerationMatches`) never consume
+  `attemptCount`, only `blockedCheckCount`.
+- **Generation-race safety**: every generation-gated terminal call
+  (`resolveIfGenerationMatches`/`blockIfGenerationMatches`/
+  `requeueAfterAttemptIfGenerationMatches`/
+  `markPermanentFailureIfGenerationMatches`) returning a zero-count
+  mismatch releases the claim via `releaseStaleClaim` and reports
+  `REQUEUED_NEWER_DIVERGENCE` - never a failure. Proven safe by
+  construction: a concurrent `recordMirrorDivergence` arrival can only
+  reach a `PROCESSING` row via `advanceGenerationPreservingStatus`, which
+  bumps `generation` but never touches `status` - the row is therefore
+  provably still `PROCESSING` and safe to release.
+- Targeted validation: `CartRepository` 12/12, all `CompensationRepository`
+  specs clean, reconciliation primary spec 24/24 (later 27/27 after
+  closing 3 coverage gaps), mode-matrix spec 9/9, `CompensationBlockedRecheckService`
+  spec 14/14, real Postgres+Redis integration spec 8/8. Combined
+  mirror-compensation suite (9 files): 123/123 - one earlier run showed 3
+  timeout failures under heavy concurrent-connection load, confirmed
+  transient (passed clean both in isolation and on a clean re-run of the
+  full combined set; not a defect, no test-infrastructure change made
+  since it did not reproduce).
+- 115 new tests across 5 new files. Full backend suite 237 -> 241 suites,
+  2045 -> 2104 tests, exit 0. Coverage 97.50%/94.18%/97.17%/97.43%
+  (80/90/90/90 threshold), exit 0. `mirror-compensation/services` at
+  100/100/100/100 (three coverage gaps closed: a defensive post-claim
+  `NOT_FOUND` check, the release-path infrastructure-exception branch,
+  and a non-`Error`-thrown-value fallback).
+- Prisma: `validate` clean, `generate` clean, `migrate status` -> 32
+  migrations, up to date. Disposable-shadow drift check -> "No
+  difference detected", confirmed on a genuinely separate database.
+- **No caller wiring** - `CompensationReconciliationService`/
+  `CompensationBlockedRecheckService` remain completely unwired, no
+  batch orchestrator, no scheduler, no decorator, no
+  `CartService`/`ProductsService`/`OrdersService` change.
+  `MirrorCompensationModule` remains unimported by `AppModule`. Confirmed
+  via targeted `git diff --stat` against every prohibited file, zero
+  changes.
+- ADR-007 gained a new §13 recording this implementation in the same
+  session, in a separate docs-only commit.
+
+Commit `4c139b4` (`feat(checkout): add mirror compensation desired-state
+reconciler`), pushed to `origin/develop`.

@@ -819,6 +819,106 @@ Prisma considers the repaired database current, but that the
 reconstructed history exactly matches source control - not merely that
 the row count looks plausible.
 
+### 13. Phase C4, Unit C4.3: desired-state reconciler - implemented, unwired
+
+`CompensationReconciliationService.attemptRecovery` and
+`CompensationBlockedRecheckService.recheckBlocked` are the recovery layer
+that consumes `CartReservationCompensation` rows written by C4.2. Two
+single-row entry points; no batching (C4.4) or scheduling (C4.5) exists
+yet.
+
+1. **Desired-state authority**: recovery is authoritative from *current*
+   durable `Cart`/`CartItem` state, read via `CartRepository.findById` and
+   the new `CartRepository.findItemByCartAndProduct(cartId, productId)` -
+   never from `CartService`. A `CartItem` present means the desired state
+   is a reservation for its *current* `quantity`; absent means no
+   reservation (release).
+2. **`compensation.operation`/`customerId`/`desiredQuantity` remain
+   historical diagnostics only** - they are never replay instructions.
+   Recovery re-derives desired state fresh on every attempt.
+3. **`CartRepository.findItemByCartAndProduct(cartId, productId)`** - a
+   plain `findUnique` on the existing `@@unique([cartId, productId])`
+   index, added specifically as this unit's desired-state read.
+4. **`CompensationBlockReason`** (`PRODUCT_SUSPECT` | `MODE_NOT_ADMITTING`)
+   is a separate persisted enum/column from `CompensationReasonCode`,
+   deliberately: `reasonCode` is the latest mirror/recovery divergence
+   diagnostic; `blockReason` is why the row is currently unable to
+   proceed. A row blocked by `DRAINING` mode never overwrites a real
+   mirror diagnostic - `blockReason` carries that fact instead.
+5. **`blockReason` is cleared to `null`** on every transition that leaves
+   `BLOCKED` (`unblockIfGenerationMatches`, `advanceGenerationAndUnblock`).
+6. **`PROCESSING -> BLOCKED`** uses the new, generation-gated
+   `blockIfGenerationMatches` - the primitive that establishes `BLOCKED`
+   for the first time (`create()` always starts a row `PENDING`). It may
+   write `reasonCode` only when the live recovery attempt itself produced
+   a new diagnostic (never for a mode-blocked row, which attempts no
+   write at all); it never touches `generation`/`attemptCount`/
+   `blockedCheckCount`/`operation`/`customerId`/`desiredQuantity`.
+7. **Normal retry scheduling** uses `requeueAfterAttemptIfGenerationMatches`
+   - also generation-gated, replacing an earlier, ungated form, because a
+   stale worker must never delay a newer generation using an old backoff
+   schedule.
+8. **`releaseStaleClaim` remains intentionally ungated** - it exists
+   specifically to release a claim that a generation-gated write has just
+   proven stale, and makes no assertion about convergence. It is
+   deliberately distinct from `requeueAfterAttemptIfGenerationMatches` and
+   must never be replaced by a generation-gated primitive.
+9. **Mode policy**:
+   - `MIRROR`: converge to current durable state (reserve if
+     `desiredQuantity > 0`, else release).
+   - `CART_SCOPED`: converge identically; additionally logs an invariant
+     warning, since a genuinely clean cutover to `CART_SCOPED` should have
+     left zero unresolved compensation rows.
+   - `DRAINING`: `desiredQuantity > 0` never attempts a write - blocks
+     directly with `blockReason: MODE_NOT_ADMITTING`; `desiredQuantity ===
+     0` releases normally (full cleanup stays allowed while `DRAINING`,
+     matching C3's precedent).
+   - `LEGACY`: never recreates a cart-scoped reservation regardless of
+     `desiredQuantity` - always releases, resolving as
+     `RESOLVED_NO_LONGER_NEEDED_LEGACY` on success (distinct from
+     `RESOLVED_CONVERGED`, since the mirror system is retired, not merely
+     satisfied).
+10. **Failure classification**: `ACCOUNTING_UNDERFLOW` and
+    `RESERVATION_PRODUCT_SUSPENDED` both classify to `BLOCKED_PRODUCT_SUSPECT`
+    (`blockReason: PRODUCT_SUSPECT`). `RESERVATION_CHECKOUT_IN_PROGRESS`
+    and any unexpected infrastructure exception both use the normal retry
+    schedule - `CHECKOUT_IN_PROGRESS` is never routed through the
+    product-suspect BLOCKED checker.
+11. **Recovery budget**: `MAX_RECOVERY_ATTEMPTS = 5`, fixed backoff of 30s
+    / 120s / 600s / 1800s before attempts 2-5, then `PERMANENT_FAILURE`.
+    `attemptCount` is the budget for the whole unresolved-compensation
+    episode, not a fresh budget per generation.
+12. **`BLOCKED` rechecks never consume `attemptCount`** -
+    `rescheduleBlockedCheckIfGenerationMatches` increments only
+    `blockedCheckCount`. `recheckBlocked` branches on the persisted
+    `blockReason` (not `reasonCode`), re-derives desired state fresh each
+    check, and unblocks unconditionally the moment desired quantity drops
+    to 0, regardless of block cause.
+13. **Generation mismatches** on `resolveIfGenerationMatches`,
+    `blockIfGenerationMatches`, `requeueAfterAttemptIfGenerationMatches`,
+    and `markPermanentFailureIfGenerationMatches` all return
+    `REQUEUED_NEWER_DIVERGENCE` after safely releasing the claim via
+    `releaseStaleClaim` - never treated as failure. Safe by construction:
+    a concurrent `recordMirrorDivergence` arrival can only have reached
+    the row via `advanceGenerationPreservingStatus`, which bumps
+    `generation` but never touches `status`, so the row is provably still
+    `PROCESSING` and safe to release without touching its (already
+    correct) diagnostic fields.
+14. **Explicitly not built in C4.3**: no batch orchestrator (C4.4), no
+    scheduler (C4.5), no `CompensatingReservationGateway` or other
+    `ReservationGateway` composition, no `CartService`/`ProductsService`/
+    `OrdersService` wiring, no C5 idempotency, no payment integration, no
+    production mode switching. `MirrorCompensationModule` remains
+    unimported by `AppModule`.
+
+Migration `20260809171336_add_compensation_block_reason` (additive only:
+`CompensationBlockReason` enum + nullable `blockReason` column),
+drift-verified against a genuinely separate disposable shadow database.
+115 new tests across 5 new files (unit, mode-matrix, real Postgres+Redis
+integration) plus updates to existing repository specs. Full backend
+suite 241 suites / 2104 tests, exit 0. Coverage 97.50%/94.18%/97.17%/97.43%
+(80/90/90/90 threshold); `mirror-compensation/services` at 100/100/100/100.
+
 ## Module architecture (revised)
 
 ```

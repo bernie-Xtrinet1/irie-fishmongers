@@ -17,123 +17,121 @@
 - Working tree is clean.
 - Local `develop` and `origin/develop` are synchronized (0 ahead / 0
   behind).
-- Commit history through `0e97a5c` (C4.1), `943c913` (C4.2), plus this
+- Commit history through `943c913` (C4.2), `4c139b4` (C4.3), plus this
   session's docs closeout, are all present on `origin/develop`.
 
-## Phase 16A.0-C, Units C0-C3, C4.0, C4.1, and C4.2 are complete
+## Phase 16A.0-C, Units C0-C3, C4.0, C4.1, C4.2, and C4.3 are complete
 
 C0-C3: see prior entries in `.claude/current-task.md` -
 `ReservationGateway`/`CheckoutReservationFacade` implemented, unwired.
 C4.0: shared error-message sanitizer. C4.1: `CartReservationCompensation`
-schema + `CompensationRepository` (11 primitive conditional-update
-methods). C4.2: `CompensationService.recordMirrorDivergence` - runtime-
-validated, sanitized, bounded-optimistic-retry divergence recording with
-widened latest-wins arrival semantics (`operation`/`customerId`/
-`desiredQuantity` included, not just `reasonCode`/`lastError`/
-`nextAttemptAt`). **Nothing outside C4.2's own tests calls
-`CompensationService` yet** - no reconciler, no decorator, no scheduler,
-no `CartService`/`ProductsService`/`OrdersService` wiring. See
-`.claude/current-task.md` for the full delivery summary of every unit.
+schema + `CompensationRepository`. C4.2: `CompensationService.recordMirrorDivergence`.
+C4.3: `CompensationReconciliationService.attemptRecovery` +
+`CompensationBlockedRecheckService.recheckBlocked` - single-row
+desired-state recovery, generation-safe, mode-aware, with the separate
+`CompensationBlockReason` schema. **Nothing outside C4.3's own tests
+calls either service yet** - no batch orchestrator, no scheduler, no
+caller wiring of any kind. See `.claude/current-task.md` for the full
+delivery summary of every unit.
 
-The `_prisma_migrations` incident discovered during C4.2 validation has a
-**confirmed, reproduced root cause** (documented in ADR-007 §12): a
-`prisma migrate diff --shadow-database-url` call mistakenly pointed at
-the same URL as its live target. The proposed 31x `prisma migrate resolve
---applied` repair remains a proposal only, deferred to a separate
-maintenance task with its own approval - do not execute it as part of
-any Phase 16A.0-C4 work.
+The Prisma migration-history incident (documented in ADR-007 §12) is now
+**fully repaired**, not just root-caused - the 31x `prisma migrate
+resolve --applied` maintenance action was executed and verified this
+session. Do not repeat it. `migrate status` reports the database current;
+a genuinely separate disposable-shadow drift check reports no
+differences.
 
-## The next session begins READ-ONLY: Phase 16A.0-C4.3 - desired-state reconciler
+## The next session begins READ-ONLY: Phase 16A.0-C4.4 - compensation batch orchestration
 
-**Key principle for C4.3 (stated explicitly at C4.2 approval time,
-carried forward as the central design constraint):** recovery must
-converge the cart-scoped mirror to the *current* durable
-`Cart`/`CartItem` state. It must never replay the `operation` or
-`desiredQuantity` stored on the compensation row as a literal command -
-those fields are C4.2's latest-wins *diagnostic snapshot* of what was
-observed at arrival time, not a queued instruction to execute.
+**Do not implement C4.4 yet** without first restating the contract.
+Begin by reviewing:
 
-**Do not implement C4.3 yet** without first restating the contract. The
-first review must focus on these five areas, in this order:
+- `CompensationReconciliationService.attemptRecovery` and
+  `CompensationBlockedRecheckService.recheckBlocked`'s exact current
+  signatures and result types (`ReconcileOneResult`).
+- `CompensationRepository`'s full primitive set, in particular
+  `claimForRecoveryAttempt`'s exact `WHERE` clause (which rows it can
+  claim) and the distinction between `PENDING`-due/stale-`PROCESSING`
+  rows (claimable via `attemptRecovery`) and `BLOCKED` rows (only
+  reachable via `recheckBlocked`, never through the claim path).
+- The `CartReservationCompensation` schema's indexes
+  (`[status, nextAttemptAt]`, `[cartId, productId]`) as the starting
+  point for designing an efficient batch candidate query.
 
-1. **The desired-state read boundary** - exactly how and where the
-   reconciler reads current `Cart`/`CartItem` truth, and how that read is
-   kept separate from (never substitutes for) the compensation row's own
-   diagnostic fields.
-2. **Generation-safe claim/resolve behavior** - how the reconciler claims
-   a row (`claimForRecoveryAttempt`), carries the claimed `generation`
-   through its recovery attempt, and how `resolveIfGenerationMatches`/
-   `markPermanentFailureIfGenerationMatches` protect against a newer
-   divergence arriving mid-repair (a generation-race test is required:
-   the row's `generation` changes between claim and resolve).
-3. **`BLOCKED` handling** - how a precondition check (product suspect
-   state, `DRAINING` mode) maps to
-   `rescheduleBlockedCheckIfGenerationMatches`/
-   `unblockIfGenerationMatches` vs. proceeding to an actual recovery
-   attempt.
-4. **Mode-dependent recovery policy** - what the reconciler does per
-   `ReservationEngineMode` (recovery only has meaning under `MIRROR`;
-   confirm explicitly what happens if the row is claimed while the mode
-   has since moved to `CART_SCOPED` or `DRAINING`).
-5. **How `CartRepository.findItemByCartAndProduct` should be introduced
-   without pulling `CartService` into the reconciler** - this must read
-   `CartItem` directly through a narrow repository method, not through
-   `CartService`, to avoid coupling the reconciler to `CartService`'s
-   own (still-open, ADR-007 decision 1) write-order semantics.
+Then plan (do not implement without approval) the batch orchestrator that
+repeatedly invokes the two single-row services:
 
-Also review before planning:
-
-- `CompensationService.recordMirrorDivergence` and
-  `CompensationRepository`'s full primitive set (all generation/status
-  guards, the claim/resolve/permanent-failure/blocked-transition
-  semantics).
-- C3's `ReservationGateway`/`MirrorDiagnostic` (what the reconciler will
-  need to call to actually retry the mirror write, and what diagnostic
-  shape it will receive back).
-
-Then plan (do not implement without approval):
-
-1. The five focus areas above, made concrete as an implementation
-   contract.
-2. How success maps to `resolveIfGenerationMatches` and failure maps to
-   either a scheduled retry (`requeueAfterAttempt`) or
-   `markPermanentFailureIfGenerationMatches`, and what threshold governs
-   that choice.
-3. Idempotency/backoff policy for repeated attempts.
-4. Whether this unit calls `ReservationGateway` directly or through some
-   narrower seam, and how that interacts with the still-open
-   Redis-first-vs-Postgres-first `CartService` write-order question
-   (ADR-007 open decision 1) - the compensation decorator itself stays
-   out of scope regardless (see prohibitions below).
-5. Service/result types and required tests.
+1. **Batch candidate query** - how due `PENDING`/stale-`PROCESSING` rows
+   and due `BLOCKED` rows are selected from Postgres.
+2. **Bounded batch size** - an explicit, justified limit per orchestrator
+   run.
+3. **Deterministic ordering** - e.g. `nextAttemptAt` ascending, matching
+   `findUnresolvedByCartAndProduct`'s existing `createdAt asc` precedent
+   for reproducibility.
+4. **Handling PENDING due rows** - route to `attemptRecovery`.
+5. **Stale PROCESSING reclaim candidates** - also route to
+   `attemptRecovery` (already folded into `claimForRecoveryAttempt`'s own
+   query - confirm whether the batch query needs to select these
+   explicitly or whether attempting every `PENDING`-shaped candidate
+   query naturally also catches them).
+6. **BLOCKED due recheck candidates** - route to `recheckBlocked`,
+   selected separately since `claimForRecoveryAttempt` never matches
+   `BLOCKED`.
+7. **Single-row service delegation** - the orchestrator must not
+   reimplement any recovery/recheck logic itself, only call the two
+   existing services per candidate.
+8. **Isolation between row failures** - one row's exception must not
+   abort the batch; how errors are caught and reported per-row.
+9. **Result aggregation** - what the orchestrator returns (counts per
+   `ReconcileOneResult` outcome, or the full list, or both).
+10. **Concurrency between multiple orchestrator runs** - what happens if
+    two orchestrator invocations overlap (the underlying single-row
+    services are already claim-safe via `claimForRecoveryAttempt`'s
+    conditional update, but confirm whether the batch-selection query
+    itself needs additional protection against double-selection).
+11. **Whether a Postgres advisory lock is needed** - matching
+    `ReservationEngineModeService.setMode`'s established
+    `pg_advisory_xact_lock` precedent, or whether per-row claim safety
+    already makes this unnecessary.
+12. **Whether `SKIP LOCKED` is preferable** to an advisory lock for the
+    batch-selection query specifically, given Postgres row-level locking
+    semantics under concurrent orchestrator runs.
+13. **Observability** - what gets logged per batch run (counts by
+    outcome, duration, candidates considered).
+14. **Scheduler boundary** - confirm explicitly that C4.4 defines the
+    batch orchestration logic only; the actual periodic invocation
+    mechanism is C4.5's scope, not this unit's.
 
 ## Explicitly prohibited this session
 
-- The batch orchestrator (C4.4).
-- The scheduler (C4.5).
+- `@Cron` or any scheduler wiring - C4.4 must NOT implement `@Cron`
+  unless separately approved, even though it designs the batch logic
+  that a future scheduler will eventually call.
+- C4.5 (the scheduler itself).
 - The compensation decorator (`CompensatingReservationGateway` or
   similar) - still deferred until the durable `CartService`/Postgres
-  write-order boundary (ADR-007 open decision 1) is resolved by a future
-  caller-integration unit.
-- `ReservationGateway` composition of any kind beyond what C4.3's own
-  reconciler directly needs to call, if approved.
+  write-order boundary (ADR-007 open decision 1) is resolved.
+- `ReservationGateway` composition beyond what C4.3's services already
+  call.
 - `CartService` integration.
+- `ProductsService` integration.
+- `OrdersService` integration.
 - C5 idempotency.
-- Production caller cutover.
-- Executing the deferred `prisma migrate resolve` migration-history
-  repair - remains its own separate maintenance task.
+- Production mode switching.
+- Payment integration.
 
 ## Do NOT do
 
-- Do not begin any C4.3 source-code edit before the contract above is
+- Do not begin any C4.4 source-code edit before the contract above is
   restated and a plan is presented and explicitly approved, matching the
   discipline used through every prior unit in this phase.
 - Do not duplicate `docs/architecture/reservation-lifecycle.md`'s,
   `ADR-007`'s, or `.claude/current-task.md`'s content into new session
   files - reference them, don't restate them.
-- Do not treat C0-C3/C4.0/C4.1/C4.2 as authorizing any caller wiring -
-  they remain fully additive and unwired; do not assume otherwise or
-  begin implementation without a separate, explicit approval.
+- Do not treat C0-C3/C4.0-C4.3 as authorizing any caller wiring - they
+  remain fully additive and unwired; do not assume otherwise or begin
+  implementation without a separate, explicit approval.
+- Do not repeat the migration-history repair - it is complete.
 
 The session must return a read-only plan/contract restatement and wait
 for approval before any implementation begins.

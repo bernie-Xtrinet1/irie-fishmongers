@@ -410,16 +410,70 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     confirmed incident in the same session, in a separate docs-only
     commit.
 
-## Next task: Phase 16A.0-C4.3 - desired-state reconciler, read-only planning/contract confirmation first
+- **Phase 16A.0-C4.3 is complete and pushed** at `4c139b4`
+  (`feat(checkout): add mirror compensation desired-state reconciler`),
+  on `origin/develop`.
+  - **`CompensationReconciliationService.attemptRecovery`** and
+    **`CompensationBlockedRecheckService.recheckBlocked`** are the
+    recovery layer consuming `CartReservationCompensation` rows. Desired
+    state is authoritative from *current* `Cart`/`CartItem` truth (read
+    via `CartRepository.findById` + the new
+    `CartRepository.findItemByCartAndProduct(cartId, productId)`) -
+    `compensation.operation`/`customerId`/`desiredQuantity` remain
+    historical diagnostics only, never replay instructions.
+  - **`CompensationBlockReason`** (`PRODUCT_SUSPECT` | `MODE_NOT_ADMITTING`)
+    is a new, separate enum/column from `CompensationReasonCode` -
+    additive migration `20260809171336_add_compensation_block_reason`,
+    drift-verified against a genuinely separate disposable shadow
+    database. `blockReason` clears to `null` on every path leaving
+    `BLOCKED`.
+  - **`CompensationRepository` gained**: `blockIfGenerationMatches`
+    (establishes `BLOCKED`, generation-gated), `requeueAfterAttemptIfGenerationMatches`
+    (replaces an earlier ungated form - normal retry scheduling, also
+    generation-gated), and `releaseStaleClaim` (intentionally **ungated**
+    - releases a claim a generation-gated write has just proven stale,
+    asserts no convergence; kept deliberately distinct from the
+    generation-gated retry primitive).
+  - **Mode policy**: `MIRROR`/`CART_SCOPED` converge to current durable
+    state (`CART_SCOPED` additionally logs an invariant warning);
+    `DRAINING` blocks reserve-shaped desired state
+    (`blockReason: MODE_NOT_ADMITTING`) but allows release; `LEGACY`
+    never recreates a reservation, always releases, resolving as
+    `RESOLVED_NO_LONGER_NEEDED_LEGACY`.
+  - **Retry budget**: `MAX_RECOVERY_ATTEMPTS = 5`, fixed backoff 30s/
+    120s/600s/1800s, then `PERMANENT_FAILURE`. `BLOCKED` rechecks never
+    consume `attemptCount`. Every generation mismatch (`resolve`/`block`/
+    `retry-schedule`/`permanent-failure`) returns `REQUEUED_NEWER_DIVERGENCE`
+    after a safe `releaseStaleClaim` release, never treated as failure.
+  - 115 new tests across 5 new files (unit, mode-matrix, real
+    Postgres+Redis integration). Full backend suite 237 -> 241 suites,
+    2045 -> 2104 tests, exit 0. Coverage 97.50%/94.18%/97.17%/97.43%
+    (80/90/90/90 threshold); `mirror-compensation/services` at
+    100/100/100/100.
+  - **Migration-history repair** (the previously-deferred 31x `prisma
+    migrate resolve --applied`) was executed as its own explicitly-
+    approved maintenance action during this session, verified via a
+    full pre/post disposable-database structural comparison (zero
+    differences) and confirmed no application data was reset. See
+    ADR-007 §12 for the full account - this repair is now complete and
+    should not be repeated.
+  - **`CompensationReconciliationService`/`CompensationBlockedRecheckService`
+    remain completely unwired** - no batch orchestrator, no scheduler,
+    no decorator, no `CartService`/`ProductsService`/`OrdersService`
+    wiring. `MirrorCompensationModule` remains unimported by `AppModule`.
+  - ADR-007 gained a new §13 recording this implementation in the same
+    session, in a separate docs-only commit.
 
-Per the established phase sequence, the next session's likely scope is
-the desired-state recovery reconciler that consumes
-`CartReservationCompensation` rows written by C4.2 and reconciles the
-mirror against current `CartItem` truth. As with every prior unit, begin
-read-only: restate `CompensationService`/`CompensationRepository`'s exact
-current contract, confirm scope boundaries, and produce a plan for
-explicit approval before any implementation begins. See
-`.claude/next-session.md` for the exact scope and explicit prohibitions.
+## Next task: Phase 16A.0-C4.4 - compensation batch orchestration, read-only planning/contract confirmation first
+
+Per the established phase sequence, the next session's scope is the
+batch orchestrator that repeatedly invokes
+`CompensationReconciliationService.attemptRecovery`/
+`CompensationBlockedRecheckService.recheckBlocked` across many rows. As
+with every prior unit, begin read-only: restate the current contract,
+confirm scope boundaries, and produce a plan for explicit approval before
+any implementation begins. See `.claude/next-session.md` for the exact
+scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

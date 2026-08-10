@@ -642,6 +642,56 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   authorize the repair.
 - **`CompensationService` remains completely unwired** - no reconciler,
   decorator, or scheduler exists yet; `MirrorCompensationModule` is
-  imported by `AppModule` for DI reachability only, no production caller
-  calls `CompensationService`, confirmed via `git diff --stat` showing
-  zero changes to `CartService`/`ProductsService`/`OrdersService`.
+  **not** imported by `AppModule` (a prior version of this note
+  incorrectly stated it was - corrected during C4.3 after verifying
+  directly via `grep` rather than trusting a carried-forward summary; see
+  the C4.3 section below for the same lesson stated as its own
+  principle). No production caller calls `CompensationService`, confirmed
+  via `git diff --stat` showing zero changes to
+  `CartService`/`ProductsService`/`OrdersService`.
+
+## Phase 16A.0-C4.3 (desired-state reconciler) - implemented (2026-08-09, `4c139b4`)
+
+- **`blockReason` is permanently separate from `reasonCode` - never
+  merge them or infer one from the other.** `reasonCode` is the latest
+  mirror/recovery divergence diagnostic; `blockReason` is why the row is
+  currently unable to proceed. A row blocked by `DRAINING` mode must
+  never overwrite a real mirror diagnostic - this is the entire reason
+  the two fields exist separately rather than reusing `reasonCode` for
+  blocking. Any future compensation-table field addition should apply
+  the same discipline: don't overload one field for two different
+  questions ("what happened" vs. "why can't we proceed").
+- **`releaseStaleClaim` must permanently remain ungated - this was
+  learned the hard way, not just decided.** During implementation, the
+  original ungated `requeueAfterAttempt` was fully replaced by the new
+  generation-gated `requeueAfterAttemptIfGenerationMatches`, which broke
+  the safe-release mechanism needed for `REQUEUED_NEWER_DIVERGENCE` (a
+  generation-gated call can never safely release a row whose generation,
+  by definition, no longer matches). Caught and fixed by working through
+  the actual algorithm before shipping, not by a later bug report. Any
+  future repository primitive that releases a claim without asserting
+  convergence must stay ungated by design - gating it defeats its
+  purpose.
+- **Verify carried-forward claims about production wiring directly,
+  every time - do not trust a prior summary.** A stale note claiming
+  `MirrorCompensationModule` was imported by `AppModule` was corrected
+  this session only because it was re-verified with `grep` rather than
+  assumed. Applies generally: "additive and unwired" claims about any
+  module in this phase should be re-confirmed by direct inspection each
+  session, not carried forward from memory.
+- **Migration-history repair is complete, permanently - do not repeat
+  it.** The 31x `prisma migrate resolve --applied` action (previously
+  proposal-only, see the C4.2 decisions above) was executed this session
+  as its own explicitly-approved maintenance action, fully verified
+  pre/post via disposable-database structural comparison. Any future
+  session encountering `_prisma_migrations`-related `migrate dev`
+  friction should assume the history is now healthy and investigate a
+  *new* cause rather than re-diagnosing this same incident.
+- **Recovery must never trust a compensation row's own
+  `operation`/`customerId`/`desiredQuantity` as an instruction to
+  execute - always re-derive desired state from current
+  `Cart`/`CartItem`.** This was the central design constraint carried
+  through from the original C4.3 kickoff framing into the shipped
+  implementation without exception - confirmed by dedicated tests
+  proving a stored `RESERVE_MIRROR` row correctly converges via release
+  when the `CartItem` has since been removed, and vice versa.
