@@ -1459,3 +1459,118 @@ service`), pushed to `origin/develop`.
 
 Commit `4c139b4` (`feat(checkout): add mirror compensation desired-state
 reconciler`), pushed to `origin/develop`.
+
+## 2026-08-10 - Phase 16A.0-C4.4: compensation batch orchestration (`318adf1`)
+
+- **`CompensationBatchService.runBatch({now, limit?})`** - the batch
+  orchestration layer over C4.3's single-row services
+  (`CompensationReconciliationService.attemptRecovery`/
+  `CompensationBlockedRecheckService.recheckBlocked`). Owns candidate
+  discovery, dispatch-by-status, and result aggregation only; never
+  reimplements any part of the reconciliation/blocked-recheck state
+  machines. `DEFAULT_BATCH_SIZE = 50`, `MAX_BATCH_SIZE = 200`, never
+  silently clamped - invalid `now`/`limit` returns
+  `{ok:false, code:'INVALID_INPUT', field, reason}`, matching
+  `CompensationService.recordMirrorDivergence`'s established C4.2 shape
+  (a correction from an earlier `batchSize`/`INVALID_BATCH_SIZE` draft,
+  aligned mid-session to the project-consistent validation pattern).
+- **`CompensationRepository.findBatchCandidateIds`**: a narrowly scoped,
+  fully parameterized raw SQL query - Prisma's query builder cannot
+  express the required status-conditional `ORDER BY`. Selects due
+  `PENDING`/`BLOCKED` rows and stale `PROCESSING` rows in one unified,
+  deterministic order: `eligibleAt ASC, id ASC`, where `eligibleAt =
+  nextAttemptAt` for `PENDING`/`BLOCKED` and `lastAttemptAt +
+  PROCESSING_STALE_TIMEOUT_MS` for `PROCESSING`. `PROCESSING_STALE_TIMEOUT_MS`
+  was promoted from a private repository constant to an exported one so
+  both this method and the pre-existing `claimForRecoveryAttempt` derive
+  their stale cutoff from the exact same value - one contractual
+  definition, never two.
+
+### Engineering finding #1 (diagnosed and resolved, not a lingering defect): PostgreSQL timestamp/timestamptz binding
+
+While validating `findBatchCandidateIds`, every "includes a due row" test
+failed unexpectedly - even the simplest case. Root-caused via direct,
+isolated reproduction: the compensation table's due/stale columns are
+Postgres `timestamp without time zone`, and this session's Postgres runs
+in a non-UTC timezone (confirmed: `America/New_York`). Passing a native
+JS `Date` object into `$queryRaw` binds it as a `timestamptz`-typed
+parameter; Postgres then silently converts it through the session
+timezone when compared against the naive column, shifting "now" by
+several hours and making every genuinely-due row invisible to the query.
+Reproduced directly: `NOW() <= <same-instant naive column value>`
+evaluated `false`. Fixed by converting each boundary timestamp to an ISO
+string and explicitly casting it to `::timestamp` in the query - this
+parses the literal digits with no timezone reinterpretation, matching
+how Prisma's own ORM query builder already compares `DateTime` fields
+correctly everywhere else in this file. A dedicated regression test
+(`compensation.repository.spec.ts`, "finds a row due 'now'") protects
+this permanently.
+
+### Engineering finding #2 (diagnosed and resolved, not a lingering defect): Redis integration-test DB-index collision
+
+During `--coverage` validation, the new real-Postgres+Redis batch
+integration suite intermittently failed a Redis-side assertion
+(`productTotalKey` returning `null`) while the same test's row-scoped
+Postgres assertions (`status`, `attemptCount`) always passed - proving
+the underlying claim/recovery logic was correct. Root cause: every
+pre-existing real-Redis integration spec in this codebase
+(`checkout-reservation-facade`, `reservation-availability`,
+`reservation-engine-mode-rollback`, `compensation-reconciliation`) shares
+one logical Redis database index (1) by established convention. Under
+genuinely overlapping Jest workers, one spec file's per-test `flushdb()`
+could erase another file's just-written key before its own assertion
+ran - reproduced directly by running the new file alongside the four
+pre-existing index-1 files together. Fixed by giving only the new C4.4
+integration suite its own dedicated index (2), leaving every pre-existing
+file's shared-index-1 convention untouched. Confirmed via 3 repeated
+combined runs (52/52 tests each) after the fix. Test-infrastructure
+change only - no production Redis topology/key-namespacing change.
+
+### Remaining C4.4 delivery
+
+- **Sequential batch execution only** - no `Promise.all`/`allSettled`/
+  bounded parallelism inside `runBatch`, matching this codebase's
+  established batch-sweep convention
+  (`ComplianceScoreCronService.runBatchRecompute`,
+  `SLABreachDetectionService`, both reviewed as precedent before
+  implementation). One candidate's exception never aborts the batch -
+  independent try/catch per candidate, sanitized via the shared
+  `sanitizeErrorMessage`, never a raw `Error` object or raw `lastError`
+  in the result.
+- **No advisory lock, no `SELECT ... FOR UPDATE SKIP LOCKED`** -
+  deliberately rejected after explicit concurrency analysis: correctness
+  under overlapping batch workers comes entirely from C4.1/C4.3's
+  existing atomic-claim (`claimForRecoveryAttempt`) and generation-gated
+  primitives. Proven via real-Postgres concurrent-worker tests
+  (`Promise.all` of two genuine `runBatch` calls): row-scoped
+  `attemptCount===1` proof for `PENDING`/stale-`PROCESSING` rows
+  (deliberately not aggregate-count-based, since `findBatchCandidateIds`
+  scans the whole table and aggregate counts are pollution-sensitive
+  across concurrently-running spec files); `BLOCKED` rechecks are
+  explicitly **not** promised exactly-once - harmless duplicate
+  bookkeeping is possible and accepted, correctness is defined by the
+  row's final generation-gated state, not by which call "wins".
+- Result type: `{candidatesFound, attempted, resolved, requeued,
+  retryScheduled, blocked, unblocked, permanentFailure,
+  staleBlockedCheck, skipped, errors, durationMs}` - every field mapped
+  directly from a real `ReconcileOneResult` outcome, no invented metric.
+- 46 new tests across 3 new files (unit + real Postgres+Redis
+  integration/concurrency) plus targeted additions to the existing
+  `compensation.repository.spec.ts`. Full backend suite 241 -> 243
+  suites, 2104 -> 2151 tests, exit 0. Coverage
+  97.49%/94.19%/97.19%/97.42% (80/90/90/90 threshold);
+  `mirror-compensation/services` at 99.25%/98.7%/100%/99.22% (the one
+  residual gap in `compensation-batch.service.ts` is a compile-time-
+  unreachable exhaustiveness-guard branch, not untested business logic).
+- `prisma validate`/`migrate status` clean, 32 migrations, no schema or
+  migration change - none was required for C4.4.
+- **`CompensationBatchService` remains completely unwired** - no
+  `@Cron`, no scheduler, no `AppModule` wiring, no
+  `CartService`/`ProductsService`/`OrdersService`/`ReservationGateway`
+  change. Confirmed via targeted `git diff --stat` against every
+  prohibited file, zero changes.
+- ADR-007 gained a new §14 recording this implementation in the same
+  session, in a separate docs-only commit.
+
+Commit `318adf1` (`feat(checkout): add mirror compensation batch
+orchestration`), pushed to `origin/develop`.

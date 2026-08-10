@@ -695,3 +695,80 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   implementation without exception - confirmed by dedicated tests
   proving a stored `RESERVE_MIRROR` row correctly converges via release
   when the `CartItem` has since been removed, and vice versa.
+
+## Phase 16A.0-C4.4 (compensation batch orchestration) - implemented (2026-08-10, `318adf1`)
+
+- **Batch candidate processing is sequential, permanently - no
+  `Promise.all`/`allSettled`/bounded parallelism inside `runBatch`.**
+  Matches this codebase's own established batch-sweep convention
+  (`ComplianceScoreCronService.runBatchRecompute`,
+  `SLABreachDetectionService`), reviewed as precedent before
+  implementation rather than invented from scratch. Each row does real
+  Redis+Postgres I/O with its own retry/backoff; concurrent connection
+  pool pressure from bounded parallelism has already been observed as a
+  real source of test flakiness this session, reinforcing the choice.
+  Revisit only if real production batch volume ever demands it - not a
+  default to reach for.
+- **Candidate ordering is a normalized `eligibleAt ASC, id ASC` across
+  all three eligible statuses, never `nextAttemptAt` alone.**
+  `PENDING`/`BLOCKED` use `eligibleAt = nextAttemptAt`; `PROCESSING`
+  uses `eligibleAt = lastAttemptAt + PROCESSING_STALE_TIMEOUT_MS` - a
+  query keyed only on `nextAttemptAt` would silently miss stale
+  `PROCESSING` rows entirely, since `claimForRecoveryAttempt` never
+  touches `nextAttemptAt` for `PROCESSING` rows. Any future addition to
+  the candidate-eligibility set must be normalized into this same
+  `eligibleAt` model, not bolted on as a fourth incompatible ordering
+  rule.
+- **`PROCESSING_STALE_TIMEOUT_MS` is the single, permanent, shared
+  definition of "stale `PROCESSING`" across this entire subsystem.**
+  Promoted from a private repository constant to an exported one
+  specifically so `findBatchCandidateIds` and `claimForRecoveryAttempt`
+  can never drift into two independently-maintained stale-timeout
+  values. Any future stale-related logic in this table must import this
+  constant, never redefine its own.
+- **Raw SQL date/timestamp parameters in this codebase must be passed as
+  ISO strings explicitly cast to `::timestamp`, never as native `Date`
+  objects, when compared against `timestamp without time zone`
+  columns.** Discovered as a real, reproducible bug: this Postgres
+  session's timezone is non-UTC (`America/New_York`), and a `Date`
+  object binds as `timestamptz`, which Postgres then silently shifts by
+  the session offset before comparing against the naive column -
+  confirmed via direct reproduction (`NOW() <= <same-instant naive
+  value>` evaluating `false`). This is a permanent invariant for any
+  future raw-SQL query in this codebase touching a naive timestamp
+  column, not specific to `findBatchCandidateIds` - protected here by a
+  dedicated regression test; do not "simplify" back to direct `Date`
+  binding without first proving equivalent semantics against this
+  database's actual session timezone.
+- **Batch-level concurrency correctness comes from the existing atomic
+  claim and generation-gated primitives, never from a selection-time
+  lock.** Explicitly rejected both a Postgres advisory lock and `SELECT
+  ... FOR UPDATE SKIP LOCKED` for candidate discovery, after walking
+  through the concurrent-worker races directly: `PENDING`/stale-
+  `PROCESSING` rows are already exactly-once-safe via
+  `claimForRecoveryAttempt`'s conditional update; `BLOCKED` rechecks are
+  knowingly *not* exactly-once (harmless duplicate bookkeeping is
+  accepted), and no additional locking was introduced merely because
+  duplicate candidate selection looked untidy. `SKIP LOCKED` was
+  rejected specifically because it would require holding a Postgres
+  transaction open across genuine external Redis I/O to serve any
+  purpose - an accepted anti-pattern this codebase avoids.
+- **Batch error aggregation is bounded and sanitized by construction: at
+  most one `errors` entry per candidate, `errors.length <=
+  candidatesFound` always, every message passes through
+  `sanitizeErrorMessage`, never a raw `Error` object or raw
+  `lastError`.** Only genuinely unexpected thrown exceptions land in
+  `errors` - a normal (non-exception) `ReconcileOneResult` failure
+  outcome (e.g. `PERMANENT_FAILURE`) never does. Any future batch-style
+  aggregation in this subsystem should follow this same shape.
+- **New real-Redis integration spec files must use their own dedicated
+  logical Redis database index, not the shared index 1 convention, if
+  genuine cross-file collision risk is discovered.** Every pre-existing
+  real-Redis spec in this codebase shares index 1; a real collision
+  (one file's `flushdb()` erasing another's just-written key under
+  genuinely overlapping Jest workers) was reproduced and fixed for the
+  new C4.4 batch integration suite by moving it to index 2, without
+  touching the pre-existing shared convention elsewhere. This is a
+  test-isolation precedent for any *future* new real-Redis spec file
+  that also exercises genuine concurrent-worker scenarios - not a
+  mandate to retroactively change the four pre-existing index-1 files.

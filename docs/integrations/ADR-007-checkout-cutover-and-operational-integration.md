@@ -919,6 +919,133 @@ integration) plus updates to existing repository specs. Full backend
 suite 241 suites / 2104 tests, exit 0. Coverage 97.50%/94.18%/97.17%/97.43%
 (80/90/90/90 threshold); `mirror-compensation/services` at 100/100/100/100.
 
+### 14. Phase C4, Unit C4.4: compensation batch orchestration - implemented, unwired
+
+`CompensationBatchService` is the batch orchestration layer over C4.3's
+single-row recovery services - it owns candidate discovery, dispatch, and
+result aggregation only, and never reimplements any part of the
+reconciliation/blocked-recheck state machines.
+
+**1. Ownership and public API**:
+
+```ts
+runBatch(input: { now: Date; limit?: number }): Promise<RunBatchResult>
+```
+
+`DEFAULT_BATCH_SIZE = 50`, `MAX_BATCH_SIZE = 200`. `limit`, when
+supplied, must be a positive integer no greater than `MAX_BATCH_SIZE` -
+never silently clamped. Invalid input (`now` not a valid `Date`, or an
+out-of-range `limit`) returns `{ ok: false, code: 'INVALID_INPUT', field,
+reason }`, matching `CompensationService.recordMirrorDivergence`'s
+established C4.2 validation-failure shape.
+
+**2. Candidate eligibility**:
+
+```
+PENDING:    status = 'PENDING'    AND nextAttemptAt <= now
+BLOCKED:    status = 'BLOCKED'    AND nextAttemptAt <= now
+PROCESSING: status = 'PROCESSING' AND lastAttemptAt < now - PROCESSING_STALE_TIMEOUT_MS
+```
+
+Both `findBatchCandidateIds` (candidate discovery) and
+`claimForRecoveryAttempt` (the per-row atomic claim, C4.1) derive their
+stale cutoff from the same exported `PROCESSING_STALE_TIMEOUT_MS = 5 *
+60 * 1000` - one contractual definition of "stale `PROCESSING`", never a
+second copy.
+
+**3. Normalized ordering**: `eligibleAt ASC, id ASC`, where
+`PENDING`/`BLOCKED` use `eligibleAt = nextAttemptAt` and `PROCESSING`
+uses `eligibleAt = lastAttemptAt + PROCESSING_STALE_TIMEOUT_MS`. Prisma's
+query builder cannot express this status-conditional ordering, so
+`findBatchCandidateIds` is a narrowly scoped, fully parameterized raw
+query (never string-concatenated).
+
+**4. Timestamp binding invariant (permanent)**: the compensation table's
+due/stale columns are PostgreSQL `timestamp without time zone`. Passing
+a JavaScript `Date` directly into the raw candidate query binds it as
+`timestamptz`, which Postgres then silently shifts by the session
+timezone before comparing against the naive column - confirmed
+reproducible in this environment (session timezone `America/New_York`).
+`findBatchCandidateIds` therefore converts each boundary timestamp to an
+ISO string and explicitly casts it to `::timestamp` before comparison. A
+dedicated regression test (`compensation.repository.spec.ts`) protects
+this - **do not simplify this back to direct `Date` binding without
+first proving equivalent timestamp semantics** in this database's actual
+session timezone configuration.
+
+**5. Sequential batch execution**: candidates are processed strictly
+sequentially, in the order the repository query returns them. No
+`Promise.all`/`Promise.allSettled`/bounded parallelism inside `runBatch`
+- matching this codebase's established batch-sweep convention
+(`ComplianceScoreCronService.runBatchRecompute`,
+`SLABreachDetectionService`). Dispatch is by `status` alone: `BLOCKED` →
+`CompensationBlockedRecheckService.recheckBlocked`; every other eligible
+status → `CompensationReconciliationService.attemptRecovery`.
+
+**6. Failure isolation**: one candidate throwing does not abort the
+batch - each candidate is wrapped in its own independent try/catch.
+Unexpected exceptions are sanitized through the shared
+`sanitizeErrorMessage` before being recorded; no raw `Error` object and
+no raw `lastError` ever enters the returned batch result.
+
+**7. Result shape and outcome mapping**:
+
+```ts
+{
+  candidatesFound, attempted, resolved, requeued, retryScheduled,
+  blocked, unblocked, permanentFailure, staleBlockedCheck, skipped,
+  errors: Array<{ compensationId: string; message: string }>,
+  durationMs
+}
+```
+
+`RESOLVED_CONVERGED`/`RESOLVED_NO_LONGER_NEEDED_LEGACY` → `resolved`;
+`REQUEUED_NEWER_DIVERGENCE` → `requeued`; `RETRY_SCHEDULED` →
+`retryScheduled`; `BLOCKED_PRODUCT_SUSPECT`/`BLOCKED_MODE_NOT_ADMITTING`
+→ `blocked`; `UNBLOCKED_PENDING` → `unblocked`; `PERMANENT_FAILURE` →
+`permanentFailure`; `STALE_BLOCKED_CHECK` → `staleBlockedCheck`;
+`ALREADY_RESOLVED`/`NOT_DUE`/`NOT_FOUND` → `skipped`.
+
+**8. Concurrency architecture**: candidate discovery performs no
+locking of any kind - no Postgres advisory lock, no `SELECT ... FOR
+UPDATE SKIP LOCKED`. Correctness under overlapping batch workers comes
+entirely from the existing atomic-claim (`claimForRecoveryAttempt`) and
+generation-gated repository primitives already shipped in C4.1/C4.3.
+Real-Postgres tests prove overlapping batch workers never duplicate a
+`PENDING` or stale-`PROCESSING` recovery attempt (row-scoped proof via
+`attemptCount === 1`). `BLOCKED` rechecks are **not** promised
+exactly-once processing - overlapping rechecks may both perform a real
+precondition read (harmless duplicate bookkeeping); correctness is
+defined by the row's final generation-gated state transition, not by
+which call "wins".
+
+**9. Redis integration-test isolation (test infrastructure, not
+production topology)**: every pre-existing real-Redis integration spec
+in this codebase (`checkout-reservation-facade`, `reservation-availability`,
+`reservation-engine-mode-rollback`, `compensation-reconciliation`) shares
+a single logical Redis database index (1) by established convention.
+During C4.4 validation this produced a reproducible collision: under
+genuinely overlapping Jest workers, one spec file's per-test `flushdb()`
+could erase another file's just-written key before its own assertion
+ran. The underlying claim/generation logic was proven correct in every
+case (row-scoped assertions always passed); only the Redis-side
+assertion was affected. Fixed by giving the new C4.4 batch integration
+suite its own dedicated logical Redis database index (2), without
+altering the pre-existing shared-index-1 convention used elsewhere. This
+is a test-isolation decision only - it does not change production Redis
+topology or key namespacing.
+
+**10. Explicitly not built in C4.4**: no scheduler execution, no
+`@Cron`, no `AppModule` wiring, no caller cutover, no `ReservationGateway`
+composition, no advisory locks, no `SKIP LOCKED`, no schema/migration
+change. C4.5 (the scheduler) remains a separate, future unit.
+
+Migration: none (C4.4 required no schema change). 46 new tests across 3
+new files (unit, real Postgres+Redis integration/concurrency) plus
+targeted repository-test additions. Full backend suite 243 suites / 2151
+tests, exit 0. Coverage 97.49%/94.19%/97.19%/97.42% (80/90/90/90
+threshold); `mirror-compensation/services` at 99.25%/98.7%/100%/99.22%.
+
 ## Module architecture (revised)
 
 ```

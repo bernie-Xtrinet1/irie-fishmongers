@@ -464,13 +464,69 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   - ADR-007 gained a new §13 recording this implementation in the same
     session, in a separate docs-only commit.
 
-## Next task: Phase 16A.0-C4.4 - compensation batch orchestration, read-only planning/contract confirmation first
+- **Phase 16A.0-C4.4 is complete and pushed** at `318adf1`
+  (`feat(checkout): add mirror compensation batch orchestration`), on
+  `origin/develop`.
+  - **`CompensationBatchService.runBatch({now, limit?})`** is the batch
+    orchestration layer over C4.3's single-row services - it owns
+    candidate discovery, dispatch, and result aggregation only, never
+    reimplements any reconciliation/blocked-recheck logic.
+    `DEFAULT_BATCH_SIZE = 50`, `MAX_BATCH_SIZE = 200`, never silently
+    clamped; invalid input returns `{ok:false, code:'INVALID_INPUT',
+    field, reason}` matching C4.2's established shape.
+  - **`CompensationRepository.findBatchCandidateIds`**: a narrowly
+    scoped, fully parameterized raw query (Prisma can't express the
+    status-conditional ordering natively) selecting due `PENDING`/
+    `BLOCKED` rows and stale `PROCESSING` rows in one unified,
+    deterministic `eligibleAt ASC, id ASC` order, where `eligibleAt =
+    nextAttemptAt` for `PENDING`/`BLOCKED` and `lastAttemptAt +
+    PROCESSING_STALE_TIMEOUT_MS` for `PROCESSING`. Shares the single
+    exported `PROCESSING_STALE_TIMEOUT_MS` constant with
+    `claimForRecoveryAttempt` - one contractual definition of "stale".
+  - **A real timezone bug was found and fixed** during implementation:
+    these columns are Postgres `timestamp without time zone`, and this
+    session's Postgres runs in `America/New_York` - a native `Date`
+    parameter binds as `timestamptz` and gets silently shifted before
+    comparison. Fixed by casting an ISO-string parameter to
+    `::timestamp` instead. A dedicated regression test protects this
+    permanently - see ADR-007 §14 point 4.
+  - **Sequential processing only** - no `Promise.all`/`allSettled`/
+    parallelism inside `runBatch`, matching
+    `ComplianceScoreCronService`'s established convention. Dispatch by
+    `status` alone: `BLOCKED` → `recheckBlocked`, everything else →
+    `attemptRecovery`. One candidate's exception never aborts the rest;
+    sanitized via the shared `sanitizeErrorMessage`, never a raw `Error`
+    or raw `lastError`.
+  - **No advisory lock, no `SKIP LOCKED`** - correctness under
+    overlapping batch workers comes entirely from C4.1/C4.3's existing
+    atomic-claim and generation-gated primitives, proven by real-Postgres
+    concurrency tests (row-scoped `attemptCount===1` proof for
+    `PENDING`/stale-`PROCESSING`; `BLOCKED` rechecks are explicitly
+    **not** promised exactly-once, only convergence-safe).
+  - **A real Redis test-isolation collision was found and fixed**: every
+    pre-existing real-Redis spec in this codebase shares logical DB
+    index 1; under genuinely overlapping Jest workers, one file's
+    `flushdb()` could erase another's just-written key mid-test. Fixed
+    by giving the new C4.4 batch integration suite its own dedicated
+    index (2) - test infrastructure only, no production Redis topology
+    change. See ADR-007 §14 point 9.
+  - 46 new tests across 3 new files. Full backend suite 241 -> 243
+    suites, 2104 -> 2151 tests, exit 0. Coverage
+    97.49%/94.19%/97.19%/97.42% (80/90/90/90 threshold);
+    `mirror-compensation/services` at 99.25%/98.7%/100%/99.22%. No
+    schema/migration change.
+  - **`CompensationBatchService` remains completely unwired** - no
+    `@Cron`, no scheduler, no `AppModule` wiring, no
+    `CartService`/`ProductsService`/`OrdersService`/`ReservationGateway`
+    change.
+  - ADR-007 gained a new §14 recording this implementation in the same
+    session, in a separate docs-only commit.
+
+## Next task: Phase 16A.0-C4.5 - compensation scheduler / operational execution, read-only planning/contract confirmation first
 
 Per the established phase sequence, the next session's scope is the
-batch orchestrator that repeatedly invokes
-`CompensationReconciliationService.attemptRecovery`/
-`CompensationBlockedRecheckService.recheckBlocked` across many rows. As
-with every prior unit, begin read-only: restate the current contract,
+scheduler that periodically invokes `CompensationBatchService.runBatch`.
+As with every prior unit, begin read-only: restate the current contract,
 confirm scope boundaries, and produce a plan for explicit approval before
 any implementation begins. See `.claude/next-session.md` for the exact
 scope and explicit prohibitions.
