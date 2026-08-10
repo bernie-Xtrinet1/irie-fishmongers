@@ -1967,6 +1967,18 @@ enum CompensationReasonCode {
   UNKNOWN_INFRA_FAILURE
 }
 
+// Phase 16A.0-C4.3. Deliberately separate from CompensationReasonCode:
+// reasonCode is the latest mirror/recovery divergence diagnostic (what
+// went wrong), blockReason is why the row is currently unable to proceed
+// (a distinct, narrower question - only two rows are ever blocking).
+// A row blocked by DRAINING mode must never overwrite a real mirror
+// diagnostic (reasonCode) - blockReason carries the mode-blocking fact
+// instead, leaving reasonCode untouched.
+enum CompensationBlockReason {
+  PRODUCT_SUSPECT
+  MODE_NOT_ADMITTING
+}
+
 // generation is the sole concurrency counter (no separate "version" field).
 // It advances on every new divergence recorded against an unresolved row,
 // and PROCESSING -> RESOLVED is conditioned on it matching what the
@@ -1984,10 +1996,10 @@ enum CompensationReasonCode {
 // a global constraint and would incorrectly block a fresh row once any
 // historical RESOLVED/PERMANENT_FAILURE row exists for the same pair.
 model CartReservationCompensation {
-  id                 String                 @id @default(uuid())
-  schemaVersion      Int                    @default(1)
+  id                 String                   @id @default(uuid())
+  schemaVersion      Int                      @default(1)
   operation          CompensationOperation
-  status             CompensationStatus     @default(PENDING)
+  status             CompensationStatus       @default(PENDING)
   cartId             String
   productId          String
   // Known at RESERVE_MIRROR creation (reserveForCart's own input); null at
@@ -2001,14 +2013,18 @@ model CartReservationCompensation {
   // no "desired quantity" concept of its own.
   desiredQuantity    Int?
   reasonCode         CompensationReasonCode
-  attemptCount       Int                    @default(0)
-  blockedCheckCount  Int                    @default(0)
-  nextAttemptAt      DateTime               @default(now())
+  // Null while the row is not BLOCKED. Set only by blockIfGenerationMatches
+  // (entering BLOCKED) and cleared only by unblockIfGenerationMatches
+  // (leaving BLOCKED) - see CompensationReconciliationService, C4.3.
+  blockReason        CompensationBlockReason?
+  attemptCount       Int                      @default(0)
+  blockedCheckCount  Int                      @default(0)
+  nextAttemptAt      DateTime                 @default(now())
   lastAttemptAt      DateTime?
   lastError          String?
-  generation         Int                    @default(0)
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
+  generation         Int                      @default(0)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
   resolvedAt         DateTime?
   permanentFailureAt DateTime?
 

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   CartReservationCompensation,
+  CompensationBlockReason,
   CompensationOperation,
   CompensationReasonCode,
   CompensationStatus,
@@ -38,6 +39,29 @@ export interface DivergenceUpdateInput {
   reasonCode: CompensationReasonCode;
   lastError: string | null;
   now: Date;
+}
+
+// Phase 16A.0-C4.3. blockReason (why a row is currently unable to
+// proceed) is deliberately separate from reasonCode (the latest mirror/
+// recovery divergence diagnostic) - see the schema comment. reasonCode is
+// optional here because entering BLOCKED for a mode-blocking reason
+// (MODE_NOT_ADMITTING) is not itself a new mirror-write diagnostic; it
+// must not overwrite whatever real diagnostic reasonCode already holds.
+export interface BlockCompensationInput {
+  blockReason: CompensationBlockReason;
+  reasonCode?: CompensationReasonCode;
+  lastError: string | null;
+  nextAttemptAt: Date;
+}
+
+// The diagnostic snapshot persisted alongside an ordinary (non-terminal)
+// retry - keeps reasonCode/lastError current with what the reconciler
+// actually just observed, matching the same latest-wins principle
+// recordMirrorDivergence's arrivals already follow.
+export interface RequeueAfterAttemptInput {
+  reasonCode: CompensationReasonCode;
+  lastError: string | null;
+  nextAttemptAt: Date;
 }
 
 const UNRESOLVED_STATUSES: CompensationStatus[] = ['PENDING', 'PROCESSING', 'BLOCKED'];
@@ -143,6 +167,7 @@ export class CompensationRepository {
         lastError: input.lastError,
         nextAttemptAt: input.now,
         status: 'PENDING',
+        blockReason: null,
       },
     });
   }
@@ -172,7 +197,7 @@ export class CompensationRepository {
   // Generation-gated: this is the one transition that claims "recovery is
   // complete for the state I observed." A zero-count result means a newer
   // divergence arrived mid-attempt - the caller must requeue
-  // (requeueAfterAttempt), never treat this as success.
+  // (requeueAfterAttemptIfGenerationMatches), never treat this as success.
   resolveIfGenerationMatches(
     id: string,
     claimedGeneration: number,
@@ -201,15 +226,49 @@ export class CompensationRepository {
     });
   }
 
-  // Used both when a generation mismatch defeats resolve/permanent-failure
-  // (nextAttemptAt = now, immediate) and when an ordinary repair attempt
-  // failed and should retry on the normal backoff schedule (nextAttemptAt
-  // = the computed delay). Never generation-gated - requeuing makes no
-  // convergence claim, so it is always safe regardless of which
-  // generation prompted it; the next claim reads fresh state regardless.
-  // attemptCount is not touched here - it was already incremented at
-  // claim.
-  requeueAfterAttempt(
+  // Phase 16A.0-C4.3 correction: generation-gated, unlike an earlier
+  // ungated form. An ordinary retry (RETRY_SCHEDULED) is not a terminal
+  // transition, but it must still never let a stale worker delay a newer
+  // generation using an old backoff schedule - a zero-count result means
+  // a newer divergence superseded this attempt; the caller must release
+  // the claim via the safe generation-advanced mechanism (see
+  // CompensationReconciliationService) and report REQUEUED_NEWER_DIVERGENCE,
+  // never RETRY_SCHEDULED. attemptCount is not touched here - it was
+  // already incremented at claim.
+  requeueAfterAttemptIfGenerationMatches(
+    id: string,
+    claimedGeneration: number,
+    input: RequeueAfterAttemptInput,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationCompensation.updateMany({
+      where: { id, status: 'PROCESSING', generation: claimedGeneration },
+      data: {
+        status: 'PENDING',
+        reasonCode: input.reasonCode,
+        lastError: input.lastError,
+        nextAttemptAt: input.nextAttemptAt,
+      },
+    });
+  }
+
+  // Phase 16A.0-C4.3: the safe stale-claim release, distinct in purpose
+  // from requeueAfterAttemptIfGenerationMatches and deliberately NOT
+  // generation-gated - it exists precisely for the case where a
+  // generation-gated call (resolve/block/permanentFailure/requeue) has
+  // just returned a zero-count mismatch, meaning a concurrent
+  // recordMirrorDivergence arrival advanced generation via
+  // advanceGenerationPreservingStatus while this row was PROCESSING (that
+  // method never touches status). The row is therefore provably still
+  // PROCESSING and safe to release: this call makes no claim about
+  // convergence and does not touch generation, reasonCode, or lastError -
+  // the newer arrival already wrote the correct diagnostic snapshot, and
+  // this call must never overwrite it. See
+  // CompensationReconciliationService for the full proof. Never call this
+  // for an ordinary (non-superseded) retry - that path is
+  // requeueAfterAttemptIfGenerationMatches, which does persist a fresh
+  // diagnostic and is generation-gated for its own reason.
+  releaseStaleClaim(
     id: string,
     nextAttemptAt: Date,
     client: PrismaClientOrTx = this.prisma,
@@ -217,6 +276,33 @@ export class CompensationRepository {
     return client.cartReservationCompensation.updateMany({
       where: { id, status: 'PROCESSING' },
       data: { status: 'PENDING', nextAttemptAt },
+    });
+  }
+
+  // Phase 16A.0-C4.3: the one transition that establishes BLOCKED for the
+  // first time (create() always starts a row at PENDING). Generation-gated
+  // for the same reason as
+  // resolveIfGenerationMatches/markPermanentFailureIfGenerationMatches -
+  // a zero-count result means a newer divergence arrived mid-attempt; the
+  // caller must release the claim rather than treat this as having
+  // established a block. Never touches generation/attemptCount/
+  // blockedCheckCount/operation/customerId/desiredQuantity - see
+  // BlockCompensationInput's doc comment for why reasonCode is optional.
+  blockIfGenerationMatches(
+    id: string,
+    claimedGeneration: number,
+    input: BlockCompensationInput,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationCompensation.updateMany({
+      where: { id, status: 'PROCESSING', generation: claimedGeneration },
+      data: {
+        status: 'BLOCKED',
+        blockReason: input.blockReason,
+        ...(input.reasonCode !== undefined ? { reasonCode: input.reasonCode } : {}),
+        lastError: input.lastError,
+        nextAttemptAt: input.nextAttemptAt,
+      },
     });
   }
 
@@ -235,7 +321,7 @@ export class CompensationRepository {
   ): Promise<{ count: number }> {
     return client.cartReservationCompensation.updateMany({
       where: { id, status: 'BLOCKED', generation: observedGeneration },
-      data: { status: 'PENDING', nextAttemptAt: now },
+      data: { status: 'PENDING', nextAttemptAt: now, blockReason: null },
     });
   }
 

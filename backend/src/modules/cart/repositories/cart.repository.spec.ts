@@ -124,6 +124,17 @@ describe('CartRepository', () => {
     await expect(repository.findItemById(randomUUID(), item.id)).resolves.toBeNull();
   });
 
+  it('finds an item by (cartId, productId) using the unique constraint', async () => {
+    const cart = await repository.findOrCreateByCustomerId(customerId);
+
+    await expect(repository.findItemByCartAndProduct(cart.id, productId)).resolves.toMatchObject({
+      cartId: cart.id,
+      productId,
+    });
+    await expect(repository.findItemByCartAndProduct(randomUUID(), productId)).resolves.toBeNull();
+    await expect(repository.findItemByCartAndProduct(cart.id, randomUUID())).resolves.toBeNull();
+  });
+
   it('removes an item', async () => {
     const cart = await repository.findOrCreateByCustomerId(customerId);
     const item = cart.items[0]!;

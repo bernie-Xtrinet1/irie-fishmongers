@@ -38,6 +38,18 @@ export class CartRepository {
     return client.cartItem.findFirst({ where: { id: itemId, cartId } });
   }
 
+  // Phase 16A.0-C4.3: the desired-state read for compensation recovery,
+  // keyed the same way CartReservationCompensation rows are (cartId,
+  // productId), not by CartItem.id. Uses the existing
+  // @@unique([cartId, productId]) index directly.
+  findItemByCartAndProduct(
+    cartId: string,
+    productId: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<CartItem | null> {
+    return client.cartItem.findUnique({ where: { cartId_productId: { cartId, productId } } });
+  }
+
   async addOrIncrementItem(cartId: string, productId: string, quantity: number): Promise<void> {
     await this.prisma.cartItem.upsert({
       where: { cartId_productId: { cartId, productId } },

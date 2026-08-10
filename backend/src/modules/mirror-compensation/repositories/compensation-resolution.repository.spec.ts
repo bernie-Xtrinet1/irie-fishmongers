@@ -77,29 +77,80 @@ describe('CompensationRepository (resolve/permanent-failure/requeue/blocked/uniq
     expect(count).toBe(0);
   });
 
-  it('requeueAfterAttempt moves PROCESSING back to PENDING without touching attemptCount', async () => {
+  it('requeueAfterAttemptIfGenerationMatches moves PROCESSING back to PENDING, persists the latest diagnostic, without touching attemptCount', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
     await repository.claimForRecoveryAttempt(row.id, new Date());
     const nextAttemptAt = new Date(Date.now() + 30_000);
 
-    const { count } = await repository.requeueAfterAttempt(row.id, nextAttemptAt);
+    const { count } = await repository.requeueAfterAttemptIfGenerationMatches(row.id, 0, {
+      reasonCode: 'CHECKOUT_IN_PROGRESS',
+      lastError: 'checkout still in progress',
+      nextAttemptAt,
+    });
 
     expect(count).toBe(1);
     const updated = await repository.findById(row.id);
     expect(updated?.status).toBe('PENDING');
     expect(updated?.attemptCount).toBe(1);
+    expect(updated?.reasonCode).toBe('CHECKOUT_IN_PROGRESS');
+    expect(updated?.lastError).toBe('checkout still in progress');
     expect(updated?.nextAttemptAt.getTime()).toBe(nextAttemptAt.getTime());
   });
 
-  it('unblockIfGenerationMatches moves BLOCKED to PENDING without touching blockedCheckCount', async () => {
+  it('requeueAfterAttemptIfGenerationMatches matches zero rows when generation differs (newer divergence superseded this attempt)', async () => {
+    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+    await repository.claimForRecoveryAttempt(row.id, new Date());
+
+    const { count } = await repository.requeueAfterAttemptIfGenerationMatches(row.id, 99, {
+      reasonCode: 'UNKNOWN_INFRA_FAILURE',
+      lastError: null,
+      nextAttemptAt: new Date(),
+    });
+
+    expect(count).toBe(0);
+    expect((await repository.findById(row.id))?.status).toBe('PROCESSING');
+  });
+
+  it('releaseStaleClaim moves PROCESSING back to PENDING without touching generation, reasonCode, or lastError', async () => {
+    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const row = await repository.create(
+      baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: null }),
+    );
+    await repository.claimForRecoveryAttempt(row.id, new Date());
+    // Simulate a concurrent divergence arrival advancing generation while
+    // still PROCESSING (advanceGenerationPreservingStatus never touches
+    // status) - the exact scenario releaseStaleClaim exists for.
+    await repository.advanceGenerationPreservingStatus(row.id, {
+      operation: 'RESERVE_MIRROR',
+      customerId,
+      desiredQuantity: 9,
+      reasonCode: 'PRODUCT_SUSPENDED',
+      lastError: 'newer arrival diagnostic',
+      now: new Date(),
+    });
+    const nextAttemptAt = new Date();
+
+    const { count } = await repository.releaseStaleClaim(row.id, nextAttemptAt);
+
+    expect(count).toBe(1);
+    const updated = await repository.findById(row.id);
+    expect(updated?.status).toBe('PENDING');
+    expect(updated?.generation).toBe(1);
+    expect(updated?.reasonCode).toBe('PRODUCT_SUSPENDED');
+    expect(updated?.lastError).toBe('newer arrival diagnostic');
+    expect(updated?.nextAttemptAt.getTime()).toBe(nextAttemptAt.getTime());
+  });
+
+  it('unblockIfGenerationMatches moves BLOCKED to PENDING, clears blockReason, without touching blockedCheckCount', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     const row = await repository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'ACCOUNTING_UNDERFLOW' }),
     );
     await prisma.cartReservationCompensation.update({
       where: { id: row.id },
-      data: { status: 'BLOCKED', blockedCheckCount: 3 },
+      data: { status: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', blockedCheckCount: 3 },
     });
 
     const { count } = await repository.unblockIfGenerationMatches(row.id, 0, new Date());
@@ -107,6 +158,7 @@ describe('CompensationRepository (resolve/permanent-failure/requeue/blocked/uniq
     expect(count).toBe(1);
     const updated = await repository.findById(row.id);
     expect(updated?.status).toBe('PENDING');
+    expect(updated?.blockReason).toBeNull();
     expect(updated?.blockedCheckCount).toBe(3);
   });
 
@@ -172,6 +224,72 @@ describe('CompensationRepository (resolve/permanent-failure/requeue/blocked/uniq
     const second = await repository.create(baseCreateInput({ cartId, productId, customerId }));
 
     expect(second.id).not.toBe(first.id);
+  });
+
+  it('blockIfGenerationMatches moves PROCESSING to BLOCKED, sets blockReason and reasonCode, leaves generation/attemptCount/blockedCheckCount/operation/customerId/desiredQuantity untouched', async () => {
+    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const row = await repository.create(
+      baseCreateInput({ cartId, productId, customerId, desiredQuantity: 5, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
+    );
+    await repository.claimForRecoveryAttempt(row.id, new Date());
+    const nextAttemptAt = new Date(Date.now() + 60_000);
+
+    const { count } = await repository.blockIfGenerationMatches(row.id, 0, {
+      blockReason: 'PRODUCT_SUSPECT',
+      reasonCode: 'ACCOUNTING_UNDERFLOW',
+      lastError: 'accounting underflow detected during recovery',
+      nextAttemptAt,
+    });
+
+    expect(count).toBe(1);
+    const updated = await repository.findById(row.id);
+    expect(updated?.status).toBe('BLOCKED');
+    expect(updated?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(updated?.reasonCode).toBe('ACCOUNTING_UNDERFLOW');
+    expect(updated?.lastError).toBe('accounting underflow detected during recovery');
+    expect(updated?.nextAttemptAt.getTime()).toBe(nextAttemptAt.getTime());
+    expect(updated?.generation).toBe(0);
+    expect(updated?.attemptCount).toBe(1);
+    expect(updated?.blockedCheckCount).toBe(0);
+    expect(updated?.operation).toBe('RESERVE_MIRROR');
+    expect(updated?.customerId).toBe(customerId);
+    expect(updated?.desiredQuantity).toBe(5);
+  });
+
+  it('blockIfGenerationMatches with no reasonCode (mode-blocked) leaves the existing diagnostic reasonCode untouched', async () => {
+    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const row = await repository.create(
+      baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
+    );
+    await repository.claimForRecoveryAttempt(row.id, new Date());
+
+    const { count } = await repository.blockIfGenerationMatches(row.id, 0, {
+      blockReason: 'MODE_NOT_ADMITTING',
+      lastError: null,
+      nextAttemptAt: new Date(),
+    });
+
+    expect(count).toBe(1);
+    const updated = await repository.findById(row.id);
+    expect(updated?.status).toBe('BLOCKED');
+    expect(updated?.blockReason).toBe('MODE_NOT_ADMITTING');
+    expect(updated?.reasonCode).toBe('UNKNOWN_INFRA_FAILURE');
+  });
+
+  it('blockIfGenerationMatches matches zero rows when generation differs', async () => {
+    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+    await repository.claimForRecoveryAttempt(row.id, new Date());
+
+    const { count } = await repository.blockIfGenerationMatches(row.id, 99, {
+      blockReason: 'PRODUCT_SUSPECT',
+      reasonCode: 'PRODUCT_SUSPENDED',
+      lastError: null,
+      nextAttemptAt: new Date(),
+    });
+
+    expect(count).toBe(0);
+    expect((await repository.findById(row.id))?.status).toBe('PROCESSING');
   });
 
   it('the partial unique index exists with the exact unresolved-status predicate', async () => {

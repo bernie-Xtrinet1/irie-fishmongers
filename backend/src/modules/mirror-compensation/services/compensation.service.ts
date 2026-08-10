@@ -6,7 +6,10 @@ import { getReservationKeySegmentValidationError } from '../../inventory/constan
 import { CompensationRepository, MAX_OPTIMISTIC_RETRIES } from '../repositories/compensation.repository';
 import { RecordMirrorDivergenceInput, RecordMirrorDivergenceResult } from '../types/compensation-service.types';
 
-const MAX_LAST_ERROR_LENGTH = 500;
+// Exported for reuse by CompensationReconciliationService (C4.3) - the
+// same sanitized-diagnostic budget applies to every lastError write on
+// this table, not just the one this service produces.
+export const MAX_LAST_ERROR_LENGTH = 500;
 
 // Runtime membership checks, not just TypeScript typing - input crossing
 // a service boundary is never trusted to actually be a valid enum member
