@@ -23,6 +23,7 @@ import { FleetModule } from './modules/fleet/fleet.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
+import { MirrorCompensationModule } from './modules/mirror-compensation/mirror-compensation.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PassportModule } from './modules/passport/passport.module';
@@ -61,6 +62,16 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     InventoryModule,
     ProductsModule,
     CartModule,
+    // Phase 16A.0-C4.5: the first C4.x unit to become reachable from
+    // AppModule. Activates only this module's own additive/unwired
+    // provider graph (including, for the first time, ReservationEngineModeModule
+    // - but only its read-only getCurrentMode() is ever called anywhere
+    // in this graph, never setMode) plus CompensationSchedulerService's
+    // @Cron tick (gated by the same isSchedulerEnabled() flag above,
+    // since ScheduleModule.forRoot() is already registered centrally).
+    // Does not touch CartService/ProductsService/OrdersService/
+    // ReservationGateway/CheckoutReservationFacade in any way.
+    MirrorCompensationModule,
     CatchesModule,
     OrdersModule,
     PaymentsModule,
