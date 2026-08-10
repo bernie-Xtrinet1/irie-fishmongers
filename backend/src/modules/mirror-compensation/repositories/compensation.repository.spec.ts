@@ -211,4 +211,175 @@ describe('CompensationRepository (create/find/arrival/claim)', () => {
 
     expect(count).toBe(0);
   });
+
+  // findBatchCandidateIds queries the whole table (no cartId/productId
+  // scope, unlike every other method in this file) - every assertion below
+  // filters the result down to this test's own known ids before checking
+  // membership/order, so it stays correct even if other concurrently
+  // running spec files have their own due rows sitting in the same shared
+  // table.
+  describe('findBatchCandidateIds', () => {
+    const LARGE_LIMIT = 10_000;
+
+    // Regression guard for a real bug found while implementing this
+    // method: these columns are Postgres `timestamp without time zone`,
+    // and this database session runs in a non-UTC timezone (confirmed:
+    // America/New_York). Binding the boundary parameter as a native JS
+    // Date object (rather than an ISO string explicitly cast to
+    // ::timestamp) makes Prisma send it as a typed timestamptz value,
+    // which Postgres then silently shifts by the session's UTC offset
+    // when compared against the naive column - reproduced directly via
+    // `NOW() <= <same-instant naive column value>` evaluating false. A
+    // row due "now" (created moments ago, the single most common due-row
+    // shape in production) is exactly the case this previously broke: it
+    // was invisible to the query even though it was genuinely due. If
+    // findBatchCandidateIds's ::timestamp cast is ever removed or a Date
+    // object is passed directly again, this test fails.
+    it('regression: finds a row due "now" (created moments ago) - the exact shape the timezone/binding bug hid', async () => {
+      const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+      const row = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+
+      const rows = await repository.findBatchCandidateIds(new Date(), LARGE_LIMIT);
+
+      expect(rows.map((r) => r.id)).toContain(row.id);
+    });
+
+    it('includes a due PENDING row and excludes a not-yet-due PENDING row', async () => {
+      const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+      const due = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+      const other = await seedCartAndProduct(fixture);
+      const notDue = await repository.create(baseCreateInput(other));
+      await prisma.cartReservationCompensation.update({
+        where: { id: notDue.id },
+        data: { nextAttemptAt: new Date(Date.now() + 60_000) },
+      });
+
+      const rows = await repository.findBatchCandidateIds(new Date(), LARGE_LIMIT);
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain(due.id);
+      expect(ids).not.toContain(notDue.id);
+    });
+
+    it('includes a stale PROCESSING row and excludes a fresh PROCESSING row', async () => {
+      const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+      const stale = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+      await prisma.cartReservationCompensation.update({
+        where: { id: stale.id },
+        data: { status: 'PROCESSING', lastAttemptAt: new Date(Date.now() - 6 * 60 * 1000) },
+      });
+      const other = await seedCartAndProduct(fixture);
+      const fresh = await repository.create(baseCreateInput(other));
+      await prisma.cartReservationCompensation.update({
+        where: { id: fresh.id },
+        data: { status: 'PROCESSING', lastAttemptAt: new Date() },
+      });
+
+      const rows = await repository.findBatchCandidateIds(new Date(), LARGE_LIMIT);
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain(stale.id);
+      expect(ids).not.toContain(fresh.id);
+    });
+
+    it('includes a due BLOCKED row and excludes a not-yet-due BLOCKED row', async () => {
+      const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+      const due = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+      await prisma.cartReservationCompensation.update({
+        where: { id: due.id },
+        data: { status: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', nextAttemptAt: new Date(Date.now() - 1000) },
+      });
+      const other = await seedCartAndProduct(fixture);
+      const notDue = await repository.create(baseCreateInput(other));
+      await prisma.cartReservationCompensation.update({
+        where: { id: notDue.id },
+        data: {
+          status: 'BLOCKED',
+          blockReason: 'PRODUCT_SUSPECT',
+          nextAttemptAt: new Date(Date.now() + 60_000),
+        },
+      });
+
+      const rows = await repository.findBatchCandidateIds(new Date(), LARGE_LIMIT);
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain(due.id);
+      expect(ids).not.toContain(notDue.id);
+    });
+
+    it('excludes RESOLVED and PERMANENT_FAILURE rows', async () => {
+      const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+      const resolved = await repository.create(baseCreateInput({ cartId, productId, customerId }));
+      await prisma.cartReservationCompensation.update({
+        where: { id: resolved.id },
+        data: { status: 'RESOLVED', resolvedAt: new Date() },
+      });
+      const other = await seedCartAndProduct(fixture);
+      const failed = await repository.create(baseCreateInput(other));
+      await prisma.cartReservationCompensation.update({
+        where: { id: failed.id },
+        data: { status: 'PERMANENT_FAILURE', permanentFailureAt: new Date() },
+      });
+
+      const rows = await repository.findBatchCandidateIds(new Date(), LARGE_LIMIT);
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).not.toContain(resolved.id);
+      expect(ids).not.toContain(failed.id);
+    });
+
+    it('respects the limit parameter', async () => {
+      const rows = await repository.findBatchCandidateIds(new Date(), 1);
+      expect(rows.length).toBeLessThanOrEqual(1);
+    });
+
+    it('orders by normalized eligibleAt ascending across mixed categories, id ascending as tie-breaker', async () => {
+      const now = new Date();
+
+      // A PENDING row due 3 minutes ago (eligibleAt = nextAttemptAt).
+      const pending = await seedCartAndProduct(fixture);
+      const pendingRow = await repository.create(baseCreateInput(pending));
+      await prisma.cartReservationCompensation.update({
+        where: { id: pendingRow.id },
+        data: { nextAttemptAt: new Date(now.getTime() - 3 * 60 * 1000) },
+      });
+
+      // A PROCESSING row whose lastAttemptAt is 10 minutes ago, so its
+      // normalized eligibleAt (lastAttemptAt + 5min timeout) is 5 minutes
+      // ago - earlier than the PENDING row above, so it must sort first
+      // even though its raw lastAttemptAt/nextAttemptAt fields alone would
+      // not reveal that ordering.
+      const processing = await seedCartAndProduct(fixture);
+      const processingRow = await repository.create(baseCreateInput(processing));
+      await prisma.cartReservationCompensation.update({
+        where: { id: processingRow.id },
+        data: { status: 'PROCESSING', lastAttemptAt: new Date(now.getTime() - 10 * 60 * 1000) },
+      });
+
+      const rows = await repository.findBatchCandidateIds(now, LARGE_LIMIT);
+      const relevantIds = rows.map((r) => r.id).filter((id) => id === pendingRow.id || id === processingRow.id);
+
+      expect(relevantIds).toEqual([processingRow.id, pendingRow.id]);
+    });
+
+    it('breaks ties in eligibleAt deterministically by id ascending', async () => {
+      const now = new Date();
+      const sameNextAttemptAt = new Date(now.getTime() - 1000);
+
+      const a = await seedCartAndProduct(fixture);
+      const rowA = await repository.create(baseCreateInput(a));
+      const b = await seedCartAndProduct(fixture);
+      const rowB = await repository.create(baseCreateInput(b));
+      await prisma.cartReservationCompensation.updateMany({
+        where: { id: { in: [rowA.id, rowB.id] } },
+        data: { nextAttemptAt: sameNextAttemptAt },
+      });
+
+      const rows = await repository.findBatchCandidateIds(now, LARGE_LIMIT);
+      const relevantIds = rows.map((r) => r.id).filter((id) => id === rowA.id || id === rowB.id);
+      const expected = [rowA.id, rowB.id].sort();
+
+      expect(relevantIds).toEqual(expected);
+    });
+  });
 });

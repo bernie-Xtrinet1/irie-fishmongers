@@ -65,7 +65,13 @@ export interface RequeueAfterAttemptInput {
 }
 
 const UNRESOLVED_STATUSES: CompensationStatus[] = ['PENDING', 'PROCESSING', 'BLOCKED'];
-const PROCESSING_STALE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Phase 16A.0-C4.4 correction: promoted from a private constant so
+// findBatchCandidateIds can derive the identical stale cutoff
+// claimForRecoveryAttempt already uses - there must be exactly one
+// contractual definition of "stale PROCESSING", never two independently
+// maintained copies.
+export const PROCESSING_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Shared budget for every bounded optimistic-retry loop in this
 // subsystem (e.g. CompensationService.recordDivergence's create/find/
@@ -338,5 +344,52 @@ export class CompensationRepository {
       where: { id, status: 'BLOCKED', generation: observedGeneration },
       data: { blockedCheckCount: { increment: 1 }, nextAttemptAt },
     });
+  }
+
+  // Phase 16A.0-C4.4. Batch candidate discovery for CompensationBatchService
+  // - read-only, bounded, no locking. Eligibility is status-dependent
+  // (never a single "nextAttemptAt for everyone" ordering, per the
+  // approved correction):
+  //   PENDING/BLOCKED : eligibleAt = nextAttemptAt
+  //   PROCESSING      : eligibleAt = lastAttemptAt + PROCESSING_STALE_TIMEOUT_MS
+  // The PROCESSING branch derives its cutoff from the exact same
+  // PROCESSING_STALE_TIMEOUT_MS claimForRecoveryAttempt uses - one
+  // contractual definition of "stale", never a second copy. Prisma's
+  // query builder cannot express a status-conditional ORDER BY
+  // expression, so this is a narrowly scoped, parameterized (never
+  // string-concatenated) raw query - the WHERE predicate matches
+  // claimForRecoveryAttempt's own PENDING/PROCESSING conditions exactly,
+  // plus a due-BLOCKED condition for recheckBlocked candidates.
+  //
+  // Date params are passed as ISO strings cast to ::timestamp, not native
+  // Date objects: these columns are `timestamp without time zone`, and a
+  // Date object binds as timestamptz, which Postgres then silently
+  // shifts by the session timezone (confirmed non-UTC here) when
+  // compared against a naive column - reproduced directly (NOW() <= a
+  // same-instant naive value evaluated false). A ::timestamp-cast ISO
+  // string parses the literal digits with no such reinterpretation.
+  async findBatchCandidateIds(
+    now: Date,
+    limit: number,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ id: string; status: CompensationStatus }[]> {
+    const nowIso = now.toISOString();
+    const staleCutoffIso = new Date(now.getTime() - PROCESSING_STALE_TIMEOUT_MS).toISOString();
+    return client.$queryRaw<{ id: string; status: CompensationStatus }[]>`
+      SELECT "id", "status"
+      FROM "cart_reservation_compensations"
+      WHERE
+        ("status" = 'PENDING' AND "nextAttemptAt" <= ${nowIso}::timestamp)
+        OR ("status" = 'PROCESSING' AND "lastAttemptAt" < ${staleCutoffIso}::timestamp)
+        OR ("status" = 'BLOCKED' AND "nextAttemptAt" <= ${nowIso}::timestamp)
+      ORDER BY
+        CASE
+          WHEN "status" = 'PROCESSING'
+            THEN "lastAttemptAt" + (${PROCESSING_STALE_TIMEOUT_MS} * INTERVAL '1 millisecond')
+          ELSE "nextAttemptAt"
+        END ASC,
+        "id" ASC
+      LIMIT ${limit}
+    `;
   }
 }
