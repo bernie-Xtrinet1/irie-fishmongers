@@ -1574,3 +1574,102 @@ change only - no production Redis topology/key-namespacing change.
 
 Commit `318adf1` (`feat(checkout): add mirror compensation batch
 orchestration`), pushed to `origin/develop`.
+
+## 2026-08-10 (cont.) - Phase 16A.0-C4.5: compensation scheduler (`14914fc`)
+
+- **`CompensationSchedulerService.runScheduledBatch()`** -
+  `@Cron(CronExpression.EVERY_MINUTE)`, calling
+  `CompensationBatchService.runBatch({now: new Date()})` with no
+  `limit` (C4.4's `DEFAULT_BATCH_SIZE` remains the single source of
+  truth). One-minute cadence chosen because the `BLOCKED` recheck
+  interval (60s, C4.3) and the recovery backoff floor (30s, C4.3/C4.4)
+  are both sub-minute - the existing 5-minute
+  `SLABreachDetectionService` precedent would have been operationally
+  too coarse for this subsystem's own timing.
+- **Existing scheduler conventions reviewed before implementing**:
+  `ComplianceScoreCronService` (`vendor-tiers`) and
+  `SLABreachDetectionService` (`delivery`) were read in full first.
+  Both call their decorated method's own separate public handler
+  directly from tests - never fake-timer-driven `@Cron` firing - and
+  `ScheduleModule.forRoot()` is registered exactly once, centrally, in
+  `AppModule`, gated by the pre-existing `isSchedulerEnabled()`. Both
+  findings directly shaped C4.5's own test strategy and module-wiring
+  approach rather than being invented independently.
+- **In-process `running` guard**, matching `ComplianceScoreCronService`'s
+  own precedent and its documented rationale ("sufficient at current
+  scale... a multi-instance deployment would need a DB-backed lock") -
+  explicitly efficiency-only, not correctness: `CompensationBatchService`
+  already tolerates overlapping callers across application instances via
+  C4.1/C4.3/C4.4's existing claim/generation-gated primitives. No
+  advisory lock, no Redis lock, no `SKIP LOCKED` - deliberately rejected
+  after the same concurrency reasoning already established in C4.4.
+- **Deliberately mode-independent** - `CompensationSchedulerService`
+  injects only `CompensationBatchService`; no `ReservationEngineModeService`
+  dependency exists anywhere in the class, confirmed by a structural
+  test (`CompensationSchedulerService.length === 1`). All mode-aware
+  reconciliation behavior stays entirely inside C4.3's single-row
+  services - the scheduler must never skip ticks based on mode, since
+  `LEGACY` still requires active cleanup and `DRAINING` still permits
+  release-shaped convergence.
+- **No startup catch-up, no custom shutdown mechanism** - explicitly
+  rejected `onModuleInit`-triggered runs, `OnModuleDestroy`,
+  `AbortController`, and any drain loop. A process crash mid-tick is
+  recovered by the already-shipped stale-`PROCESSING` reclaim
+  (`PROCESSING_STALE_TIMEOUT_MS`, C4.1) on a later tick - documented as
+  the intended crash-recovery behavior, not a gap to fill.
+- **Scheduler-level error handling**: unexpected exceptions caught,
+  converted to a message, sanitized via the shared `sanitizeErrorMessage`
+  before logging (matching the same private-static `errorMessage(error:
+  unknown)` pattern already used in `CompensationReconciliationService`/
+  `CompensationBatchService` - no new shared utility introduced, since no
+  genuinely centralized one already existed to reuse). `runBatch`
+  returning `{ok:false, code:'INVALID_INPUT', ...}` is logged as an
+  internal invariant failure (structurally unreachable given the
+  scheduler's own fixed input shape) rather than silently swallowed.
+- **Logging kept minimal by design**: `WARN` only for a local overlap
+  skip, `ERROR` only for an unexpected exception or the impossible
+  `INVALID_INPUT` case - the scheduler never re-logs
+  `CompensationBatchService`'s own aggregate result and never logs
+  per-row, matching the approved contract exactly.
+- **`MirrorCompensationModule` is now imported by `AppModule`** - the
+  first time any part of the C4.0-C4.5 provider graph becomes reachable
+  from the production application. Verified explicitly before and after
+  wiring: `ReservationEngineModeModule` becomes reachable from `AppModule`
+  for the first time too (transitively), but only its read-only
+  `getCurrentMode()` is ever called anywhere in the newly-reachable
+  graph - `grep` confirmed zero `setMode` calls anywhere in
+  `mirror-compensation/`. Zero changes to `CartService`/`ProductsService`/
+  `OrdersService`/`ReservationGateway`/`CheckoutReservationFacade`/
+  payments. `ScheduleModule.forRoot()` was not touched and
+  `MirrorCompensationModule` does not import `ScheduleModule` itself.
+- **No new scheduler-enable flag** - reuses the existing
+  `isSchedulerEnabled()`/`ENABLE_SCHEDULER` mechanism exactly as the two
+  pre-existing crons already do. Confirmed `test/setup-e2e.ts` still sets
+  `ENABLE_SCHEDULER=false`, unmodified, and the `app.e2e-spec.ts`
+  health-bootstrap test passes cleanly with the scheduler now wired into
+  `AppModule`'s graph - proving the flag continues to prevent wall-clock
+  ticks from racing e2e teardown, exactly as it already does for the two
+  existing crons.
+- 14 new unit tests (13 from the approved matrix + 1 added after the
+  first coverage run found a genuine, non-structural gap - a non-`Error`
+  thrown value's sanitization path - closed the same way C4.2-C4.4 each
+  closed their own equivalent gaps). No schema/migration change, no new
+  real-Postgres/Redis integration spec needed (the scheduler itself
+  touches neither database directly). Full backend suite 243 -> 244
+  suites, 2151 -> 2165 tests, exit 0. Coverage
+  97.50%/94.20%/97.20%/97.43% (80/90/90/90 threshold);
+  `compensation-scheduler.service.ts` at 100/100/100/100.
+- **Naming finding, recorded precisely rather than silently resolved**:
+  ADR-007's own "Implementation sequence" table names the phase after
+  Phase C (C0-C4.5, all now complete) as **Phase D** -
+  `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring,
+  `checkoutMark` integration - not "C5". Checked `docs/roadmap.md`
+  directly (`grep` for "C5"/"16A.0-C"/"Phase D"/"idempoten" - zero
+  matches) - the informal "C5 idempotency" phrase used throughout this
+  session's own prohibition lists does not appear in either authoritative
+  document. Recorded in ADR-007 §15 and `.claude/next-session.md` as an
+  open naming question for the next session to resolve explicitly,
+  rather than silently picking one label.
+
+Commit `14914fc` (`feat(checkout): add mirror compensation scheduler`),
+pushed to `origin/develop`.

@@ -1046,6 +1046,104 @@ targeted repository-test additions. Full backend suite 243 suites / 2151
 tests, exit 0. Coverage 97.49%/94.19%/97.19%/97.42% (80/90/90/90
 threshold); `mirror-compensation/services` at 99.25%/98.7%/100%/99.22%.
 
+### 15. Phase C4, Unit C4.5: compensation scheduler - implemented, activated
+
+`CompensationSchedulerService` is the sole scheduling mechanism for this
+subsystem - a thin `@Cron` wrapper over `CompensationBatchService.runBatch`,
+owning cadence, an efficiency-only overlap guard, and scheduler-level
+error isolation only.
+
+1. **Public API**: `runScheduledBatch(): Promise<void>`, decorated
+   `@Cron(CronExpression.EVERY_MINUTE)`. No other public methods.
+2. **Ownership**: belongs to `MirrorCompensationModule`, as a `providers`
+   entry only - not exported (no consumer needs it outside the module).
+3. **Application activation**: `MirrorCompensationModule` is now
+   imported by `AppModule` - the first production reachability of the
+   mirror-compensation provider graph through C4.0-C4.5. This does
+   **not** constitute reservation caller cutover: nothing in the
+   newly-reachable graph is called by `CartService`, `ProductsService`,
+   `OrdersService`, or any HTTP-facing controller; the only externally
+   observable effect is the `@Cron` tick itself.
+4. **Scheduler infrastructure**: `ScheduleModule.forRoot()` remains
+   centrally owned by `AppModule`, gated by the existing
+   `isSchedulerEnabled()`/`ENABLE_SCHEDULER` mechanism - the same one
+   already governing `ComplianceScoreCronService` and
+   `SLABreachDetectionService`. No compensation-specific scheduler flag
+   was introduced; `MirrorCompensationModule` does not import
+   `ScheduleModule` itself.
+5. **Batch invocation**: each tick calls
+   `CompensationBatchService.runBatch({ now: new Date() })` - no
+   `limit` is ever passed, so C4.4's `DEFAULT_BATCH_SIZE` remains the
+   single source of truth for scheduled runs.
+6. **Cadence**: `EVERY_MINUTE`, chosen because the `BLOCKED` recheck
+   interval (60s) and the recovery backoff floor (30s, C4.3/C4.4) are
+   both sub-minute - a 5-minute cadence (matching
+   `SLABreachDetectionService`'s precedent) would make those timings
+   operationally too coarse.
+7. **Overlap semantics**: a private in-process `running: boolean` guard
+   (matching `ComplianceScoreCronService`'s established precedent)
+   prevents overlapping ticks on the same application instance -
+   avoiding duplicate candidate scans, duplicate `BLOCKED` precondition
+   reads, unnecessary Postgres/Redis load, and duplicate logs. This is
+   **efficiency-only, not a correctness mechanism**: multiple
+   application instances may still overlap safely, because
+   `CompensationBatchService`'s own database claim/generation-gated
+   primitives (C4.1/C4.3/C4.4) already provide correctness. No advisory
+   lock, no Redis lock, no distributed scheduler lock, no `SKIP LOCKED`.
+8. **Failure handling**: unexpected batch-level exceptions are caught,
+   converted to a message, and sanitized via the shared
+   `sanitizeErrorMessage` before logging - never a raw `Error` object,
+   never raw `lastError`, never a secret or customer payload.
+   `runBatch` returning `{ok:false, code:'INVALID_INPUT', ...}` is
+   treated as an internal invariant failure (logged, never thrown) -
+   structurally unreachable in practice, since the scheduler always
+   passes a fresh, valid `Date` and no `limit`.
+9. **Logging**: `WARN` only for a local overlapping-tick skip; `ERROR`
+   only for an unexpected batch-level exception or the
+   structurally-impossible `INVALID_INPUT` case. Never re-logs
+   `CompensationBatchService`'s own aggregate result, never logs
+   per-row.
+10. **Mode independence**: `CompensationSchedulerService` injects only
+    `CompensationBatchService` - no `ReservationEngineModeService`
+    dependency of any kind (confirmed structurally: the compiled
+    constructor takes exactly one parameter). The scheduler runs
+    identically regardless of `LEGACY`/`MIRROR`/`CART_SCOPED`/`DRAINING` -
+    all mode-dependent behavior remains entirely inside C4.3's
+    single-row services. This matters specifically because `LEGACY`
+    still requires active stale cart-scoped cleanup and `DRAINING` still
+    permits release-shaped convergence/rechecks - the scheduler must
+    never short-circuit either by skipping ticks based on mode.
+11. **Startup/shutdown**: no startup catch-up run, no
+    constructor/`onModuleInit`-triggered execution, no custom
+    graceful-shutdown mechanism (no `OnModuleDestroy`, `AbortController`,
+    or drain loop). A process crash mid-tick, after a row has been
+    claimed but before recovery completes, is recovered by the
+    already-shipped stale-`PROCESSING` reclaim mechanism
+    (`PROCESSING_STALE_TIMEOUT_MS`, C4.1) on a later tick or a later
+    process instance - this is the intended crash-recovery behavior, not
+    a gap.
+12. **Explicitly not built in C4.5**: `CartService`/`ProductsService`/
+    `OrdersService` caller cutover, `ReservationGateway` composition,
+    `CheckoutReservationFacade` modification, C5/idempotency work,
+    payment integration, production `ReservationEngineMode` switching.
+
+**Naming note**: this ADR's own §"Implementation sequence" table (below)
+names the phase after Phase C (whose sub-units C0-C4.5 are now all
+complete) as **Phase D** - `CheckoutCoordinatorService`, `CheckoutAttempt`
+lifecycle wiring, `checkoutMark` integration - not "C5". The informal
+"C5 idempotency" label used throughout `.claude/*.md` session-continuity
+docs through this phase does not appear anywhere in this ADR or in
+`docs/roadmap.md`; it may refer to part of Phase D's own scope (durable
+idempotency is naturally part of "`CheckoutAttempt` lifecycle wiring") or
+to a distinct future concern not yet given its own ADR-007 phase letter.
+The next session should confirm this explicitly rather than either name
+being assumed.
+
+14 new tests (unit only - no schema/migration, no new integration spec
+needed). Full backend suite 243 -> 244 suites, 2151 -> 2165 tests, exit
+0. Coverage 97.50%/94.20%/97.20%/97.43% (80/90/90/90 threshold);
+`compensation-scheduler.service.ts` at 100/100/100/100.
+
 ## Module architecture (revised)
 
 ```

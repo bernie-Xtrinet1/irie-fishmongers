@@ -522,14 +522,66 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
   - ADR-007 gained a new §14 recording this implementation in the same
     session, in a separate docs-only commit.
 
-## Next task: Phase 16A.0-C4.5 - compensation scheduler / operational execution, read-only planning/contract confirmation first
+- **Phase 16A.0-C4.5 is complete, pushed, and activated** at `14914fc`
+  (`feat(checkout): add mirror compensation scheduler`), on
+  `origin/develop`.
+  - **`CompensationSchedulerService.runScheduledBatch()`**, decorated
+    `@Cron(CronExpression.EVERY_MINUTE)` - a thin wrapper over
+    `CompensationBatchService.runBatch({now: new Date()})` (no `limit`,
+    reusing C4.4's `DEFAULT_BATCH_SIZE` as the single source of truth).
+    Cadence chosen because `BLOCKED` recheck (60s) and the recovery
+    backoff floor (30s) are both sub-minute.
+  - **Efficiency-only local `running` guard** (matching
+    `ComplianceScoreCronService`'s established precedent) - skips an
+    overlapping tick on the *same* application instance, logging a
+    `warn`. Not a correctness mechanism: multiple application instances
+    may still overlap safely, since `CompensationBatchService`'s own
+    claim/generation-gated primitives already provide correctness. No
+    advisory lock, no Redis lock, no distributed scheduler lock.
+  - **Mode-independent** - injects only `CompensationBatchService`, no
+    `ReservationEngineModeService` dependency of any kind (confirmed
+    structurally). Runs identically under every reservation-engine mode.
+  - **No startup catch-up, no custom shutdown mechanism** - a crash
+    mid-tick is recovered by the already-shipped stale-`PROCESSING`
+    reclaim (`PROCESSING_STALE_TIMEOUT_MS`, C4.1) on a later tick.
+  - **`MirrorCompensationModule` is now imported by `AppModule`** - the
+    first production reachability of the mirror-compensation provider
+    graph through C4.0-C4.5. This does **not** constitute reservation
+    caller cutover - nothing in the newly-reachable graph is called by
+    `CartService`/`ProductsService`/`OrdersService`/any controller; the
+    only externally observable effect is the `@Cron` tick itself.
+    `ScheduleModule.forRoot()` stays centrally owned by `AppModule` via
+    the existing `isSchedulerEnabled()`/`ENABLE_SCHEDULER` mechanism - no
+    new scheduler-enable flag was introduced.
+  - 14 new unit tests (no schema/migration, no new integration spec
+    needed). Full backend suite 243 -> 244 suites, 2151 -> 2165 tests,
+    exit 0. Coverage 97.50%/94.20%/97.20%/97.43% (80/90/90/90
+    threshold); `compensation-scheduler.service.ts` at 100/100/100/100.
+    `app.e2e-spec.ts` health bootstrap confirmed clean with the scheduler
+    now wired in, and `ENABLE_SCHEDULER=false` confirmed still
+    preventing wall-clock ticks during the e2e run.
+  - ADR-007 gained a new §15 recording this implementation in the same
+    session, in a separate docs-only commit.
+  - **Naming finding**: ADR-007's own "Implementation sequence" table
+    names the phase after Phase C (C0-C4.5, now all complete) as
+    **Phase D** - `CheckoutCoordinatorService`, `CheckoutAttempt`
+    lifecycle wiring, `checkoutMark` integration - not "C5". Neither
+    ADR-007 nor `docs/roadmap.md` contains a "C5" label anywhere. See
+    ADR-007 §15's naming note and `.claude/next-session.md` for the full
+    account - the next session must confirm this explicitly rather than
+    either name being assumed.
 
-Per the established phase sequence, the next session's scope is the
-scheduler that periodically invokes `CompensationBatchService.runBatch`.
-As with every prior unit, begin read-only: restate the current contract,
-confirm scope boundaries, and produce a plan for explicit approval before
-any implementation begins. See `.claude/next-session.md` for the exact
-scope and explicit prohibitions.
+## Next task: Phase 16A.0, Phase D (per ADR-007's own table) - "C5 idempotency" naming discrepancy noted, read-only architecture review first
+
+Per ADR-007's authoritative "Implementation sequence" table, the phase
+now unblocked (both of its prerequisites, A and C, are complete) is
+**Phase D**: `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle
+wiring, `checkoutMark` integration - which is a different label than the
+informal "C5 idempotency" phrase used throughout this session's
+prohibition lists. As with every prior unit, begin read-only: restate the
+current contract, confirm scope boundaries, and produce a plan for
+explicit approval before any implementation begins. See
+`.claude/next-session.md` for the exact scope and explicit prohibitions.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

@@ -772,3 +772,82 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   test-isolation precedent for any *future* new real-Redis spec file
   that also exercises genuine concurrent-worker scenarios - not a
   mandate to retroactively change the four pre-existing index-1 files.
+
+## Phase 16A.0-C4.5 (compensation scheduler) - implemented (2026-08-10, `14914fc`)
+
+- **Cadence is `EVERY_MINUTE`, permanently, unless a future session
+  presents new timing evidence.** Chosen because this subsystem's own
+  fastest due-row intervals (60s `BLOCKED` recheck, 30s recovery-backoff
+  floor) are both sub-minute - the existing 5-minute
+  `SLABreachDetectionService` precedent would under-serve this
+  subsystem's own timing, and a sub-minute cadence was rejected as
+  unnecessary churn for a batch that itself takes negligible time
+  against a several-hundred-row table.
+- **The in-process `running` guard is efficiency-only, never a
+  correctness mechanism, and must never be treated as one.**
+  `CompensationBatchService.runBatch` already tolerates overlapping
+  callers via C4.1's atomic-claim/generation-gated primitives (proven in
+  C4.4 with real-Postgres concurrent-worker tests). The guard exists
+  solely to avoid redundant same-process scans/logging - matches
+  `ComplianceScoreCronService`'s own documented rationale exactly. Do
+  not "upgrade" this to a distributed lock without a new, separately
+  justified multi-instance-scale argument.
+- **No advisory lock, no Redis lock, no `SKIP LOCKED` at the scheduler
+  level.** Same conclusion C4.4 already reached for candidate selection,
+  reapplied here rather than re-litigated: the underlying claim
+  primitives are the correctness boundary, not the scheduler.
+- **The scheduler is deliberately mode-independent - no
+  `ReservationEngineModeService` dependency anywhere in
+  `CompensationSchedulerService`, structurally enforced
+  (`CompensationSchedulerService.length === 1`).** All mode-aware
+  behavior stays inside C4.3's single-row services. The scheduler must
+  never skip a tick based on `ReservationEngineMode` - `LEGACY` still
+  needs active cleanup via `RESOLVED_NO_LONGER_NEEDED_LEGACY`, and
+  `DRAINING` still permits release-shaped convergence.
+- **C4.4's `DEFAULT_BATCH_SIZE` is reused as-is; the scheduler never
+  passes a `limit`.** No scheduler-specific batch-size constant was
+  introduced - a second competing size value for the same kind of sweep
+  was explicitly rejected, matching the `PROCESSING_STALE_TIMEOUT_MS`
+  single-shared-constant precedent from C4.4.
+- **No startup catch-up run and no custom shutdown mechanism.** A
+  process crash mid-tick is recovered entirely by the pre-existing
+  stale-`PROCESSING` reclaim on a later tick - this is the intended,
+  sufficient crash-recovery path, not a gap requiring `OnModuleInit`/
+  `OnModuleDestroy`/`AbortController` handling.
+- **`AppModule` now imports `MirrorCompensationModule` - this is the
+  first time any part of the C4.0-C4.5 provider graph becomes reachable
+  from the production application, and it is explicitly NOT caller
+  cutover.** Verified directly (not assumed): zero `setMode()` calls
+  exist anywhere in `mirror-compensation/` (`getCurrentMode()` only, via
+  C4.3); zero changes to `CartService`/`ProductsService`/
+  `OrdersService`/`ReservationGateway`/`CheckoutReservationFacade`/
+  payments. `ReservationEngineModeModule` becomes transitively reachable
+  for the first time as a side effect, but remains read-only-used.
+  Applies the same "verify carried-forward wiring claims directly, every
+  time" discipline established in the C4.3 section above.
+- **No new scheduler-enable flag - reuses the existing
+  `isSchedulerEnabled()`/`ENABLE_SCHEDULER` mechanism exactly as
+  `ComplianceScoreCronService`/`SLABreachDetectionService` already do.**
+  Confirmed `test/setup-e2e.ts` still sets `ENABLE_SCHEDULER=false`
+  unmodified, and the AppModule e2e bootstrap test passes with the
+  scheduler now wired in - proving the flag still prevents wall-clock
+  ticks from racing e2e teardown for a third cron, without needing a
+  dedicated per-feature flag.
+- **Test strategy matches this codebase's own established convention:
+  invoke the decorated method directly, never fake-timer-driven `@Cron`
+  firing.** Confirmed as the actual pattern in both
+  `ComplianceScoreCronService`'s and `SLABreachDetectionService`'s own
+  specs before writing C4.5's - not assumed. `jest.useFakeTimers()` is
+  reserved for pinning `now` values, never for proving cron scheduling
+  itself.
+- **ADR-007's own "Implementation sequence" table names the phase after
+  Phase C (now fully complete through C4.5) as "Phase D" -
+  `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring,
+  `checkoutMark` integration - not "C5."** `docs/roadmap.md` was
+  grepped directly and contains zero matches for "C5"/"16A.0-C"/
+  "Phase D"/"idempoten" - the informal "C5 idempotency" label used
+  throughout this session's own prior prohibition lists does not
+  correspond to any authoritative document. Recorded as an open,
+  explicitly-flagged naming question in `.claude/next-session.md` for
+  the next session to confirm before adopting either label as settled -
+  not silently resolved here in either direction.
