@@ -1,97 +1,31 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
+import { PrismaService } from '../../../database/prisma.service';
+import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
-import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
+import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
-import { CartRepository, CartWithItems } from '../repositories/cart.repository';
+import { CartRepository } from '../repositories/cart.repository';
+import { buildCart, buildCartItem, buildLot, buildProduct, buildVendor } from './cart-service-test-helpers';
 import { CartService } from './cart.service';
 
-function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
-  return {
-    id: 'product-1',
-    vendorId: 'vendor-1',
-    categoryId: 'cat-1',
-    lotId: null,
-    lot: null,
-    name: 'Fresh Snapper',
-    description: 'Caught this morning.',
-    unit: 'PER_POUND',
-    price: new Prisma.Decimal(500),
-    currency: 'JMD',
-    quantityAvailable: 20,
-    imageUrl: 'https://cdn.example.com/snapper.jpg',
-    weightLbs: null,
-    isActive: true,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
-}
-
-function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
-  return {
-    id: 'lot-1',
-    lotNumber: 'LOT-2026-000001',
-    publicTraceToken: 'trace-token-1',
-    vendorId: 'vendor-1',
-    catchItemId: null,
-    species: 'Snapper',
-    speciesId: null,
-    storageType: 'FRESH',
-    catchDate: new Date(),
-    catchLocation: null,
-    landingSite: null,
-    weight: new Prisma.Decimal(20),
-    weightUnit: 'POUNDS',
-    freshnessGrade: null,
-    qualityScore: null,
-    foodSafetyStatus: 'SAFE',
-    statusNotes: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
-}
-
-function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
-  return {
-    id: 'vendor-1',
-    userId: 'vendor-user-1',
-    businessName: "Vera's Catch",
-    description: null,
-    phone: null,
-    parish: 'KINGSTON',
-    logoUrl: null,
-    status: 'APPROVED',
-    tier: 'COMMUNITY_FISHER',
-    complianceScore: null,
-    complianceScoreUpdatedAt: null,
-    termsAcceptedAt: new Date(),
-    primaryZoneId: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
-}
-
-function buildCart(overrides: Partial<CartWithItems> = {}): CartWithItems {
-  return {
-    id: 'cart-1',
-    customerId: 'user-1',
-    currency: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    items: [],
-    ...overrides,
-  };
-}
-
+// Compensation/Redis-failure-convergence tests live in
+// cart-service-compensation.spec.ts (Phase 16A.0-DA, Unit DA.1A) - split to
+// stay under the 400-line file cap.
 describe('CartService', () => {
+  let prisma: { $transaction: jest.Mock };
   let cartRepository: jest.Mocked<
     Pick<
       CartRepository,
-      'findOrCreateByCustomerId' | 'addOrIncrementItem' | 'updateItemQuantity' | 'removeItem' | 'findItemById'
+      | 'findOrCreateByCustomerId'
+      | 'addOrIncrementItem'
+      | 'updateItemQuantity'
+      | 'removeItem'
+      | 'findItemById'
+      | 'findItemByCartAndProduct'
+      | 'compensateItemQuantity'
+      | 'compensateItemDeleteIfUnchanged'
+      | 'compensateItemRestore'
     >
   >;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'findById'>>;
@@ -99,15 +33,25 @@ describe('CartService', () => {
   let inventoryReservations: jest.Mocked<
     Pick<InventoryReservationsService, 'getAvailableToPurchase' | 'reserve' | 'release'>
   >;
+  let syncState: jest.Mocked<
+    Pick<CartReservationSyncStateRepository, 'upsertDesiredState' | 'resolveIfCurrentGeneration' | 'markUnresolved'>
+  >;
   let service: CartService;
 
   beforeEach(() => {
+    prisma = {
+      $transaction: jest.fn((callback: (tx: unknown) => unknown) => callback({})),
+    };
     cartRepository = {
       findOrCreateByCustomerId: jest.fn(),
       addOrIncrementItem: jest.fn(),
       updateItemQuantity: jest.fn(),
       removeItem: jest.fn(),
       findItemById: jest.fn(),
+      findItemByCartAndProduct: jest.fn().mockResolvedValue(null),
+      compensateItemQuantity: jest.fn(),
+      compensateItemDeleteIfUnchanged: jest.fn(),
+      compensateItemRestore: jest.fn(),
     };
     productsRepository = { findById: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
@@ -116,12 +60,19 @@ describe('CartService', () => {
       reserve: jest.fn(),
       release: jest.fn(),
     };
+    syncState = {
+      upsertDesiredState: jest.fn().mockResolvedValue({ generation: 0 }),
+      resolveIfCurrentGeneration: jest.fn().mockResolvedValue({ count: 1 }),
+      markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
+    };
 
     service = new CartService(
+      prisma as unknown as PrismaService,
       cartRepository as unknown as CartRepository,
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
+      syncState as unknown as CartReservationSyncStateRepository,
     );
   });
 
@@ -130,15 +81,7 @@ describe('CartService', () => {
       const cart = buildCart({
         items: [
           {
-            id: 'item-1',
-            cartId: 'cart-1',
-            productId: 'product-1',
-            quantity: 2,
-            lockedUnitPrice: null,
-            lockedCurrency: null,
-            priceLockedAt: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
+            ...buildCartItem({ quantity: 2 }),
             product: buildProduct(),
           },
         ],
@@ -164,10 +107,16 @@ describe('CartService', () => {
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 0 }));
 
       await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
 
-      expect(cartRepository.addOrIncrementItem).toHaveBeenCalledWith('cart-1', 'product-1', 2);
+      expect(cartRepository.addOrIncrementItem).toHaveBeenCalledWith(
+        'cart-1',
+        'product-1',
+        2,
+        expect.anything(),
+      );
     });
 
     it('rejects adding an inactive product', async () => {
@@ -209,33 +158,52 @@ describe('CartService', () => {
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 0 }));
 
       await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
 
       expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 2);
     });
 
+    it('resolves the sync marker (by generation) after a successful reserve', async () => {
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 3 }));
+      syncState.upsertDesiredState.mockResolvedValue({ generation: 7 });
+
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+
+      expect(syncState.upsertDesiredState).toHaveBeenCalledWith('cart-1', 'product-1', 3, 2, expect.anything());
+      expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 7);
+    });
+
+    it('marks the marker unresolved (never falsely resolved) when a just-completed reserve write is stale', async () => {
+      // Phase 16A.0-DA, Unit DA.1A concurrency-proof correction: reserve/
+      // release carry no CAS predicate, so a successful write's own
+      // resolveIfCurrentGeneration call can still miss if a newer mutation
+      // has since advanced the marker's generation - proving the write may
+      // have physically landed after a fresher one. That must never be
+      // treated as convergence.
+      productsRepository.findById.mockResolvedValue(buildProduct());
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 0 }));
+      syncState.upsertDesiredState.mockResolvedValue({ generation: 7 });
+      syncState.resolveIfCurrentGeneration.mockResolvedValue({ count: 0 });
+
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+
+      expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 7);
+      expect(syncState.markUnresolved).toHaveBeenCalledWith('cart-1', 'product-1');
+    });
+
     it('adds the existing cart quantity to the new request before checking availability', async () => {
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
-      cartRepository.findOrCreateByCustomerId.mockResolvedValue(
-        buildCart({
-          items: [
-            {
-              id: 'item-1',
-              cartId: 'cart-1',
-              productId: 'product-1',
-              quantity: 3,
-              lockedUnitPrice: null,
-              lockedCurrency: null,
-              priceLockedAt: null,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              product: buildProduct(),
-            },
-          ],
-        }),
-      );
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.findItemByCartAndProduct.mockResolvedValue(buildCartItem({ quantity: 3 }));
+      cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 5, mutationVersion: 1 }));
 
       await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
 
@@ -265,23 +233,14 @@ describe('CartService', () => {
     it('updates the quantity of an owned item', async () => {
       const cart = buildCart();
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
-      cartRepository.findItemById.mockResolvedValue({
-        id: 'item-1',
-        cartId: 'cart-1',
-        productId: 'product-1',
-        quantity: 1,
-        lockedUnitPrice: null,
-        lockedCurrency: null,
-        priceLockedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
+      cartRepository.updateItemQuantity.mockResolvedValue(buildCartItem({ quantity: 5, mutationVersion: 1 }));
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
 
       await service.updateItemQuantity('user-1', 'item-1', { quantity: 5 });
 
-      expect(cartRepository.updateItemQuantity).toHaveBeenCalledWith('item-1', 5);
+      expect(cartRepository.updateItemQuantity).toHaveBeenCalledWith('item-1', 5, expect.anything());
     });
 
     it('throws when the item does not belong to the cart', async () => {
@@ -295,17 +254,8 @@ describe('CartService', () => {
 
     it('reserves the new quantity after a successful update', async () => {
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
-      cartRepository.findItemById.mockResolvedValue({
-        id: 'item-1',
-        cartId: 'cart-1',
-        productId: 'product-1',
-        quantity: 1,
-        lockedUnitPrice: null,
-        lockedCurrency: null,
-        priceLockedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
+      cartRepository.updateItemQuantity.mockResolvedValue(buildCartItem({ quantity: 5, mutationVersion: 1 }));
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
 
@@ -316,17 +266,7 @@ describe('CartService', () => {
 
     it('rejects updating to a quantity above what is currently available', async () => {
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
-      cartRepository.findItemById.mockResolvedValue({
-        id: 'item-1',
-        cartId: 'cart-1',
-        productId: 'product-1',
-        quantity: 1,
-        lockedUnitPrice: null,
-        lockedCurrency: null,
-        priceLockedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       inventoryReservations.getAvailableToPurchase.mockResolvedValue(2);
@@ -341,20 +281,11 @@ describe('CartService', () => {
   describe('removeItem', () => {
     it('removes an owned item', async () => {
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
-      cartRepository.findItemById.mockResolvedValue({
-        id: 'item-1',
-        cartId: 'cart-1',
-        productId: 'product-1',
-        quantity: 1,
-        lockedUnitPrice: null,
-        lockedCurrency: null,
-        priceLockedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
+      cartRepository.removeItem.mockResolvedValue(buildCartItem({ quantity: 1, mutationVersion: 2 }));
 
       await service.removeItem('user-1', 'item-1');
-      expect(cartRepository.removeItem).toHaveBeenCalledWith('item-1');
+      expect(cartRepository.removeItem).toHaveBeenCalledWith('item-1', expect.anything());
       expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
     });
 
@@ -365,6 +296,31 @@ describe('CartService', () => {
       await expect(service.removeItem('user-1', 'item-1')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('resolves the sync marker (by generation) for the deleted state after a successful release', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
+      cartRepository.removeItem.mockResolvedValue(buildCartItem({ quantity: 1, mutationVersion: 2 }));
+      syncState.upsertDesiredState.mockResolvedValue({ generation: 4 });
+
+      await service.removeItem('user-1', 'item-1');
+
+      expect(syncState.upsertDesiredState).toHaveBeenCalledWith('cart-1', 'product-1', 2, null, expect.anything());
+      expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 4);
+    });
+
+    it('marks the marker unresolved when a just-completed release write is stale', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
+      cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
+      cartRepository.removeItem.mockResolvedValue(buildCartItem({ quantity: 1, mutationVersion: 2 }));
+      syncState.upsertDesiredState.mockResolvedValue({ generation: 4 });
+      syncState.resolveIfCurrentGeneration.mockResolvedValue({ count: 0 });
+
+      await service.removeItem('user-1', 'item-1');
+
+      expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 4);
+      expect(syncState.markUnresolved).toHaveBeenCalledWith('cart-1', 'product-1');
     });
   });
 });

@@ -197,4 +197,176 @@ describe('CartRepository', () => {
       expect(count).toBe(0);
     });
   });
+
+  // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review).
+  describe('mutationVersion and compensation primitives', () => {
+    it('starts a fresh insert at mutationVersion 0 and increments on every subsequent increment', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+
+      const created = await repository.addOrIncrementItem(cart.id, productId, 2);
+      expect(created.mutationVersion).toBe(0);
+
+      const incremented = await repository.addOrIncrementItem(cart.id, productId, 3);
+      expect(incremented.mutationVersion).toBe(1);
+      expect(incremented.quantity).toBe(5);
+
+      await repository.removeItem(created.id);
+    });
+
+    it('increments mutationVersion on updateItemQuantity and returns the resulting row', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+      const created = await repository.addOrIncrementItem(cart.id, productId, 1);
+
+      const updated = await repository.updateItemQuantity(created.id, 9);
+
+      expect(updated.mutationVersion).toBe(1);
+      expect(updated.quantity).toBe(9);
+
+      await repository.removeItem(created.id);
+    });
+
+    it('removeItem returns the deleted row, quantity and mutationVersion intact', async () => {
+      const cart = await repository.findOrCreateByCustomerId(customerId);
+      const created = await repository.addOrIncrementItem(cart.id, productId, 4);
+
+      const deleted = await repository.removeItem(created.id);
+
+      expect(deleted.quantity).toBe(4);
+      expect(deleted.mutationVersion).toBe(0);
+      await expect(repository.findItemById(cart.id, created.id)).resolves.toBeNull();
+    });
+
+    describe('compensateItemQuantity', () => {
+      it('reverts quantity and bumps mutationVersion when the guard matches', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 5);
+        const updated = await repository.updateItemQuantity(created.id, 8);
+
+        const { count } = await repository.compensateItemQuantity(cart.id, productId, updated.mutationVersion, 5);
+
+        expect(count).toBe(1);
+        const reverted = await repository.findItemByCartAndProduct(cart.id, productId);
+        expect(reverted?.quantity).toBe(5);
+        expect(reverted?.mutationVersion).toBe(updated.mutationVersion + 1);
+
+        await repository.removeItem(created.id);
+      });
+
+      it('misses when the guard no longer matches the current version', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 5);
+        await repository.updateItemQuantity(created.id, 8);
+
+        // Stale guard: the row has since moved to mutationVersion 1, not 0.
+        const { count } = await repository.compensateItemQuantity(cart.id, productId, 0, 5);
+
+        expect(count).toBe(0);
+        const unchanged = await repository.findItemByCartAndProduct(cart.id, productId);
+        expect(unchanged?.quantity).toBe(8);
+
+        await repository.removeItem(created.id);
+      });
+
+      // Proves the exact ABA scenario a quantity-only guard would have been
+      // vulnerable to: quantity cycles 1 -> 2 -> 3 -> 2 across three
+      // genuinely different writers, so a WHERE quantity = 2 guard would
+      // incorrectly match writer A's stale expectation even though writer
+      // C, not A, produced the current row. mutationVersion never repeats
+      // a value across distinct writes, so the same guard correctly misses.
+      it('never lets a stale writer\'s guard match a value another writer produced later (ABA reproduction)', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 1); // quantity 1, version 0
+
+        const afterA = await repository.updateItemQuantity(created.id, 2); // writer A: 1 -> 2, version 1
+        await repository.updateItemQuantity(created.id, 3); // writer B: 2 -> 3, version 2
+        const afterC = await repository.updateItemQuantity(created.id, 2); // writer C: 3 -> 2, version 3
+
+        // A quantity-only guard here would incorrectly believe its own
+        // write (which produced quantity 2 at version 1) is still current,
+        // since the row's quantity is 2 again - but it is C's row, not A's.
+        expect(afterC.quantity).toBe(afterA.quantity);
+        expect(afterC.mutationVersion).not.toBe(afterA.mutationVersion);
+
+        // A's own compensation attempt, guarded on the version IT observed
+        // (1), correctly misses - it must never revert C's genuinely newer
+        // write just because the quantity happens to match.
+        const { count } = await repository.compensateItemQuantity(
+          cart.id,
+          productId,
+          afterA.mutationVersion,
+          1,
+        );
+        expect(count).toBe(0);
+        const stillCurrent = await repository.findItemByCartAndProduct(cart.id, productId);
+        expect(stillCurrent?.quantity).toBe(2);
+        expect(stillCurrent?.mutationVersion).toBe(afterC.mutationVersion);
+
+        await repository.removeItem(created.id);
+      });
+    });
+
+    describe('compensateItemDeleteIfUnchanged', () => {
+      it('deletes a fresh insert when the guard matches', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 2);
+
+        const { count } = await repository.compensateItemDeleteIfUnchanged(cart.id, productId, created.mutationVersion);
+
+        expect(count).toBe(1);
+        await expect(repository.findItemByCartAndProduct(cart.id, productId)).resolves.toBeNull();
+      });
+
+      it('misses when a concurrent mutation already changed the row (real Postgres race)', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 2);
+
+        // A second, concurrent request incremented the same fresh row
+        // before the first request's own compensation attempt ran.
+        await repository.addOrIncrementItem(cart.id, productId, 3);
+
+        const { count } = await repository.compensateItemDeleteIfUnchanged(cart.id, productId, created.mutationVersion);
+
+        expect(count).toBe(0);
+        const stillPresent = await repository.findItemByCartAndProduct(cart.id, productId);
+        expect(stillPresent?.quantity).toBe(5);
+
+        await repository.removeItem(stillPresent!.id);
+      });
+    });
+
+    describe('compensateItemRestore', () => {
+      it('recreates a removed item at its pre-deletion quantity', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 6);
+        await repository.removeItem(created.id);
+
+        const { restored, item } = await repository.compensateItemRestore(cart.id, productId, 6);
+
+        expect(restored).toBe(true);
+        expect(item?.quantity).toBe(6);
+        expect(item?.mutationVersion).toBe(0);
+
+        await repository.removeItem(item!.id);
+      });
+
+      it('misses (P2002) when another request already re-added the same product (real Postgres race)', async () => {
+        const cart = await repository.findOrCreateByCustomerId(customerId);
+        const created = await repository.addOrIncrementItem(cart.id, productId, 6);
+        await repository.removeItem(created.id);
+
+        // A second, concurrent request already re-added the product before
+        // the first request's own restore-compensation attempt ran.
+        const reAdded = await repository.addOrIncrementItem(cart.id, productId, 9);
+
+        const { restored, item } = await repository.compensateItemRestore(cart.id, productId, 6);
+
+        expect(restored).toBe(false);
+        expect(item).toBeNull();
+        const current = await repository.findItemByCartAndProduct(cart.id, productId);
+        expect(current?.quantity).toBe(9);
+
+        await repository.removeItem(reAdded.id);
+      });
+    });
+  });
 });

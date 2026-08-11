@@ -52,6 +52,7 @@ describe('PriceLockService (createPriceLock structural failures and race-loss re
       cartId,
       productId,
       quantity: 1,
+      mutationVersion: 0,
       lockedUnitPrice: null,
       lockedCurrency: null,
       priceLockedAt: null,

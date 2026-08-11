@@ -57,6 +57,7 @@ describe('PriceLockService (createPriceLock)', () => {
       cartId,
       productId,
       quantity: 1,
+      mutationVersion: 0,
       lockedUnitPrice: null,
       lockedCurrency: null,
       priceLockedAt: null,

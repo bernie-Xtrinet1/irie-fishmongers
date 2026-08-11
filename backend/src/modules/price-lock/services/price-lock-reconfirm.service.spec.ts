@@ -45,6 +45,7 @@ describe('PriceLockService (reconfirmPrice)', () => {
       cartId,
       productId,
       quantity: 1,
+      mutationVersion: 0,
       lockedUnitPrice: null,
       lockedCurrency: null,
       priceLockedAt: null,

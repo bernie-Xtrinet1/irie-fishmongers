@@ -234,6 +234,7 @@ model Product {
   wasteDisposalRecords            WasteDisposalRecord[]
   reviews                         Review[]
   reservationCompensations        CartReservationCompensation[]
+  reservationSyncStates           CartReservationSyncState[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -248,10 +249,11 @@ model Cart {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  customer         User                          @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  items            CartItem[]
-  checkoutAttempts CheckoutAttempt[]
-  compensations    CartReservationCompensation[]
+  customer              User                          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items                 CartItem[]
+  checkoutAttempts      CheckoutAttempt[]
+  compensations         CartReservationCompensation[]
+  reservationSyncStates CartReservationSyncState[]
 
   @@map("carts")
 }
@@ -261,6 +263,17 @@ model CartItem {
   cartId          String
   productId       String
   quantity        Int
+  // Phase 16A.0-DA, Unit DA.1A. The compensation-guard/mutation-identity
+  // token for this row - never quantity or updatedAt (see the DA.1
+  // architecture review: quantity can cycle back to a previously-seen
+  // value under concurrent writers, and updatedAt's millisecond precision
+  // cannot be proven collision-free under genuine concurrent connections).
+  // Bumped on every mutation that changes this row, including compensating
+  // reverts - never reset, never reused across a delete/recreate cycle
+  // (a fresh insert always restarts at 0, which is fine: the compensation
+  // guard for a fresh insert only ever needs to detect "am I still the
+  // only writer", not "am I still writer N").
+  mutationVersion Int       @default(0)
   lockedUnitPrice Decimal?  @db.Decimal(10, 2)
   lockedCurrency  String?
   priceLockedAt   DateTime?
@@ -272,6 +285,78 @@ model CartItem {
 
   @@unique([cartId, productId])
   @@map("cart_items")
+}
+
+enum CartReservationSyncStatus {
+  PENDING
+  PROCESSING
+}
+
+// Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review). Durable,
+// proactive record of the desired Redis reservation state for one
+// (cartId, productId) pair, written atomically with every CartItem
+// mutation that affects reservation state (add/update/remove/compensating
+// revert), before the corresponding Redis write is even attempted.
+//
+// This row is NEVER deleted once created, and never re-inserted for the
+// same pair - resolution sets resolvedAt instead of removing the row. This
+// is deliberate, not an oversight: CartItem.mutationVersion resets to 0 on
+// every fresh insert (a delete followed by a later re-add restarts
+// numbering), so it cannot serve as a logical generation for the pair's
+// full lifetime - a stale compensation captured against a deleted row's
+// version could otherwise numerically collide with a later, unrelated
+// row's version. `generation` on THIS row is the fix: it lives on a row
+// that is upserted (never deleted, never re-created) for as long as this
+// (cartId, productId) pair exists, so it is a true, permanent,
+// monotonically-increasing counter - immune to CartItem's own delete/
+// recreate resets, and immune to the same problem repeating if the marker
+// row itself were ever deleted and re-created (which is exactly why it
+// isn't). Every mutation and every compensation attempt against this pair
+// advances `generation`; resolution and compensation are both guarded on
+// it, never on CartItem.mutationVersion. CartItem.mutationVersion remains
+// in use only as the CartItem-table-level write guard (defense in depth,
+// redundant with but not a substitute for the generation gate).
+//
+// DA.1A only ever writes PENDING and sets resolvedAt on success;
+// PROCESSING/attemptCount/lastError/processingStartedAt are unused until
+// DA.1B's recovery worker exists - included in this migration now so
+// DA.1B never needs a second schema change for the same table.
+model CartReservationSyncState {
+  id                      String                    @id @default(uuid())
+  cartId                  String
+  productId               String
+  // The CartItem.mutationVersion this row's expectedQuantity reflects as
+  // of `generation`. Purely a historical/debugging value once the
+  // CartItem has since been deleted - DA.1B relies on expectedQuantity
+  // being null to mean "desired absence" in that case, never on this
+  // field once no CartItem exists for the pair.
+  expectedMutationVersion Int
+  // null = desired Redis state is "released/absent". Non-null = desired
+  // absolute reservation quantity. Never a delta - matches
+  // InventoryReservationsService.reserve/reserveOrRenew's own
+  // absolute-quantity contract, which is what makes idempotent
+  // reassertion safe in the first place.
+  expectedQuantity        Int?
+  status                  CartReservationSyncStatus @default(PENDING)
+  // The permanent logical generation for this (cartId, productId) pair -
+  // see the model-level comment. Advances on every write to this row,
+  // including compensation attempts, for as long as the row exists.
+  generation              Int                       @default(0)
+  attemptCount            Int                       @default(0)
+  lastError               String?
+  processingStartedAt     DateTime?
+  // Non-null once the current generation's desired Redis state has been
+  // confirmed - never deleted, only set. A later mutation's upsert clears
+  // it back to null (there is new, unconfirmed desired state again).
+  resolvedAt              DateTime?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, productId])
+  @@map("cart_reservation_sync_states")
 }
 
 enum VendorOrderStatus {
