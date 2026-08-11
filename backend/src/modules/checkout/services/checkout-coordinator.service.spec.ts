@@ -18,7 +18,10 @@ import {
 
 describe('CheckoutCoordinatorService', () => {
   let checkoutAttempt: jest.Mocked<
-    Pick<CheckoutAttemptService, 'createOrResume' | 'markFailed' | 'markCommittedInTransaction'>
+    Pick<
+      CheckoutAttemptService,
+      'createOrResume' | 'markFailed' | 'markCommittedInTransaction' | 'inspectByIdempotencyKey'
+    >
   >;
   let priceLock: jest.Mocked<Pick<PriceLockService, 'validateCartPriceLocks'>>;
   let checkoutReservationState: jest.Mocked<Pick<CheckoutReservationStateService, 'checkoutMark'>>;
@@ -40,6 +43,7 @@ describe('CheckoutCoordinatorService', () => {
       createOrResume: jest.fn().mockResolvedValue({ ok: true, action: 'CREATED', attempt: buildAttemptSummary() }),
       markFailed: jest.fn().mockResolvedValue({ ok: true, alreadyFailed: false, detailsMatched: true }),
       markCommittedInTransaction: jest.fn().mockResolvedValue({ ok: true, alreadyCommitted: false }),
+      inspectByIdempotencyKey: jest.fn().mockResolvedValue({ action: 'NOT_FOUND' }),
     };
     priceLock = { validateCartPriceLocks: jest.fn().mockResolvedValue(buildPriceLockOk()) };
     checkoutReservationState = {
@@ -211,6 +215,56 @@ describe('CheckoutCoordinatorService', () => {
       await expect(service.checkout('user-1', 'key-1', checkoutDto, now)).rejects.toThrow(
         'Internal consistency error: checkout attempt attempt-1 is COMMITTED with no orderId',
       );
+    });
+  });
+
+  describe('idempotency preflight (D.2.1)', () => {
+    it('9. ALREADY_COMMITTED preflight short-circuits before prepareCheckout is ever called', async () => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({
+        action: 'ALREADY_COMMITTED',
+        attempt: buildAttemptSummary({ orderId: 'order-1' }),
+      });
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+      expect(result).toEqual({ ok: true, order: { id: 'order-1' } });
+      expect(ordersService.prepareCheckout).not.toHaveBeenCalled();
+      expect(priceLock.validateCartPriceLocks).not.toHaveBeenCalled();
+      expect(checkoutAttempt.createOrResume).not.toHaveBeenCalled();
+    });
+
+    it('10. RESUMED_PROCESSING preflight short-circuits before prepareCheckout is ever called', async () => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({
+        action: 'RESUMED_PROCESSING',
+        attempt: buildAttemptSummary(),
+      });
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+      expect(result).toEqual({ ok: false, code: 'CHECKOUT_ALREADY_IN_PROGRESS' });
+      expect(ordersService.prepareCheckout).not.toHaveBeenCalled();
+    });
+
+    it('11. ALREADY_FAILED preflight short-circuits before prepareCheckout is ever called', async () => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({
+        action: 'ALREADY_FAILED',
+        attempt: buildAttemptSummary({ failureCode: 'ORDER_TRANSACTION_FAILED' }),
+      });
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+      expect(result).toEqual({ ok: false, code: 'CHECKOUT_ALREADY_FAILED', failureCode: 'ORDER_TRANSACTION_FAILED' });
+      expect(ordersService.prepareCheckout).not.toHaveBeenCalled();
+    });
+
+    it('12. IDEMPOTENCY_KEY_CONFLICT preflight short-circuits before prepareCheckout is ever called', async () => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({ action: 'IDEMPOTENCY_KEY_CONFLICT' });
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+      expect(result).toEqual({ ok: false, code: 'IDEMPOTENCY_KEY_CONFLICT' });
+      expect(ordersService.prepareCheckout).not.toHaveBeenCalled();
+    });
+
+    it('13. NOT_FOUND proceeds to prepareCheckout/price-lock validation/createOrResume as normal', async () => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({ action: 'NOT_FOUND' });
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+      expect(result.ok).toBe(true);
+      expect(ordersService.prepareCheckout).toHaveBeenCalledTimes(1);
+      expect(priceLock.validateCartPriceLocks).toHaveBeenCalledTimes(1);
+      expect(checkoutAttempt.createOrResume).toHaveBeenCalledTimes(1);
     });
   });
 

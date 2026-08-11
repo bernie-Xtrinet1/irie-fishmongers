@@ -67,6 +67,15 @@ export class CheckoutAttemptRepository {
     return client.checkoutAttempt.findUnique({ where: { id } });
   }
 
+  // Phase 16A.0-D.2.1. Read-only - no write, no lastHeartbeatAt mutation.
+  // idempotencyKey alone is sufficient to look up the row (it is globally
+  // unique), but this is an internal persistence primitive only - the
+  // caller (CheckoutAttemptService.inspectByIdempotencyKey) must
+  // cross-check ownership before exposing anything about the result.
+  findByIdempotencyKey(idempotencyKey: string): Promise<CheckoutAttempt | null> {
+    return this.prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  }
+
   updateHeartbeatIfProcessing(id: string, customerId: string, now: Date): Promise<{ count: number }> {
     return this.prisma.checkoutAttempt.updateMany({
       where: { id, customerId, status: 'PROCESSING', lastHeartbeatAt: { lte: now } },

@@ -65,6 +65,47 @@ export class CheckoutCoordinatorService {
       return { ok: false, code: 'INVALID_INPUT', field: 'idempotencyKey', reason: keyError };
     }
 
+    // D.2.1: a read-only preflight, before any cart/price-lock read.
+    // createOrderInTransaction clears the cart on commit, so a same-key
+    // retry after COMMITTED must never depend on prepareCheckout finding
+    // that same (now-empty) cart again - see the corrected coordinator
+    // order.
+    //
+    // This is NOT an atomic reservation of the idempotency key. Two
+    // concurrent requests may both observe NOT_FOUND here and both
+    // proceed into prepareCheckout/price-lock validation before either
+    // reaches createOrResume, which remains the sole unique-constraint-
+    // backed concurrency authority below. Before createOrResume
+    // establishes the durable winner, the losing request may legitimately
+    // terminate because mutable pre-attempt state changed underneath it
+    // (e.g. the winner already cleared the cart or consumed price-lock
+    // state) - it is not guaranteed to observe CHECKOUT_ALREADY_IN_PROGRESS
+    // specifically, and may instead see a typed PREPARE_FAILED/
+    // PRICE_LOCK_INVALID/CHECKOUT_PLAN_MISMATCH outcome. This is
+    // acceptable as long as the durable invariants hold: at most one
+    // CheckoutAttempt wins creation for the key; at most one order is
+    // durably created; stock is never double-decremented; checkoutMark is
+    // never duplicated once a winner is established; payment is never
+    // initiated twice; and a later same-key retry after COMMITTED always
+    // replays the committed order (proven in
+    // checkout-coordinator-idempotency.integration.spec.ts). Do not add an
+    // advisory/Redis/row lock, and do not move mutable validation inside
+    // an artificial global lock, merely to force every concurrent loser
+    // toward one specific response shape.
+    const preflight = await this.checkoutAttempt.inspectByIdempotencyKey(customerId, idempotencyKey);
+    if (preflight.action === 'ALREADY_COMMITTED') {
+      return this.replayCommitted(customerId, preflight.attempt.id, preflight.attempt.orderId);
+    }
+    if (preflight.action === 'RESUMED_PROCESSING') {
+      return { ok: false, code: 'CHECKOUT_ALREADY_IN_PROGRESS' };
+    }
+    if (preflight.action === 'ALREADY_FAILED') {
+      return { ok: false, code: 'CHECKOUT_ALREADY_FAILED', failureCode: preflight.attempt.failureCode };
+    }
+    if (preflight.action === 'IDEMPOTENCY_KEY_CONFLICT') {
+      return { ok: false, code: 'IDEMPOTENCY_KEY_CONFLICT' };
+    }
+
     const prepareResult = await this.ordersService.prepareCheckout(customerId, dto);
     if (!prepareResult.ok) {
       return { ok: false, code: 'PREPARE_FAILED', prepareFailure: prepareResult };

@@ -57,6 +57,20 @@ export type CreateOrResumeCheckoutAttemptResult =
   | { ok: true; action: 'ALREADY_FAILED'; attempt: CheckoutAttemptSummary }
   | { ok: false; code: 'IDEMPOTENCY_KEY_CONFLICT' };
 
+// inspectByIdempotencyKey (Phase 16A.0-D.2.1) - a read-only preflight so a
+// caller can resolve an already-COMMITTED/PROCESSING/FAILED attempt
+// without first needing a cartId (unlike createOrResume, which both reads
+// and creates and therefore does require one). Never mutates
+// lastHeartbeatAt, never writes. IDEMPOTENCY_KEY_CONFLICT carries the same
+// zero-detail privacy contract as createOrResume's own conflict result -
+// never the stored customerId/cartId, never a mismatch field.
+export type InspectCheckoutAttemptResult =
+  | { action: 'NOT_FOUND' }
+  | { action: 'RESUMED_PROCESSING'; attempt: CheckoutAttemptSummary }
+  | { action: 'ALREADY_FAILED'; attempt: CheckoutAttemptSummary }
+  | { action: 'ALREADY_COMMITTED'; attempt: CheckoutAttemptSummary }
+  | { action: 'IDEMPOTENCY_KEY_CONFLICT' };
+
 // updateHeartbeat - one conditional update; a zero-match result is
 // classified by a same-shape re-read, never inferred structurally.
 export type UpdateCheckoutHeartbeatResult =

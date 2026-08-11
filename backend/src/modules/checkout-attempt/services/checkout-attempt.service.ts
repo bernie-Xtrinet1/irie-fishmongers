@@ -10,6 +10,7 @@ import {
   CreateOrResumeCheckoutAttemptResult,
   FindStaleCheckoutAttemptsInput,
   FindStaleCheckoutAttemptsResult,
+  InspectCheckoutAttemptResult,
   MarkCheckoutAttemptCommittedResult,
   MarkCheckoutAttemptFailedResult,
   UpdateCheckoutHeartbeatResult,
@@ -67,6 +68,39 @@ export class CheckoutAttemptService {
         return { ok: true, action: 'ALREADY_COMMITTED', attempt: summary };
       case 'FAILED':
         return { ok: true, action: 'ALREADY_FAILED', attempt: summary };
+    }
+  }
+
+  // Phase 16A.0-D.2.1. Read-only preflight - no cartId required (unlike
+  // createOrResume), never creates a row, never mutates lastHeartbeatAt.
+  // Ownership is cross-checked here, before any row detail is exposed -
+  // a row belonging to another customer returns only the generic
+  // IDEMPOTENCY_KEY_CONFLICT, never the stored customerId/cartId or which
+  // field mismatched (same privacy contract as createOrResume's own
+  // conflict result).
+  async inspectByIdempotencyKey(
+    customerId: string,
+    idempotencyKey: string,
+  ): Promise<InspectCheckoutAttemptResult> {
+    const attempt = await this.repository.findByIdempotencyKey(idempotencyKey);
+    if (!attempt) {
+      return { action: 'NOT_FOUND' };
+    }
+    if (attempt.customerId !== customerId) {
+      this.logger.warn('checkout attempt idempotency key inspected with mismatched ownership', {
+        idempotencyKey,
+      });
+      return { action: 'IDEMPOTENCY_KEY_CONFLICT' };
+    }
+
+    const summary = CheckoutAttemptService.toSummary(attempt);
+    switch (attempt.status) {
+      case 'PROCESSING':
+        return { action: 'RESUMED_PROCESSING', attempt: summary };
+      case 'COMMITTED':
+        return { action: 'ALREADY_COMMITTED', attempt: summary };
+      case 'FAILED':
+        return { action: 'ALREADY_FAILED', attempt: summary };
     }
   }
 

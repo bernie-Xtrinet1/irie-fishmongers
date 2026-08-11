@@ -157,6 +157,28 @@ describe('CheckoutAttemptRepository', () => {
     });
   });
 
+  describe('findByIdempotencyKey', () => {
+    it('returns null when no row exists for the key', async () => {
+      await expect(repository.findByIdempotencyKey(idem())).resolves.toBeNull();
+    });
+
+    it('finds the row by idempotencyKey alone, without a write or lastHeartbeatAt mutation', async () => {
+      const idempotencyKey = idem();
+      const now = new Date();
+      const { attempt: created } = await repository.createOrGetByIdempotencyKey({
+        idempotencyKey,
+        cartId,
+        customerId,
+        now,
+      });
+
+      const found = await repository.findByIdempotencyKey(idempotencyKey);
+
+      expect(found?.id).toBe(created.id);
+      expect(found?.lastHeartbeatAt).toEqual(now);
+    });
+  });
+
   describe('updateHeartbeatIfProcessing', () => {
     it('updates a PROCESSING row owned by the given customer', async () => {
       const now = new Date();

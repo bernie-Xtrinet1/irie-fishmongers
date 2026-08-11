@@ -20,7 +20,10 @@ import {
 
 describe('CheckoutCoordinatorService - transaction / finalize / payment / plan consistency', () => {
   let checkoutAttempt: jest.Mocked<
-    Pick<CheckoutAttemptService, 'createOrResume' | 'markFailed' | 'markCommittedInTransaction'>
+    Pick<
+      CheckoutAttemptService,
+      'createOrResume' | 'markFailed' | 'markCommittedInTransaction' | 'inspectByIdempotencyKey'
+    >
   >;
   let priceLock: jest.Mocked<Pick<PriceLockService, 'validateCartPriceLocks'>>;
   let checkoutReservationState: jest.Mocked<Pick<CheckoutReservationStateService, 'checkoutMark'>>;
@@ -43,6 +46,7 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
       createOrResume: jest.fn().mockResolvedValue({ ok: true, action: 'CREATED', attempt: buildAttemptSummary() }),
       markFailed: jest.fn().mockResolvedValue({ ok: true, alreadyFailed: false, detailsMatched: true }),
       markCommittedInTransaction: jest.fn().mockResolvedValue({ ok: true, alreadyCommitted: false }),
+      inspectByIdempotencyKey: jest.fn().mockResolvedValue({ action: 'NOT_FOUND' }),
     };
     priceLock = { validateCartPriceLocks: jest.fn().mockResolvedValue(buildPriceLockOk()) };
     checkoutReservationState = {
