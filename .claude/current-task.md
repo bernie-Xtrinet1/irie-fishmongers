@@ -571,17 +571,66 @@ Current phase: **Phase 16A.0 - Cart Price Integrity** (remains active)
     account - the next session must confirm this explicitly rather than
     either name being assumed.
 
-## Next task: Phase 16A.0, Phase D (per ADR-007's own table) - "C5 idempotency" naming discrepancy noted, read-only architecture review first
+- **Phase 16A.0-D, Units D.1-D.5 are complete and pushed**: `9e6163b`
+  (D.1), `757b6e9` (D.1.1), `9674cf4` (D.2), `1f41932` (D.2.1), `8324fd1`
+  (D.3), `3ef72da` (D.4), plus this D.5 docs-closeout commit - all on
+  `origin/develop`. **D-core is complete and frozen.**
+  - **D.1**: extracted `OrdersService.prepareCheckout`/
+    `createOrderInTransaction` from the legacy `checkout` method,
+    behavior-preserving.
+  - **D.1.1**: `OrderPricingSnapshot` - explicit durable pricing snapshot,
+    single-currency authority (never per-line), `validatePricingSnapshot`
+    enforcing an exact item-set match, `buildLegacyPricingSnapshot` for
+    the still-unchanged legacy path.
+  - **D.2**: `CheckoutCoordinatorService` - the durable saga orchestrator:
+    `CheckoutAttempt` idempotency, `checkoutMark`, the order transaction
+    (with `markCommittedInTransaction` inside the *same* `$transaction*` -
+    ADR-007 Decision 1's hard requirement), post-commit
+    `finalizeCheckoutConsumption` and payment initiation.
+  - **D.2.1**: `CheckoutAttemptService.inspectByIdempotencyKey` - a
+    read-only durable preflight fixing a genuine same-key-after-COMMITTED
+    defect D.3 exposed. Not an atomic key reservation - `createOrResume`
+    remains the sole concurrency authority.
+  - **D.3**: full saga proven against real Postgres and Redis - atomic
+    commit/rollback (including a genuine stock race), locked-price
+    persistence, Redis lifecycle (`checkoutMark`/`checkoutRevert`/
+    `finalizeCheckoutConsumption`), idempotency (retry-after-commit,
+    concurrent same-key - 10x-repeated, zero
+    `IDEMPOTENCY_KEY_CONFLICT`/`CHECKOUT_ALREADY_FAILED` occurrences -
+    concurrent different-key), `OrderPlacedEvent` emission, and the
+    Phase-E payment-after-commit gap (proven, not fixed).
+  - **D.4**: `CheckoutModule` - packages `CheckoutCoordinatorService`
+    into a real Nest module/DI graph for the first time. Fixed a genuine
+    blocker (`OrdersModule` never exported `OrdersService`) with a
+    one-line additive export, approved before implementing. A DI-boundary
+    spec proves the real graph resolves everything correctly, including
+    across the new `OrdersModule` export, with `PrismaService`/
+    `REDIS_CLIENT` overridden by inert test-only stubs (no real DB/Redis
+    connection needed to prove DI wiring). No controller, no `AppModule`
+    import.
+  - **D.5**: read-only architecture audit. Found `CheckoutCoordinatorService`
+    depends directly on `CheckoutReservationStateService`/
+    `CheckoutReservationRecoveryService`, contradicting ADR-007 Decision
+    3's original facade requirement (never built). User chose to
+    formally supersede Decision 3 (approve direct composition, not
+    retrofit a speculative facade) - see ADR-007 §16 for the full
+    rationale, invariant summary, corrected module-architecture sketch,
+    and naming clarification (`CheckoutReservationFacade` keeps only its
+    C3 per-item meaning). Pure documentation closeout - no source, test,
+    or schema change.
+  - **`CheckoutModule` remains intentionally unreachable from `AppModule`.**
+    No controller, no route, no idempotency-key endpoint, no
+    `CartService`/`ProductsService`/`OrdersController` change.
 
-Per ADR-007's authoritative "Implementation sequence" table, the phase
-now unblocked (both of its prerequisites, A and C, are complete) is
-**Phase D**: `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle
-wiring, `checkoutMark` integration - which is a different label than the
-informal "C5 idempotency" phrase used throughout this session's
-prohibition lists. As with every prior unit, begin read-only: restate the
-current contract, confirm scope boundaries, and produce a plan for
-explicit approval before any implementation begins. See
-`.claude/next-session.md` for the exact scope and explicit prohibitions.
+## Next task: Phase D-Activation Readiness / Phase-C Cutover Gate Resolution - READ-ONLY FIRST
+
+D-core (D.1-D.5) is finished and frozen - **do not** begin generic "Phase D
+implementation," it is already complete. The next session's task is a
+**read-only** review resolving the prerequisites that block exposing
+`CheckoutCoordinatorService` to any real caller. See
+`.claude/next-session.md` for the exact scope, the 15-item review list, and
+explicit prohibitions. Do not begin caller cutover until that review is
+presented and explicitly approved.
 
 ## Operational policy: Accepted (see `.claude/decisions.md`)
 

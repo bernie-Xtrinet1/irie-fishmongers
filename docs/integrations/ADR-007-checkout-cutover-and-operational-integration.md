@@ -137,7 +137,14 @@ already validated the new engine's behavior against production traffic.
 The Redis-first-vs-Postgres-first question (open decision 1) is answered
 by that comparison, not decided upfront.
 
-### 3. `CheckoutReservationFacade` - new abstraction layer
+### 3. `CheckoutReservationFacade` - new abstraction layer (SUPERSEDED - see §16)
+
+> **Superseded by §16 ("Phase D, Units D.1-D.5") during implementation.**
+> This decision's checkout-lifecycle facade requirement was never built and
+> is no longer required. The text below is preserved unchanged as a
+> historical record of the original design intent - do not delete it, and
+> do not silently treat it as still authoritative. §16 records the actual
+> shipped architecture and the rationale for the change.
 
 `CheckoutCoordinatorService` must not call `checkoutMark`, lease
 inspection/extension, `checkoutRevert`, `finalizeCheckoutConsumption`,
@@ -1144,6 +1151,154 @@ needed). Full backend suite 243 -> 244 suites, 2151 -> 2165 tests, exit
 0. Coverage 97.50%/94.20%/97.20%/97.43% (80/90/90/90 threshold);
 `compensation-scheduler.service.ts` at 100/100/100/100.
 
+### 16. Phase D, Units D.1-D.5: `CheckoutCoordinatorService` saga - implemented, unwired, D-core frozen
+
+Phase D (per this ADR's own "Implementation sequence" table - see the §15
+naming note; the informal "C5" label used in prior session-continuity docs
+never referred to any authoritative phase) is now complete across five
+sub-units: D.1 (`OrdersService.prepareCheckout`/`createOrderInTransaction`
+extraction), D.1.1 (explicit durable `OrderPricingSnapshot`, single-currency
+authority, no live `Product.price` fallback), D.2
+(`CheckoutCoordinatorService` saga orchestration), D.2.1 (the read-only
+`inspectByIdempotencyKey` durable preflight), D.3 (real Postgres/Redis
+integration proof), D.4 (`CheckoutModule` packaging and DI proof), D.5 (this
+audit and closeout). **D-core is complete and frozen** - no further D-core
+source change is authorized without a new, separately scoped approval.
+Everything below is additive and unwired: no controller, no route, no
+`AppModule` import, no `CartService`/`ProductsService`/`OrdersController`
+change.
+
+#### 16.1 Decision 3 is superseded: direct composition, not a new facade
+
+**Final decision, superseding §3 above**: `CheckoutCoordinatorService`
+depends directly on `CheckoutReservationStateService` and
+`CheckoutReservationRecoveryService` for the checkout-state family
+(`checkoutMark`, `checkoutRevert`, `finalizeCheckoutConsumption`). No
+second, checkout-lifecycle-shaped facade was built, and none should be
+built merely to satisfy the original §3 sketch.
+
+**Rationale for superseding §3** (the real rationale, recorded at the time
+this was discovered during D.5's audit, not a retrospective excuse):
+
+- §3's facade was intended primarily to provide (a) a single
+  instrumentation/shadow-mode seam, (b) insulation from calling multiple
+  inventory-state services directly, and (c) a future rollout-comparison
+  boundary.
+- No current production caller requires that instrumentation seam - Phase
+  C's shadow-mode comparison work has no consumer for it yet, and may
+  never need exactly this shape once it is actually designed.
+- `checkoutMark` already owns whole-cart reservation-plan validation
+  (existence, quantity, version, owner, expiry) - a facade-level admission
+  recheck would be redundant, not additional safety.
+- `checkoutRevert`/`finalizeCheckoutConsumption` are already cohesive
+  recovery operations owned by `CheckoutReservationRecoveryService` - not
+  raw primitives that need composing.
+- Introducing a facade today would only forward three already-narrow
+  operations with no behavior of its own - a pure pass-through layer.
+- There is no circular dependency and no duplicated business logic that a
+  facade would remove; `CheckoutCoordinatorService`'s own dependency graph
+  is small, explicit, and fully tested (D.2/D.3/D.4).
+- This codebase's constitution (`.claude/CLAUDE.md`) discourages
+  dead/speculative abstraction - a facade with no current second consumer
+  and no current instrumentation requirement would be exactly that.
+
+Direct composition is approved **until a concrete instrumentation or
+rollout requirement creates a real abstraction boundary** - at which point
+that future phase designs its own seam against a real, current need, not
+against this paragraph's prediction of one.
+
+#### 16.2 Naming clarification: `CheckoutReservationFacade` keeps only its C3 meaning
+
+`CheckoutReservationFacade` already exists and already has a shipped
+meaning from Phase C, Unit C3 (§10 above): the per-item, mode-aware
+cart-reservation/admission abstraction (`reserveForCart`, `releaseForCart`,
+`releaseCart`, `getCartAdmissionAvailability`, implementing the
+`ReservationGateway` interface). That responsibility is unchanged by this
+section and remains scoped to per-item cart reservation routing - it is
+**not**, and was never actually built as, a whole-cart checkout-lifecycle
+abstraction.
+
+This name must not be reused for a second, different facade. If a future
+phase (Phase C's actual shadow-mode/rollout work, or a later phase) needs
+an instrumentation or rollout-comparison seam around
+`checkoutMark`/`checkoutRevert`/`finalizeCheckoutConsumption`, it must be
+designed then, against a real requirement, with its own distinct name and
+responsibility. It must not be pre-named or pre-created now.
+
+#### 16.3 Verified D-core invariants
+
+- **Transaction**: the order's durable writes and
+  `CheckoutAttempt.status = COMMITTED`/`orderId` occur inside the same
+  Prisma `$transaction` - never a separate write after commit (satisfies
+  Decision 1's hard requirement; proven in
+  `checkout-coordinator.postgres.integration.spec.ts`).
+- **Pricing**: one canonical plan (`reconcileCheckoutPlan`, D.2) is the
+  sole authority for `productId`/quantity/locked price/currency,
+  reconciling the durable cart read against the locked-price read and
+  rejecting any divergence as `CHECKOUT_PLAN_MISMATCH` rather than
+  silently preferring either side. Single currency, never per-line.
+- **Idempotency**: existing durable `CheckoutAttempt` state is inspected
+  (D.2.1's `inspectByIdempotencyKey`) before any mutable cart/price-lock
+  read. `createOrResume` remains the sole unique-constraint-backed
+  concurrency authority - the preflight is not an atomic reservation of
+  the key, and a losing concurrent request may observe any of
+  `CHECKOUT_ALREADY_IN_PROGRESS`/`PRICE_LOCK_INVALID`/`PREPARE_FAILED`/
+  `CHECKOUT_PLAN_MISMATCH` depending on how far the winner progressed -
+  proven never to include `IDEMPOTENCY_KEY_CONFLICT` or
+  `CHECKOUT_ALREADY_FAILED` for a genuine same-customer, same-key race
+  (10 repeated real-Postgres/Redis runs, zero occurrences).
+- **Redis lifecycle**: `checkoutMark` occurs before the durable
+  transaction; `checkoutRevert` handles durable transaction failure
+  (reverting the reservation to `ACTIVE`); `finalizeCheckoutConsumption`
+  occurs after durable commit (best-effort - a thrown finalize error
+  leaves the order successful and the reservation in `CHECKOUT_PENDING`
+  for deferred Phase F recovery, never retried synchronously and never
+  reverted after a successful commit).
+- **Payment**: initiation remains strictly post-commit
+  (`completeWithPayment`, called only after the order transaction and
+  Redis finalize). The payment-after-commit failure/recovery gap (§16.4)
+  remains deferred to Phase E, not fixed by D-core.
+- **Replay**: a same-key retry after `COMMITTED` returns the existing
+  order with zero duplicate stock decrement, zero duplicate order, zero
+  duplicate `OrderPlacedEvent`, zero duplicate payment initiation - proven
+  in `checkout-coordinator-idempotency.integration.spec.ts` and
+  `checkout-coordinator-failure.integration.spec.ts`.
+
+#### 16.4 The Phase-E gap (recorded, not fixed)
+
+If `paymentsService.initiatePayment` throws after the order is durably
+committed, `CheckoutAttempt` is `COMMITTED`, and Redis finalize has run:
+the original `checkout()` call rejects/throws; no `Payment` row is
+created; a same-key replay returns the already-committed order
+successfully, without ever repairing the missing payment. D-core does not
+initiate payment a second time under any circumstance. This is confirmed,
+intentional, unfixed scope - it is Phase E's design responsibility (§4,
+open decision 5), not a D-core defect.
+
+#### 16.5 D-activation remains blocked
+
+D-core completion is not production activation. Still required before any
+caller cutover, unchanged from the gates already recorded in this ADR:
+
+- **Open decision 1** (Redis-first vs. Postgres-first `CartService`
+  writes) - blocks Phase C's `CartService` cutover and, transitively,
+  Phase D activation.
+- **Open decision 9** (`addItem` idempotency semantics) - depends on
+  decision 1.
+- **Open decision 10** (rollout-flag mechanism) - blocks Phase C
+  activation.
+- No server-issued checkout idempotency-key endpoint exists.
+- No `CheckoutController` or any production checkout HTTP route exists.
+- `CheckoutModule` is not imported by `AppModule` - it remains
+  intentionally unreachable from production.
+- No decision has been made on `OrdersController`'s legacy checkout route
+  (cutover vs. deprecation vs. indefinite coexistence).
+- The production `CartService` reservation path remains unaligned with the
+  cart-scoped checkout engine (Phase C's own unresolved scope).
+
+Module graph is corrected in "Module architecture (revised)" below to
+match what actually shipped, not the pre-implementation sketch.
+
 ## Module architecture (revised)
 
 ```
@@ -1161,27 +1316,39 @@ PriceLockModule   <- implemented as standalone (Phase B decision, see
                        Decision 7); imports CartModule, ProductsModule
   exports: PriceLockService, PriceLockRepository
 
-CheckoutModule
-  imports: AuthModule, CartModule, InventoryModule, CheckoutAttemptModule,
-           PriceLockModule, PaymentsModule, OrdersModule
-  providers: CheckoutReservationFacade, CheckoutCoordinatorService,
-             (Phase F) the recovery scheduler
+CheckoutModule   <- shipped shape (D.4); supersedes the pre-implementation
+                     sketch this section originally contained
+  imports: CheckoutAttemptModule, PriceLockModule, InventoryModule,
+           OrdersModule, PaymentsModule
+  providers: CheckoutCoordinatorService
+  exports: CheckoutCoordinatorService
 ```
+
+`AuthModule` and `CartModule` are **not** direct `CheckoutModule` imports -
+they are transitive dependencies of the modules `CheckoutModule` actually
+imports (e.g. `OrdersModule`/`InventoryModule` each import `AuthModule`
+themselves), not direct constructor dependencies of
+`CheckoutCoordinatorService`. They were present in this section's original
+sketch before the real constructor signature existed; do not add them to
+`CheckoutModule` merely to match that stale sketch - Nest resolves them
+transitively already, and a direct import here would be an unused edge.
+No `CheckoutReservationFacade`-shaped provider exists in `CheckoutModule`
+either, per §16.1/§16.2 above.
 
 Dependency direction unchanged from the original plan: `CheckoutModule` is
 the only new edge, pointing one way, into the existing modules - none of
-them import it back.
+them import it back. Not imported by `AppModule` (§16.5).
 
 ## Implementation sequence (approved order)
 
 | Phase | Scope | Blocked on |
 |---|---|---|
-| A | `CheckoutAttemptRepository`, `CheckoutAttemptService`, repository tests | Nothing - ready now |
+| A | `CheckoutAttemptRepository`, `CheckoutAttemptService`, repository tests | **Complete** |
 | B | `PriceLockService`, cart currency enforcement, price-lock validation | **Complete** - open decisions 4, 8 resolved |
-| C | `CheckoutReservationFacade`, feature flags, shadow mode, combined availability - **no production cutover** | Open decisions 1 (resolved empirically by C's own shadow comparison, not upfront), 9 (`addItem` idempotency, dependent on 1), 10 (rollout-flag mechanism) |
-| D | `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring, `checkoutMark` integration | A, C |
-| E | Payment review (separate planning session), then payment compensation and duplicate-callback protection | Its own planning session - open decision 5 |
-| F | Scheduler, heartbeat recovery, Postgres advisory lock | A |
+| C | `CheckoutReservationFacade`, feature flags, shadow mode, combined availability - **no production cutover** | C0-C4.5 (mirror compensation) **complete, unwired**. Shadow mode/feature-flag/combined-availability cutover work itself remains open, blocked on decisions 1 (resolved empirically by C's own shadow comparison, not upfront), 9 (`addItem` idempotency, dependent on 1), 10 (rollout-flag mechanism) |
+| D | `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring, `checkoutMark` integration | **D-core complete and frozen (D.1-D.5, §16) - additive and unwired.** Activation (caller cutover, `CheckoutController`, `AppModule` import) remains blocked on Phase C's unresolved decisions 1/9/10, per §16.5 |
+| E | Payment review (separate planning session), then payment compensation and duplicate-callback protection | Its own planning session - open decision 5. Distinct from Phase F (see §16.4/§21 note below) - never conflate the two |
+| F | Scheduler, heartbeat recovery, Postgres advisory lock | A. Distinct from C4.5's mirror-compensation scheduler, which is a different subsystem entirely (see §15's naming note) |
 | G | Limited allow-list rollout, shadow validation, monitoring | C, D |
 | H | Maintenance window, legacy Redis drain, production cutover | G at full rollout; open decision 7 (drain wait time) |
 

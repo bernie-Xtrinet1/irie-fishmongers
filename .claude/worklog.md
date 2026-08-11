@@ -1673,3 +1673,95 @@ orchestration`), pushed to `origin/develop`.
 
 Commit `14914fc` (`feat(checkout): add mirror compensation scheduler`),
 pushed to `origin/develop`.
+
+## 2026-08-10/11 - Phase 16A.0-D, Units D.1-D.5: `CheckoutCoordinatorService` saga, D-core frozen
+
+Resolved the naming discrepancy first (confirmed with the user: ADR-007's
+own "Phase D" table, not the informal "C5" label), then implemented D.1
+through D.5 sub-unit by sub-unit, each with its own read-only plan, explicit
+approval, implementation, full validation sweep, and separate commit.
+
+1. **D.1** (`9e6163b`) - extracted `OrdersService.prepareCheckout`/
+   `createOrderInTransaction` from the legacy `checkout` method,
+   behavior-preserving (legacy method still calls through the extracted
+   pieces, unchanged output).
+2. **D.1.1** (`757b6e9`) - added `OrderPricingSnapshot` (locked-price
+   snapshot, single-currency authority - `currency` lives once at the
+   snapshot level, never per-line), `validatePricingSnapshot` (exact
+   item-set match: reject duplicate/missing/extra lines and quantity
+   mismatches), `buildLegacyPricingSnapshot` (the legacy `checkout` path's
+   live-price/null-currency fallback). Fixed a rippling `currency`-field
+   requirement across 10 unrelated modules' test fixtures. Removed a
+   provably-dead-code length check in the validator (proved via set theory
+   that dedup + the missing-line check jointly already guarantee it could
+   never fire) - reordered the extra/missing checks so both are
+   independently reachable instead.
+3. **D.2** (`9674cf4`) - built `CheckoutCoordinatorService`: durable
+   idempotency via `CheckoutAttemptService`, `checkoutMark`, the order
+   transaction (with `markCommittedInTransaction` inside the *same*
+   `$transaction`, satisfying ADR-007 Decision 1), post-commit
+   `finalizeCheckoutConsumption` and payment initiation. Fully unit-tested,
+   additive/unwired.
+4. **D.2.1** (`1f41932`) - fixed a genuine idempotency defect D.3 exposed:
+   a same-key retry after `COMMITTED` hit `CART_EMPTY` because the cart was
+   already cleared by the winning attempt. Added
+   `CheckoutAttemptService.inspectByIdempotencyKey` - a read-only durable
+   preflight, called before any mutable cart/price-lock read. Explicitly
+   documented as *not* an atomic reservation of the key -
+   `createOrResume`'s unique constraint remains the sole concurrency
+   authority; a losing concurrent request may see any typed pre-attempt
+   failure, not just `CHECKOUT_ALREADY_IN_PROGRESS`.
+5. **D.3** (`8324fd1`) - proved the full saga against real Postgres and
+   Redis: atomic commit/rollback (including a genuine, not injected, stock
+   race), locked-price persistence over live-price drift, `checkoutMark`/
+   `checkoutRevert`/`finalizeCheckoutConsumption` Redis interactions,
+   idempotency (retry-after-commit, concurrent same-key, concurrent
+   different-key), `OrderPlacedEvent` emission, and the Phase-E
+   payment-after-commit gap (proven, not fixed). Two real engineering
+   findings along the way: `Vendor.status` defaults to `PENDING` in the
+   schema (fixture gap, not a production bug - fixed by explicitly
+   approving the fixture vendor); a Redis test-DB-index collision between
+   two new integration spec files sharing an index with the Postgres spec
+   (fixed with a dedicated index, matching C4.4's precedent). A follow-up
+   correction tightened the concurrent-same-key test's accepted loser
+   codes after the user flagged that `IDEMPOTENCY_KEY_CONFLICT`/
+   `CHECKOUT_ALREADY_FAILED` are not legitimate race outcomes for a
+   same-customer, same-key race (they would indicate a real defect) -
+   re-run 10x in isolation, zero occurrences of either.
+6. **D.4** (`3ef72da`) - packaged `CheckoutCoordinatorService` into a real
+   `CheckoutModule` for the first time (D.2/D.3 had only ever used manual
+   mocks or hand-built `new` construction, never real Nest DI). Discovered
+   a genuine blocker during investigation: `OrdersModule` provided
+   `OrdersService` but never exported it, so no other module could inject
+   it - fixed with a one-line additive export (approved before
+   implementing, not fixed silently). A dedicated DI-boundary spec
+   (`checkout.module.spec.ts`) compiles the real module graph (with
+   `PrismaService`/`REDIS_CLIENT` overridden by inert stubs scoped to the
+   test only - proving DI wiring, not database/Redis integration, which
+   D.3 already owns) and proves `OrdersService` resolves as a single
+   singleton through the `OrdersModule` export, never duplicated. No
+   controller, no `AppModule` import.
+7. **D.5** (this entry) - read-only architecture audit before declaring
+   D-core complete. Found one real ADR-vs-shipped divergence:
+   `CheckoutCoordinatorService` depends directly on
+   `CheckoutReservationStateService`/`CheckoutReservationRecoveryService`,
+   not through a facade, contradicting ADR-007 Decision 3's original
+   design (and a permanent decision recorded in this file, corrected
+   below). Presented as a decision point rather than silently resolved
+   either direction; the user chose to supersede Decision 3 (approve
+   direct composition as the final architecture) rather than retrofit a
+   speculative facade with no current consumer. ADR-007 gained a new §16
+   recording the supersession, the rationale, the naming clarification
+   (`CheckoutReservationFacade` keeps only its C3 per-item meaning), the
+   corrected module-architecture sketch, and a summary of every verified
+   D-core invariant. No source, test, or schema change in D.5 - pure
+   documentation closeout.
+
+**D-core (D.1-D.5) is complete and frozen.** All five commits above are on
+`origin/develop`. `CheckoutModule` remains intentionally unreachable from
+`AppModule` - D-activation (caller cutover, `CheckoutController`, the
+server-issued idempotency-key endpoint) is a separate, future phase gated
+on ADR-007 open decisions 1/9/10, none of which were touched by D-core.
+
+Docs-closeout commit for D.5: see the commit hash recorded at the top of
+`.claude/current-task.md`.

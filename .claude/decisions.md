@@ -328,11 +328,24 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   `prisma.checkoutAttempt.*` directly.
 - **`CheckoutCoordinatorService` never queries Prisma directly** for
   `CheckoutAttempt` state - it depends only on `CheckoutAttemptService`.
-- **`CheckoutReservationFacade` isolates checkout orchestration from the
-  inventory reservation services.** `CheckoutCoordinatorService` depends
-  only on the facade, never directly on `CheckoutReservationStateService`,
-  `CheckoutLeaseStateService`, `CheckoutReservationRecoveryService`,
-  `CheckoutPendingReconciliationService`, or `InventoryReservationsService`.
+- **`CheckoutCoordinatorService` depends directly on
+  `CheckoutReservationStateService`/`CheckoutReservationRecoveryService`
+  for the checkout-state family - no interposed facade, permanently,
+  unless a future phase identifies a real instrumentation/rollout
+  requirement.** *(Corrected 2026-08-11, Phase 16A.0-D.5: this entry
+  originally said the opposite - that `CheckoutCoordinatorService` must
+  depend only on a facade, never directly on these services. That was
+  ADR-007 Decision 3's original, pre-implementation design; D.5's audit
+  found the shipped D.2 code never built that facade and depends on both
+  services directly instead. Rather than retrofit a facade with no current
+  consumer, the direct-composition architecture was formally approved,
+  superseding Decision 3 - see ADR-007 §16.1 for the full rationale. Do
+  not build a checkout-lifecycle facade "to match the ADR" - the ADR
+  itself now records direct composition as final. `CheckoutReservationFacade`
+  remains the name of a different, already-shipped C3 class (per-item cart
+  reservation/admission routing, `ReservationGateway`'s sole
+  implementation) - do not reuse that name for a second facade; see
+  ADR-007 §16.2.)*
 - **`PriceLockService` owns price-lock behavior** (creation, expiry,
   reconfirmation, one-cart/one-currency enforcement) - not embedded in
   `CartService`.
@@ -341,10 +354,19 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   cross-reference; a partial rollout under dual-write would let each
   system undercount the other's holds, a genuine overselling risk. Staged
   rollout instead uses an allowlist plus a combined-availability read.
-- **Combined availability subtracts both legacy and cart-scoped
-  reservations, stated exactly**: `Available = Product.quantityAvailable -
-  LegacyReserved - NewReserved`. Authoritative for the entire partial-
-  rollout window, until the legacy term is removed at full cutover.
+- **Combined availability is mode-specific, never one global summed
+  formula.** *(Corrected 2026-08-11: this entry originally stated
+  `Available = Product.quantityAvailable - LegacyReserved - NewReserved`
+  as the authoritative formula for the entire partial-rollout window. That
+  was superseded inside ADR-007 itself during Phase C, Unit C2 (§6): it
+  assumed disjoint reservation populations, which `MIRROR` mode's 100%-of-
+  traffic dual-write violates, double-subtracting the same logical hold.
+  The actual authoritative rule is ADR-007 §6's per-mode authority matrix -
+  `LEGACY`/`MIRROR` admit via legacy only, `CART_SCOPED` via the new
+  engine only, `DRAINING` admits nothing - see ADR-007 §6 and §9 for the
+  full table and the `ReservationAvailabilityService` implementation. This
+  correction was already live in ADR-007 before this session; only this
+  file's own note was stale.)*
 - **Payment integration remains separately planned.** The identified
   payment shortcomings (no duplicate-callback protection, no automatic
   compensation on payment failure, no rollback path) are confirmed real
@@ -851,3 +873,87 @@ Full detail lives in `docs/integrations/ADR-007-checkout-cutover-and-operational
   explicitly-flagged naming question in `.claude/next-session.md` for
   the next session to confirm before adopting either label as settled -
   not silently resolved here in either direction.
+
+## Phase 16A.0-D (D.1-D.5): `CheckoutCoordinatorService` saga, D-core frozen - implemented (2026-08-11, `9e6163b`/`757b6e9`/`9674cf4`/`1f41932`/`8324fd1`/`3ef72da`)
+
+- **The naming discrepancy (`.claude/next-session.md`'s "C5" vs. ADR-007's
+  "Phase D") is resolved: "Phase D" is correct, confirmed explicitly by
+  the user before any implementation began.**
+- **`OrderPricingSnapshot.currency` is the single currency authority for
+  an order - never a per-line field, permanently.** `OrderPricingLine`
+  carries `productId`/`quantity`/`unitPrice` only. Any future pricing
+  change must preserve one currency per snapshot, not reintroduce a
+  per-item currency that could disagree with the cart-wide invariant
+  `PriceLockService` already enforces.
+- **A pricing-snapshot validator must make every rejection reason
+  independently reachable, never leave a redundant check that can't
+  actually fire.** Discovered directly during D.1.1: an item-count
+  equality check was provably dead code once dedup plus the
+  missing-line check already jointly guaranteed set equality - removed,
+  with the extra/missing checks reordered so both are independently
+  provable-reachable. Apply the same scrutiny to any future validator
+  with multiple overlapping checks.
+- **`markCommittedInTransaction` must execute inside the *same* Prisma
+  `$transaction` as order creation, permanently - never a second write
+  after commit.** ADR-007 Decision 1's hard requirement, verified by
+  direct code inspection during D.2 and proven under real Postgres in
+  D.3 (genuine, not injected, stock-race rollback; injected
+  `markCommittedInTransaction`-failure rollback).
+- **The D.2.1 idempotency preflight (`inspectByIdempotencyKey`) is
+  read-only and is *not* an atomic reservation of the idempotency key,
+  permanently.** `createOrResume`'s unique-constraint claim remains the
+  sole concurrency authority. A losing concurrent request may
+  legitimately observe any typed pre-attempt failure (not only
+  `CHECKOUT_ALREADY_IN_PROGRESS`) depending on how far the winner
+  progressed - this is an accepted, tested contract shape, not a defect.
+  Do not add an advisory/Redis/row lock, and do not move mutable
+  validation inside an artificial global lock, merely to force every
+  concurrent loser toward one specific response shape.
+- **`IDEMPOTENCY_KEY_CONFLICT` and `CHECKOUT_ALREADY_FAILED` are never
+  legitimate outcomes for a genuine same-customer, same-key concurrent
+  checkout race - if either is ever observed, it is a production defect,
+  not an accepted race shape.** Corrected mid-D.3 after the user flagged
+  that the original test's accepted-outcomes list was too permissive;
+  narrowed to `CHECKOUT_ALREADY_IN_PROGRESS`/`PRICE_LOCK_INVALID`/
+  `PREPARE_FAILED`/`CHECKOUT_PLAN_MISMATCH` only, and re-run 10x in
+  isolation against real Postgres/Redis with zero occurrences of either
+  excluded code. Any future change to the coordinator's pre-attempt flow
+  must preserve this exclusion.
+- **`CheckoutCoordinatorService` depends directly on
+  `CheckoutReservationStateService`/`CheckoutReservationRecoveryService` -
+  ADR-007 Decision 3's original facade requirement is superseded,
+  permanently, unless a future phase identifies a real instrumentation/
+  rollout requirement.** See the corrected entry in the "caller-cutover
+  architecture" section above and ADR-007 §16.1/§16.2 for the full
+  rationale and the naming clarification (`CheckoutReservationFacade`
+  keeps only its C3 per-item meaning - do not reuse the name for a second
+  facade).
+- **A module providing a service that a new cross-module consumer needs
+  must export it explicitly - Nest does not infer this from usage.**
+  Discovered as a genuine blocker during D.4: `OrdersModule` provided
+  `OrdersService` as an internal provider but never exported it, so
+  `CheckoutModule` could not resolve it via DI. Fixed with a one-line
+  additive export, approved before implementing (not silently patched) -
+  `OrdersService` remains owned and instantiated only by `OrdersModule`,
+  now merely reachable from outside it too.
+- **A Nest DI-boundary test that compiles a real module graph must not
+  trigger real external connections merely to prove wiring.** `RedisModule`'s
+  `REDIS_CLIENT` factory (`new Redis(url, {lazyConnect: false})`) and
+  `PrismaService.onModuleInit`'s `$connect()` both would have run for real
+  during `checkout.module.spec.ts`'s `compile()` (Nest eagerly instantiates
+  every singleton in the compiled graph) - fixed by overriding both
+  providers with inert stubs scoped to that test only, and by never
+  calling `moduleRef.init()`/always calling `moduleRef.close()` via
+  `afterEach` so the stubs' own lifecycle methods (not real I/O) satisfy
+  teardown. This is now the established pattern for any future Nest
+  module-boundary test in this codebase that transitively pulls in
+  `RedisModule`/`PrismaModule`.
+- **D-core (D.1-D.5) is complete and frozen, permanently, until a new,
+  separately scoped approval authorizes further D-core source change.**
+  `CheckoutModule` remains intentionally unreachable from `AppModule`.
+  D-activation (caller cutover, `CheckoutController`, the server-issued
+  idempotency-key endpoint) is separate future work, gated on ADR-007
+  open decisions 1/9/10 - none of which D-core touched. See ADR-007 §16
+  for the complete verified-invariant summary and the Phase-E gap
+  (payment-after-commit failure/recovery, confirmed and unfixed by
+  design, deferred to its own planning session).
