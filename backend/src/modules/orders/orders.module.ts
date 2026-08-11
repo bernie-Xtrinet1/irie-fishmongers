@@ -31,6 +31,9 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     OrdersRepository,
     VendorOrdersRepository,
   ],
-  exports: [OrdersRepository, VendorOrdersRepository],
+  // OrdersService added to exports in Phase 16A.0-D, Unit D.4: the first
+  // consumer outside this module (CheckoutModule) needs it through Nest DI.
+  // Still owned and instantiated only here.
+  exports: [OrdersRepository, VendorOrdersRepository, OrdersService],
 })
 export class OrdersModule {}
