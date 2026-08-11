@@ -798,6 +798,26 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('toOrderResponseWithPayment', () => {
+    it('builds a response from an already-known order and payment, without reading payment from the database', () => {
+      const order = buildOrder();
+      const payment = buildPaymentResponse();
+
+      const result = service.toOrderResponseWithPayment(order, payment, 'https://pay.example.com/redirect');
+
+      expect(result.id).toBe(order.id);
+      expect(result.payment).toBe(payment);
+      expect(result.paymentRedirectUrl).toBe('https://pay.example.com/redirect');
+      expect(paymentsService.getByOrderId).not.toHaveBeenCalled();
+    });
+
+    it('accepts an absent payment', () => {
+      const result = service.toOrderResponseWithPayment(buildOrder());
+      expect(result.payment).toBeUndefined();
+      expect(result.paymentRedirectUrl).toBeUndefined();
+    });
+  });
+
   describe('getCustomerOrders', () => {
     it('paginates the customer order list', async () => {
       ordersRepository.findManyByCustomer.mockResolvedValue({ items: [buildOrder()], total: 1 });
