@@ -22,6 +22,7 @@ export interface VendorOrderInput {
     unit: ProductUnit;
     quantity: number;
     subtotal: number;
+    currency: string | null;
   }[];
 }
 
@@ -32,6 +33,7 @@ export interface CreateOrderInput {
   deliveryParish: Parish;
   deliveryPhone: string;
   deliveryZoneId?: string | null;
+  currency: string | null;
   vendorOrders: VendorOrderInput[];
 }
 
@@ -48,6 +50,7 @@ export class OrdersRepository {
         deliveryParish: input.deliveryParish,
         deliveryPhone: input.deliveryPhone,
         deliveryZoneId: input.deliveryZoneId,
+        currency: input.currency,
         vendorOrders: {
           create: input.vendorOrders.map((vendorOrder) => ({
             vendorId: vendorOrder.vendorId,

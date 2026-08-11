@@ -92,6 +92,7 @@ describe('VendorSettlementAdjustmentsRepository', () => {
       deliveryAddressLine1: '1 Test Street',
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      currency: null,
       vendorOrders: [
         {
           vendorId: vendor.id,
@@ -104,6 +105,7 @@ describe('VendorSettlementAdjustmentsRepository', () => {
               unit: 'PER_POUND',
               quantity: 2,
               subtotal: 1000,
+              currency: null,
             },
           ],
         },

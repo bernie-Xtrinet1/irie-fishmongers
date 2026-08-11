@@ -128,6 +128,7 @@ describe('OrdersRepository', () => {
       deliveryAddressLine1: '1 Test Street',
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      currency: null,
       vendorOrders: [
         {
           vendorId: vendorA.id,
@@ -140,6 +141,7 @@ describe('OrdersRepository', () => {
               unit: 'PER_POUND',
               quantity: 2,
               subtotal: 1000,
+              currency: null,
             },
           ],
         },
@@ -154,6 +156,7 @@ describe('OrdersRepository', () => {
               unit: 'PER_POUND',
               quantity: 1,
               subtotal: 800,
+              currency: null,
             },
           ],
         },
@@ -171,6 +174,7 @@ describe('OrdersRepository', () => {
       deliveryAddressLine1: '1 Test Street',
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      currency: null,
       vendorOrders: [
         {
           vendorId: vendorA.id,
@@ -183,6 +187,7 @@ describe('OrdersRepository', () => {
               unit: 'PER_POUND',
               quantity: 1,
               subtotal: 500,
+              currency: null,
             },
           ],
         },
@@ -192,6 +197,70 @@ describe('OrdersRepository', () => {
     const found = await repository.findById(created.id);
     expect(found?.id).toBe(created.id);
     expect(found?.vendorOrders[0]?.items[0]?.productName).toBe('Vendor A Snapper');
+  });
+
+  it('persists a non-null Order.currency and OrderItem.currency when supplied', async () => {
+    const created = await repository.create({
+      customerId,
+      deliveryAddressLine1: '1 Test Street',
+      deliveryParish: 'KINGSTON',
+      deliveryPhone: '+18765551234',
+      currency: 'JMD',
+      vendorOrders: [
+        {
+          vendorId: vendorA.id,
+          subtotal: 500,
+          items: [
+            {
+              productId: productAId,
+              productName: 'Vendor A Snapper',
+              unitPrice: 500,
+              unit: 'PER_POUND',
+              quantity: 1,
+              subtotal: 500,
+              currency: 'JMD',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(created.currency).toBe('JMD');
+    expect(created.vendorOrders[0]?.items[0]?.currency).toBe('JMD');
+
+    const found = await repository.findById(created.id);
+    expect(found?.currency).toBe('JMD');
+    expect(found?.vendorOrders[0]?.items[0]?.currency).toBe('JMD');
+  });
+
+  it('persists a null Order.currency and OrderItem.currency when omitted (legacy path)', async () => {
+    const created = await repository.create({
+      customerId,
+      deliveryAddressLine1: '1 Test Street',
+      deliveryParish: 'KINGSTON',
+      deliveryPhone: '+18765551234',
+      currency: null,
+      vendorOrders: [
+        {
+          vendorId: vendorA.id,
+          subtotal: 500,
+          items: [
+            {
+              productId: productAId,
+              productName: 'Vendor A Snapper',
+              unitPrice: 500,
+              unit: 'PER_POUND',
+              quantity: 1,
+              subtotal: 500,
+              currency: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(created.currency).toBeNull();
+    expect(created.vendorOrders[0]?.items[0]?.currency).toBeNull();
   });
 
   it('returns null when an order cannot be found', async () => {

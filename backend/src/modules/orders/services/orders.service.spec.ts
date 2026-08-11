@@ -647,6 +647,157 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('createOrderInTransaction', () => {
+    function singleItemCart(quantity = 1, priceOverride = 500): CartWithItems {
+      return buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct({ price: new Prisma.Decimal(priceOverride) }),
+          },
+        ],
+      });
+    }
+
+    it('throws an internal consistency error when the pricing snapshot has no line for a cart item', async () => {
+      const prepared = { cart: singleItemCart(), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = { currency: null, items: [] };
+
+      await expect(
+        service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing),
+      ).rejects.toThrow('Internal consistency error: no pricing line for product product-1');
+    });
+
+    it('throws an internal consistency error when the pricing snapshot quantity does not match the cart quantity', async () => {
+      const prepared = { cart: singleItemCart(2), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: null,
+        items: [{ productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) }],
+      };
+
+      await expect(
+        service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing),
+      ).rejects.toThrow(/pricing quantity 1 != cart quantity 2/);
+    });
+
+    it('throws an internal consistency error when the pricing snapshot has a duplicate product', async () => {
+      const prepared = { cart: singleItemCart(), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: null,
+        items: [
+          { productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) },
+          { productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) },
+        ],
+      };
+
+      await expect(
+        service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing),
+      ).rejects.toThrow('Internal consistency error: pricing snapshot has a duplicate line for product product-1');
+    });
+
+    it('throws an internal consistency error when the pricing snapshot has an extra product not in the cart', async () => {
+      const prepared = { cart: singleItemCart(), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: null,
+        items: [
+          { productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) },
+          { productId: 'product-2', quantity: 1, unitPrice: new Prisma.Decimal(300) },
+        ],
+      };
+
+      await expect(
+        service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing),
+      ).rejects.toThrow('Internal consistency error: pricing snapshot has an extra line for product product-2');
+    });
+
+    it('never derives unitPrice/subtotal from item.product.price when the pricing snapshot supplies a different value', async () => {
+      const prepared = { cart: singleItemCart(1, 999), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: 'JMD',
+        items: [{ productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(111) }],
+      };
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      await service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing);
+
+      const createArg = ordersRepository.create.mock.calls[0]?.[0];
+      expect(createArg?.currency).toBe('JMD');
+      expect(createArg?.vendorOrders[0]?.items[0]?.unitPrice).toBe(111);
+    });
+
+    it('persists pricing.currency as the single authority for both Order.currency and every OrderItem.currency', async () => {
+      const cart = buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 1,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct({ vendorId: 'vendor-1' }),
+          },
+          {
+            id: 'item-2',
+            cartId: 'cart-1',
+            productId: 'product-2',
+            quantity: 1,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct({ id: 'product-2', vendorId: 'vendor-2' }),
+          },
+        ],
+      });
+      const prepared = { cart, dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: 'JMD',
+        items: [
+          { productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) },
+          { productId: 'product-2', quantity: 1, unitPrice: new Prisma.Decimal(300) },
+        ],
+      };
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      await service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing);
+
+      const createArg = ordersRepository.create.mock.calls[0]?.[0];
+      expect(createArg?.currency).toBe('JMD');
+      const allItems = createArg?.vendorOrders.flatMap((vendorOrder) => vendorOrder.items) ?? [];
+      expect(allItems).toHaveLength(2);
+      expect(allItems.every((item) => item.currency === 'JMD')).toBe(true);
+    });
+
+    it('succeeds when the pricing snapshot productId set exactly matches the cart', async () => {
+      const prepared = { cart: singleItemCart(), dto: checkoutDto, deliveryZoneId: null };
+      const pricing = {
+        currency: null,
+        items: [{ productId: 'product-1', quantity: 1, unitPrice: new Prisma.Decimal(500) }],
+      };
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      await expect(
+        service.createOrderInTransaction({} as unknown as Prisma.TransactionClient, prepared, pricing),
+      ).resolves.toBeDefined();
+    });
+  });
+
   describe('getCustomerOrders', () => {
     it('paginates the customer order list', async () => {
       ordersRepository.findManyByCustomer.mockResolvedValue({ items: [buildOrder()], total: 1 });

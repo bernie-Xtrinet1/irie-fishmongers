@@ -106,6 +106,7 @@ describe('DeliveryExceptionsRepository', () => {
       deliveryAddressLine1: '1 Test Street',
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
+      currency: null,
       vendorOrders: [
         {
           vendorId: vendor.id,
@@ -118,6 +119,7 @@ describe('DeliveryExceptionsRepository', () => {
               unit: 'PER_POUND',
               quantity: 1,
               subtotal: 500,
+              currency: null,
             },
           ],
         },

@@ -114,6 +114,7 @@ describe('DeliveryRunsRepository', () => {
       deliveryParish: 'KINGSTON',
       deliveryPhone: '+18765551234',
       deliveryZoneId: zoneId,
+      currency: null,
       vendorOrders: [
         {
           vendorId: vendor.id,
@@ -126,6 +127,7 @@ describe('DeliveryRunsRepository', () => {
               unit: 'PER_POUND',
               quantity: 1,
               subtotal: 500,
+              currency: null,
             },
           ],
         },

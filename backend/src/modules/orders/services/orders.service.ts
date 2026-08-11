@@ -22,7 +22,10 @@ import {
 } from '../repositories/orders.repository';
 import { VendorOrdersRepository } from '../repositories/vendor-orders.repository';
 import { PreparedCheckout, PrepareCheckoutResult } from '../types/checkout-preparation.types';
+import { OrderPricingSnapshot } from '../types/order-pricing-snapshot.types';
 import { mapPrepareFailureToHttpException } from './checkout-preparation-http-mapper';
+import { buildLegacyPricingSnapshot } from './legacy-pricing-snapshot.builder';
+import { validatePricingSnapshot } from './order-pricing-snapshot.validator';
 
 const CANCELLABLE_STATUS = 'PENDING';
 
@@ -49,7 +52,9 @@ export class OrdersService {
     }
     const { prepared } = prepareResult;
 
-    const order = await this.prisma.$transaction((tx) => this.createOrderInTransaction(tx, prepared));
+    const order = await this.prisma.$transaction((tx) =>
+      this.createOrderInTransaction(tx, prepared, buildLegacyPricingSnapshot(prepared.cart)),
+    );
 
     // No longer "reserved", it's actually decremented now - release the
     // soft holds for exactly the products just purchased so they stop
@@ -86,13 +91,11 @@ export class OrdersService {
     };
   }
 
-  // Phase 16A.0-D, Unit D.1. Every read-only business validation
-  // OrdersService.checkout performs before it ever opens a transaction -
-  // extracted verbatim, only the failure signaling changed (a typed result
-  // instead of a thrown exception), so a second caller (the future
-  // CheckoutCoordinatorService) can react without parsing exception message
-  // text. Legacy checkout() translates a failure back into the exact
-  // exception it has always thrown - see mapPrepareFailureToHttpException.
+  // Phase 16A.0-D, Unit D.1. Every read-only validation OrdersService.checkout
+  // performs before opening a transaction - extracted verbatim, only the
+  // failure signaling changed (a typed result, not a thrown exception), so a
+  // second caller (the future CheckoutCoordinatorService) can react without
+  // parsing exception text. See mapPrepareFailureToHttpException.
   async prepareCheckout(userId: string, dto: CheckoutDto): Promise<PrepareCheckoutResult> {
     const cart = await this.cartRepository.findOrCreateByCustomerId(userId);
     if (cart.items.length === 0) {
@@ -170,31 +173,44 @@ export class OrdersService {
     return { ok: true, prepared: { cart, dto, deliveryZoneId } };
   }
 
-  // Phase 16A.0-D, Unit D.1. The durable write portion of
-  // OrdersService.checkout - extracted verbatim, requiring an
+  // Phase 16A.0-D, Unit D.1/D.1.1. The durable write portion of
+  // OrdersService.checkout - extracted verbatim in D.1, requiring an
   // externally-owned Prisma.TransactionClient rather than opening its own
   // $transaction, so a future caller (CheckoutCoordinatorService) can
   // include CheckoutAttempt's PROCESSING -> COMMITTED transition in the
   // same durable transaction. Never calls $transaction itself.
+  //
+  // D.1.1: pricing is REQUIRED, never optional - no `pricing?.unitPrice ??
+  // item.product.price` fallback exists. pricing.currency is the single
+  // authority persisted to both Order.currency and every OrderItem.currency
+  // - never a separate per-line currency that could disagree. Legacy
+  // checkout() supplies buildLegacyPricingSnapshot's live-price/null-currency
+  // snapshot; the future Phase-D coordinator supplies one built exclusively
+  // from PriceLockService's locked values. One implementation serves both.
   async createOrderInTransaction(
     tx: Prisma.TransactionClient,
     prepared: PreparedCheckout,
+    pricing: OrderPricingSnapshot,
   ): Promise<OrderWithDetails> {
     const { cart, dto, deliveryZoneId } = prepared;
+    const pricingByProductId = validatePricingSnapshot(cart, pricing);
     const vendorGroups = new Map<string, VendorOrderInput>();
 
     for (const item of cart.items) {
+      const pricingLine = pricingByProductId.get(item.productId)!;
+
       await this.productsRepository.adjustStock(item.productId, -item.quantity, tx);
 
-      const itemSubtotal = item.product.price.times(item.quantity);
+      const itemSubtotal = pricingLine.unitPrice.times(item.quantity);
       const existingGroup = vendorGroups.get(item.product.vendorId);
       const orderItem = {
         productId: item.productId,
         productName: item.product.name,
-        unitPrice: item.product.price.toNumber(),
+        unitPrice: pricingLine.unitPrice.toNumber(),
         unit: item.product.unit,
         quantity: item.quantity,
         subtotal: itemSubtotal.toNumber(),
+        currency: pricing.currency,
       };
 
       if (existingGroup) {
@@ -217,6 +233,7 @@ export class OrdersService {
         deliveryParish: dto.deliveryParish,
         deliveryPhone: dto.deliveryPhone,
         deliveryZoneId,
+        currency: pricing.currency,
         vendorOrders: Array.from(vendorGroups.values()),
       },
       tx,
