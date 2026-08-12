@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import {
   RecoveryFixture,
   createProduct,
@@ -26,7 +28,7 @@ describe('CartReservationSyncRecoveryService.runBatch (real Postgres, real Redis
     const product = await createProduct(fixture, 'Batch Persistent Failure');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 3 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 3 }, randomUUID());
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
     await syncStateRepository.markUnresolved(cart.id, product.id);
 
@@ -58,7 +60,7 @@ describe('CartReservationSyncRecoveryService.runBatch (real Postgres, real Redis
       [1, 2, 3].map((n) => createProduct(fixture, `Batch Multi ${n}`)),
     );
     for (const [index, product] of products.entries()) {
-      await cartService.addItem(customerId, { productId: product.id, quantity: index + 1 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: index + 1 }, randomUUID());
       await syncStateRepository.markUnresolved(cart.id, product.id);
     }
 

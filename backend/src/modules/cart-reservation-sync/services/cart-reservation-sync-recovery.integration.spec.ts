@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import {
   RecoveryFixture,
@@ -28,7 +30,7 @@ describe('CartReservationSyncRecoveryService convergence (real Postgres, real Re
     const product = await createProduct(fixture, 'Recovery Existing Item');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 5 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
     // Simulate a divergence DA.1A left unresolved: force the marker back to
     // PENDING/unresolved and corrupt Redis directly to a stale value.
@@ -50,7 +52,7 @@ describe('CartReservationSyncRecoveryService convergence (real Postgres, real Re
     const product = await createProduct(fixture, 'Recovery Absent Item');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 3 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 3 }, randomUUID());
     const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
     await cartService.removeItem(customerId, item!.id);
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
@@ -73,7 +75,7 @@ describe('CartReservationSyncRecoveryService convergence (real Postgres, real Re
     const product = await createProduct(fixture, 'Recovery Stale Diagnostic');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 9 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 9 }, randomUUID());
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
     // Corrupt the diagnostic field directly - a real recovery worker must
     // never replay this as an instruction (DA.1B review, Section 3).
@@ -94,7 +96,7 @@ describe('CartReservationSyncRecoveryService convergence (real Postgres, real Re
     const product = await createProduct(fixture, 'Recovery Redis Throw');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 6 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 6 }, randomUUID());
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
     await syncStateRepository.markUnresolved(cart.id, product.id);
 
@@ -131,7 +133,7 @@ describe('CartReservationSyncRecoveryService convergence (real Postgres, real Re
       const { staleCallStarted, releaseStaleCall } = installDelayedReserveSpy(inventoryReservations);
 
       // Mutation A: addItem, delayed reserve() call.
-      const mutationA = cartService.addItem(customerId, { productId: product.id, quantity: 2 });
+      const mutationA = cartService.addItem(customerId, { productId: product.id, quantity: 2 }, randomUUID());
       await staleCallStarted;
 
       // Mutation B: a fully independent, later updateItemQuantity, converges

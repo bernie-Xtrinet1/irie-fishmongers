@@ -24,8 +24,12 @@ describe('CartController', () => {
   });
 
   it('adds an item', async () => {
-    await controller.addItem(user, { productId: 'product-1', quantity: 2 });
-    expect(cartService.addItem).toHaveBeenCalledWith('user-1', { productId: 'product-1', quantity: 2 });
+    await controller.addItem(user, { productId: 'product-1', quantity: 2 }, 'a3f5b2c1-1111-4a2b-9c3d-000000000001');
+    expect(cartService.addItem).toHaveBeenCalledWith(
+      'user-1',
+      { productId: 'product-1', quantity: 2 },
+      'a3f5b2c1-1111-4a2b-9c3d-000000000001',
+    );
   });
 
   it('updates item quantity', async () => {

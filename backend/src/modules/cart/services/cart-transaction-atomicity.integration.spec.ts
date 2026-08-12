@@ -10,6 +10,9 @@ import { CategoriesRepository } from '../../products/repositories/categories.rep
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartItemAddAttemptRepository } from '../repositories/cart-item-add-attempt.repository';
+import { CartItemAddIdempotencyService } from './cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from './cart-reservation-convergence.service';
 import { CartService } from './cart.service';
 
 // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review). Proves the
@@ -99,6 +102,13 @@ describe('CartService transaction atomicity (real Postgres)', () => {
     });
     productId = product.id;
 
+    const convergence = new CartReservationConvergenceService(
+      prisma,
+      cartRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
+      syncStateRepository,
+    );
+    const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
     service = new CartService(
       prisma,
       cartRepository,
@@ -106,14 +116,17 @@ describe('CartService transaction atomicity (real Postgres)', () => {
       vendorsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
       syncStateRepository,
+      convergence,
+      idempotency,
     );
   });
 
   afterAll(async () => {
-    // CartReservationSyncState rows are never deleted (Phase 16A.0-DA,
-    // Unit DA.1A - generation must be permanent) and use onDelete: Restrict
-    // on their Cart relation, so they must be cleared explicitly before the
-    // owning user/cart can be deleted.
+    // CartReservationSyncState/CartItemAddAttempt rows are never deleted
+    // (generation/attempt history must be permanent) and use onDelete:
+    // Restrict on their Cart/Product relations, so they must be cleared
+    // explicitly before the owning user/cart can be deleted.
+    await prisma.cartItemAddAttempt.deleteMany({ where: { productId } });
     await prisma.cartReservationSyncState.deleteMany({ where: { productId } });
     await prisma.user.delete({ where: { id: customerId } });
     await prisma.user.delete({ where: { id: vendorUserId } });
@@ -128,7 +141,7 @@ describe('CartService transaction atomicity (real Postgres)', () => {
       .spyOn(syncStateRepository, 'upsertDesiredState')
       .mockRejectedValueOnce(new Error('simulated marker write failure'));
 
-    await expect(service.addItem(customerId, { productId, quantity: 2 })).rejects.toThrow(
+    await expect(service.addItem(customerId, { productId, quantity: 2 }, randomUUID())).rejects.toThrow(
       'simulated marker write failure',
     );
     spy.mockRestore();
@@ -146,7 +159,7 @@ describe('CartService transaction atomicity (real Postgres)', () => {
   it('commits both the CartItem mutation and the marker together on the ordinary success path', async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await service.addItem(customerId, { productId, quantity: 3 });
+    await service.addItem(customerId, { productId, quantity: 3 }, randomUUID());
 
     const item = await cartRepository.findItemByCartAndProduct(cart.id, productId);
     expect(item?.quantity).toBe(3);

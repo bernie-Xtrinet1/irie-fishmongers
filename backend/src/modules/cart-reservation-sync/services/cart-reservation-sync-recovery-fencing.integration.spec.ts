@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import {
@@ -33,7 +35,7 @@ describe('CartReservationSyncRecoveryService claim fencing (real Postgres, real 
       const product = await createProduct(fixture, 'Fencing Resolve');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await cartService.addItem(customerId, { productId: product.id, quantity: 5 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
       const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       await syncStateRepository.markUnresolved(cart.id, product.id);
 
@@ -78,7 +80,7 @@ describe('CartReservationSyncRecoveryService claim fencing (real Postgres, real 
       const product = await createProduct(fixture, 'Fencing Release');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await cartService.addItem(customerId, { productId: product.id, quantity: 5 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
       const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       await syncStateRepository.markUnresolved(cart.id, product.id);
 
@@ -134,7 +136,7 @@ describe('CartReservationSyncRecoveryService claim fencing (real Postgres, real 
     const product = await createProduct(fixture, 'Fencing False Pending');
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-    await cartService.addItem(customerId, { productId: product.id, quantity: 6 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 6 }, randomUUID());
     const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
     // Simulate DA.1A's own conservative false-PENDING flag even though
     // Redis is ALREADY correct (the accepted trade-off from DA.1A Review #3,

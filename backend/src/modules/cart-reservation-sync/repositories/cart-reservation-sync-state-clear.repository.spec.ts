@@ -5,6 +5,9 @@ import { Category, Role, RoleName, Vendor } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-add-attempt.repository';
+import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
@@ -88,6 +91,8 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
       reserve: jest.fn().mockResolvedValue(undefined),
       release: jest.fn().mockResolvedValue(undefined),
     } as unknown as InventoryReservationsService;
+    const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, repository);
+    const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
     cartService = new CartService(
       prisma,
       cartRepository,
@@ -95,11 +100,14 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
       vendorsRepository,
       inventoryReservations,
       repository,
+      convergence,
+      idempotency,
     );
   });
 
   afterAll(async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
+    await prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
     await prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
     await prisma.user.delete({ where: { id: customerId } });
     await prisma.user.delete({ where: { id: vendorUserId } });
@@ -123,7 +131,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
   it('A: a single CartItem - marker generation advances exactly once and the row is deleted', async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
     const product = await createProduct('Clear Single');
-    await cartService.addItem(customerId, { productId: product.id, quantity: 3 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 3 }, randomUUID());
     const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
     const markerBefore = await repository.findByCartAndProduct(cart.id, product.id);
 
@@ -144,7 +152,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
     const products = await Promise.all([1, 2, 3].map((n) => createProduct(`Clear Multi ${n}`)));
     for (const [index, product] of products.entries()) {
-      await cartService.addItem(customerId, { productId: product.id, quantity: index + 1 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: index + 1 }, randomUUID());
     }
     const items = await Promise.all(
       products.map(async (product) => {
@@ -173,7 +181,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
   it('C: an existing marker with a non-zero generation increments rather than resetting', async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
     const product = await createProduct('Clear Existing Generation');
-    await cartService.addItem(customerId, { productId: product.id, quantity: 1 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 1 }, randomUUID());
     const item1 = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
     await cartService.updateItemQuantity(customerId, item1!.id, { quantity: 5 }); // advances generation again
     const item2 = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
@@ -214,7 +222,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
   it('E: transaction rollback - neither the marker advance nor the CartItem delete survives', async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
     const product = await createProduct('Clear Rollback');
-    await cartService.addItem(customerId, { productId: product.id, quantity: 6 });
+    await cartService.addItem(customerId, { productId: product.id, quantity: 6 }, randomUUID());
     const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
     const markerBefore = await repository.findByCartAndProduct(cart.id, product.id);
 

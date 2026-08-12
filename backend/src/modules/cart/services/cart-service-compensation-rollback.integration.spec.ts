@@ -10,6 +10,9 @@ import { CategoriesRepository } from '../../products/repositories/categories.rep
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartItemAddAttemptRepository } from '../repositories/cart-item-add-attempt.repository';
+import { CartItemAddIdempotencyService } from './cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from './cart-reservation-convergence.service';
 import { CartService } from './cart.service';
 
 // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review's
@@ -116,6 +119,13 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       slug: `cart-rollback-test-category-${randomUUID()}`,
     });
 
+    const convergence = new CartReservationConvergenceService(
+      prisma,
+      cartRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
+      syncStateRepository,
+    );
+    const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
     service = new CartService(
       prisma,
       cartRepository,
@@ -123,11 +133,14 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       vendorsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
       syncStateRepository,
+      convergence,
+      idempotency,
     );
   });
 
   afterAll(async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
+    await prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
     await prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
     await prisma.user.delete({ where: { id: customerId } });
     await prisma.user.delete({ where: { id: vendorUserId } });
@@ -141,7 +154,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
       const product = await createProduct('Update Revert Rollback');
 
-      await service.addItem(customerId, { productId: product.id, quantity: 1 });
+      await service.addItem(customerId, { productId: product.id, quantity: 1 }, randomUUID());
       const initialItem = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
 
       let resolveAStarted!: () => void;
@@ -174,7 +187,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       // guard, while the marker's own permanent generation has genuinely
       // advanced three times past what A captured.
       await service.removeItem(customerId, itemAfterAPrimary!.id);
-      await service.addItem(customerId, { productId: product.id, quantity: 9 });
+      await service.addItem(customerId, { productId: product.id, quantity: 9 }, randomUUID());
       const itemAfterB2 = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       await service.updateItemQuantity(customerId, itemAfterB2!.id, { quantity: 20 });
 
@@ -227,7 +240,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
 
       // Mutation A: addItem for a brand-new pair - fresh insert,
       // mutationVersion=0.
-      const mutationA = service.addItem(customerId, { productId: product.id, quantity: 2 });
+      const mutationA = service.addItem(customerId, { productId: product.id, quantity: 2 }, randomUUID());
       await aStarted;
 
       const itemAfterAPrimary = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
@@ -237,7 +250,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       // mutationVersion=0 by coincidence, while the marker's permanent
       // generation genuinely advances past what A captured.
       await service.removeItem(customerId, itemAfterAPrimary!.id);
-      await service.addItem(customerId, { productId: product.id, quantity: 7 });
+      await service.addItem(customerId, { productId: product.id, quantity: 7 }, randomUUID());
 
       const itemAfterB = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       expect(itemAfterB?.quantity).toBe(7);
@@ -271,7 +284,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
       const product = await createProduct('Remove Restore Rollback');
 
-      await service.addItem(customerId, { productId: product.id, quantity: 5 });
+      await service.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
       const initialItem = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
 
       let resolveAStarted!: () => void;
@@ -301,7 +314,7 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       // actually execute rather than being blocked by the unique
       // constraint), while the marker's permanent generation genuinely
       // advances past what A captured.
-      await service.addItem(customerId, { productId: product.id, quantity: 9 });
+      await service.addItem(customerId, { productId: product.id, quantity: 9 }, randomUUID());
       const itemAfterB1 = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       await service.removeItem(customerId, itemAfterB1!.id);
 

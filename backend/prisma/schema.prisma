@@ -46,6 +46,7 @@ model User {
   cart                         Cart?
   orders                       Order[]
   checkoutAttempts             CheckoutAttempt[]
+  cartItemAddAttempts          CartItemAddAttempt[]
   temperatureReadings          TemperatureReading[]
   qualityInspections           QualityInspection[]
   reportedIncidents            FoodSafetyIncident[]
@@ -235,6 +236,7 @@ model Product {
   reviews                         Review[]
   reservationCompensations        CartReservationCompensation[]
   reservationSyncStates           CartReservationSyncState[]
+  cartItemAddAttempts             CartItemAddAttempt[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -254,6 +256,7 @@ model Cart {
   checkoutAttempts      CheckoutAttempt[]
   compensations         CartReservationCompensation[]
   reservationSyncStates CartReservationSyncState[]
+  itemAddAttempts       CartItemAddAttempt[]
 
   @@map("carts")
 }
@@ -357,6 +360,76 @@ model CartReservationSyncState {
 
   @@unique([cartId, productId])
   @@map("cart_reservation_sync_states")
+}
+
+enum CartItemAddAttemptStatus {
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+// Phase 16A.0-DA, Unit DA.2 (see the DA.2 design review). Durable
+// idempotency record for one client-supplied Idempotency-Key on
+// POST /cart/items, preventing a retried request from incrementing
+// CartItem.quantity twice. Scoped to addItem only - updateItemQuantity/
+// removeItem are out of scope for this unit.
+//
+// Uniqueness is per (customerId, idempotencyKey), not global - this key is
+// a client-minted per-action token, not a cross-account identifier (unlike
+// CheckoutAttempt.idempotencyKey, which is globally unique). Two different
+// customers may reuse the same key without collision.
+//
+// Lifecycle is a strict two-phase write, never a single transaction:
+// Phase 1 (its own fast statement) creates this row at PROCESSING,
+// attemptCount 1 - durably visible immediately, which is what lets a
+// genuinely concurrent duplicate request observe ALREADY_PROCESSING
+// instead of blocking on a Postgres row lock. Phase 2 (the addItem mutation
+// transaction) mutates CartItem + CartReservationSyncState and transitions
+// this row to COMPLETED atomically in the SAME transaction, fenced on
+// (id, attemptCount, status='PROCESSING') - so there is never an
+// observable state where the CartItem mutation committed but this row
+// didn't reach COMPLETED, only the safe reverse (PROCESSING with no
+// mutation applied - e.g. the server crashed between phase 1 and phase 2).
+//
+// REJECTED is distinct from a crash: it is written when phase 2's
+// read-only business validation (product purchasable, quantity available)
+// reaches a deterministic, typed rejection BEFORE any CartItem mutation is
+// attempted - also fenced on attemptCount, via its own conditional update
+// outside the mutation transaction (nothing to roll back). Infrastructure
+// failures (DB/Redis/process errors) are never classified as REJECTED -
+// they leave the row at PROCESSING, identical to a crash, recoverable only
+// via stale reclaim.
+//
+// A PROCESSING row older than the staleness window (see
+// CART_ITEM_ADD_ATTEMPT_STALE_TIMEOUT_MS) is reclaimed by incrementing
+// attemptCount and re-executing phase 2 under the new count - never by
+// deleting or re-creating the row, so its identity and audit trail survive
+// exactly like every other permanent attempt/marker table in this schema.
+model CartItemAddAttempt {
+  id                String                    @id @default(uuid())
+  idempotencyKey    String
+  customerId        String
+  cartId            String
+  productId         String
+  requestedQuantity Int
+  status            CartItemAddAttemptStatus  @default(PROCESSING)
+  attemptCount      Int                       @default(1)
+  rejectionCode     String?
+  rejectionMessage  String?
+  resultCartItemId  String?
+  resultQuantity    Int?
+  resultMutationVersion Int?
+  resultGeneration  Int?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  customer User    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  cart     Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  product  Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, idempotencyKey])
+  @@index([createdAt])
+  @@map("cart_item_add_attempts")
 }
 
 enum VendorOrderStatus {

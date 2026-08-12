@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import {
   ConcurrencyFixture,
@@ -33,7 +35,7 @@ describe('CartService release-path ordering (real Postgres, real Redis, controll
       const { service, cartRepository, syncStateRepository, redisClient, productId, customerId } = fixture;
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await service.addItem(customerId, { productId, quantity: 3 });
+      await service.addItem(customerId, { productId, quantity: 3 }, randomUUID());
       const item = await cartRepository.findItemByCartAndProduct(cart.id, productId);
       await service.removeItem(customerId, item!.id);
 
@@ -58,7 +60,7 @@ describe('CartService release-path ordering (real Postgres, real Redis, controll
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
       // Unraced setup: get a real, converged item into the cart first.
-      await service.addItem(customerId, { productId, quantity: 3 });
+      await service.addItem(customerId, { productId, quantity: 3 }, randomUUID());
       const itemBeforeA = await cartRepository.findItemByCartAndProduct(cart.id, productId);
 
       const { staleCallStarted, releaseStaleCall } = installDelayedReleaseSpy(inventoryReservations);
@@ -79,7 +81,7 @@ describe('CartService release-path ordering (real Postgres, real Redis, controll
       // creates a fresh CartItem), completing entirely - Postgres commit +
       // its own real reserve() call (untouched by the release spy) -
       // while A's release() is still blocked.
-      await service.addItem(customerId, { productId, quantity: 9 });
+      await service.addItem(customerId, { productId, quantity: 9 }, randomUUID());
 
       const markerAfterB = await syncStateRepository.findByCartAndProduct(cart.id, productId);
       expect(markerAfterB?.expectedQuantity).toBe(9);

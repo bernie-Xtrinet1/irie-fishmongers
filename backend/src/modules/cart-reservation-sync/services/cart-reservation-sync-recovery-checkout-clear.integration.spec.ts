@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
@@ -87,7 +89,7 @@ describe('DA.1B repository-wide invariant: checkout clear vs. recovery worker (r
       purchasedProductId = product.id;
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await fixture.cartService.addItem(customerId, { productId: product.id, quantity: 5 });
+      await fixture.cartService.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
       const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       const generationBeforeRace = marker!.generation;
       // Simulate a pending recovery need that predates checkout (e.g. a
@@ -190,7 +192,7 @@ describe('DA.1B repository-wide invariant: checkout clear vs. recovery worker (r
       const product = await createProduct(fixture, 'Checkout Clear Rollback');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await fixture.cartService.addItem(customerId, { productId: product.id, quantity: 4 });
+      await fixture.cartService.addItem(customerId, { productId: product.id, quantity: 4 }, randomUUID());
       const itemBefore = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       const markerBefore = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       expect(markerBefore?.resolvedAt).not.toBeNull(); // converged normally, real Redis

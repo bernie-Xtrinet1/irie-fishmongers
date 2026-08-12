@@ -13,6 +13,9 @@ import { CategoriesRepository } from '../../products/repositories/categories.rep
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartItemAddAttemptRepository } from '../repositories/cart-item-add-attempt.repository';
+import { CartItemAddIdempotencyService } from './cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from './cart-reservation-convergence.service';
 import { CartService } from './cart.service';
 
 // Shared plumbing for the real-Postgres + real-Redis DA.1A concurrency
@@ -103,6 +106,8 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
     imageUrl: 'https://cdn.example.com/snapper.jpg',
   });
 
+  const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, syncStateRepository);
+  const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
   const service = new CartService(
     prisma,
     cartRepository,
@@ -110,6 +115,8 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
     vendorsRepository,
     inventoryReservations,
     syncStateRepository,
+    convergence,
+    idempotency,
   );
 
   return {
@@ -127,10 +134,11 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
 }
 
 export async function tearDownConcurrencyFixture(fixture: ConcurrencyFixture): Promise<void> {
-  // CartReservationSyncState rows are never deleted by DA.1A itself
-  // (generation must be permanent) and use onDelete: Restrict on their Cart
-  // relation, so they must be cleared explicitly before the owning
-  // user/cart can be deleted.
+  // CartReservationSyncState/CartItemAddAttempt rows are never deleted by
+  // production code (generation/attempt history must be permanent) and use
+  // onDelete: Restrict on their Cart/Product/User relations, so they must
+  // be cleared explicitly before the owning user/cart can be deleted.
+  await fixture.prisma.cartItemAddAttempt.deleteMany({ where: { productId: fixture.productId } });
   await fixture.prisma.cartReservationSyncState.deleteMany({ where: { productId: fixture.productId } });
   await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
   await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });

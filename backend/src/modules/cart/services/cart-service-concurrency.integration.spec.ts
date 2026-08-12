@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import {
   ConcurrencyFixture,
@@ -40,7 +42,7 @@ describe('CartService reserve-path ordering (real Postgres, real Redis, controll
       const { service, cartRepository, syncStateRepository, redisClient, productId, customerId } = fixture;
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await service.addItem(customerId, { productId, quantity: 2 });
+      await service.addItem(customerId, { productId, quantity: 2 }, randomUUID());
       const item = await cartRepository.findItemByCartAndProduct(cart.id, productId);
       await service.updateItemQuantity(customerId, item!.id, { quantity: 7 });
 
@@ -73,7 +75,7 @@ describe('CartService reserve-path ordering (real Postgres, real Redis, controll
       // + marker upsert) commits before convergeReservation's reserve()
       // call is even entered - confirmed by staleCallStarted resolving
       // only once reserve() has actually started.
-      const mutationA = service.addItem(customerId, { productId, quantity: 2 });
+      const mutationA = service.addItem(customerId, { productId, quantity: 2 }, randomUUID());
       await staleCallStarted;
 
       const itemAfterA = await cartRepository.findItemByCartAndProduct(cart.id, productId);

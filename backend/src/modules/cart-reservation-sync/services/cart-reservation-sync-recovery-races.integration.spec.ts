@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import {
   RecoveryFixture,
@@ -33,7 +35,7 @@ describe('CartReservationSyncRecoveryService mid-repair races (real Postgres, re
       const product = await createProduct(fixture, 'Races Quantity Change');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await cartService.addItem(customerId, { productId: product.id, quantity: 4 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 4 }, randomUUID());
       const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       const markerBefore = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       await syncStateRepository.markUnresolved(cart.id, product.id); // simulate a pending recovery need
@@ -78,7 +80,7 @@ describe('CartReservationSyncRecoveryService mid-repair races (real Postgres, re
       const product = await createProduct(fixture, 'Races Delete');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await cartService.addItem(customerId, { productId: product.id, quantity: 4 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 4 }, randomUUID());
       const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       const markerBefore = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
       await syncStateRepository.markUnresolved(cart.id, product.id);
@@ -116,7 +118,7 @@ describe('CartReservationSyncRecoveryService mid-repair races (real Postgres, re
       const product = await createProduct(fixture, 'Races Delete Recreate');
       const cart = await cartRepository.findOrCreateByCustomerId(customerId);
 
-      await cartService.addItem(customerId, { productId: product.id, quantity: 5 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 5 }, randomUUID());
       const item = await cartRepository.findItemByCartAndProduct(cart.id, product.id);
       await cartService.removeItem(customerId, item!.id);
       const markerBefore = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
@@ -131,7 +133,7 @@ describe('CartReservationSyncRecoveryService mid-repair races (real Postgres, re
       // Customer re-adds the same product while the worker is blocked -
       // fresh CartItem (mutationVersion resets to 0), a genuinely NEWER
       // marker generation, its own reserve() converges cleanly.
-      await cartService.addItem(customerId, { productId: product.id, quantity: 9 });
+      await cartService.addItem(customerId, { productId: product.id, quantity: 9 }, randomUUID());
 
       // Release the worker's stale release() - it wrongly deletes the
       // freshly re-added reservation.

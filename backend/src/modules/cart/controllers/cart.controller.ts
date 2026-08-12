@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiHeader,
   ApiOperation,
   ApiResponse as ApiResponseDoc,
   ApiTags,
@@ -8,6 +9,7 @@ import {
 import { RoleName } from '@prisma/client';
 
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { IdempotencyKey } from '../../../common/decorators/idempotency-key.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -33,12 +35,22 @@ export class CartController {
 
   @Post('items')
   @ApiOperation({ summary: 'Add a product to the cart (or increase its quantity)' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    description:
+      'A client-generated UUID identifying this logical add operation. Retrying the same ' +
+      'operation must reuse the same key - reusing it with a different productId/quantity ' +
+      'returns 409 Conflict rather than executing a second mutation.',
+  })
   @ApiResponseDoc({ status: 201, type: CartResponseEntity })
+  @ApiResponseDoc({ status: 409, description: 'Idempotency key conflict, in-flight, or superseded' })
   addItem(
     @CurrentUser() user: RequestUser,
     @Body() dto: AddCartItemDto,
+    @IdempotencyKey() idempotencyKey: string,
   ): Promise<CartResponseEntity> {
-    return this.cartService.addItem(user.id, dto);
+    return this.cartService.addItem(user.id, dto, idempotencyKey);
   }
 
   @Patch('items/:itemId')

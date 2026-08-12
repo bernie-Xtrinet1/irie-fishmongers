@@ -4,24 +4,23 @@ import { InventoryReservationsService } from '../../inventory/services/inventory
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartItemAddIdempotencyService } from './cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from './cart-reservation-convergence.service';
 import { buildCart, buildCartItem, buildProduct, buildVendor } from './cart-service-test-helpers';
 import { CartService } from './cart.service';
 
 // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review, including
 // the concurrency-proof correction). Covers the convergence algorithm's
 // Redis-failure/compensation branching in isolation - split from
-// cart.service.spec.ts to stay under the 400-line file cap. Basic
-// CRUD/validation behavior lives there.
+// cart.service.spec.ts to stay under the 400-line file cap.
 //
 // applyCompensation attempts the CartItem-level compensation FIRST and the
-// marker-generation gate SECOND, both inside the same transaction -
-// deliberately matching the primary-mutation path's own lock order, to
-// eliminate the opposite-order deadlock a marker-first gate would create
-// (see the DA.1 architecture review's lock-ordering correction). The
-// marker's permanent generation remains the actual correctness boundary: a
-// late gate miss throws StaleCompensationGenerationError, rolling back the
-// WHOLE transaction (including any tentative CartItem write already made),
-// so nothing commits regardless of which check ran first.
+// marker-generation gate SECOND, matching the primary-mutation path's own
+// lock order (see the DA.1 architecture review's lock-ordering
+// correction). The marker's permanent generation is the actual
+// correctness boundary: a late gate miss throws
+// StaleCompensationGenerationError, rolling back the WHOLE transaction
+// (including any tentative CartItem write already made).
 describe('CartService compensation (DA.1A)', () => {
   let prisma: { $transaction: jest.Mock };
   let cartRepository: jest.Mocked<
@@ -79,6 +78,20 @@ describe('CartService compensation (DA.1A)', () => {
       advanceIfCurrentGeneration: jest.fn(),
       markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    // convergeReservation moved to CartReservationConvergenceService (DA.2,
+    // split for file size) - a REAL instance over these same mocks.
+    const convergence = new CartReservationConvergenceService(
+      prisma as unknown as PrismaService,
+      cartRepository as unknown as CartRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
+      syncState as unknown as CartReservationSyncStateRepository,
+    );
+    // Idempotency is out of scope here - always executes fresh, never superseded.
+    const idempotency: jest.Mocked<Pick<CartItemAddIdempotencyService, 'classify' | 'reject' | 'complete'>> = {
+      classify: jest.fn().mockResolvedValue({ outcome: 'EXECUTE', attemptId: 'attempt-1', attemptCount: 1 }),
+      reject: jest.fn().mockResolvedValue({ count: 1 }),
+      complete: jest.fn().mockResolvedValue({ count: 1 }),
+    };
 
     service = new CartService(
       prisma as unknown as PrismaService,
@@ -87,6 +100,8 @@ describe('CartService compensation (DA.1A)', () => {
       vendorsRepository as unknown as VendorsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
       syncState as unknown as CartReservationSyncStateRepository,
+      convergence,
+      idempotency as unknown as CartItemAddIdempotencyService,
     );
   });
 
@@ -102,7 +117,7 @@ describe('CartService compensation (DA.1A)', () => {
       syncState.advanceIfCurrentGeneration.mockResolvedValue({ count: 1, generation: 6 });
       cartRepository.compensateItemDeleteIfUnchanged.mockResolvedValue({ count: 1 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(syncState.advanceIfCurrentGeneration).toHaveBeenCalledWith(
         'cart-1',
@@ -131,7 +146,7 @@ describe('CartService compensation (DA.1A)', () => {
       syncState.advanceIfCurrentGeneration.mockResolvedValue({ count: 1, generation: 3 });
       cartRepository.compensateItemQuantity.mockResolvedValue({ count: 1 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       // newExpectedMutationVersion is mutationVersion+1: the exact value
       // compensateItemQuantity's own {increment:1} will produce, computed
@@ -154,10 +169,8 @@ describe('CartService compensation (DA.1A)', () => {
     });
 
     it('never reaches the marker-generation gate when the CartItem-level guard itself misses', async () => {
-      // Phase 16A.0-DA, Unit DA.1A concurrency-proof correction: applyCompensation
-      // now attempts the CartItem-level write FIRST (matching the primary-
-      // mutation path's own lock order), so a miss here short-circuits
-      // before the marker is ever touched.
+      // applyCompensation attempts the CartItem-level write FIRST, so a
+      // miss here short-circuits before the marker is ever touched.
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
@@ -166,7 +179,7 @@ describe('CartService compensation (DA.1A)', () => {
       inventoryReservations.reserve.mockRejectedValue(new Error('redis down'));
       cartRepository.compensateItemDeleteIfUnchanged.mockResolvedValue({ count: 0 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(syncState.advanceIfCurrentGeneration).not.toHaveBeenCalled();
       expect(inventoryReservations.reserve).toHaveBeenCalledTimes(1); // no retry
@@ -174,14 +187,10 @@ describe('CartService compensation (DA.1A)', () => {
     });
 
     it('rolls back the tentative CartItem-level write when the marker-generation gate misses afterward', async () => {
-      // The CartItem-level guard alone can tentatively match (e.g. a stale
-      // mutationVersion collision after a delete/recreate cycle - see the
-      // DA.1 architecture review's ABA finding), but the marker's
-      // permanent generation is the actual correctness boundary: a miss
-      // there throws StaleCompensationGenerationError, rolling back the
-      // WHOLE transaction (including the tentative CartItem write just
-      // made) - applyCompensation still reports 'MISSED' to its caller, so
-      // no Redis retry and no marker resolution follow.
+      // The CartItem-level guard can tentatively match (an ABA
+      // mutationVersion collision), but the marker's permanent generation
+      // is the real boundary: a miss there rolls back the WHOLE
+      // transaction, including the tentative CartItem write just made.
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
@@ -209,7 +218,7 @@ describe('CartService compensation (DA.1A)', () => {
         }
       });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(cartRepository.compensateItemDeleteIfUnchanged).toHaveBeenCalled();
       expect(transactionCallbackRejected).toBe(true);
@@ -227,7 +236,7 @@ describe('CartService compensation (DA.1A)', () => {
       syncState.advanceIfCurrentGeneration.mockResolvedValue({ count: 1, generation: 9 });
       cartRepository.compensateItemDeleteIfUnchanged.mockResolvedValue({ count: 1 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
       expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 9);
@@ -249,7 +258,7 @@ describe('CartService compensation (DA.1A)', () => {
       cartRepository.compensateItemDeleteIfUnchanged.mockResolvedValue({ count: 1 });
       syncState.resolveIfCurrentGeneration.mockResolvedValue({ count: 0 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 9);
       expect(syncState.markUnresolved).toHaveBeenCalledWith('cart-1', 'product-1');

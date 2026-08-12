@@ -7,6 +7,9 @@ import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-add-attempt.repository';
+import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -93,6 +96,8 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     slug: `${namePrefix}-category-${randomUUID()}`,
   });
 
+  const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, syncStateRepository);
+  const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
   const cartService = new CartService(
     prisma,
     cartRepository,
@@ -100,6 +105,8 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     vendorsRepository,
     inventoryReservations,
     syncStateRepository,
+    convergence,
+    idempotency,
   );
   const recoveryService = new CartReservationSyncRecoveryService(syncStateRepository, cartRepository, inventoryReservations);
 
@@ -122,6 +129,7 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
 
 export async function tearDownRecoveryFixture(fixture: RecoveryFixture): Promise<void> {
   const cart = await fixture.cartRepository.findOrCreateByCustomerId(fixture.customerId);
+  await fixture.prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
   await fixture.prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
   await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
   await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });

@@ -6,6 +6,8 @@ import { InventoryReservationsService } from '../../inventory/services/inventory
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartItemAddIdempotencyService } from './cart-item-add-idempotency.service';
+import { CartReservationConvergenceService } from './cart-reservation-convergence.service';
 import { buildCart, buildCartItem, buildLot, buildProduct, buildVendor } from './cart-service-test-helpers';
 import { CartService } from './cart.service';
 
@@ -65,6 +67,23 @@ describe('CartService', () => {
       resolveIfCurrentGeneration: jest.fn().mockResolvedValue({ count: 1 }),
       markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    // convergeReservation moved to CartReservationConvergenceService
+    // (Phase 16A.0-DA, Unit DA.2, split for file size) - a REAL instance
+    // built from these same mocked repositories exercises the exact logic
+    // under test here unchanged. Idempotency is out of scope for this file
+    // (see cart-item-add-idempotency.service.spec.ts) - always executes
+    // fresh, never superseded.
+    const convergence = new CartReservationConvergenceService(
+      prisma as unknown as PrismaService,
+      cartRepository as unknown as CartRepository,
+      inventoryReservations as unknown as InventoryReservationsService,
+      syncState as unknown as CartReservationSyncStateRepository,
+    );
+    const idempotency: jest.Mocked<Pick<CartItemAddIdempotencyService, 'classify' | 'reject' | 'complete'>> = {
+      classify: jest.fn().mockResolvedValue({ outcome: 'EXECUTE', attemptId: 'attempt-1', attemptCount: 1 }),
+      reject: jest.fn().mockResolvedValue({ count: 1 }),
+      complete: jest.fn().mockResolvedValue({ count: 1 }),
+    };
 
     service = new CartService(
       prisma as unknown as PrismaService,
@@ -73,6 +92,8 @@ describe('CartService', () => {
       vendorsRepository as unknown as VendorsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
       syncState as unknown as CartReservationSyncStateRepository,
+      convergence,
+      idempotency as unknown as CartItemAddIdempotencyService,
     );
   });
 
@@ -109,7 +130,7 @@ describe('CartService', () => {
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 0 }));
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(cartRepository.addOrIncrementItem).toHaveBeenCalledWith(
         'cart-1',
@@ -120,37 +141,41 @@ describe('CartService', () => {
     });
 
     it('rejects adding an inactive product', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       productsRepository.findById.mockResolvedValue(buildProduct({ isActive: false }));
 
       await expect(
-        service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
+        service.addItem('user-1', { productId: 'product-1', quantity: 1 }, 'idempotency-key-1'),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('rejects adding a product that does not exist', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       productsRepository.findById.mockResolvedValue(null);
 
       await expect(
-        service.addItem('user-1', { productId: 'missing', quantity: 1 }),
+        service.addItem('user-1', { productId: 'missing', quantity: 1 }, 'idempotency-key-1'),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('rejects adding a product from an unapproved vendor', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor({ status: 'SUSPENDED' }));
 
       await expect(
-        service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
+        service.addItem('user-1', { productId: 'product-1', quantity: 1 }, 'idempotency-key-1'),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('rejects adding a product whose lot is not SAFE', async () => {
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       productsRepository.findById.mockResolvedValue(
         buildProduct({ lotId: 'lot-1', lot: buildLot({ foodSafetyStatus: 'RECALLED' }) }),
       );
 
       await expect(
-        service.addItem('user-1', { productId: 'product-1', quantity: 1 }),
+        service.addItem('user-1', { productId: 'product-1', quantity: 1 }, 'idempotency-key-1'),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -160,7 +185,7 @@ describe('CartService', () => {
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
       cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 0 }));
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 2);
     });
@@ -172,7 +197,7 @@ describe('CartService', () => {
       cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 2, mutationVersion: 3 }));
       syncState.upsertDesiredState.mockResolvedValue({ generation: 7 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(syncState.upsertDesiredState).toHaveBeenCalledWith('cart-1', 'product-1', 3, 2, expect.anything());
       expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 7);
@@ -192,7 +217,7 @@ describe('CartService', () => {
       syncState.upsertDesiredState.mockResolvedValue({ generation: 7 });
       syncState.resolveIfCurrentGeneration.mockResolvedValue({ count: 0 });
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(syncState.resolveIfCurrentGeneration).toHaveBeenCalledWith('cart-1', 'product-1', 7);
       expect(syncState.markUnresolved).toHaveBeenCalledWith('cart-1', 'product-1');
@@ -205,7 +230,7 @@ describe('CartService', () => {
       cartRepository.findItemByCartAndProduct.mockResolvedValue(buildCartItem({ quantity: 3 }));
       cartRepository.addOrIncrementItem.mockResolvedValue(buildCartItem({ quantity: 5, mutationVersion: 1 }));
 
-      await service.addItem('user-1', { productId: 'product-1', quantity: 2 });
+      await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
       expect(inventoryReservations.getAvailableToPurchase).toHaveBeenCalledWith(
         'product-1',
@@ -222,7 +247,7 @@ describe('CartService', () => {
       inventoryReservations.getAvailableToPurchase.mockResolvedValue(1);
 
       await expect(
-        service.addItem('user-1', { productId: 'product-1', quantity: 2 }),
+        service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1'),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(cartRepository.addOrIncrementItem).not.toHaveBeenCalled();
       expect(inventoryReservations.reserve).not.toHaveBeenCalled();
