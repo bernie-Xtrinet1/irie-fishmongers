@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CartModule } from '../cart/cart.module';
+import { CartReservationSyncModule } from '../cart-reservation-sync/cart-reservation-sync.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { ProductsModule } from '../products/products.module';
@@ -18,6 +19,7 @@ import { VendorOrdersService } from './services/vendor-orders.service';
   imports: [
     AuthModule,
     CartModule,
+    CartReservationSyncModule,
     ProductsModule,
     VendorsModule,
     PaymentsModule,

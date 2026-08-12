@@ -9,6 +9,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
@@ -100,6 +101,12 @@ export async function tearDownCheckoutIntegrationFixture(fixture: CheckoutIntegr
   await prisma.vendorOrder.deleteMany({ where: { vendorId: vendor.id } });
   await prisma.order.deleteMany({ where: { customerId: { in: userIds } } });
   await prisma.inventoryEvent.deleteMany({ where: { productId: { in: productIds } } });
+  // CartReservationSyncState rows are never deleted by production code
+  // (generation must be permanent - see the DA.1 architecture review) and
+  // use onDelete: Restrict on their Cart relation - checkout now creates
+  // them via the DA.1B checkout-clear correction, so they must be cleared
+  // explicitly before Cart can be deleted.
+  await prisma.cartReservationSyncState.deleteMany({ where: { productId: { in: productIds } } });
   await prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
   await prisma.cart.deleteMany({ where: { customerId: { in: userIds } } });
   await prisma.product.deleteMany({ where: { vendorId: vendor.id } });
@@ -118,6 +125,7 @@ export interface RealCoordinatorHandles {
   inventoryReservations: InventoryReservationsService;
   ordersService: OrdersService;
   cartRepository: CartRepository;
+  syncStateRepository: CartReservationSyncStateRepository;
   eventEmitter: EventEmitter2;
   paymentsService: PaymentsService;
 }
@@ -134,6 +142,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
   const inventoryEventsRepository = new InventoryEventsRepository(prisma);
   const inventoryReservations = new InventoryReservationsService(redisService);
   const eventEmitter = new EventEmitter2();
+  const syncStateRepository = new CartReservationSyncStateRepository(prisma);
 
   const paymentsService = new PaymentsService(
     new PaymentsRepository(prisma),
@@ -159,6 +168,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     inventoryEventsRepository,
     inventoryReservations,
     eventEmitter,
+    syncStateRepository,
   );
 
   const checkoutAttemptService = new CheckoutAttemptService(new CheckoutAttemptRepository(prisma));
@@ -191,6 +201,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     inventoryReservations,
     ordersService,
     cartRepository,
+    syncStateRepository,
     eventEmitter,
     paymentsService,
   };

@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
+import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { PaymentsService } from '../../payments/services/payments.service';
@@ -145,6 +146,7 @@ describe('OrdersService', () => {
   let ordersRepository: jest.Mocked<Pick<OrdersRepository, 'create' | 'findById' | 'findManyByCustomer'>>;
   let vendorOrdersRepository: jest.Mocked<Pick<VendorOrdersRepository, 'updateStatus'>>;
   let cartRepository: jest.Mocked<Pick<CartRepository, 'findOrCreateByCustomerId' | 'clear'>>;
+  let syncStateRepository: jest.Mocked<Pick<CartReservationSyncStateRepository, 'advanceForClearedCart'>>;
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'adjustStock'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
@@ -164,6 +166,7 @@ describe('OrdersService', () => {
     ordersRepository = { create: jest.fn(), findById: jest.fn(), findManyByCustomer: jest.fn() };
     vendorOrdersRepository = { updateStatus: jest.fn() };
     cartRepository = { findOrCreateByCustomerId: jest.fn(), clear: jest.fn() };
+    syncStateRepository = { advanceForClearedCart: jest.fn().mockResolvedValue(undefined) };
     productsRepository = { adjustStock: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
     paymentsService = {
@@ -187,6 +190,7 @@ describe('OrdersService', () => {
       inventoryEventsRepository as unknown as InventoryEventsRepository,
       inventoryReservations as unknown as InventoryReservationsService,
       eventEmitter as unknown as EventEmitter2,
+      syncStateRepository as unknown as CartReservationSyncStateRepository,
     );
   });
 
@@ -375,6 +379,21 @@ describe('OrdersService', () => {
       expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', -2, {});
       expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-2', -1, {});
       expect(cartRepository.clear).toHaveBeenCalledWith('cart-1', {});
+      // Checkout-clear correction (DA.1B final review): every removed
+      // CartItem must get its marker generation advanced in the same
+      // transaction - one call per pair, never a single call covering
+      // the whole cart implicitly.
+      expect(syncStateRepository.advanceForClearedCart).toHaveBeenCalledWith(
+        'cart-1',
+        [
+          { productId: 'product-1', mutationVersion: 0 },
+          { productId: 'product-2', mutationVersion: 0 },
+        ],
+        {},
+      );
+      const clearOrder = cartRepository.clear.mock.invocationCallOrder[0]!;
+      const advanceOrder = syncStateRepository.advanceForClearedCart.mock.invocationCallOrder[0]!;
+      expect(clearOrder).toBeLessThan(advanceOrder); // CartItem-then-marker, matching every other DA.1A primary path
       const createArg = ordersRepository.create.mock.calls[0]?.[0];
       expect(createArg?.vendorOrders).toHaveLength(2);
       expect(eventEmitter.emitAsync).toHaveBeenCalledWith(

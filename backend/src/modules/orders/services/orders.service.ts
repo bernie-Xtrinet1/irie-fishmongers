@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -40,6 +41,7 @@ export class OrdersService {
     private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly inventoryReservations: InventoryReservationsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly syncStateRepository: CartReservationSyncStateRepository,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
@@ -89,9 +91,7 @@ export class OrdersService {
   }
 
   // Phase 16A.0-D, Unit D.1. Every read-only validation OrdersService.checkout
-  // performs before opening a transaction - a typed result, not a thrown
-  // exception, so a second caller can react without parsing exception text.
-  // See mapPrepareFailureToHttpException.
+  // performs before opening a transaction - a typed result, not a thrown exception.
   async prepareCheckout(userId: string, dto: CheckoutDto): Promise<PrepareCheckoutResult> {
     const cart = await this.cartRepository.findOrCreateByCustomerId(userId);
     if (cart.items.length === 0) {
@@ -174,12 +174,9 @@ export class OrdersService {
   // Prisma.TransactionClient, never opens its own $transaction, so
   // CheckoutCoordinatorService can include CheckoutAttempt's
   // PROCESSING -> COMMITTED transition in the same transaction. pricing is
-  // REQUIRED, never optional - no `pricing?.unitPrice ?? item.product.price`
-  // fallback exists; pricing.currency is the single authority for both
-  // Order.currency and every OrderItem.currency. Legacy checkout() supplies
-  // buildLegacyPricingSnapshot's live-price/null-currency snapshot; the
-  // Phase-D coordinator supplies one built from PriceLockService's locked
-  // values. One implementation serves both.
+  // REQUIRED, never optional - pricing.currency is the single authority
+  // for both Order.currency and every OrderItem.currency; legacy checkout()
+  // and the Phase-D coordinator each supply their own snapshot.
   async createOrderInTransaction(
     tx: Prisma.TransactionClient,
     prepared: PreparedCheckout,
@@ -246,7 +243,14 @@ export class OrdersService {
       }
     }
 
+    // DA.1B checkout-clear correction: clear() alone never advances the
+    // sync marker - pair it with advanceForClearedCart in this same tx.
     await this.cartRepository.clear(cart.id, tx);
+    await this.syncStateRepository.advanceForClearedCart(
+      cart.id,
+      cart.items.map((item) => ({ productId: item.productId, mutationVersion: item.mutationVersion })),
+      tx,
+    );
 
     return created;
   }
@@ -353,9 +357,8 @@ export class OrdersService {
     return { ...OrdersService.toResponse(order), payment: payment ?? undefined };
   }
 
-  // D.2: exposes toResponse for a caller that already has a payment result
-  // in hand (CheckoutCoordinatorService, right after initiatePayment) -
-  // avoids the extra getByOrderId read toResponseWithPayment performs.
+  // D.2: exposes toResponse for a caller with a payment result already in
+  // hand (CheckoutCoordinatorService), avoiding an extra getByOrderId read.
   toOrderResponseWithPayment(
     order: OrderWithDetails,
     payment?: PaymentResponseEntity,

@@ -9,6 +9,14 @@ export interface AdvanceGenerationOutcome {
   generation: number | null;
 }
 
+// Phase 16A.0-DA, Unit DA.1B (see the DA.1B claim-fencing review). The
+// recovery worker's stale-PROCESSING reclaim window - identical value to
+// mirror-compensation's own PROCESSING_STALE_TIMEOUT_MS, but defined
+// independently here rather than imported: these are two unrelated
+// recovery subsystems that happen to agree on a cadence, not a shared
+// dependency.
+export const PROCESSING_STALE_TIMEOUT_MS = 5 * 60 * 1000;
+
 // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review). Owns the
 // durable CartReservationSyncState marker - the proactive record of what
 // Redis reservation state a (cartId, productId) pair should converge to.
@@ -147,5 +155,158 @@ export class CartReservationSyncStateRepository {
     return client.cartReservationSyncState.findUnique({
       where: { cartId_productId: { cartId, productId } },
     });
+  }
+
+  // --- Phase 16A.0-DA, Unit DA.1B (recovery worker; see the DA.1B
+  // claim-fencing review). attemptCount is the claim-fencing token: it is
+  // monotonic and never reset (unlike CartItem.mutationVersion, which
+  // resets on delete/recreate - see the DA.1 architecture review's ABA
+  // finding), so a stale worker's captured (generation, attemptCount)
+  // pair can never coincidentally match again once superseded, whether by
+  // a customer mutation (generation moves) or by another worker's
+  // stale-PROCESSING reclaim (attemptCount moves, generation does not). ---
+
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<CartReservationSyncState | null> {
+    return client.cartReservationSyncState.findUnique({ where: { id } });
+  }
+
+  // Read-only, bounded, no locking (see the DA.1B review's Section 14 -
+  // "do not add SKIP LOCKED reflexively", mirroring
+  // CompensationRepository.findBatchCandidateIds's own proven precedent).
+  // resolvedAt IS NULL is the sole correctness selector (Section 3's
+  // mandatory source-of-truth rule: a resolved row is never a recovery
+  // candidate, regardless of status). No nextAttemptAt/backoff column
+  // exists on this table by design (Section 7/15) - a PENDING unresolved
+  // row is always immediately eligible; only a PROCESSING row has a time
+  // gate at all (the stale-reclaim cutoff).
+  //
+  // Timestamp binding: these columns are Postgres `timestamp without time
+  // zone` (same native type as CartReservationCompensation's, confirmed by
+  // that table's own regression-test comment). Binding a native JS Date
+  // directly would send it as timestamptz and let Postgres silently shift
+  // it by the session's non-UTC offset when compared against a naive
+  // column - the staleCutoff boundary is passed as an ISO string cast to
+  // ::timestamp instead, never a raw Date, matching
+  // CompensationRepository.findBatchCandidateIds's own established fix.
+  async findRecoveryCandidateIds(
+    now: Date,
+    limit: number,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ id: string }[]> {
+    const staleCutoffIso = new Date(now.getTime() - PROCESSING_STALE_TIMEOUT_MS).toISOString();
+    return client.$queryRaw<{ id: string }[]>`
+      SELECT "id"
+      FROM "cart_reservation_sync_states"
+      WHERE "resolvedAt" IS NULL
+        AND (
+          "status" = 'PENDING'
+          OR ("status" = 'PROCESSING' AND "processingStartedAt" < ${staleCutoffIso}::timestamp)
+        )
+      ORDER BY
+        CASE
+          WHEN "status" = 'PROCESSING'
+            THEN "processingStartedAt" + (${PROCESSING_STALE_TIMEOUT_MS} * INTERVAL '1 millisecond')
+          ELSE "createdAt"
+        END ASC,
+        "id" ASC
+      LIMIT ${limit}
+    `;
+  }
+
+  // The single claim path for both an ordinary unresolved PENDING row and
+  // a stale PROCESSING row whose worker crashed before resolving -
+  // contractual, not a fallback (mirrors
+  // CompensationRepository.claimForRecoveryAttempt). resolvedAt: null is
+  // included defensively even though candidate discovery already filters
+  // on it - every primitive here is self-contained, never relying solely
+  // on the caller's own pre-filtering. Never touches generation: claiming
+  // is purely a worker-ownership concern, orthogonal to the pair's
+  // logical desired-state identity (Section 1/2 of the DA.1B review).
+  // Returns the claimed row (including the post-increment attemptCount)
+  // so the caller can capture its own claimedGeneration/claimedAttemptCount
+  // fencing pair, or null if nothing was claimed.
+  async claimForRecovery(
+    id: string,
+    now: Date,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<CartReservationSyncState | null> {
+    const staleCutoff = new Date(now.getTime() - PROCESSING_STALE_TIMEOUT_MS);
+    const result = await client.cartReservationSyncState.updateMany({
+      where: {
+        id,
+        resolvedAt: null,
+        OR: [{ status: 'PENDING' }, { status: 'PROCESSING', processingStartedAt: { lt: staleCutoff } }],
+      },
+      data: { status: 'PROCESSING', processingStartedAt: now, attemptCount: { increment: 1 } },
+    });
+    if (result.count === 0) {
+      return null;
+    }
+    return client.cartReservationSyncState.findUniqueOrThrow({ where: { id } });
+  }
+
+  // Fenced by BOTH generation and attemptCount, plus status='PROCESSING' -
+  // a stale worker whose claim was reclaimed (attemptCount moved) or whose
+  // target was superseded by a customer mutation (generation moved) can
+  // never match this predicate again, so it can never resolve a claim it
+  // no longer owns. Clears lastError on success (Section 12) and
+  // normalizes processingStartedAt back to null when leaving PROCESSING.
+  resolveClaimIfCurrent(
+    id: string,
+    claimedGeneration: number,
+    claimedAttemptCount: number,
+    resolvedAt: Date,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
+      data: { status: 'PENDING', resolvedAt, processingStartedAt: null, lastError: null },
+    });
+  }
+
+  // Same fencing predicate as resolveClaimIfCurrent, used for both a
+  // genuinely retryable Redis failure and a superseded-mid-flight
+  // requeue. Deliberately NOT an ungated release (see the DA.1B review's
+  // Section 3): an ungated release-by-id could reset a NEWER worker's
+  // legitimate, still-fresh PROCESSING claim back to PENDING purely
+  // because a stale caller's own claim was reclaimed out from under it -
+  // this predicate makes that structurally impossible, since a fenced-out
+  // caller's (generation, attemptCount) pair can never match the row's
+  // current values again. A zero-count result means the caller has been
+  // fenced out entirely; it must not attempt any further write.
+  releaseClaimIfCurrent(
+    id: string,
+    claimedGeneration: number,
+    claimedAttemptCount: number,
+    sanitizedLastError: string | null,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
+      data: { status: 'PENDING', lastError: sanitizedLastError, processingStartedAt: null },
+    });
+  }
+
+  // Checkout-clear correction (see the DA.1B final review's repository-wide
+  // mutation invariant audit). The desired-absence counterpart to
+  // upsertDesiredState for a bulk removal: every production mutation that
+  // changes CartItem existence or quantity for a (cartId, productId) pair
+  // must atomically advance generation in the SAME transaction as that
+  // mutation - this was the one gap the audit found (OrdersService's
+  // checkout-clear bulk delete never touched this table at all). This is
+  // deliberately just a loop over the exact same unconditional
+  // upsertDesiredState every other primary mutation already uses - never a
+  // bespoke second write path or a second generation mechanism.
+  // mutationVersion is diagnostic-only here, exactly as everywhere else in
+  // this contract - the caller's already-known pre-clear value is
+  // sufficient; no fresh CartItem read is required or performed.
+  async advanceForClearedCart(
+    cartId: string,
+    items: { productId: string; mutationVersion: number }[],
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<void> {
+    for (const item of items) {
+      await this.upsertDesiredState(cartId, item.productId, item.mutationVersion, null, client);
+    }
   }
 }
