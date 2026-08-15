@@ -2,10 +2,10 @@ import { randomUUID } from 'crypto';
 
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { installDelayedReserveSpy } from './cart-reservation-sync-recovery-delay-spy-test-helpers';
 import {
   RecoveryFixture,
   createProduct,
-  installDelayedReserveSpy,
   setUpRecoveryFixture,
   tearDownRecoveryFixture,
 } from './cart-reservation-sync-recovery-test-helpers';

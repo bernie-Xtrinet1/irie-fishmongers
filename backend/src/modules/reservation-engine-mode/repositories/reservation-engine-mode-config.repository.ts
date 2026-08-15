@@ -21,12 +21,19 @@ export interface CreateReservationEngineModeConfigInput {
 // (matching CartRepository/ProductsRepository's established convention)
 // so the service can run findCurrent + create inside the same advisory-
 // locked transaction.
+//
+// Phase 16A.0-DA, Unit DA.4B: findCurrent orders by `revision`, never
+// `createdAt`. `createdAt` is TIMESTAMP(3) (millisecond precision) and is
+// not a reliable ordering under a same-millisecond tie between two
+// transitions; `revision` is Postgres-sequence-backed and therefore
+// atomic and strictly monotonic by construction - see the schema comment
+// on ReservationEngineModeConfig.revision.
 @Injectable()
 export class ReservationEngineModeConfigRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   findCurrent(client: PrismaClientOrTx = this.prisma): Promise<ReservationEngineModeConfig | null> {
-    return client.reservationEngineModeConfig.findFirst({ orderBy: { createdAt: 'desc' } });
+    return client.reservationEngineModeConfig.findFirst({ orderBy: { revision: 'desc' } });
   }
 
   create(

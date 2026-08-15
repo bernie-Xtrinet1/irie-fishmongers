@@ -16,8 +16,12 @@ import { connectRealRedis } from '../../inventory/services/inventory-reservation
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
+import { ReservationEngineModeConfigRepository } from '../../reservation-engine-mode/repositories/reservation-engine-mode-config.repository';
+import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
+import { ReservationRecoveryConvergenceService } from '../../reservation-recovery/services/reservation-recovery-convergence.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CartReservationSyncStateRepository } from '../repositories/cart-reservation-sync-state.repository';
+import { CartReservationSyncBlockedRecheckService } from './cart-reservation-sync-blocked-recheck.service';
 import { CartReservationSyncRecoveryService } from './cart-reservation-sync-recovery.service';
 
 // Shared plumbing for the real-Postgres + real-Redis DA.1B recovery specs
@@ -36,12 +40,20 @@ export interface RecoveryFixture {
   inventoryReservations: InventoryReservationsService;
   cartService: CartService;
   recoveryService: CartReservationSyncRecoveryService;
+  // Phase 16A.0-DA, Unit DA.4B additions - exposed so mode-race integration
+  // specs can drive real setMode() transitions and directly exercise the
+  // blocked-recheck entry point without reconstructing the whole fixture.
+  modeService: ReservationEngineModeService;
+  modeConfigRepository: ReservationEngineModeConfigRepository;
+  recoveryTarget: ReservationRecoveryConvergenceService;
+  blockedRecheckService: CartReservationSyncBlockedRecheckService;
   productsRepository: ProductsRepository;
   vendorId: string;
   categoryId: string;
   customerId: string;
   vendorUserId: string;
   category: Category;
+  adminUserId: string;
 }
 
 export async function setUpRecoveryFixture(namePrefix: string): Promise<RecoveryFixture> {
@@ -97,6 +109,16 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     slug: `${namePrefix}-category-${randomUUID()}`,
   });
 
+  const admin = await usersRepository.create({
+    email: `${namePrefix}-admin-${randomUUID()}@example.com`,
+    passwordHash: 'hashed',
+    firstName: 'Ada',
+    lastName: 'Admin',
+    roleId: vendorRole.id,
+    emailVerificationTokenHash: 'token-hash',
+    emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+  });
+
   const gateway = buildLegacyReservationGateway(inventoryReservations);
   const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
   const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
@@ -110,10 +132,31 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     convergence,
     idempotency,
   );
-  // Recovery deliberately keeps calling InventoryReservationsService
-  // directly, never the gateway - see the DA.4 prerequisite recorded in
-  // cart-reservation-sync-recovery.service.ts.
-  const recoveryService = new CartReservationSyncRecoveryService(syncStateRepository, cartRepository, inventoryReservations);
+
+  // Phase 16A.0-DA, Unit DA.4B. Recovery now goes through
+  // ReservationRecoveryConvergenceService (the mode-aware recovery-authority
+  // port), never InventoryReservationsService directly - see the DA.4B
+  // frozen plan. modeConfigRepository/modeService are real, against the
+  // same Postgres/Redis connections as everything else in this fixture, so
+  // real setMode() transitions and the shared/exclusive advisory-lock
+  // fencing are genuinely exercised, never mocked.
+  const modeConfigRepository = new ReservationEngineModeConfigRepository(prisma);
+  const modeService = new ReservationEngineModeService(prisma, modeConfigRepository, redisService, inventoryReservations);
+  const recoveryTarget = new ReservationRecoveryConvergenceService(modeService, inventoryReservations);
+  const blockedRecheckService = new CartReservationSyncBlockedRecheckService(
+    syncStateRepository,
+    cartRepository,
+    inventoryReservations,
+    modeService,
+  );
+  const recoveryService = new CartReservationSyncRecoveryService(
+    syncStateRepository,
+    cartRepository,
+    recoveryTarget,
+    modeService,
+    prisma,
+    blockedRecheckService,
+  );
 
   return {
     redisClient,
@@ -123,12 +166,17 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     inventoryReservations,
     cartService,
     recoveryService,
+    modeService,
+    modeConfigRepository,
+    recoveryTarget,
+    blockedRecheckService,
     productsRepository,
     vendorId: vendor.id,
     categoryId: category.id,
     customerId: customer.id,
     vendorUserId: vendorUser.id,
     category,
+    adminUserId: admin.id,
   };
 }
 
@@ -136,12 +184,52 @@ export async function tearDownRecoveryFixture(fixture: RecoveryFixture): Promise
   const cart = await fixture.cartRepository.findOrCreateByCustomerId(fixture.customerId);
   await fixture.prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
   await fixture.prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
+  // Phase 16A.0-DA, Unit DA.4B: any ReservationEngineModeConfig rows this
+  // fixture's own tests created via setMode() must be cleared before the
+  // admin user (their updatedById FK target) can be deleted - this table's
+  // append-only rows are never touched by any other fixture in this file,
+  // so a wholesale delete scoped to this fixture's own admin is safe.
+  await fixture.prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: fixture.adminUserId } });
   await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
   await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });
+  await fixture.prisma.user.delete({ where: { id: fixture.adminUserId } });
   await fixture.prisma.category.delete({ where: { id: fixture.category.id } });
   await fixture.prisma.onModuleDestroy();
   await fixture.redisClient.flushdb();
   await fixture.redisClient.quit();
+}
+
+// Phase 16A.0-DA, Unit DA.4B. fixture.cartService is deliberately wired to
+// a LEGACY-only fake gateway (buildLegacyReservationGateway - see the DA.3
+// test-helper rationale: "LEGACY remains the only effective mode" was the
+// whole point at the time). It never observes a mode-touching test's own
+// setMode() transitions, so every marker DA.4B's own tests need under a
+// non-LEGACY mode is built directly against the repositories instead -
+// this is also a more precise proof, since it means reconcileOne's own
+// write is the ONLY thing that ever touches Redis in these tests.
+export async function unresolvedReserveMarker(
+  fixture: RecoveryFixture,
+  quantity: number,
+): Promise<{ cartId: string; productId: string; markerId: string }> {
+  const { cartRepository, syncStateRepository, customerId } = fixture;
+  const product = await createProduct(fixture, 'Mode Aware Test');
+  const cart = await cartRepository.findOrCreateByCustomerId(customerId);
+  await cartRepository.addOrIncrementItem(cart.id, product.id, quantity);
+  await syncStateRepository.upsertDesiredState(cart.id, product.id, 0, quantity);
+  const marker = await syncStateRepository.findByCartAndProduct(cart.id, product.id);
+  return { cartId: cart.id, productId: product.id, markerId: marker!.id };
+}
+
+export async function unresolvedReleaseMarker(
+  fixture: RecoveryFixture,
+  quantity: number,
+): Promise<{ cartId: string; productId: string; markerId: string }> {
+  const { cartId, productId } = await unresolvedReserveMarker(fixture, quantity);
+  const item = await fixture.cartRepository.findItemByCartAndProduct(cartId, productId);
+  await fixture.prisma.cartItem.delete({ where: { id: item!.id } });
+  await fixture.syncStateRepository.upsertDesiredState(cartId, productId, item!.mutationVersion, null);
+  const marker = await fixture.syncStateRepository.findByCartAndProduct(cartId, productId);
+  return { cartId, productId, markerId: marker!.id };
 }
 
 export function createProduct(fixture: RecoveryFixture, name: string): Promise<Product> {
@@ -157,65 +245,55 @@ export function createProduct(fixture: RecoveryFixture, name: string): Promise<P
   });
 }
 
-export interface DelayedCallHandle {
-  staleCallStarted: Promise<void>;
-  releaseStaleCall: () => void;
+// Delay-spy helpers (installDelayedReserveSpy, installDelayedReleaseSpy,
+// installDelayedReserveOrRenewSpy, installDelayedReleaseReservationSpy,
+// DelayedCallHandle) now live in
+// cart-reservation-sync-recovery-delay-spy-test-helpers.ts - split purely
+// to keep both files within the repository's 400-line limit.
+
+// Phase 16A.0-DA, Unit DA.4B. ReservationEngineModeConfig is a single
+// GLOBAL, unscoped table - unlike everything else in this fixture, its
+// "current" row is not isolated per test file. Both forceLegacyMode and
+// ensureMode always walk a fully valid path from whatever mode is
+// ACTUALLY current (never assumed), so DA.4B's mode-touching integration
+// specs can never leak a non-LEGACY mode into any other test file sharing
+// the same --runInBand process, regardless of execution order.
+export async function forceLegacyMode(fixture: RecoveryFixture): Promise<void> {
+  const current = await fixture.modeService.getCurrentMode();
+  if (current === 'LEGACY') {
+    return;
+  }
+  if (current === 'MIRROR') {
+    await fixture.modeService.setMode({ targetMode: 'LEGACY', updatedById: fixture.adminUserId });
+    return;
+  }
+  if (current === 'CART_SCOPED') {
+    await fixture.modeService.setMode({ targetMode: 'DRAINING', updatedById: fixture.adminUserId });
+  }
+  // Dedicated, exclusive Redis DB index for this fixture - safe to flush
+  // wholesale to guarantee verifyRollbackSafe's gate passes.
+  await fixture.redisClient.flushdb();
+  const rollback = await fixture.modeService.setMode({ targetMode: 'LEGACY', updatedById: fixture.adminUserId });
+  if (!rollback.ok) {
+    throw new Error(`Failed to force LEGACY mode in test setup/teardown: ${JSON.stringify(rollback)}`);
+  }
 }
 
-// Call-through spy: blocks the FIRST invocation of reserve() until
-// explicitly released, while every invocation - including the eventually-
-// released first one - still performs the REAL underlying Redis HSET
-// (never mocked away). Mirrors cart-service-concurrency-test-helpers.ts's
-// own helper of the same shape.
-//
-// Binds from the class PROTOTYPE, never from the instance's own (possibly
-// already-spied) property: several tests in this file's siblings share one
-// fixture/instance across multiple installDelayedReserveSpy calls without
-// restoring between them (calling reconcileOne again mid-test needs the
-// spy to stay live). jest.spyOn(instance, 'method') shadows via an own
-// property, leaving the prototype method untouched - binding from the
-// instance instead would capture a PRIOR test's still-installed spy as
-// "real", producing unbounded mutual recursion (a real bug hit and fixed
-// during this unit's own implementation).
-export function installDelayedReserveSpy(
-  inventoryReservations: InventoryReservationsService,
-): DelayedCallHandle {
-  const realReserve = InventoryReservationsService.prototype.reserve.bind(inventoryReservations);
-  let callCount = 0;
-  let release!: () => void;
-  const staleCallStarted = new Promise<void>((resolveStarted) => {
-    jest.spyOn(inventoryReservations, 'reserve').mockImplementation(async (productId, cartId, quantity) => {
-      callCount += 1;
-      if (callCount === 1) {
-        resolveStarted();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return realReserve(productId, cartId, quantity);
-    });
-  });
-  return { staleCallStarted, releaseStaleCall: () => release() };
-}
-
-// Same prototype-binding rationale as installDelayedReserveSpy above.
-export function installDelayedReleaseSpy(
-  inventoryReservations: InventoryReservationsService,
-): DelayedCallHandle {
-  const realRelease = InventoryReservationsService.prototype.release.bind(inventoryReservations);
-  let callCount = 0;
-  let release!: () => void;
-  const staleCallStarted = new Promise<void>((resolveStarted) => {
-    jest.spyOn(inventoryReservations, 'release').mockImplementation(async (productId, cartId) => {
-      callCount += 1;
-      if (callCount === 1) {
-        resolveStarted();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return realRelease(productId, cartId);
-    });
-  });
-  return { staleCallStarted, releaseStaleCall: () => release() };
+export async function ensureMode(
+  fixture: RecoveryFixture,
+  target: 'LEGACY' | 'MIRROR' | 'CART_SCOPED' | 'DRAINING',
+): Promise<void> {
+  await forceLegacyMode(fixture);
+  if (target === 'LEGACY') {
+    return;
+  }
+  await fixture.modeService.setMode({ targetMode: 'MIRROR', updatedById: fixture.adminUserId });
+  if (target === 'MIRROR') {
+    return;
+  }
+  await fixture.modeService.setMode({ targetMode: 'CART_SCOPED', updatedById: fixture.adminUserId });
+  if (target === 'CART_SCOPED') {
+    return;
+  }
+  await fixture.modeService.setMode({ targetMode: 'DRAINING', updatedById: fixture.adminUserId });
 }

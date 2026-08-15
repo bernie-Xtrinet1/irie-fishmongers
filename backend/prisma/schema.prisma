@@ -293,6 +293,18 @@ model CartItem {
 enum CartReservationSyncStatus {
   PENDING
   PROCESSING
+  BLOCKED
+}
+
+// Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan). Why a row is
+// currently BLOCKED - distinct from any diagnostic reason that might live
+// elsewhere, mirroring CompensationBlockReason's own separation from
+// CompensationReasonCode in mirror-compensation (a different table, a
+// structurally similar but independently-owned concept - see the
+// recovery-authority split comment on CartReservationSyncRecoveryService).
+enum CartReservationSyncBlockReason {
+  PRODUCT_SUSPECT
+  MODE_NOT_ADMITTING
 }
 
 // Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review). Durable,
@@ -341,6 +353,21 @@ model CartReservationSyncState {
   // reassertion safe in the first place.
   expectedQuantity        Int?
   status                  CartReservationSyncStatus @default(PENDING)
+  // Phase 16A.0-DA, Unit DA.4B. Why this row is currently BLOCKED - null
+  // whenever status is not BLOCKED. See CartReservationSyncBlockReason.
+  blockReason             CartReservationSyncBlockReason?
+  // Phase 16A.0-DA, Unit DA.4B. Meaningful only while status is BLOCKED -
+  // when the next periodic recheck may run. This is a deliberate, narrow
+  // exception to this table's "no nextAttemptAt/backoff column by design"
+  // precedent (see findRecoveryCandidateIds's own comment): that precedent
+  // covers ordinary PENDING/PROCESSING retries, which rely on batch-to-
+  // batch cadence instead. BLOCKED did not exist when that precedent was
+  // set - without a timing gate, a BLOCKED row would be re-examined
+  // (calling reconcileProductReservedTotal, or re-reading mode) on every
+  // single runBatch tick while genuinely waiting on an external condition,
+  // never a "retry with growing backoff" concept the original precedent
+  // was actually about.
+  nextAttemptAt           DateTime?
   // The permanent logical generation for this (cartId, productId) pair -
   // see the model-level comment. Advances on every write to this row,
   // including compensation attempts, for as long as the row exists.
@@ -2086,8 +2113,23 @@ enum ReservationEngineMode {
 // table is ever written with mode = LEGACY from a DRAINING state - this
 // model has no way to enforce that gate itself, by design (persistence
 // only, no business rules - see ADR-007 Decision 8).
+//
+// Phase 16A.0-DA, Unit DA.4B. `revision` is the true monotonic identity
+// for "which transition is current" - `id` (a random UUID) has identity
+// but no ordering, and `createdAt` is TIMESTAMP(3) (millisecond
+// precision), which is not a reliable ordering under a same-millisecond
+// tie. `revision` is Postgres-sequence-backed (nextval()), which is
+// atomic and strictly monotonic across concurrent transactions by
+// construction, including across rollbacks (a rolled-back transaction's
+// value is skipped, never reused). findCurrent() orders by `revision`,
+// never `createdAt`. This exists specifically so recovery workers
+// (CartReservationSyncRecoveryService, DA.4B) can prove, under the same
+// advisory lock setMode() itself uses, that the mode identity they chose
+// a write against is still current before treating any recovery as
+// resolved - see ReservationEngineModeService.verifyModeRevisionUnchanged.
 model ReservationEngineModeConfig {
   id          String                @id @default(uuid())
+  revision    Int                   @unique @default(autoincrement())
   mode        ReservationEngineMode @default(LEGACY)
   updatedById String?
   createdAt   DateTime              @default(now())

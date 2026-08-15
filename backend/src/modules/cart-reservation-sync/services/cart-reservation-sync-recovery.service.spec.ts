@@ -1,16 +1,25 @@
-import { CartReservationSyncState } from '@prisma/client';
+import { CartReservationSyncState, Prisma } from '@prisma/client';
 
+import { PrismaService } from '../../../database/prisma.service';
 import { CartRepository } from '../../cart/repositories/cart.repository';
-import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
+import { ReservationRecoveryConvergenceService } from '../../reservation-recovery/services/reservation-recovery-convergence.service';
 import { CartReservationSyncStateRepository } from '../repositories/cart-reservation-sync-state.repository';
+import { CartReservationSyncBlockedRecheckService } from './cart-reservation-sync-blocked-recheck.service';
 import { CartReservationSyncRecoveryService } from './cart-reservation-sync-recovery.service';
 
-// Phase 16A.0-DA, Unit DA.1B (see the DA.1B claim-fencing review). Proves
-// the claim/fencing contract at the unit level: every terminal repository
-// call must be gated by BOTH claimedGeneration and claimedAttemptCount, a
-// stale worker's fenced-out miss must never touch a newer worker's claim,
-// and markUnresolved fires only for the generation-superseded case, never
-// the pure-reclaim case.
+// Phase 16A.0-DA, Unit DA.1B (see the DA.1B claim-fencing review), extended
+// in Unit DA.4B (see the DA.4B frozen plan). Proves the claim/fencing
+// contract at the unit level: every terminal repository call must be
+// gated by BOTH claimedGeneration and claimedAttemptCount, a stale
+// worker's fenced-out miss must never touch a newer worker's claim, and
+// markUnresolved fires only for the generation-superseded case, never the
+// pure-reclaim case. BLOCKED entry, REQUEUED_MODE_CHANGED, and
+// customerId-derivation coverage live in the sibling
+// cart-reservation-sync-recovery-mode-aware.service.spec.ts; runBatch
+// dispatch mechanics live in cart-reservation-sync-recovery-batch.service.spec.ts;
+// both splits exist purely to keep every file within the repository's
+// 400-line limit.
 function buildMarker(overrides: Partial<CartReservationSyncState> = {}): CartReservationSyncState {
   return {
     id: 'marker-1',
@@ -19,6 +28,8 @@ function buildMarker(overrides: Partial<CartReservationSyncState> = {}): CartRes
     expectedMutationVersion: 0,
     expectedQuantity: 5,
     status: 'PENDING',
+    blockReason: null,
+    nextAttemptAt: null,
     generation: 3,
     attemptCount: 0,
     lastError: null,
@@ -30,6 +41,9 @@ function buildMarker(overrides: Partial<CartReservationSyncState> = {}): CartRes
   };
 }
 
+const legacySnapshot = { mode: 'LEGACY' as const, revisionId: null, revision: null };
+const fakeTx = { marker: 'tx' } as unknown as Prisma.TransactionClient;
+
 describe('CartReservationSyncRecoveryService', () => {
   let syncState: jest.Mocked<
     Pick<
@@ -40,10 +54,14 @@ describe('CartReservationSyncRecoveryService', () => {
       | 'releaseClaimIfCurrent'
       | 'markUnresolved'
       | 'findRecoveryCandidateIds'
+      | 'blockIfGenerationMatches'
     >
   >;
-  let cartRepository: jest.Mocked<Pick<CartRepository, 'findItemByCartAndProduct'>>;
-  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'reserve' | 'release'>>;
+  let cartRepository: jest.Mocked<Pick<CartRepository, 'findItemByCartAndProduct' | 'findById'>>;
+  let recoveryTarget: jest.Mocked<Pick<ReservationRecoveryConvergenceService, 'converge'>>;
+  let modeService: jest.Mocked<Pick<ReservationEngineModeService, 'verifyModeRevisionUnchanged'>>;
+  let prisma: jest.Mocked<Pick<PrismaService, '$transaction'>>;
+  let blockedRecheck: jest.Mocked<Pick<CartReservationSyncBlockedRecheckService, 'recheckBlocked'>>;
   let service: CartReservationSyncRecoveryService;
 
   beforeEach(() => {
@@ -54,14 +72,24 @@ describe('CartReservationSyncRecoveryService', () => {
       releaseClaimIfCurrent: jest.fn(),
       markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
       findRecoveryCandidateIds: jest.fn(),
+      blockIfGenerationMatches: jest.fn(),
     };
-    cartRepository = { findItemByCartAndProduct: jest.fn() };
-    inventoryReservations = { reserve: jest.fn(), release: jest.fn() };
+    cartRepository = {
+      findItemByCartAndProduct: jest.fn(),
+      findById: jest.fn().mockResolvedValue({ id: 'cart-1', customerId: 'customer-1' }),
+    };
+    recoveryTarget = { converge: jest.fn() };
+    modeService = { verifyModeRevisionUnchanged: jest.fn().mockResolvedValue(true) };
+    prisma = { $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(fakeTx)) } as never;
+    blockedRecheck = { recheckBlocked: jest.fn() };
 
     service = new CartReservationSyncRecoveryService(
       syncState as unknown as CartReservationSyncStateRepository,
       cartRepository as unknown as CartRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      recoveryTarget as unknown as ReservationRecoveryConvergenceService,
+      modeService as unknown as ReservationEngineModeService,
+      prisma as unknown as PrismaService,
+      blockedRecheck as unknown as CartReservationSyncBlockedRecheckService,
     );
   });
 
@@ -98,7 +126,7 @@ describe('CartReservationSyncRecoveryService', () => {
   });
 
   describe('reserve path (CartItem exists)', () => {
-    it('uses the CURRENT CartItem quantity, ignores marker.expectedQuantity, never mutates CartItem, and resolves on the fenced pair', async () => {
+    it('uses the CURRENT CartItem quantity, ignores marker.expectedQuantity, derives customerId from the current cart, and resolves on the fenced pair', async () => {
       const claimed = buildMarker({ generation: 7, attemptCount: 2, status: 'PROCESSING', expectedQuantity: 999 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue({
@@ -108,41 +136,57 @@ describe('CartReservationSyncRecoveryService', () => {
         quantity: 11,
         mutationVersion: 4,
       } as never);
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       syncState.resolveClaimIfCurrent.mockResolvedValue({ count: 1 });
 
       const now = new Date();
       const outcome = await service.reconcileOne('marker-1', now);
 
-      expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 11); // current quantity, not 999
-      expect(inventoryReservations.release).not.toHaveBeenCalled();
-      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 7, 2, now); // id + claimedGeneration + claimedAttemptCount
+      expect(recoveryTarget.converge).toHaveBeenCalledWith({
+        cartId: 'cart-1',
+        productId: 'product-1',
+        customerId: 'customer-1',
+        desiredQuantity: 11, // current quantity, not 999
+      });
+      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 7, 2, now, fakeTx);
       expect(outcome).toEqual({ outcome: 'RESOLVED_CONVERGED', markerId: 'marker-1' });
     });
   });
 
   describe('release path (CartItem absent)', () => {
-    it('calls release, ignores marker.expectedQuantity, and resolves on the fenced pair', async () => {
+    it('converges with a null customerId/desiredQuantity, never looks up the cart, and resolves on the fenced pair', async () => {
       const claimed = buildMarker({ generation: 5, attemptCount: 1, expectedQuantity: 42 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       syncState.resolveClaimIfCurrent.mockResolvedValue({ count: 1 });
 
       const now = new Date();
       const outcome = await service.reconcileOne('marker-1', now);
 
-      expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
-      expect(inventoryReservations.reserve).not.toHaveBeenCalled();
-      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 5, 1, now);
+      expect(recoveryTarget.converge).toHaveBeenCalledWith({
+        cartId: 'cart-1',
+        productId: 'product-1',
+        customerId: null,
+        desiredQuantity: null,
+      });
+      expect(cartRepository.findById).not.toHaveBeenCalled();
+      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 5, 1, now, fakeTx);
       expect(outcome).toEqual({ outcome: 'RESOLVED_CONVERGED', markerId: 'marker-1' });
     });
   });
 
-  describe('Redis failure', () => {
-    it('sanitizes the error and releases on the exact claimed (generation, attemptCount) pair - fenced hit', async () => {
+  describe('RETRY outcomes', () => {
+    it('an infra-failure RETRY sanitizes lastError and releases on the exact claimed (generation, attemptCount) pair - fenced hit', async () => {
       const claimed = buildMarker({ generation: 2, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
-      inventoryReservations.release.mockRejectedValue(new Error('redis down: token=secret-abc'));
+      recoveryTarget.converge.mockResolvedValue({
+        outcome: 'RETRY',
+        reasonCode: 'UNKNOWN_INFRA_FAILURE',
+        lastError: 'redis down: token=secret-abc',
+        observedMode: legacySnapshot,
+      });
       syncState.releaseClaimIfCurrent.mockResolvedValue({ count: 1 });
 
       const outcome = await service.reconcileOne('marker-1', new Date());
@@ -158,11 +202,39 @@ describe('CartReservationSyncRecoveryService', () => {
       expect(outcome).toEqual({ outcome: 'REQUEUED_RETRYABLE_FAILURE', markerId: 'marker-1' });
     });
 
+    it('a CHECKOUT_IN_PROGRESS RETRY releases with a fixed descriptive message, never a raw error', async () => {
+      const claimed = buildMarker({ generation: 2, attemptCount: 1 });
+      syncState.claimForRecovery.mockResolvedValue(claimed);
+      cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
+      recoveryTarget.converge.mockResolvedValue({
+        outcome: 'RETRY',
+        reasonCode: 'CHECKOUT_IN_PROGRESS',
+        lastError: null,
+        observedMode: legacySnapshot,
+      });
+      syncState.releaseClaimIfCurrent.mockResolvedValue({ count: 1 });
+
+      const outcome = await service.reconcileOne('marker-1', new Date());
+
+      expect(syncState.releaseClaimIfCurrent).toHaveBeenCalledWith(
+        'marker-1',
+        2,
+        1,
+        expect.stringContaining('checkout in progress'),
+      );
+      expect(outcome).toEqual({ outcome: 'REQUEUED_RETRYABLE_FAILURE', markerId: 'marker-1' });
+    });
+
     it('classifies STALE_CLAIM when the fenced release misses - never falls back to an ungated release', async () => {
       const claimed = buildMarker({ generation: 2, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
-      inventoryReservations.release.mockRejectedValue(new Error('redis down'));
+      recoveryTarget.converge.mockResolvedValue({
+        outcome: 'RETRY',
+        reasonCode: 'UNKNOWN_INFRA_FAILURE',
+        lastError: 'redis down',
+        observedMode: legacySnapshot,
+      });
       syncState.releaseClaimIfCurrent.mockResolvedValue({ count: 0 });
 
       const outcome = await service.reconcileOne('marker-1', new Date());
@@ -173,11 +245,12 @@ describe('CartReservationSyncRecoveryService', () => {
     });
   });
 
-  describe('resolve miss after a successful Redis write', () => {
+  describe('resolve miss after a converged write', () => {
     it('never returns RESOLVED_CONVERGED on a miss, and calls markUnresolved only when generation changed (superseded)', async () => {
       const claimed = buildMarker({ generation: 4, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       syncState.resolveClaimIfCurrent.mockResolvedValue({ count: 0 });
       // A customer mutation superseded us: generation moved, current row is
       // back at PENDING (upsertDesiredState's own unconditional write).
@@ -195,6 +268,7 @@ describe('CartReservationSyncRecoveryService', () => {
       const claimed = buildMarker({ generation: 4, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       syncState.resolveClaimIfCurrent.mockResolvedValue({ count: 0 });
       // Another worker reclaimed: generation UNCHANGED, only attemptCount/status moved.
       syncState.findById.mockResolvedValue(
@@ -208,14 +282,14 @@ describe('CartReservationSyncRecoveryService', () => {
     });
   });
 
-  describe('false-PENDING acceptance (DA.1A Review #2 conservative rule, reused by DA.1B)', () => {
-    it('a stale worker whose Redis write lands after a newer generation already resolved conservatively unresolves it - not treated as corruption', async () => {
+  describe('false-PENDING acceptance (DA.1A Review #2 conservative rule, reused by DA.1B/DA.4B)', () => {
+    it('a stale worker whose write lands after a newer generation already resolved conservatively unresolves it - not treated as corruption', async () => {
       // Old stale worker's claim: generation 4, attemptCount 1.
       const claimed = buildMarker({ generation: 4, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(claimed);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
-      // Redis "succeeds" from the stale worker's own point of view.
-      inventoryReservations.release.mockResolvedValue(undefined);
+      // The write "succeeds" from the stale worker's own point of view.
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       // But the fenced resolve misses - a newer generation (5) already
       // converged and was resolved by DA.1A's own synchronous path.
       syncState.resolveClaimIfCurrent.mockResolvedValue({ count: 0 });
@@ -237,7 +311,7 @@ describe('CartReservationSyncRecoveryService', () => {
       const workerAClaim = buildMarker({ generation: 4, attemptCount: 1 });
       syncState.claimForRecovery.mockResolvedValue(workerAClaim);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
-      inventoryReservations.release.mockResolvedValue(undefined);
+      recoveryTarget.converge.mockResolvedValue({ outcome: 'CONVERGED', observedMode: legacySnapshot });
       // A's terminal resolve is fenced out - B has since reclaimed
       // (attemptCount now 2, same generation 4 - no CartItem mutation
       // happened, only a stale-PROCESSING reclaim).
@@ -249,7 +323,7 @@ describe('CartReservationSyncRecoveryService', () => {
       const outcome = await service.reconcileOne('marker-1', new Date());
 
       // A's resolve attempt used EXACTLY A's own claimed pair - never B's.
-      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 4, 1, expect.any(Date));
+      expect(syncState.resolveClaimIfCurrent).toHaveBeenCalledWith('marker-1', 4, 1, expect.any(Date), fakeTx);
       // A never attempts release in the success path at all.
       expect(syncState.releaseClaimIfCurrent).not.toHaveBeenCalled();
       // A must not touch B's claim via markUnresolved either.
@@ -257,11 +331,16 @@ describe('CartReservationSyncRecoveryService', () => {
       expect(outcome).toEqual({ outcome: 'STALE_CLAIM', markerId: 'marker-1' });
     });
 
-    it('a reclaimed worker (A) whose Redis call throws still fences its release attempt to its own stale pair, never B\'s', async () => {
+    it('a reclaimed worker (A) whose write throws still fences its release attempt to its own stale pair, never B\'s', async () => {
       const workerAClaim = buildMarker({ generation: 6, attemptCount: 3 });
       syncState.claimForRecovery.mockResolvedValue(workerAClaim);
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
-      inventoryReservations.release.mockRejectedValue(new Error('redis timeout'));
+      recoveryTarget.converge.mockResolvedValue({
+        outcome: 'RETRY',
+        reasonCode: 'UNKNOWN_INFRA_FAILURE',
+        lastError: 'redis timeout',
+        observedMode: legacySnapshot,
+      });
       // B has already reclaimed (attemptCount 4) by the time A's release
       // finally rejects - A's fenced release must miss.
       syncState.releaseClaimIfCurrent.mockResolvedValue({ count: 0 });
@@ -273,122 +352,4 @@ describe('CartReservationSyncRecoveryService', () => {
     });
   });
 
-  describe('runBatch', () => {
-    it('snapshots candidates exactly once and processes each at most once in the invocation', async () => {
-      syncState.findRecoveryCandidateIds.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
-      const spy = jest
-        .spyOn(service, 'reconcileOne')
-        .mockResolvedValueOnce({ outcome: 'RESOLVED_CONVERGED', markerId: 'a' })
-        .mockResolvedValueOnce({ outcome: 'STALE_CLAIM', markerId: 'b' })
-        .mockResolvedValueOnce({ outcome: 'REQUEUED_RETRYABLE_FAILURE', markerId: 'c' });
-
-      const now = new Date();
-      const result = await service.runBatch({ now });
-
-      expect(syncState.findRecoveryCandidateIds).toHaveBeenCalledTimes(1);
-      expect(spy).toHaveBeenCalledTimes(3);
-      expect(spy).toHaveBeenNthCalledWith(1, 'a', now);
-      expect(spy).toHaveBeenNthCalledWith(2, 'b', now);
-      expect(spy).toHaveBeenNthCalledWith(3, 'c', now);
-      expect(result).toMatchObject({
-        ok: true,
-        result: {
-          candidatesFound: 3,
-          attempted: 3,
-          counters: { resolvedConverged: 1, staleClaim: 1, requeuedRetryableFailure: 1, requeuedSuperseded: 0, skipped: 0 },
-        },
-      });
-      spy.mockRestore();
-    });
-
-    it('a permanently failing candidate is attempted only once per invocation - no in-run hot loop', async () => {
-      syncState.findRecoveryCandidateIds.mockResolvedValue([{ id: 'always-fails' }]);
-      const spy = jest
-        .spyOn(service, 'reconcileOne')
-        .mockResolvedValue({ outcome: 'REQUEUED_RETRYABLE_FAILURE', markerId: 'always-fails' });
-
-      await service.runBatch({ now: new Date() });
-
-      expect(spy).toHaveBeenCalledTimes(1); // never re-invoked within this same run
-      spy.mockRestore();
-    });
-
-    it('isolates a per-candidate exception and still processes the remaining candidates', async () => {
-      syncState.findRecoveryCandidateIds.mockResolvedValue([{ id: 'throws' }, { id: 'ok' }]);
-      const spy = jest
-        .spyOn(service, 'reconcileOne')
-        .mockRejectedValueOnce(new Error('unexpected: token=secret-xyz'))
-        .mockResolvedValueOnce({ outcome: 'RESOLVED_CONVERGED', markerId: 'ok' });
-
-      const result = await service.runBatch({ now: new Date() });
-
-      expect(result).toMatchObject({ ok: true });
-      if (result.ok) {
-        expect(result.result.attempted).toBe(2);
-        expect(result.result.errors).toHaveLength(1);
-        expect(result.result.errors[0]?.markerId).toBe('throws');
-        expect(result.result.errors[0]?.message).not.toContain('secret-xyz');
-        expect(result.result.counters.resolvedConverged).toBe(1);
-      }
-      spy.mockRestore();
-    });
-
-    it('processes candidates sequentially, not in parallel', async () => {
-      syncState.findRecoveryCandidateIds.mockResolvedValue([{ id: 'first' }, { id: 'second' }]);
-      const order: string[] = [];
-      const spy = jest.spyOn(service, 'reconcileOne').mockImplementation(async (markerId) => {
-        order.push(`start:${markerId}`);
-        await new Promise((resolve) => setTimeout(resolve, markerId === 'first' ? 30 : 0));
-        order.push(`end:${markerId}`);
-        return { outcome: 'RESOLVED_CONVERGED', markerId };
-      });
-
-      await service.runBatch({ now: new Date() });
-
-      expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
-      spy.mockRestore();
-    });
-
-    it('rejects invalid input without touching the repository', async () => {
-      const result = await service.runBatch({ now: new Date(), limit: 0 });
-
-      expect(result).toMatchObject({ ok: false, code: 'INVALID_INPUT', field: 'limit' });
-      expect(syncState.findRecoveryCandidateIds).not.toHaveBeenCalled();
-    });
-
-    it('rejects an invalid now', async () => {
-      const result = await service.runBatch({ now: new Date('not-a-date') });
-
-      expect(result).toMatchObject({ ok: false, code: 'INVALID_INPUT', field: 'now' });
-    });
-
-    it('rejects a limit exceeding MAX_RECOVERY_BATCH_SIZE', async () => {
-      const result = await service.runBatch({ now: new Date(), limit: 10_000 });
-
-      expect(result).toMatchObject({ ok: false, code: 'INVALID_INPUT', field: 'limit' });
-    });
-
-    it('tallies REQUEUED_SUPERSEDED and skipped (ALREADY_RESOLVED/ALREADY_CLAIMED/NOT_FOUND) outcomes', async () => {
-      syncState.findRecoveryCandidateIds.mockResolvedValue([
-        { id: 'superseded' },
-        { id: 'resolved' },
-        { id: 'claimed' },
-        { id: 'missing' },
-      ]);
-      const spy = jest
-        .spyOn(service, 'reconcileOne')
-        .mockResolvedValueOnce({ outcome: 'REQUEUED_SUPERSEDED', markerId: 'superseded' })
-        .mockResolvedValueOnce({ outcome: 'ALREADY_RESOLVED', markerId: 'resolved' })
-        .mockResolvedValueOnce({ outcome: 'ALREADY_CLAIMED', markerId: 'claimed' })
-        .mockResolvedValueOnce({ outcome: 'NOT_FOUND', markerId: 'missing' });
-
-      const result = await service.runBatch({ now: new Date() });
-
-      expect(result).toMatchObject({
-        ok: true,
-        result: { counters: { requeuedSuperseded: 1, skipped: 3 } },
-      });
-      spy.mockRestore();
-    });
-  });
 });

@@ -8,10 +8,10 @@ import { buildLegacyPricingSnapshot } from '../../orders/services/legacy-pricing
 import { OrdersService } from '../../orders/services/orders.service';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
+import { installDelayedReserveSpy } from './cart-reservation-sync-recovery-delay-spy-test-helpers';
 import {
   RecoveryFixture,
   createProduct,
-  installDelayedReserveSpy,
   setUpRecoveryFixture,
   tearDownRecoveryFixture,
 } from './cart-reservation-sync-recovery-test-helpers';

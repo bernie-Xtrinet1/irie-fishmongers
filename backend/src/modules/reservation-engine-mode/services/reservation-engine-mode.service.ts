@@ -1,11 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { ReservationEngineMode } from '@prisma/client';
+import { Prisma, ReservationEngineMode } from '@prisma/client';
 
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
-import { ReservationEngineModeConfigRepository } from '../repositories/reservation-engine-mode-config.repository';
 import {
+  PrismaClientOrTx,
+  ReservationEngineModeConfigRepository,
+} from '../repositories/reservation-engine-mode-config.repository';
+import {
+  ReservationEngineModeSnapshot,
   RollbackVerificationResult,
   SetReservationEngineModeInput,
   SetReservationEngineModeResult,
@@ -25,6 +29,18 @@ const VALID_TRANSITIONS: ReadonlySet<string> = new Set([
   'DRAINING->CART_SCOPED',
   'DRAINING->LEGACY',
 ]);
+
+// Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan). One lock key,
+// referenced by both setMode() (exclusive) and verifyModeRevisionUnchanged
+// (shared) - never duplicated as a second hardcoded string literal. Postgres
+// advisory locks implement the standard reader-writer pattern: multiple
+// shared holders may coexist, but a shared acquisition blocks while an
+// exclusive holder is active and vice versa. setMode()'s entire
+// read-validate-write sequence already holds this lock exclusively; a
+// recovery attempt's terminal resolution holds it shared only long enough
+// to re-read and compare the mode identity it chose a write against,
+// proving no transition can have committed in between.
+const TRANSITION_LOCK_KEY = 'reservation_engine_mode_transition';
 
 // Owns reservation-engine-mode business rules: the state-transition table
 // and the DRAINING -> LEGACY rollback-verification gate (see ADR-007
@@ -56,6 +72,21 @@ export class ReservationEngineModeService {
     return config?.mode ?? 'LEGACY';
   }
 
+  // Phase 16A.0-DA, Unit DA.4B. Same plain, lock-free read as getCurrentMode
+  // (this is a best-effort read used to CHOOSE a recovery write, never the
+  // terminal fencing check itself - see verifyModeRevisionUnchanged below
+  // for that), but also returns the identity that choice was made against,
+  // so a caller can later prove nothing changed before treating anything as
+  // resolved. The implicit-LEGACY case is a real, comparable identity of
+  // its own - see ReservationEngineModeSnapshot's own doc comment.
+  async getCurrentModeSnapshot(client: PrismaClientOrTx = this.prisma): Promise<ReservationEngineModeSnapshot> {
+    const config = await this.repository.findCurrent(client);
+    if (!config) {
+      return { mode: 'LEGACY', revisionId: null, revision: null };
+    }
+    return { mode: config.mode, revisionId: config.id, revision: config.revision };
+  }
+
   // The entire read-validate-(gate-check)-write sequence runs inside one
   // Postgres transaction, serialized by a transaction-scoped advisory
   // lock acquired first (pg_advisory_xact_lock - auto-released at
@@ -73,7 +104,7 @@ export class ReservationEngineModeService {
   // acceptable cost here.
   async setMode(input: SetReservationEngineModeInput): Promise<SetReservationEngineModeResult> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('reservation_engine_mode_transition'))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
 
       const currentConfig = await this.repository.findCurrent(tx);
       const currentMode: ReservationEngineMode = currentConfig?.mode ?? 'LEGACY';
@@ -100,6 +131,30 @@ export class ReservationEngineModeService {
       const created = await this.repository.create({ mode: targetMode, updatedById }, tx);
       return { ok: true, id: created.id, mode: created.mode, createdAt: created.createdAt };
     });
+  }
+
+  // Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan's atomic-fencing
+  // design). Proves, under the SAME advisory lock key setMode() holds
+  // exclusively, that a previously-observed mode identity is still current -
+  // the terminal fencing check a recovery attempt must pass before it may
+  // ever treat a write as resolved. Takes an externally-managed transaction
+  // client (never opens its own): the caller needs the SAME transaction for
+  // its own conditional marker-resolution write immediately afterward, so
+  // the shared lock acquired here remains held for the rest of that
+  // transaction's lifetime - provably preventing any setMode() transition
+  // from committing until this transaction ends. Compares the complete
+  // identity (both revisionId and revision - see ReservationEngineModeSnapshot's
+  // own comment), including the implicit-LEGACY/no-row case symmetrically:
+  // { revisionId: null, revision: null } is a real, comparable identity.
+  async verifyModeRevisionUnchanged(
+    tx: Prisma.TransactionClient,
+    expected: Pick<ReservationEngineModeSnapshot, 'revisionId' | 'revision'>,
+  ): Promise<boolean> {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext(${TRANSITION_LOCK_KEY}))`;
+    const current = await this.repository.findCurrent(tx);
+    const currentRevisionId = current?.id ?? null;
+    const currentRevision = current?.revision ?? null;
+    return currentRevisionId === expected.revisionId && currentRevision === expected.revision;
   }
 
   // The DRAINING -> LEGACY gate itself, callable independently of setMode

@@ -42,8 +42,8 @@ describe('ReservationEngineModeService', () => {
     );
   });
 
-  function buildConfig(mode: ReservationEngineMode): ReservationEngineModeConfig {
-    return { id: 'config-1', mode, updatedById, createdAt: now };
+  function buildConfig(mode: ReservationEngineMode, revision = 1): ReservationEngineModeConfig {
+    return { id: 'config-1', revision, mode, updatedById, createdAt: now };
   }
 
   function mockActiveReservation() {
@@ -314,6 +314,87 @@ describe('ReservationEngineModeService', () => {
 
       expect(result).toEqual({ clear: true, outstandingProductIds: [], structureDriftProductIds: [] });
       expect(smembers).not.toHaveBeenCalled();
+    });
+  });
+
+  // Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan).
+  describe('getCurrentModeSnapshot', () => {
+    it('returns the implicit-LEGACY snapshot when no config row exists yet', async () => {
+      repository.findCurrent.mockResolvedValue(null);
+
+      await expect(service.getCurrentModeSnapshot()).resolves.toEqual({
+        mode: 'LEGACY',
+        revisionId: null,
+        revision: null,
+      });
+    });
+
+    it("returns the current row's mode, id, and revision when one exists", async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('CART_SCOPED', 7));
+
+      await expect(service.getCurrentModeSnapshot()).resolves.toEqual({
+        mode: 'CART_SCOPED',
+        revisionId: 'config-1',
+        revision: 7,
+      });
+    });
+
+    it('passes an externally-supplied transaction client through to the repository read', async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('MIRROR', 2));
+
+      await service.getCurrentModeSnapshot(tx);
+
+      expect(repository.findCurrent).toHaveBeenCalledWith(tx);
+    });
+  });
+
+  describe('verifyModeRevisionUnchanged', () => {
+    it('acquires the shared advisory lock on the same key setMode() holds exclusively', async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('MIRROR', 3));
+
+      await service.verifyModeRevisionUnchanged(tx, { revisionId: 'config-1', revision: 3 });
+
+      expect(executeRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns true when both revisionId and revision still match', async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('CART_SCOPED', 5));
+
+      await expect(
+        service.verifyModeRevisionUnchanged(tx, { revisionId: 'config-1', revision: 5 }),
+      ).resolves.toBe(true);
+    });
+
+    it('returns false when revisionId no longer matches', async () => {
+      repository.findCurrent.mockResolvedValue({ ...buildConfig('CART_SCOPED', 5), id: 'config-2' });
+
+      await expect(
+        service.verifyModeRevisionUnchanged(tx, { revisionId: 'config-1', revision: 5 }),
+      ).resolves.toBe(false);
+    });
+
+    it('returns false when revision no longer matches, even if revisionId did (defensive - should never happen given revision is unique)', async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('CART_SCOPED', 6));
+
+      await expect(
+        service.verifyModeRevisionUnchanged(tx, { revisionId: 'config-1', revision: 5 }),
+      ).resolves.toBe(false);
+    });
+
+    it('returns true when the implicit-LEGACY identity (no row) is still current', async () => {
+      repository.findCurrent.mockResolvedValue(null);
+
+      await expect(
+        service.verifyModeRevisionUnchanged(tx, { revisionId: null, revision: null }),
+      ).resolves.toBe(true);
+    });
+
+    it('returns false when the very first transition committed since the implicit-LEGACY snapshot was taken', async () => {
+      repository.findCurrent.mockResolvedValue(buildConfig('MIRROR', 1));
+
+      await expect(
+        service.verifyModeRevisionUnchanged(tx, { revisionId: null, revision: null }),
+      ).resolves.toBe(false);
     });
   });
 });

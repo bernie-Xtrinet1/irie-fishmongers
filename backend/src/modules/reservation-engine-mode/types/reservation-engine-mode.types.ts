@@ -45,3 +45,25 @@ export interface RollbackVerificationResult {
   outstandingProductIds: string[];
   structureDriftProductIds: string[];
 }
+
+// Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan). The complete
+// persisted transition identity a recovery attempt chose a write against -
+// both fields together, never revisionId alone: revisionId (a random UUID)
+// has identity but no ordering value of its own once compared, and
+// revision (the monotonic sequence value) is the actual fencing signal:
+// comparing both is redundant-but-cheap defense in depth, since revision
+// alone is already unique per row by construction.
+//
+// The implicit default - no ReservationEngineModeConfig row exists yet, so
+// the effective mode is LEGACY - is a real, comparable identity of its own:
+// { mode: 'LEGACY', revisionId: null, revision: null }. This is not a
+// missing-data placeholder; it is what getCurrentModeSnapshot returns
+// before the first setMode() call ever happens, and verifyModeRevisionUnchanged
+// treats it exactly like any other snapshot - if the very first transition
+// commits between two reads, revisionId/revision moving from null to a
+// real value is detected as a change like any other.
+export interface ReservationEngineModeSnapshot {
+  mode: ReservationEngineMode;
+  revisionId: string | null;
+  revision: number | null;
+}

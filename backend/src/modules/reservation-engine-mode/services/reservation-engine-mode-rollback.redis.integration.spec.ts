@@ -94,6 +94,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
   function draining() {
     repository.findCurrent.mockResolvedValue({
       id: 'config-1',
+      revision: 1,
       mode: 'DRAINING',
       updatedById: 'admin-1',
       createdAt: new Date(),
@@ -105,6 +106,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
     draining();
     repository.create.mockResolvedValue({
       id: 'config-2',
+      revision: 2,
       mode: 'LEGACY',
       updatedById: 'admin-1',
       createdAt: new Date(),
@@ -221,6 +223,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
   it('case 6: rejects CART_SCOPED -> LEGACY directly, without going through DRAINING', async () => {
     repository.findCurrent.mockResolvedValue({
       id: 'config-1',
+      revision: 1,
       mode: 'CART_SCOPED',
       updatedById: 'admin-1',
       createdAt: new Date(),

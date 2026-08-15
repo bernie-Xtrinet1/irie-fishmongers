@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { CartReservationSyncState } from '@prisma/client';
+import { CartReservationSyncBlockReason, CartReservationSyncState, CartReservationSyncStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { PrismaClientOrTx } from '../../cart/repositories/cart.repository';
@@ -176,36 +176,46 @@ export class CartReservationSyncStateRepository {
   // resolvedAt IS NULL is the sole correctness selector (Section 3's
   // mandatory source-of-truth rule: a resolved row is never a recovery
   // candidate, regardless of status). No nextAttemptAt/backoff column
-  // exists on this table by design (Section 7/15) - a PENDING unresolved
-  // row is always immediately eligible; only a PROCESSING row has a time
-  // gate at all (the stale-reclaim cutoff).
+  // exists for ordinary PENDING/PROCESSING rows by design (Section 7/15) -
+  // a PENDING unresolved row is always immediately eligible; only a
+  // PROCESSING row has a time gate at all (the stale-reclaim cutoff).
+  //
+  // Phase 16A.0-DA, Unit DA.4B: BLOCKED rows are the one deliberate
+  // exception to that no-backoff precedent - see nextAttemptAt's own
+  // schema comment for why. status is now returned alongside id so
+  // runBatch can dispatch each candidate (reconcileOne vs recheckBlocked)
+  // without a second per-row query.
   //
   // Timestamp binding: these columns are Postgres `timestamp without time
   // zone` (same native type as CartReservationCompensation's, confirmed by
   // that table's own regression-test comment). Binding a native JS Date
   // directly would send it as timestamptz and let Postgres silently shift
   // it by the session's non-UTC offset when compared against a naive
-  // column - the staleCutoff boundary is passed as an ISO string cast to
+  // column - every boundary below is passed as an ISO string cast to
   // ::timestamp instead, never a raw Date, matching
   // CompensationRepository.findBatchCandidateIds's own established fix.
   async findRecoveryCandidateIds(
     now: Date,
     limit: number,
     client: PrismaClientOrTx = this.prisma,
-  ): Promise<{ id: string }[]> {
+  ): Promise<{ id: string; status: CartReservationSyncStatus }[]> {
     const staleCutoffIso = new Date(now.getTime() - PROCESSING_STALE_TIMEOUT_MS).toISOString();
-    return client.$queryRaw<{ id: string }[]>`
-      SELECT "id"
+    const nowIso = now.toISOString();
+    return client.$queryRaw<{ id: string; status: CartReservationSyncStatus }[]>`
+      SELECT "id", "status"
       FROM "cart_reservation_sync_states"
       WHERE "resolvedAt" IS NULL
         AND (
           "status" = 'PENDING'
           OR ("status" = 'PROCESSING' AND "processingStartedAt" < ${staleCutoffIso}::timestamp)
+          OR ("status" = 'BLOCKED' AND "nextAttemptAt" <= ${nowIso}::timestamp)
         )
       ORDER BY
         CASE
           WHEN "status" = 'PROCESSING'
             THEN "processingStartedAt" + (${PROCESSING_STALE_TIMEOUT_MS} * INTERVAL '1 millisecond')
+          WHEN "status" = 'BLOCKED'
+            THEN "nextAttemptAt"
           ELSE "createdAt"
         END ASC,
         "id" ASC
@@ -284,6 +294,70 @@ export class CartReservationSyncStateRepository {
     return client.cartReservationSyncState.updateMany({
       where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
       data: { status: 'PENDING', lastError: sanitizedLastError, processingStartedAt: null },
+    });
+  }
+
+  // --- Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan). BLOCKED is
+  // a waiting-on-a-precondition state, not a claim: entering it happens
+  // from inside the SAME reconcileOne call that already holds the claim
+  // (fenced identically to resolveClaimIfCurrent/releaseClaimIfCurrent -
+  // generation + attemptCount + status='PROCESSING'), but rechecking a
+  // BLOCKED row is never a claim of any kind - claimForRecovery never
+  // matches BLOCKED, and unblocking/rescheduling are fenced by generation
+  // alone. attemptCount is never touched by any of these three primitives:
+  // a blocked precondition check consumes zero recovery attempts (DA.4B
+  // decision C - retries remain unbounded, and checking a BLOCKED
+  // precondition is not itself an attempt to converge). No blockedCheckCount
+  // exists here either, by explicit DA.4B decision. ---
+
+  // The sole PROCESSING -> BLOCKED transition. Sets blockReason and the
+  // first nextAttemptAt, and - deliberately, matching
+  // resolveClaimIfCurrent's own convention - clears processingStartedAt:
+  // a BLOCKED row is not "being processed" between checks, so its
+  // staleness window is meaningless while blocked.
+  blockIfGenerationMatches(
+    id: string,
+    claimedGeneration: number,
+    claimedAttemptCount: number,
+    blockReason: CartReservationSyncBlockReason,
+    nextAttemptAt: Date,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
+      data: { status: 'BLOCKED', blockReason, nextAttemptAt, processingStartedAt: null },
+    });
+  }
+
+  // BLOCKED -> PENDING: the precondition has cleared (or desired state
+  // re-derived to release-shaped, which is never blocked - see
+  // recheckBlocked's own comment), so the row becomes eligible for the
+  // very next runBatch/reconcileOne pass, targeting whatever mode is
+  // current at that later moment - never the mode observed when it was
+  // first blocked. Clears blockReason/nextAttemptAt back to null.
+  unblockIfGenerationMatches(
+    id: string,
+    observedGeneration: number,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: observedGeneration, status: 'BLOCKED' },
+      data: { status: 'PENDING', blockReason: null, nextAttemptAt: null },
+    });
+  }
+
+  // BLOCKED -> BLOCKED: the precondition has not cleared yet - only
+  // nextAttemptAt moves forward. blockReason is left untouched (the
+  // recheck re-confirmed the SAME precondition, not a new diagnostic).
+  rescheduleBlockedCheckIfGenerationMatches(
+    id: string,
+    observedGeneration: number,
+    nextAttemptAt: Date,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: observedGeneration, status: 'BLOCKED' },
+      data: { nextAttemptAt },
     });
   }
 
