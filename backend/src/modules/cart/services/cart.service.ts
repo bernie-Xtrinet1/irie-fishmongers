@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,8 +10,8 @@ import { CartItem, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { RESERVATION_GATEWAY, ReservationGateway } from '../../checkout-reservation/types/reservation-gateway.types';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
-import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { AddCartItemDto } from '../dto/add-cart-item.dto';
@@ -47,7 +48,7 @@ export class CartService {
     private readonly cartRepository: CartRepository,
     private readonly productsRepository: ProductsRepository,
     private readonly vendorsRepository: VendorsRepository,
-    private readonly inventoryReservations: InventoryReservationsService,
+    @Inject(RESERVATION_GATEWAY) private readonly gateway: ReservationGateway,
     private readonly syncState: CartReservationSyncStateRepository,
     private readonly convergence: CartReservationConvergenceService,
     private readonly idempotency: CartItemAddIdempotencyService,
@@ -162,7 +163,14 @@ export class CartService {
     const compensationPlan: CompensationPlan = existingItem
       ? { kind: 'REVERT_QUANTITY', mutationVersion: mutation.item.mutationVersion, toQuantity: existingQuantity }
       : { kind: 'DELETE_IF_UNCHANGED', mutationVersion: mutation.item.mutationVersion };
-    await this.convergence.convergeReservation(cartId, dto.productId, mutation.generation, mutation.item.quantity, compensationPlan);
+    await this.convergence.convergeReservation(
+      cartId,
+      dto.productId,
+      userId,
+      mutation.generation,
+      mutation.item.quantity,
+      compensationPlan,
+    );
 
     const updated = await this.cartRepository.findOrCreateByCustomerId(userId);
     return CartService.toResponse(updated);
@@ -220,7 +228,7 @@ export class CartService {
       return { item: updatedItem, generation: marker.generation };
     });
 
-    await this.convergence.convergeReservation(cart.id, item.productId, generation, mutated.quantity, {
+    await this.convergence.convergeReservation(cart.id, item.productId, userId, generation, mutated.quantity, {
       kind: 'REVERT_QUANTITY',
       mutationVersion: mutated.mutationVersion,
       toQuantity: previousQuantity,
@@ -243,7 +251,7 @@ export class CartService {
       return { item: removed, generation: marker.generation };
     });
 
-    await this.convergence.convergeReservation(cart.id, item.productId, generation, null, {
+    await this.convergence.convergeReservation(cart.id, item.productId, userId, generation, null, {
       kind: 'RESTORE',
       toQuantity: deleted.quantity,
     });
@@ -274,16 +282,23 @@ export class CartService {
     return product;
   }
 
+  // Phase 16A.0-DA, Unit DA.3 (see the DA.3 frozen plan). Routed through
+  // the mode-aware gateway - LEGACY remains the only effective mode today
+  // (nothing here calls setMode()), so `available` is behaviorally
+  // identical to the pre-DA.3 direct getAvailableToPurchase call. The
+  // three non-LEGACY failure shapes (MODE_NOT_ADMITTING,
+  // RESERVATION_STRUCTURE_DRIFT, INVALID_INPUT) are not yet reachable in
+  // production but must still compile and behave sensibly: each is
+  // treated as zero available, producing the exact same ConflictException
+  // shape the LEGACY "not enough available" path already throws today -
+  // no new exception type is introduced for currently-dead branches.
   private async assertQuantityAvailable(
     product: ProductWithLot,
     cartId: string,
     requestedTotal: number,
   ): Promise<void> {
-    const availableToPurchase = await this.inventoryReservations.getAvailableToPurchase(
-      product.id,
-      product.quantityAvailable,
-      cartId,
-    );
+    const result = await this.gateway.getCartAdmissionAvailability(product.id, product.quantityAvailable, cartId);
+    const availableToPurchase = result.ok ? result.available : 0;
     if (requestedTotal > availableToPurchase) {
       throw new ConflictException(
         `Only ${availableToPurchase} unit(s) of this product are currently available`,

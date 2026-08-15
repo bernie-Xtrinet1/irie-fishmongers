@@ -6,8 +6,12 @@ import { CheckoutReservationFacade } from './services/checkout-reservation-facad
 import { RESERVATION_GATEWAY } from './types/reservation-gateway.types';
 
 // Phase 16A.0-C, Unit C3 (see ADR-007 and the approved C3 implementation
-// contract). Additive and unwired - not imported by CartModule, AppModule,
-// or any other production module.
+// contract). As of Phase 16A.0-DA, Unit DA.3, this module is imported by
+// CartModule - CartService/CartReservationConvergenceService now depend
+// on RESERVATION_GATEWAY instead of InventoryReservationsService directly.
+// Not imported by AppModule/CheckoutController/any activation surface -
+// LEGACY remains the only effective runtime mode (nothing calls
+// setMode()).
 //
 // CheckoutReservationFacade is a provider but deliberately NOT exported -
 // it is resolvable within this module (including via RESERVATION_GATEWAY's

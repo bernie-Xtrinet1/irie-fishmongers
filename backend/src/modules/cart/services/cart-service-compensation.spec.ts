@@ -1,5 +1,6 @@
 import { PrismaService } from '../../../database/prisma.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -9,18 +10,16 @@ import { CartReservationConvergenceService } from './cart-reservation-convergenc
 import { buildCart, buildCartItem, buildProduct, buildVendor } from './cart-service-test-helpers';
 import { CartService } from './cart.service';
 
-// Phase 16A.0-DA, Unit DA.1A (see the DA.1 architecture review, including
-// the concurrency-proof correction). Covers the convergence algorithm's
-// Redis-failure/compensation branching in isolation - split from
+// Phase 16A.0-DA, Unit DA.1A. Covers the convergence algorithm's Redis-
+// failure/compensation branching in isolation - split from
 // cart.service.spec.ts to stay under the 400-line file cap.
 //
 // applyCompensation attempts the CartItem-level compensation FIRST and the
 // marker-generation gate SECOND, matching the primary-mutation path's own
-// lock order (see the DA.1 architecture review's lock-ordering
-// correction). The marker's permanent generation is the actual
-// correctness boundary: a late gate miss throws
-// StaleCompensationGenerationError, rolling back the WHOLE transaction
-// (including any tentative CartItem write already made).
+// lock order. The marker's permanent generation is the actual correctness
+// boundary: a late gate miss throws StaleCompensationGenerationError,
+// rolling back the WHOLE transaction (including any tentative CartItem
+// write already made).
 describe('CartService compensation (DA.1A)', () => {
   let prisma: { $transaction: jest.Mock };
   let cartRepository: jest.Mocked<
@@ -40,7 +39,7 @@ describe('CartService compensation (DA.1A)', () => {
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let inventoryReservations: jest.Mocked<
-    Pick<InventoryReservationsService, 'getAvailableToPurchase' | 'reserve' | 'release'>
+    Pick<InventoryReservationsService, 'getReservedByOthers' | 'reserve' | 'release'>
   >;
   let syncState: jest.Mocked<
     Pick<
@@ -68,7 +67,7 @@ describe('CartService compensation (DA.1A)', () => {
     productsRepository = { findById: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
     inventoryReservations = {
-      getAvailableToPurchase: jest.fn().mockResolvedValue(999),
+      getReservedByOthers: jest.fn().mockResolvedValue(0),
       reserve: jest.fn(),
       release: jest.fn(),
     };
@@ -78,12 +77,12 @@ describe('CartService compensation (DA.1A)', () => {
       advanceIfCurrentGeneration: jest.fn(),
       markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
     };
-    // convergeReservation moved to CartReservationConvergenceService (DA.2,
-    // split for file size) - a REAL instance over these same mocks.
+    // A REAL, LEGACY-pinned gateway over these same mocks (DA.3).
+    const gateway = buildLegacyReservationGateway(inventoryReservations as unknown as InventoryReservationsService);
     const convergence = new CartReservationConvergenceService(
       prisma as unknown as PrismaService,
       cartRepository as unknown as CartRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      gateway,
       syncState as unknown as CartReservationSyncStateRepository,
     );
     // Idempotency is out of scope here - always executes fresh, never superseded.
@@ -98,7 +97,7 @@ describe('CartService compensation (DA.1A)', () => {
       cartRepository as unknown as CartRepository,
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      gateway,
       syncState as unknown as CartReservationSyncStateRepository,
       convergence,
       idempotency as unknown as CartItemAddIdempotencyService,

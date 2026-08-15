@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, NotFoundExc
 
 import { PrismaService } from '../../../database/prisma.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -33,7 +34,7 @@ describe('CartService', () => {
   let productsRepository: jest.Mocked<Pick<ProductsRepository, 'findById'>>;
   let vendorsRepository: jest.Mocked<Pick<VendorsRepository, 'findById'>>;
   let inventoryReservations: jest.Mocked<
-    Pick<InventoryReservationsService, 'getAvailableToPurchase' | 'reserve' | 'release'>
+    Pick<InventoryReservationsService, 'getReservedByOthers' | 'reserve' | 'release'>
   >;
   let syncState: jest.Mocked<
     Pick<CartReservationSyncStateRepository, 'upsertDesiredState' | 'resolveIfCurrentGeneration' | 'markUnresolved'>
@@ -58,7 +59,7 @@ describe('CartService', () => {
     productsRepository = { findById: jest.fn() };
     vendorsRepository = { findById: jest.fn() };
     inventoryReservations = {
-      getAvailableToPurchase: jest.fn().mockResolvedValue(999),
+      getReservedByOthers: jest.fn().mockResolvedValue(0),
       reserve: jest.fn(),
       release: jest.fn(),
     };
@@ -67,16 +68,15 @@ describe('CartService', () => {
       resolveIfCurrentGeneration: jest.fn().mockResolvedValue({ count: 1 }),
       markUnresolved: jest.fn().mockResolvedValue({ count: 1 }),
     };
-    // convergeReservation moved to CartReservationConvergenceService
-    // (Phase 16A.0-DA, Unit DA.2, split for file size) - a REAL instance
-    // built from these same mocked repositories exercises the exact logic
-    // under test here unchanged. Idempotency is out of scope for this file
-    // (see cart-item-add-idempotency.service.spec.ts) - always executes
-    // fresh, never superseded.
+    // A REAL, LEGACY-pinned gateway over these same mocks (DA.3) feeds a
+    // REAL CartReservationConvergenceService (DA.2) - both exercise the
+    // exact logic under test unchanged. Idempotency is out of scope for
+    // this file - always executes fresh, never superseded.
+    const gateway = buildLegacyReservationGateway(inventoryReservations as unknown as InventoryReservationsService);
     const convergence = new CartReservationConvergenceService(
       prisma as unknown as PrismaService,
       cartRepository as unknown as CartRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      gateway,
       syncState as unknown as CartReservationSyncStateRepository,
     );
     const idempotency: jest.Mocked<Pick<CartItemAddIdempotencyService, 'classify' | 'reject' | 'complete'>> = {
@@ -90,7 +90,7 @@ describe('CartService', () => {
       cartRepository as unknown as CartRepository,
       productsRepository as unknown as ProductsRepository,
       vendorsRepository as unknown as VendorsRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      gateway,
       syncState as unknown as CartReservationSyncStateRepository,
       convergence,
       idempotency as unknown as CartItemAddIdempotencyService,
@@ -232,11 +232,7 @@ describe('CartService', () => {
 
       await service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1');
 
-      expect(inventoryReservations.getAvailableToPurchase).toHaveBeenCalledWith(
-        'product-1',
-        20,
-        'cart-1',
-      );
+      expect(inventoryReservations.getReservedByOthers).toHaveBeenCalledWith('product-1', 'cart-1');
       expect(inventoryReservations.reserve).toHaveBeenCalledWith('product-1', 'cart-1', 5);
     });
 
@@ -244,7 +240,7 @@ describe('CartService', () => {
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
       cartRepository.findOrCreateByCustomerId.mockResolvedValue(buildCart());
-      inventoryReservations.getAvailableToPurchase.mockResolvedValue(1);
+      inventoryReservations.getReservedByOthers.mockResolvedValue(19); // 20 - 19 = 1 available
 
       await expect(
         service.addItem('user-1', { productId: 'product-1', quantity: 2 }, 'idempotency-key-1'),
@@ -294,7 +290,7 @@ describe('CartService', () => {
       cartRepository.findItemById.mockResolvedValue(buildCartItem({ quantity: 1 }));
       productsRepository.findById.mockResolvedValue(buildProduct());
       vendorsRepository.findById.mockResolvedValue(buildVendor());
-      inventoryReservations.getAvailableToPurchase.mockResolvedValue(2);
+      inventoryReservations.getReservedByOthers.mockResolvedValue(18); // 20 - 18 = 2 available
 
       await expect(
         service.updateItemQuantity('user-1', 'item-1', { quantity: 5 }),

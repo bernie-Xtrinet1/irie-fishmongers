@@ -5,6 +5,7 @@ import { Category, Role, RoleName, Vendor } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
@@ -49,9 +50,9 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
   let category: Category;
 
   const inventoryReservations: jest.Mocked<
-    Pick<InventoryReservationsService, 'getAvailableToPurchase' | 'reserve' | 'release'>
+    Pick<InventoryReservationsService, 'getReservedByOthers' | 'reserve' | 'release'>
   > = {
-    getAvailableToPurchase: jest.fn().mockResolvedValue(999),
+    getReservedByOthers: jest.fn().mockResolvedValue(0),
     reserve: jest.fn().mockResolvedValue(undefined),
     release: jest.fn().mockResolvedValue(undefined),
   };
@@ -119,19 +120,15 @@ describe('CartService compensation rollback (real Postgres, ABA-collision races)
       slug: `cart-rollback-test-category-${randomUUID()}`,
     });
 
-    const convergence = new CartReservationConvergenceService(
-      prisma,
-      cartRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
-      syncStateRepository,
-    );
+    const gateway = buildLegacyReservationGateway(inventoryReservations as unknown as InventoryReservationsService);
+    const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
     const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
     service = new CartService(
       prisma,
       cartRepository,
       productsRepository,
       vendorsRepository,
-      inventoryReservations as unknown as InventoryReservationsService,
+      gateway,
       syncStateRepository,
       convergence,
       idempotency,

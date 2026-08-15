@@ -11,6 +11,7 @@ import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-
 import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
 import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
@@ -96,18 +97,22 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     slug: `${namePrefix}-category-${randomUUID()}`,
   });
 
-  const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, syncStateRepository);
+  const gateway = buildLegacyReservationGateway(inventoryReservations);
+  const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
   const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
   const cartService = new CartService(
     prisma,
     cartRepository,
     productsRepository,
     vendorsRepository,
-    inventoryReservations,
+    gateway,
     syncStateRepository,
     convergence,
     idempotency,
   );
+  // Recovery deliberately keeps calling InventoryReservationsService
+  // directly, never the gateway - see the DA.4 prerequisite recorded in
+  // cart-reservation-sync-recovery.service.ts.
   const recoveryService = new CartReservationSyncRecoveryService(syncStateRepository, cartRepository, inventoryReservations);
 
   return {

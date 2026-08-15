@@ -215,7 +215,10 @@ describe('CartService addItem idempotency (real Postgres, real Redis)', () => {
     // without mocking real Redis-backed availability.
     const excessiveQuantity = 1_000_000;
 
-    const availabilitySpy = jest.spyOn(inventoryReservations, 'getAvailableToPurchase');
+    // Phase 16A.0-DA, Unit DA.3: assertQuantityAvailable now routes through
+    // the ReservationGateway, whose LEGACY path calls getReservedByOthers
+    // (never getAvailableToPurchase directly) - see cart.service.ts.
+    const availabilitySpy = jest.spyOn(inventoryReservations, 'getReservedByOthers');
     await expect(
       service.addItem(customerId, { productId, quantity: excessiveQuantity }, key),
     ).rejects.toBeInstanceOf(ConflictException);

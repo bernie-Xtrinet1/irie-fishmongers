@@ -9,6 +9,7 @@ import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-
 import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
 import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
@@ -87,18 +88,19 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
     categoryId = category.id;
 
     const inventoryReservations = {
-      getAvailableToPurchase: jest.fn().mockResolvedValue(999),
+      getReservedByOthers: jest.fn().mockResolvedValue(0),
       reserve: jest.fn().mockResolvedValue(undefined),
       release: jest.fn().mockResolvedValue(undefined),
     } as unknown as InventoryReservationsService;
-    const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, repository);
+    const gateway = buildLegacyReservationGateway(inventoryReservations);
+    const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, repository);
     const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
     cartService = new CartService(
       prisma,
       cartRepository,
       productsRepository,
       vendorsRepository,
-      inventoryReservations,
+      gateway,
       repository,
       convergence,
       idempotency,

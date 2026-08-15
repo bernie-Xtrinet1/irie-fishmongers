@@ -7,6 +7,7 @@ import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
@@ -106,14 +107,15 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
     imageUrl: 'https://cdn.example.com/snapper.jpg',
   });
 
-  const convergence = new CartReservationConvergenceService(prisma, cartRepository, inventoryReservations, syncStateRepository);
+  const gateway = buildLegacyReservationGateway(inventoryReservations);
+  const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
   const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
   const service = new CartService(
     prisma,
     cartRepository,
     productsRepository,
     vendorsRepository,
-    inventoryReservations,
+    gateway,
     syncStateRepository,
     convergence,
     idempotency,

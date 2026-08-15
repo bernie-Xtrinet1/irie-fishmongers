@@ -24,10 +24,26 @@ export const MAX_RECOVERY_BATCH_SIZE = 200;
 // 3 of the DA.1B review - they are diagnostic/ordering context only), and
 // re-derives the desired Redis state from the CURRENT CartItem every time.
 //
-// Calls the same legacy InventoryReservationsService.reserve/release
-// CartService itself calls - no ReservationGateway/mode-awareness here,
-// matching DA.1A's own scope boundary. No @Cron, no AppModule wiring -
-// invocation cadence is entirely external to this unit.
+// Calls InventoryReservationsService.reserve/release directly - never the
+// ReservationGateway. This is DELIBERATE and UNCHANGED by Unit DA.3, which
+// moved CartService's own synchronous path onto the gateway: as of DA.3,
+// LEGACY is still the only mode either path can observe (nothing calls
+// setMode()), so both resolve to the identical legacy Redis calls and
+// there is no divergence to reconcile yet.
+//
+// HARD DA.4 PREREQUISITE: this worker must become mode-aware (or be
+// routed through an equivalent recovery abstraction) BEFORE any
+// non-LEGACY mode (MIRROR, CART_SCOPED) is activated via setMode(). Once
+// a non-LEGACY mode is live, this worker's direct legacy calls and the
+// gateway's real admission authority would target different reservation
+// systems for the same convergence job - recovery could "fix" a marker by
+// writing to legacy Redis while the gateway has already moved admission
+// authority to the cart-scoped engine, silently reintroducing the false-
+// convergence class of bug this worker exists to prevent. Do not activate
+// a non-LEGACY mode until this is resolved.
+//
+// No @Cron, no AppModule wiring - invocation cadence is entirely external
+// to this unit.
 @Injectable()
 export class CartReservationSyncRecoveryService {
   private readonly logger = new Logger(CartReservationSyncRecoveryService.name);
