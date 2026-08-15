@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { ReservationEngineMode } from '@prisma/client';
 
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { CompensationService } from '../../mirror-compensation/services/compensation.service';
 import { ReservationAvailabilityService } from '../../reservation-engine-mode/services/reservation-availability.service';
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 import { CheckoutReservationModule } from '../checkout-reservation.module';
@@ -11,9 +12,10 @@ import { CheckoutReservationFacade } from './checkout-reservation-facade.service
 
 // Phase 16A.0-C, Unit C3. Non-MIRROR routing, validation, releaseCart,
 // availability delegation, and module-boundary coverage. MIRROR-specific
-// scenarios (legacy-first, typed failures, underflow, thrown exceptions)
-// live in checkout-reservation-facade-mirror.service.spec.ts - split purely
-// to keep both files within the repository's 400-line file limit.
+// scenarios (legacy-first, typed failures, underflow, thrown exceptions,
+// DA.4 divergence recording) live in
+// checkout-reservation-facade-mirror.service.spec.ts - split purely to
+// keep both files within the repository's 400-line file limit.
 
 type MockModeService = jest.Mocked<Pick<ReservationEngineModeService, 'getCurrentMode'>>;
 type MockInventoryReservations = jest.Mocked<
@@ -23,11 +25,13 @@ type MockInventoryReservations = jest.Mocked<
   >
 >;
 type MockAvailability = jest.Mocked<Pick<ReservationAvailabilityService, 'getCartAdmissionAvailability'>>;
+type MockCompensation = jest.Mocked<Pick<CompensationService, 'recordMirrorDivergence'>>;
 
 describe('CheckoutReservationFacade', () => {
   let modeService: MockModeService;
   let inventoryReservations: MockInventoryReservations;
   let availability: MockAvailability;
+  let compensation: MockCompensation;
   let facade: CheckoutReservationFacade;
 
   function setMode(mode: ReservationEngineMode): void {
@@ -44,10 +48,12 @@ describe('CheckoutReservationFacade', () => {
       getActiveReservation: jest.fn(),
     };
     availability = { getCartAdmissionAvailability: jest.fn() };
+    compensation = { recordMirrorDivergence: jest.fn() };
     facade = new CheckoutReservationFacade(
       modeService as unknown as ReservationEngineModeService,
       inventoryReservations as unknown as InventoryReservationsService,
       availability as unknown as ReservationAvailabilityService,
+      compensation as unknown as CompensationService,
     );
   });
 
@@ -168,6 +174,7 @@ describe('CheckoutReservationFacade', () => {
       const result = await facade.reserveForCart('cart-1', 'product-1', 'customer-1', 5);
       expect(result).toEqual({ ok: true, mode: 'LEGACY', mirror: { status: 'NOT_ATTEMPTED' } });
       expect(inventoryReservations.reserveOrRenew).not.toHaveBeenCalled();
+      expect(compensation.recordMirrorDivergence).not.toHaveBeenCalled();
     });
 
     it('release touches legacy only', async () => {
@@ -175,6 +182,7 @@ describe('CheckoutReservationFacade', () => {
       expect(result).toEqual({ ok: true, mode: 'LEGACY', mirror: { status: 'NOT_ATTEMPTED' } });
       expect(inventoryReservations.release).toHaveBeenCalledWith('product-1', 'cart-1');
       expect(inventoryReservations.releaseReservation).not.toHaveBeenCalled();
+      expect(compensation.recordMirrorDivergence).not.toHaveBeenCalled();
     });
   });
 
@@ -191,6 +199,7 @@ describe('CheckoutReservationFacade', () => {
 
       expect(result).toEqual({ ok: true, mode: 'CART_SCOPED', mirror: { status: 'NOT_ATTEMPTED' } });
       expect(inventoryReservations.reserve).not.toHaveBeenCalled();
+      expect(compensation.recordMirrorDivergence).not.toHaveBeenCalled();
     });
 
     it('maps a typed reserve failure directly', async () => {
@@ -199,6 +208,7 @@ describe('CheckoutReservationFacade', () => {
       const result = await facade.reserveForCart('cart-1', 'product-1', 'customer-1', 5);
 
       expect(result).toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
+      expect(compensation.recordMirrorDivergence).not.toHaveBeenCalled();
     });
 
     it('release touches the new engine only', async () => {
@@ -278,8 +288,8 @@ describe('CheckoutReservationFacade', () => {
   });
 
   describe('module boundary', () => {
-    it('has no dependency beyond the three expected services (constructor arity)', () => {
-      expect(CheckoutReservationFacade.length).toBe(3);
+    it('has no dependency beyond the four expected services (constructor arity)', () => {
+      expect(CheckoutReservationFacade.length).toBe(4);
     });
 
     it('CheckoutReservationModule exports exactly RESERVATION_GATEWAY', () => {
@@ -293,6 +303,7 @@ describe('CheckoutReservationFacade', () => {
           { provide: ReservationEngineModeService, useValue: modeService },
           { provide: InventoryReservationsService, useValue: inventoryReservations },
           { provide: ReservationAvailabilityService, useValue: availability },
+          { provide: CompensationService, useValue: compensation },
           CheckoutReservationFacade,
           { provide: RESERVATION_GATEWAY, useExisting: CheckoutReservationFacade },
         ],

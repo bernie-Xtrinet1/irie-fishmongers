@@ -1,4 +1,5 @@
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { CompensationService } from '../../mirror-compensation/services/compensation.service';
 import { ReservationAvailabilityService } from '../../reservation-engine-mode/services/reservation-availability.service';
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 import { CheckoutReservationFacade } from './checkout-reservation-facade.service';
@@ -7,16 +8,21 @@ import { CheckoutReservationFacade } from './checkout-reservation-facade.service
 // non-MIRROR routing, validation, releaseCart, availability delegation, and
 // module-boundary coverage live in checkout-reservation-facade.service.spec.ts.
 // Split purely to keep both files within the repository's 400-line limit.
+// Phase 16A.0-DA, Unit DA.4 divergence-recording scenarios live in the
+// sibling checkout-reservation-facade-divergence.service.spec.ts, split for
+// the same reason.
 
 type MockModeService = jest.Mocked<Pick<ReservationEngineModeService, 'getCurrentMode'>>;
 type MockInventoryReservations = jest.Mocked<
   Pick<InventoryReservationsService, 'reserve' | 'release' | 'reserveOrRenew' | 'releaseReservation'>
 >;
 type MockAvailability = jest.Mocked<Pick<ReservationAvailabilityService, 'getCartAdmissionAvailability'>>;
+type MockCompensation = jest.Mocked<Pick<CompensationService, 'recordMirrorDivergence'>>;
 
 describe('CheckoutReservationFacade (MIRROR mode)', () => {
   let modeService: MockModeService;
   let inventoryReservations: MockInventoryReservations;
+  let compensation: MockCompensation;
   let facade: CheckoutReservationFacade;
 
   beforeEach(() => {
@@ -28,10 +34,12 @@ describe('CheckoutReservationFacade (MIRROR mode)', () => {
       releaseReservation: jest.fn(),
     };
     const availability: MockAvailability = { getCartAdmissionAvailability: jest.fn() };
+    compensation = { recordMirrorDivergence: jest.fn().mockResolvedValue({ ok: true, outcome: 'CREATED', compensationId: 'comp-1' }) };
     facade = new CheckoutReservationFacade(
       modeService as unknown as ReservationEngineModeService,
       inventoryReservations as unknown as InventoryReservationsService,
       availability as unknown as ReservationAvailabilityService,
+      compensation as unknown as CompensationService,
     );
   });
 

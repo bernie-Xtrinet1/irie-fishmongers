@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ReservationEngineMode } from '@prisma/client';
+import { CompensationOperation, ReservationEngineMode } from '@prisma/client';
 
+import { sanitizeErrorMessage } from '../../../common/utils/sanitize-error-message.util';
 import { getReservationKeySegmentValidationError } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { CompensationService, MAX_LAST_ERROR_LENGTH } from '../../mirror-compensation/services/compensation.service';
 import { ReservationAvailabilityResult } from '../../reservation-engine-mode/types/reservation-availability.types';
 import { ReservationAvailabilityService } from '../../reservation-engine-mode/services/reservation-availability.service';
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
@@ -23,9 +25,19 @@ interface ValidationFailure {
 
 // Phase 16A.0-C, Unit C3 (see ADR-007 and the approved C3 implementation
 // contract). Owns mode-aware write routing only - no Cart/Product/PriceLock
-// persistence, no compensation ledger, no idempotency. Additive and
-// unwired: nothing calls this facade yet, and CheckoutReservationModule is
-// not imported by any production module.
+// persistence, no idempotency. Additive and unwired: nothing calls this
+// facade yet, and CheckoutReservationModule is not imported by any
+// production module.
+//
+// Phase 16A.0-DA, Unit DA.4: owns recording MIRROR-mode mirror-write
+// divergence too (see recordDivergence below) - the facade is the only
+// component that actually observes a FAILED MirrorDiagnostic at the
+// moment it happens, so it is the natural, non-leaky place to persist it
+// (see the DA.4 read-only report's decision 1). Recording is strictly
+// best-effort with respect to the customer-facing result: a persistence
+// failure is caught, sanitized, and logged at ERROR (never WARN - this is
+// a lost repair record, not an ordinary mirror-write failure) and never
+// turns a successful LEGACY reservation/release into a failed one.
 @Injectable()
 export class CheckoutReservationFacade implements ReservationGateway {
   private readonly logger = new Logger(CheckoutReservationFacade.name);
@@ -34,6 +46,7 @@ export class CheckoutReservationFacade implements ReservationGateway {
     private readonly modeService: ReservationEngineModeService,
     private readonly inventoryReservations: InventoryReservationsService,
     private readonly availability: ReservationAvailabilityService,
+    private readonly compensation: CompensationService,
   ) {}
 
   async reserveForCart(
@@ -104,15 +117,34 @@ export class CheckoutReservationFacade implements ReservationGateway {
         const reasonCode: MirrorFailureReasonCode =
           outcome.code === 'RESERVATION_PRODUCT_SUSPENDED' ? 'PRODUCT_SUSPENDED' : 'CHECKOUT_IN_PROGRESS';
         this.logMirrorFailure(cartId, productId, 'RESERVE', reasonCode);
+        await this.recordDivergence('RESERVE_MIRROR', cartId, productId, customerId, desiredQuantity, reasonCode, null);
         return { status: 'FAILED', operation: 'RESERVE', reasonCode };
       }
       if (outcome.result.underflow !== null) {
         this.logMirrorFailure(cartId, productId, 'RESERVE', 'ACCOUNTING_UNDERFLOW');
+        await this.recordDivergence(
+          'RESERVE_MIRROR',
+          cartId,
+          productId,
+          customerId,
+          desiredQuantity,
+          'ACCOUNTING_UNDERFLOW',
+          null,
+        );
         return { status: 'FAILED', operation: 'RESERVE', reasonCode: 'ACCOUNTING_UNDERFLOW' };
       }
       return { status: 'SYNCED' };
-    } catch {
+    } catch (error) {
       this.logMirrorFailure(cartId, productId, 'RESERVE', 'UNKNOWN_INFRA_FAILURE');
+      await this.recordDivergence(
+        'RESERVE_MIRROR',
+        cartId,
+        productId,
+        customerId,
+        desiredQuantity,
+        'UNKNOWN_INFRA_FAILURE',
+        CheckoutReservationFacade.errorMessage(error),
+      );
       return { status: 'FAILED', operation: 'RESERVE', reasonCode: 'UNKNOWN_INFRA_FAILURE' };
     }
   }
@@ -158,13 +190,76 @@ export class CheckoutReservationFacade implements ReservationGateway {
       const result = await this.inventoryReservations.releaseReservation(cartId, productId);
       if (result.underflow !== null) {
         this.logMirrorFailure(cartId, productId, 'RELEASE', 'ACCOUNTING_UNDERFLOW');
+        await this.recordDivergence('RELEASE_MIRROR', cartId, productId, null, null, 'ACCOUNTING_UNDERFLOW', null);
         return { status: 'FAILED', operation: 'RELEASE', reasonCode: 'ACCOUNTING_UNDERFLOW' };
       }
       return { status: 'SYNCED' };
-    } catch {
+    } catch (error) {
       this.logMirrorFailure(cartId, productId, 'RELEASE', 'UNKNOWN_INFRA_FAILURE');
+      await this.recordDivergence(
+        'RELEASE_MIRROR',
+        cartId,
+        productId,
+        null,
+        null,
+        'UNKNOWN_INFRA_FAILURE',
+        CheckoutReservationFacade.errorMessage(error),
+      );
       return { status: 'FAILED', operation: 'RELEASE', reasonCode: 'UNKNOWN_INFRA_FAILURE' };
     }
+  }
+
+  // Best-effort persistence of a MIRROR divergence diagnostic - see this
+  // class's own DA.4 doc comment. reasonCode is MirrorFailureReasonCode at
+  // every call site, passed straight through as CompensationReasonCode:
+  // the two enums are documented as structurally identical (same members,
+  // same order) in mirror-compensation's own RecordMirrorDivergenceInput
+  // comment, specifically so callers holding one can pass it directly
+  // without a cast. Never throws; never affects the caller's returned
+  // MirrorDiagnostic.
+  private async recordDivergence(
+    operation: CompensationOperation,
+    cartId: string,
+    productId: string,
+    customerId: string | null,
+    desiredQuantity: number | null,
+    reasonCode: MirrorFailureReasonCode,
+    lastError: string | null,
+  ): Promise<void> {
+    try {
+      const result = await this.compensation.recordMirrorDivergence({
+        operation,
+        cartId,
+        productId,
+        customerId,
+        desiredQuantity,
+        reasonCode,
+        lastError,
+        now: new Date(),
+      });
+      if (!result.ok) {
+        this.logger.error('Mirror divergence rejected as invalid input - repair record lost', {
+          cartId,
+          productId,
+          operation,
+          reasonCode,
+          field: result.field,
+          reason: result.reason,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Failed to persist mirror divergence compensation record - repair record lost, manual investigation required', {
+        cartId,
+        productId,
+        operation,
+        reasonCode,
+        error: sanitizeErrorMessage(CheckoutReservationFacade.errorMessage(error), MAX_LAST_ERROR_LENGTH),
+      });
+    }
+  }
+
+  private static errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   async releaseCart(cartId: string, productIds: string[]): Promise<ReleaseCartResult> {

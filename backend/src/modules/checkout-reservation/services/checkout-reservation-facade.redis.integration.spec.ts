@@ -8,6 +8,7 @@ import {
 } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { connectRealRedis, ids } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { CompensationService } from '../../mirror-compensation/services/compensation.service';
 import { ReservationAvailabilityService } from '../../reservation-engine-mode/services/reservation-availability.service';
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 import { CheckoutReservationFacade } from './checkout-reservation-facade.service';
@@ -26,7 +27,11 @@ import { CheckoutReservationFacade } from './checkout-reservation-facade.service
 // exists to prove the facade's Redis-facing behavior. ReservationAvailabilityService
 // is unused by any test here (getCartAdmissionAvailability is a pure
 // delegation, already proven by mocked unit tests) and is constructed with
-// a minimal stub.
+// a minimal stub. CompensationService (Phase 16A.0-DA, Unit DA.4) is
+// likewise stubbed - this file has no real Postgres fixture and exists to
+// prove Redis-facing behavior only; the genuine divergence-record ->
+// C4.3 reconciliation -> resolved proof (real Postgres AND real Redis)
+// lives in checkout-reservation-facade-divergence.postgres.integration.spec.ts.
 //
 // Test isolation - same dedicated logical Redis DB (1) and per-test
 // FLUSHDB convention established by C1/C2's real-Redis suites.
@@ -60,10 +65,14 @@ describe('CheckoutReservationFacade (real Redis integration)', () => {
     inventoryReservations = new InventoryReservationsService(redisService);
     modeService = { getCurrentMode: jest.fn() };
     const availability = { getCartAdmissionAvailability: jest.fn() } as unknown as ReservationAvailabilityService;
+    const compensation = {
+      recordMirrorDivergence: jest.fn().mockResolvedValue({ ok: true, outcome: 'CREATED', compensationId: 'stub' }),
+    } as unknown as CompensationService;
     facade = new CheckoutReservationFacade(
       modeService as unknown as ReservationEngineModeService,
       inventoryReservations,
       availability,
+      compensation,
     );
   });
 
