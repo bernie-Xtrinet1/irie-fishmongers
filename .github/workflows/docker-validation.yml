@@ -1,0 +1,281 @@
+# Phase 17B.2V — Docker image VALIDATION ONLY.
+#
+# Proves the three committed Dockerfiles build and run on Linux. It NEVER
+# pushes images to a registry, NEVER deploys anywhere, and NEVER uses Azure or
+# any cloud credentials. Postgres/Redis are disposable containers created and
+# destroyed within the runner. All NEXT_PUBLIC_* values are public build
+# configuration (not secrets). Any failed assertion fails the job.
+name: docker-validation
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - backend/Dockerfile
+      - apps/web/Dockerfile
+      - apps/admin-dashboard/Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Disposable, non-secret local test values only.
+      PGUSER: irieval
+      PGPASSWORD: irieval
+      PGDB: irieval
+      # NEXT_PUBLIC_* are public build config (inlined into the client bundle).
+      NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_ENVIRONMENT: validation
+      SUMMARY: ${{ github.workspace }}/validation-summary.txt
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+
+      - name: Initialize summary + assert helper
+        run: |
+          echo "check|result" > "$SUMMARY"
+          {
+            echo "IrieFishmongers Phase 17B.2V Docker validation"
+            echo "commit: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # assert.sh <name> <status>: records PASS/FAIL, exits non-zero on FAIL
+          # (so `bash assert.sh ...` as a step's last command fails the step).
+          cat > "$GITHUB_WORKSPACE/assert.sh" <<'EOF'
+          #!/usr/bin/env bash
+          name="$1"; status="$2"
+          if [ "$status" -eq 0 ]; then
+            echo "${name}|PASS" >> "$SUMMARY"; echo "PASS: ${name}"; exit 0
+          else
+            echo "${name}|FAIL" >> "$SUMMARY"; echo "FAIL: ${name}"; exit 1
+          fi
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/assert.sh"
+
+      - name: Create disposable network + Postgres + Redis
+        run: |
+          set -euo pipefail
+          docker network create irie-val
+          docker run -d --name pgval --network irie-val \
+            -e POSTGRES_USER="$PGUSER" -e POSTGRES_PASSWORD="$PGPASSWORD" -e POSTGRES_DB="$PGDB" \
+            postgres:16-alpine
+          docker run -d --name redisval --network irie-val redis:7-alpine
+
+      - name: Wait for disposable Postgres + Redis readiness
+        run: |
+          set -euo pipefail
+          # Explicit infra-readiness gate BEFORE the backend starts. Do NOT rely
+          # on the backend health retry loop to absorb infra startup races.
+          # Bounded timeout: 30 attempts x 2s = up to 60s per service.
+          pg_ready=1
+          for i in $(seq 1 30); do
+            if docker exec pgval pg_isready -U "$PGUSER" >/dev/null 2>&1; then pg_ready=0; break; fi
+            sleep 2
+          done
+          if [ "$pg_ready" -ne 0 ]; then
+            echo "FAIL: Postgres (pgval) never became ready within the timeout"
+            docker logs pgval | tail -60 || true
+            exit 1
+          fi
+          echo "Postgres ready"
+          redis_ready=1
+          for i in $(seq 1 30); do
+            if [ "$(docker exec redisval redis-cli ping 2>/dev/null)" = "PONG" ]; then redis_ready=0; break; fi
+            sleep 2
+          done
+          if [ "$redis_ready" -ne 0 ]; then
+            echo "FAIL: Redis (redisval) never became ready within the timeout"
+            docker logs redisval | tail -60 || true
+            exit 1
+          fi
+          echo "Redis ready"
+
+      # ---- 1/2/3: builds (repo-root context), logs tee'd for artifacts ----
+      - name: Build backend image
+        run: |
+          set +e
+          docker build -f backend/Dockerfile -t irie-backend:val . 2>&1 | tee backend-build.log
+          rc=${PIPESTATUS[0]}; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" build-backend "$rc"
+
+      - name: Build web image
+        run: |
+          set +e
+          docker build -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            --build-arg NEXT_PUBLIC_APP_URL="$NEXT_PUBLIC_APP_URL" \
+            --build-arg NEXT_PUBLIC_ENVIRONMENT="$NEXT_PUBLIC_ENVIRONMENT" \
+            -t irie-web:val . 2>&1 | tee web-build.log
+          rc=${PIPESTATUS[0]}; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" build-web "$rc"
+
+      - name: Build admin image (NEXT_PUBLIC_API_URL mandatory)
+        run: |
+          set +e
+          docker build -f apps/admin-dashboard/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            --build-arg NEXT_PUBLIC_APP_URL="$NEXT_PUBLIC_APP_URL" \
+            --build-arg NEXT_PUBLIC_ENVIRONMENT="$NEXT_PUBLIC_ENVIRONMENT" \
+            -t irie-admin:val . 2>&1 | tee admin-build.log
+          rc=${PIPESTATUS[0]}; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" build-admin "$rc"
+
+      # ---- 4: Prisma Linux engine present; 5: bcrypt loads ----
+      - name: Backend image — Prisma engine present + bcrypt loads
+        run: |
+          set +e
+          docker run --rm irie-backend:val sh -c \
+            'ls node_modules/.prisma/client/ 2>/dev/null | grep -q "libquery_engine-debian-openssl-3.0.x" \
+             || ls /app/node_modules/.prisma/client/ 2>/dev/null | grep -q "libquery_engine-debian-openssl-3.0.x"'
+          rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" prisma-linux-engine-present "$rc"
+          set +e
+          docker run --rm irie-backend:val node -e "require('bcrypt').hashSync('x',8); console.log('BCRYPT_OK')"
+          rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" bcrypt-loads "$rc"
+
+      # ---- 6: runtime prisma present, build/test tooling absent ----
+      - name: Backend image — dependency tree audit
+        run: |
+          set +e
+          docker run --rm irie-backend:val sh -c 'test -d node_modules/@prisma/client -o -d /app/node_modules/@prisma/client'
+          a=$?
+          docker run --rm irie-backend:val sh -c 'test -d node_modules/.prisma/client -o -d /app/node_modules/.prisma/client'
+          b=$?
+          docker run --rm irie-backend:val sh -c '
+            for p in @nestjs/cli typescript jest prisma; do
+              if [ -e "/app/node_modules/$p" ] || [ -e "/app/backend/node_modules/$p" ]; then echo "PRESENT:$p"; exit 1; fi
+            done; echo TOOLING_ABSENT'
+          c=$?
+          set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" prisma-client-present "$a"
+          bash "$GITHUB_WORKSPACE/assert.sh" prisma-engine-dir-present "$b"
+          bash "$GITHUB_WORKSPACE/assert.sh" build-test-tooling-absent "$c"
+
+      # ---- 7: image sizes (on-disk + gzipped) ----
+      - name: Image sizes
+        run: |
+          set -euo pipefail
+          echo "### Image sizes" >> "$GITHUB_STEP_SUMMARY"
+          for img in irie-backend:val irie-web:val irie-admin:val; do
+            disk=$(docker images --format '{{.Size}}' "$img" | head -1)
+            gz=$(docker save "$img" | gzip -c | wc -c)
+            gzmb=$(( gz / 1024 / 1024 ))
+            echo "- ${img}: on-disk ${disk}, gzip ~${gzmb} MiB" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "size-${img}|${disk} disk / ${gzmb}MiB gz" >> "$SUMMARY"
+          done
+
+      # ---- 8: backend starts + /api/v1/health passes ----
+      - name: Run backend + health check
+        run: |
+          set -euo pipefail
+          docker run -d --name backend --network irie-val -p 3001:3001 \
+            -e NODE_ENV=production -e PORT=3001 -e API_PREFIX=api/v1 \
+            -e DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@pgval:5432/${PGDB}?schema=public" \
+            -e REDIS_URL="redis://redisval:6379" \
+            -e ENABLE_SCHEDULER=false \
+            -e JWT_ACCESS_SECRET="validation-access-secret-not-a-real-secret-32c" \
+            -e JWT_ACCESS_EXPIRES_IN=15m \
+            -e JWT_REFRESH_SECRET="validation-refresh-secret-not-a-real-secret-32c" \
+            -e JWT_REFRESH_EXPIRES_IN=7d \
+            -e APP_BASE_URL="http://localhost:3001" \
+            -e CORS_ORIGIN="http://localhost:3000" \
+            -e WIPAY_API_URL="https://sandbox.invalid/api" \
+            -e WIPAY_ACCOUNT_NUMBER="validation" -e WIPAY_API_KEY="validation" \
+            -e SENDGRID_API_KEY="validation" -e SENDGRID_FROM_EMAIL="val@demo.test" \
+            -e FCM_SERVER_KEY="validation" \
+            irie-backend:val
+          ok=1
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' http://localhost:3001/api/v1/health || true)
+            [ "$code" = "200" ] && { ok=0; break; }; sleep 2
+          done
+          echo "health body: $(cat /tmp/health.json 2>/dev/null || true)"
+          [ $ok -ne 0 ] && { echo '--- backend logs ---'; docker logs backend | tail -80; }
+          set +e
+          grep -q '"postgres":"up"' /tmp/health.json && grep -q '"redis":"up"' /tmp/health.json
+          body=$?
+          [ $ok -eq 0 ] && [ $body -eq 0 ]; rc=$?
+          set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" backend-health-200-pg-redis-up "$rc"
+
+      # ---- 9/11: web / = 200, public asset, /_next/static ----
+      - name: Run web + asset checks
+        run: |
+          set -euo pipefail
+          docker run -d --name web --network irie-val -p 3000:3000 irie-web:val
+          ok=1
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/web.html -w '%{http_code}' http://localhost:3000/ || true)
+            [ "$code" = "200" ] && { ok=0; break; }; sleep 2
+          done
+          [ $ok -ne 0 ] && docker logs web | tail -40
+          set +e; [ $ok -eq 0 ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" web-root-200 "$rc"
+          set +e
+          pcode=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/demo-products/red-snapper.png)
+          [ "$pcode" = "200" ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" web-public-asset-200 "$rc"
+          set +e
+          asset=$(grep -oE '/_next/static/[^"]+\.js' /tmp/web.html | head -1)
+          scode=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000${asset}")
+          [ -n "$asset" ] && [ "$scode" = "200" ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" web-next-static-200 "$rc"
+
+      # ---- 10/11: admin /login = 200, /_next/static ----
+      - name: Run admin + asset checks
+        run: |
+          set -euo pipefail
+          docker run -d --name admin --network irie-val -p 3002:3002 irie-admin:val
+          ok=1
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/admin.html -w '%{http_code}' http://localhost:3002/login || true)
+            [ "$code" = "200" ] && { ok=0; break; }; sleep 2
+          done
+          [ $ok -ne 0 ] && docker logs admin | tail -40
+          set +e; [ $ok -eq 0 ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" admin-login-200 "$rc"
+          set +e
+          asset=$(grep -oE '/_next/static/[^"]+\.js' /tmp/admin.html | head -1)
+          scode=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3002${asset}")
+          [ -n "$asset" ] && [ "$scode" = "200" ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" admin-next-static-200 "$rc"
+
+      # ---- 12: all three containers run as non-root ----
+      - name: Non-root execution
+        run: |
+          set -euo pipefail
+          fail=0
+          for c in backend web admin; do
+            uid=$(docker exec "$c" id -u)
+            echo "$c uid=$uid"
+            [ "$uid" != "0" ] || fail=1
+          done
+          set +e; [ $fail -eq 0 ]; rc=$?; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" containers-non-root "$rc"
+
+      - name: Publish summary + teardown
+        if: always()
+        run: |
+          echo "### Validation summary" >> "$GITHUB_STEP_SUMMARY"
+          [ -f "$SUMMARY" ] && sed 's/|/ = /; s/^/- /' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY" || true
+          docker rm -f backend web admin pgval redisval 2>/dev/null || true
+          docker network rm irie-val 2>/dev/null || true
+
+      - name: Upload build logs + summary artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-validation-17b2v
+          path: |
+            backend-build.log
+            web-build.log
+            admin-build.log
+            validation-summary.txt
+          if-no-files-found: warn
