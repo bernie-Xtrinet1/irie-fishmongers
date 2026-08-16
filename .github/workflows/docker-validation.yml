@@ -129,6 +129,22 @@ jobs:
       # ---- 4: Prisma Linux engine present; 5: bcrypt loads ----
       - name: Backend image — Prisma engine present + bcrypt loads
         run: |
+          # Phase 17B.2V diagnostic: reveal the actual final-image Prisma layout
+          # BEFORE the fail-closed presence assertion below (which is unchanged).
+          # Captured to prisma-layout.log so it survives in the uploaded artifact
+          # even when this step fails at the assertion.
+          docker run --rm irie-backend:val sh -c '
+            echo "== any libquery_engine anywhere =="
+            find /app -path "*/.prisma/*" -name "libquery_engine*" -print 2>/dev/null || true
+            echo "== backend .prisma/client =="
+            ls -la /app/backend/node_modules/.prisma/client 2>/dev/null || true
+            echo "== root .prisma/client =="
+            ls -la /app/node_modules/.prisma/client 2>/dev/null || true
+            echo "== backend @prisma/client =="
+            ls -la /app/backend/node_modules/@prisma/client 2>/dev/null || true
+            echo "== root @prisma/client =="
+            ls -la /app/node_modules/@prisma/client 2>/dev/null || true
+          ' 2>&1 | tee prisma-layout.log
           set +e
           docker run --rm irie-backend:val sh -c \
             'ls node_modules/.prisma/client/ 2>/dev/null | grep -q "libquery_engine-debian-openssl-3.0.x" \
@@ -277,5 +293,6 @@ jobs:
             backend-build.log
             web-build.log
             admin-build.log
+            prisma-layout.log
             validation-summary.txt
           if-no-files-found: warn
