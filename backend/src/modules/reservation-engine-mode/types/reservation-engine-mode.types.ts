@@ -5,9 +5,32 @@ import { ReservationEngineMode } from '@prisma/client';
 // Decision 8). Additive and unwired - nothing reads the current mode or
 // calls setMode yet.
 
+// CART_SCOPED activation-boundary gate (see the gate design review's final
+// atomic-freshness design). The exact, frozen proof setMode() re-verifies
+// atomically, under TRANSITION_LOCK_KEY, before ever authorizing
+// MIRROR -> CART_SCOPED. Canonically defined here (the module that
+// verifies it), not in cart-scoped-backfill (which only produces it via
+// CartScopedBackfillService.buildAttestation) - the consumer owns the
+// contract, the producer imports it. barrierRevision/targetCount are the
+// two backlog/target-completeness authorization inputs; minimumExpiresAt
+// is the freshness bound (epoch ms, Node clock domain - see
+// InventoryReservationsService.reserveWithFreshEpoch's own comment on why
+// this is never Redis/Postgres time); completedAt is informational/
+// logging only, never itself compared against anything.
+export interface CutoverAttestation {
+  barrierRevision: number;
+  targetCount: number;
+  minimumExpiresAt: number;
+  completedAt: number;
+}
+
 export interface SetReservationEngineModeInput {
   targetMode: ReservationEngineMode;
   updatedById: string;
+  // Required if and only if targetMode is CART_SCOPED - setMode() rejects
+  // with CUTOVER_ATTESTATION_REQUIRED otherwise. Never meaningful for any
+  // other transition.
+  cutoverAttestation?: CutoverAttestation;
 }
 
 // The state-transition table lives in ADR-007, not restated here beyond
@@ -19,11 +42,24 @@ export interface SetReservationEngineModeInput {
 // two independent rollback signals is a data-integrity concern, not
 // merely "wait longer for holds to expire" (see ADR-007 Decision 8's
 // "outstanding reservations vs. data-structure drift" distinction).
+// CART_SCOPED activation-boundary gate. Six new failure codes, one per
+// hard-blocking precondition verified atomically inside the same locked
+// transaction (see ReservationEngineModeService.setMode's own comment for
+// the exact check order) - mirroring the existing ROLLBACK_BLOCKED/
+// ROLLBACK_STRUCTURE_DRIFT precedent rather than collapsing them into one
+// generic failure, so a caller/operator can distinguish exactly which
+// precondition failed without parsing a message string.
 export type SetReservationEngineModeResult =
   | { ok: true; id: string; mode: ReservationEngineMode; createdAt: Date }
   | { ok: false; code: 'INVALID_TRANSITION'; from: ReservationEngineMode; to: ReservationEngineMode }
   | { ok: false; code: 'ROLLBACK_BLOCKED'; outstandingProductIds: string[] }
-  | { ok: false; code: 'ROLLBACK_STRUCTURE_DRIFT'; structureDriftProductIds: string[] };
+  | { ok: false; code: 'ROLLBACK_STRUCTURE_DRIFT'; structureDriftProductIds: string[] }
+  | { ok: false; code: 'CUTOVER_ATTESTATION_REQUIRED' }
+  | { ok: false; code: 'CUTOVER_BARRIER_REVISION_MISMATCH' }
+  | { ok: false; code: 'CUTOVER_SYNC_BACKLOG'; unresolvedCount: number }
+  | { ok: false; code: 'CUTOVER_COMPENSATION_BACKLOG'; unresolvedCount: number }
+  | { ok: false; code: 'CUTOVER_TARGET_COUNT_MISMATCH'; expected: number; actual: number }
+  | { ok: false; code: 'CUTOVER_BACKFILL_STALE' };
 
 // Verifies rollback safety using two independent Redis signals - the
 // aggregated product-total keys (inv:reserved:product-total:{*}) and the

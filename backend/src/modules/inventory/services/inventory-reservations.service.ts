@@ -175,11 +175,25 @@ export class InventoryReservationsService {
   // --- Cart-scoped reservation model (additive, not yet wired to any
   // caller - see the block comment above the type declarations). ---
 
-  async reserveOrRenew(
+  async reserveOrRenew(cartId: string, productId: string, customerId: string, quantity: number): Promise<ReserveOrRenewOutcome> {
+    return this.executeReserveOrRenew(cartId, productId, customerId, quantity, false);
+  }
+
+  // CART_SCOPED activation-boundary gate. Administrative-only, the
+  // cutover freshness sweep's sole caller - a distinct method rather than
+  // a boolean flag on reserveOrRenew, so an accidental `true` can never
+  // opt a customer write into resetting createdAt/absoluteExpiresAt. See
+  // RESERVE_OR_RENEW_SCRIPT's own comment for the exact Lua-level diff.
+  async reserveWithFreshEpoch(cartId: string, productId: string, customerId: string, quantity: number): Promise<ReserveOrRenewOutcome> {
+    return this.executeReserveOrRenew(cartId, productId, customerId, quantity, true);
+  }
+
+  private async executeReserveOrRenew(
     cartId: string,
     productId: string,
     customerId: string,
     quantity: number,
+    forceFreshEpoch: boolean,
   ): Promise<ReserveOrRenewOutcome> {
     const now = Date.now();
     const keys = [
@@ -198,6 +212,7 @@ export class InventoryReservationsService {
       RESERVATION_TTL_SECONDS * 1000,
       MAX_RESERVATION_LIFETIME_SECONDS * 1000,
       RESERVATION_ENTRY_VERSION,
+      forceFreshEpoch ? '1' : '0',
     ];
 
     const raw = await this.redis.eval(RESERVE_OR_RENEW_SCRIPT, keys, args);

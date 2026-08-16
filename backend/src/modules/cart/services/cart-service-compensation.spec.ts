@@ -1,4 +1,5 @@
 import { PrismaService } from '../../../database/prisma.service';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -91,6 +92,9 @@ describe('CartService compensation (DA.1A)', () => {
       reject: jest.fn().mockResolvedValue({ count: 1 }),
       complete: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    const mutationBarrier: jest.Mocked<Pick<CartMutationBarrierService, 'assertNotActive'>> = {
+      assertNotActive: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new CartService(
       prisma as unknown as PrismaService,
@@ -101,6 +105,7 @@ describe('CartService compensation (DA.1A)', () => {
       syncState as unknown as CartReservationSyncStateRepository,
       convergence,
       idempotency as unknown as CartItemAddIdempotencyService,
+      mutationBarrier as unknown as CartMutationBarrierService,
     );
   });
 

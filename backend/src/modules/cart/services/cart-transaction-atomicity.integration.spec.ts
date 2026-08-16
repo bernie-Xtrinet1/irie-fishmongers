@@ -4,6 +4,8 @@ import { Category, Role, RoleName, Vendor } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -106,6 +108,7 @@ describe('CartService transaction atomicity (real Postgres)', () => {
     const gateway = buildLegacyReservationGateway(inventoryReservations as unknown as InventoryReservationsService);
     const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
     const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
+    const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
     service = new CartService(
       prisma,
       cartRepository,
@@ -115,6 +118,7 @@ describe('CartService transaction atomicity (real Postgres)', () => {
       syncStateRepository,
       convergence,
       idempotency,
+      mutationBarrier,
     );
   });
 

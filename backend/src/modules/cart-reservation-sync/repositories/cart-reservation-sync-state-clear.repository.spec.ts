@@ -9,6 +9,8 @@ import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-
 import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
 import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
@@ -95,6 +97,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
     const gateway = buildLegacyReservationGateway(inventoryReservations);
     const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, repository);
     const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
+    const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
     cartService = new CartService(
       prisma,
       cartRepository,
@@ -104,6 +107,7 @@ describe('CartReservationSyncStateRepository.advanceForClearedCart (real Postgre
       repository,
       convergence,
       idempotency,
+      mutationBarrier,
     );
   });
 

@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
 import {
   cartIndexKey,
   productTotalKey,
@@ -61,6 +62,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
   let client: Redis;
   let inventoryReservations: InventoryReservationsService;
   let repository: jest.Mocked<Pick<ReservationEngineModeConfigRepository, 'findCurrent' | 'create'>>;
+  let mutationBarrierRepository: jest.Mocked<Pick<CartMutationBarrierConfigRepository, 'findCurrent'>>;
   let prisma: jest.Mocked<Pick<PrismaService, '$transaction'>>;
   let service: ReservationEngineModeService;
 
@@ -78,6 +80,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
   beforeEach(async () => {
     await client.flushdb();
     repository = { findCurrent: jest.fn(), create: jest.fn() };
+    mutationBarrierRepository = { findCurrent: jest.fn() };
     prisma = {
       $transaction: jest.fn((fn: (tx: unknown) => unknown) =>
         Promise.resolve(fn({ $executeRaw: jest.fn().mockResolvedValue(0) })),
@@ -88,6 +91,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
       repository as unknown as ReservationEngineModeConfigRepository,
       new RedisService(client),
       inventoryReservations,
+      mutationBarrierRepository as unknown as CartMutationBarrierConfigRepository,
     );
   });
 

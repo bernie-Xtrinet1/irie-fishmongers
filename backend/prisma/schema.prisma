@@ -59,6 +59,7 @@ model User {
   triggeredDowngrades          VendorDowngradeEvent[]        @relation("DowngradeTriggeredBy")
   marketplaceModeUpdates       MarketplaceModeConfig[]
   reservationEngineModeUpdates ReservationEngineModeConfig[]
+  cartMutationBarrierUpdates   CartMutationBarrierConfig[]
   vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
   fulfillmentDecisions         FulfillmentDecision[]
   triggeredInventoryEvents     InventoryEvent[]
@@ -2137,6 +2138,35 @@ model ReservationEngineModeConfig {
   updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@map("reservation_engine_mode_configs")
+}
+
+// Phase 16A.0-DA, CART_SCOPED activation-boundary gate (see the gate design
+// review). Append-only, mirroring ReservationEngineModeConfig's exact shape
+// and rationale: "current" is always the highest-`revision` row, never a
+// mutated single row - this is what lets a captured `barrierRevision` in a
+// pre-cutover attestation be compared for EXACT equality against whatever
+// is current at transition time, correctly rejecting an attestation from an
+// earlier activation/deactivation cycle (revision N) once a later cycle
+// (revision N+1) has begun, even though `active` alone might coincidentally
+// read the same boolean value again.
+//
+// This table's `active` flag is deliberately NOT ReservationEngineMode - it
+// is a narrower, orthogonal "is ordinary cart-mutation admission currently
+// frozen" signal, checked by addItem/updateItemQuantity/removeItem/checkout
+// BEFORE their own durable CartItem write, never coupled to
+// TRANSITION_LOCK_KEY or the mode-transition machinery itself (see
+// CartMutationBarrierService's own doc comment for the full shared/
+// exclusive advisory-lock protocol this table participates in).
+model CartMutationBarrierConfig {
+  id            String   @id @default(uuid())
+  revision      Int      @unique @default(autoincrement())
+  active        Boolean
+  activatedById String?
+  createdAt     DateTime @default(now())
+
+  activatedBy User? @relation(fields: [activatedById], references: [id], onDelete: Restrict)
+
+  @@map("cart_mutation_barrier_configs")
 }
 
 // Phase 16A.0-C4 (see ADR-007). Durable recovery record for MIRROR-mode

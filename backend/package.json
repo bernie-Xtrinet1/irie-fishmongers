@@ -17,7 +17,9 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
     "demo:seed": "ts-node prisma/demo-seed.ts",
-    "compliance:scores:recompute-all": "ts-node src/scripts/recompute-compliance-scores.ts"
+    "compliance:scores:recompute-all": "ts-node src/scripts/recompute-compliance-scores.ts",
+    "cutover:activate-cart-scoped": "ts-node src/scripts/activate-cart-scoped-mode.ts",
+    "cutover:lift-mutation-barrier": "ts-node src/scripts/lift-cart-mutation-barrier.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

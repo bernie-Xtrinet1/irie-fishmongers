@@ -4,6 +4,7 @@ import { InventoryReservationsService } from '../../inventory/services/inventory
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 import { ReservationEngineModeSnapshot } from '../../reservation-engine-mode/types/reservation-engine-mode.types';
 import {
+  DirectCartScopedConvergenceResult,
   ReservationRecoveryConvergenceInput,
   ReservationRecoveryConvergenceResult,
   ReservationRecoveryTarget,
@@ -78,19 +79,40 @@ export class ReservationRecoveryConvergenceService implements ReservationRecover
     input: ReservationRecoveryConvergenceInput,
     snapshot: ReservationEngineModeSnapshot,
   ): Promise<ReservationRecoveryConvergenceResult> {
+    const core = await this.convergeCartScopedCore(input);
+    return { ...core, observedMode: snapshot };
+  }
+
+  // CART_SCOPED activation-boundary gate (see the gate design review's
+  // direct-backfill design). The pre-cutover backfill/freshness sweep's
+  // sole entry point - bypasses the mode read entirely (mode is still
+  // MIRROR the whole time this runs; converge()'s own mode-branching logic
+  // would incorrectly route through convergeLegacy) and calls the exact
+  // same underlying convergeCartScopedCore logic convergeCartScoped
+  // itself uses, so PRODUCT_SUSPECT/CHECKOUT_IN_PROGRESS/underflow
+  // classification is never duplicated. No observedMode - see
+  // DirectCartScopedConvergenceResult's own comment for why.
+  async convergeCartScopedDirect(
+    input: ReservationRecoveryConvergenceInput,
+  ): Promise<DirectCartScopedConvergenceResult> {
+    return this.convergeCartScopedCore(input);
+  }
+
+  private async convergeCartScopedCore(
+    input: ReservationRecoveryConvergenceInput,
+  ): Promise<DirectCartScopedConvergenceResult> {
     if (input.desiredQuantity === null) {
       try {
         const result = await this.inventoryReservations.releaseReservation(input.cartId, input.productId);
         if (result.underflow !== null) {
-          return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', observedMode: snapshot };
+          return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };
         }
-        return { outcome: 'CONVERGED', observedMode: snapshot };
+        return { outcome: 'CONVERGED' };
       } catch (error) {
         return {
           outcome: 'RETRY',
           reasonCode: 'UNKNOWN_INFRA_FAILURE',
           lastError: ReservationRecoveryConvergenceService.errorMessage(error),
-          observedMode: snapshot,
         };
       }
     }
@@ -112,23 +134,22 @@ export class ReservationRecoveryConvergenceService implements ReservationRecover
       );
       if (!outcome.ok) {
         if (outcome.code === 'RESERVATION_PRODUCT_SUSPENDED') {
-          return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', observedMode: snapshot };
+          return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };
         }
         // RESERVATION_CHECKOUT_IN_PROGRESS - an active checkout is
         // currently consuming this reservation; back off and retry rather
         // than force-overwrite it.
-        return { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null, observedMode: snapshot };
+        return { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null };
       }
       if (outcome.result.underflow !== null) {
-        return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', observedMode: snapshot };
+        return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };
       }
-      return { outcome: 'CONVERGED', observedMode: snapshot };
+      return { outcome: 'CONVERGED' };
     } catch (error) {
       return {
         outcome: 'RETRY',
         reasonCode: 'UNKNOWN_INFRA_FAILURE',
         lastError: ReservationRecoveryConvergenceService.errorMessage(error),
-        observedMode: snapshot,
       };
     }
   }

@@ -11,6 +11,8 @@ import { CartItemAddAttemptRepository } from '../../cart/repositories/cart-item-
 import { CartItemAddIdempotencyService } from '../../cart/services/cart-item-add-idempotency.service';
 import { CartReservationConvergenceService } from '../../cart/services/cart-reservation-convergence.service';
 import { CartService } from '../../cart/services/cart.service';
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -45,6 +47,7 @@ export interface RecoveryFixture {
   // blocked-recheck entry point without reconstructing the whole fixture.
   modeService: ReservationEngineModeService;
   modeConfigRepository: ReservationEngineModeConfigRepository;
+  mutationBarrier: CartMutationBarrierService;
   recoveryTarget: ReservationRecoveryConvergenceService;
   blockedRecheckService: CartReservationSyncBlockedRecheckService;
   productsRepository: ProductsRepository;
@@ -122,6 +125,8 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
   const gateway = buildLegacyReservationGateway(inventoryReservations);
   const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
   const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
+  const mutationBarrierRepository = new CartMutationBarrierConfigRepository(prisma);
+  const mutationBarrier = new CartMutationBarrierService(prisma, mutationBarrierRepository);
   const cartService = new CartService(
     prisma,
     cartRepository,
@@ -131,6 +136,7 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     syncStateRepository,
     convergence,
     idempotency,
+    mutationBarrier,
   );
 
   // Phase 16A.0-DA, Unit DA.4B. Recovery now goes through
@@ -141,7 +147,13 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
   // real setMode() transitions and the shared/exclusive advisory-lock
   // fencing are genuinely exercised, never mocked.
   const modeConfigRepository = new ReservationEngineModeConfigRepository(prisma);
-  const modeService = new ReservationEngineModeService(prisma, modeConfigRepository, redisService, inventoryReservations);
+  const modeService = new ReservationEngineModeService(
+    prisma,
+    modeConfigRepository,
+    redisService,
+    inventoryReservations,
+    mutationBarrierRepository,
+  );
   const recoveryTarget = new ReservationRecoveryConvergenceService(modeService, inventoryReservations);
   const blockedRecheckService = new CartReservationSyncBlockedRecheckService(
     syncStateRepository,
@@ -168,6 +180,7 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
     recoveryService,
     modeService,
     modeConfigRepository,
+    mutationBarrier,
     recoveryTarget,
     blockedRecheckService,
     productsRepository,
@@ -190,6 +203,10 @@ export async function tearDownRecoveryFixture(fixture: RecoveryFixture): Promise
   // append-only rows are never touched by any other fixture in this file,
   // so a wholesale delete scoped to this fixture's own admin is safe.
   await fixture.prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: fixture.adminUserId } });
+  // CART_SCOPED activation-boundary gate: transitionToCartScoped's own
+  // barrier activate/deactivate cycle leaves rows referencing this
+  // fixture's admin - same FK-before-user-delete precedent as above.
+  await fixture.prisma.cartMutationBarrierConfig.deleteMany({ where: { activatedById: fixture.adminUserId } });
   await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
   await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });
   await fixture.prisma.user.delete({ where: { id: fixture.adminUserId } });
@@ -279,6 +296,42 @@ export async function forceLegacyMode(fixture: RecoveryFixture): Promise<void> {
   }
 }
 
+// CART_SCOPED activation-boundary gate (see the gate design review's final,
+// approved design). MIRROR -> CART_SCOPED now requires a cutoverAttestation
+// - this helper is pure test SETUP (getting into a mode to test OTHER
+// behavior, never testing the gate itself; that lives entirely in
+// reservation-engine-mode-cutover.service.spec.ts and
+// cart-scoped-cutover-end-to-end.postgres.integration.spec.ts), so it
+// builds a real, honestly-satisfied attestation rather than bypassing the
+// gate: activates the barrier, reads the REAL current global positive-
+// CartItem count (setMode's own check is unscoped, matching production),
+// attests against that, transitions, then deactivates the barrier
+// immediately - every caller in this file builds its own marker/CartItem
+// via the repositories directly (see unresolvedReserveMarker's own doc
+// comment), never through CartService, so a barrier window here never
+// blocks anything this fixture still needs to do.
+export async function transitionToCartScoped(fixture: RecoveryFixture): Promise<void> {
+  const barrierSnapshot = await fixture.mutationBarrier.activate(fixture.adminUserId);
+  if (barrierSnapshot.revision === null) {
+    throw new Error('test setup invariant: barrier revision must be non-null once active');
+  }
+  const targetCount = await fixture.prisma.cartItem.count({ where: { quantity: { gt: 0 } } });
+  const result = await fixture.modeService.setMode({
+    targetMode: 'CART_SCOPED',
+    updatedById: fixture.adminUserId,
+    cutoverAttestation: {
+      barrierRevision: barrierSnapshot.revision,
+      targetCount,
+      minimumExpiresAt: Date.now() + 300_000,
+      completedAt: Date.now(),
+    },
+  });
+  await fixture.mutationBarrier.deactivate(fixture.adminUserId);
+  if (!result.ok) {
+    throw new Error(`Failed to transition test fixture to CART_SCOPED mode: ${JSON.stringify(result)}`);
+  }
+}
+
 export async function ensureMode(
   fixture: RecoveryFixture,
   target: 'LEGACY' | 'MIRROR' | 'CART_SCOPED' | 'DRAINING',
@@ -291,7 +344,7 @@ export async function ensureMode(
   if (target === 'MIRROR') {
     return;
   }
-  await fixture.modeService.setMode({ targetMode: 'CART_SCOPED', updatedById: fixture.adminUserId });
+  await transitionToCartScoped(fixture);
   if (target === 'CART_SCOPED') {
     return;
   }

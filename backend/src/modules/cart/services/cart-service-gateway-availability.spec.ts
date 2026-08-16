@@ -1,6 +1,7 @@
 import { ConflictException } from '@nestjs/common';
 
 import { PrismaService } from '../../../database/prisma.service';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { ReservationGateway } from '../../checkout-reservation/types/reservation-gateway.types';
 import { ProductsRepository } from '../../products/repositories/products.repository';
@@ -58,6 +59,9 @@ describe('CartService assertQuantityAvailable gateway-mode matrix', () => {
       reject: jest.fn().mockResolvedValue({ count: 1 }),
       complete: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    const mutationBarrier: jest.Mocked<Pick<CartMutationBarrierService, 'assertNotActive'>> = {
+      assertNotActive: jest.fn().mockResolvedValue(undefined),
+    };
     const convergence = new CartReservationConvergenceService(
       { $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb({})) } as unknown as PrismaService,
       cartRepository as unknown as CartRepository,
@@ -73,6 +77,7 @@ describe('CartService assertQuantityAvailable gateway-mode matrix', () => {
       syncState as unknown as CartReservationSyncStateRepository,
       convergence,
       idempotency as unknown as CartItemAddIdempotencyService,
+      mutationBarrier as unknown as CartMutationBarrierService,
     );
   });
 

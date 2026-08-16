@@ -5,10 +5,15 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { CartItem, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
+import {
+  CartMutationBarrierActiveError,
+  CartMutationBarrierService,
+} from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { RESERVATION_GATEWAY, ReservationGateway } from '../../checkout-reservation/types/reservation-gateway.types';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
@@ -29,6 +34,14 @@ import { CartReservationConvergenceService, CompensationPlan } from './cart-rese
 // 'SUPERSEDED'). Mirrors StaleCompensationGenerationError's role in
 // cart-reservation-convergence.service.ts.
 class StaleIdempotencyAttemptError extends Error {}
+
+// CART_SCOPED activation-boundary gate (see the gate design review). One
+// shared message for every target-changing entry point this file owns -
+// addItem, updateItemQuantity, removeItem all convert
+// CartMutationBarrierActiveError to the identical 503, never a
+// per-call-site variant.
+const CART_MUTATION_BARRIER_ACTIVE_MESSAGE =
+  'Cart mutations are temporarily paused for system maintenance; please try again shortly.';
 
 // A second supersession within one synchronous addItem call would require
 // a second full staleness window to have already elapsed - never expected
@@ -52,6 +65,7 @@ export class CartService {
     private readonly syncState: CartReservationSyncStateRepository,
     private readonly convergence: CartReservationConvergenceService,
     private readonly idempotency: CartItemAddIdempotencyService,
+    private readonly mutationBarrier: CartMutationBarrierService,
   ) {}
 
   async getCart(userId: string): Promise<CartResponseEntity> {
@@ -139,6 +153,7 @@ export class CartService {
     let mutation: { item: CartItem; generation: number } | 'SUPERSEDED';
     try {
       mutation = await this.prisma.$transaction(async (tx) => {
+        await this.mutationBarrier.assertNotActive(tx);
         const item = await this.cartRepository.addOrIncrementItem(cartId, dto.productId, dto.quantity, tx);
         const marker = await this.syncState.upsertDesiredState(cartId, dto.productId, item.mutationVersion, item.quantity, tx);
         const completed = await this.idempotency.complete(
@@ -156,6 +171,9 @@ export class CartService {
     } catch (error) {
       if (error instanceof StaleIdempotencyAttemptError) {
         return 'SUPERSEDED';
+      }
+      if (error instanceof CartMutationBarrierActiveError) {
+        throw new ServiceUnavailableException(CART_MUTATION_BARRIER_ACTIVE_MESSAGE);
       }
       throw error;
     }
@@ -216,17 +234,27 @@ export class CartService {
     await this.assertQuantityAvailable(product, cart.id, dto.quantity);
 
     const previousQuantity = item.quantity;
-    const { item: mutated, generation } = await this.prisma.$transaction(async (tx) => {
-      const updatedItem = await this.cartRepository.updateItemQuantity(itemId, dto.quantity, tx);
-      const marker = await this.syncState.upsertDesiredState(
-        cart.id,
-        item.productId,
-        updatedItem.mutationVersion,
-        updatedItem.quantity,
-        tx,
-      );
-      return { item: updatedItem, generation: marker.generation };
-    });
+    let mutation: { item: CartItem; generation: number };
+    try {
+      mutation = await this.prisma.$transaction(async (tx) => {
+        await this.mutationBarrier.assertNotActive(tx);
+        const updatedItem = await this.cartRepository.updateItemQuantity(itemId, dto.quantity, tx);
+        const marker = await this.syncState.upsertDesiredState(
+          cart.id,
+          item.productId,
+          updatedItem.mutationVersion,
+          updatedItem.quantity,
+          tx,
+        );
+        return { item: updatedItem, generation: marker.generation };
+      });
+    } catch (error) {
+      if (error instanceof CartMutationBarrierActiveError) {
+        throw new ServiceUnavailableException(CART_MUTATION_BARRIER_ACTIVE_MESSAGE);
+      }
+      throw error;
+    }
+    const { item: mutated, generation } = mutation;
 
     await this.convergence.convergeReservation(cart.id, item.productId, userId, generation, mutated.quantity, {
       kind: 'REVERT_QUANTITY',
@@ -245,11 +273,21 @@ export class CartService {
       throw new NotFoundException('Cart item not found');
     }
 
-    const { item: deleted, generation } = await this.prisma.$transaction(async (tx) => {
-      const removed = await this.cartRepository.removeItem(itemId, tx);
-      const marker = await this.syncState.upsertDesiredState(cart.id, item.productId, removed.mutationVersion, null, tx);
-      return { item: removed, generation: marker.generation };
-    });
+    let removal: { item: CartItem; generation: number };
+    try {
+      removal = await this.prisma.$transaction(async (tx) => {
+        await this.mutationBarrier.assertNotActive(tx);
+        const removed = await this.cartRepository.removeItem(itemId, tx);
+        const marker = await this.syncState.upsertDesiredState(cart.id, item.productId, removed.mutationVersion, null, tx);
+        return { item: removed, generation: marker.generation };
+      });
+    } catch (error) {
+      if (error instanceof CartMutationBarrierActiveError) {
+        throw new ServiceUnavailableException(CART_MUTATION_BARRIER_ACTIVE_MESSAGE);
+      }
+      throw error;
+    }
+    const { item: deleted, generation } = removal;
 
     await this.convergence.convergeReservation(cart.id, item.productId, userId, generation, null, {
       kind: 'RESTORE',

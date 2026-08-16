@@ -52,3 +52,27 @@ export type ReservationRecoveryConvergenceResult =
       lastError: string | null;
       observedMode: ReservationEngineModeSnapshot;
     };
+
+// CART_SCOPED activation-boundary gate (see the gate design review's
+// direct-backfill design). The same three outcomes as the cart-scoped
+// branch of ReservationRecoveryConvergenceResult, deliberately WITHOUT
+// observedMode - the pre-cutover backfill/freshness sweep runs entirely
+// while mode is still MIRROR (never CART_SCOPED), under the mutation
+// barrier's own revision proof, not the mode-transition advisory lock;
+// there is no "verify mode identity unchanged" step for it to feed, so
+// carrying a snapshot here would be either misleading (a fabricated
+// CART_SCOPED identity that was never actually current) or meaningless
+// (echoing back MIRROR, which no caller needs).
+//
+// blockReason is narrowed to 'PRODUCT_SUSPECT' only, never the full
+// CartReservationSyncBlockReason union: convergeCartScopedCore (the sole
+// producer of this type) can never itself decide MODE_NOT_ADMITTING -
+// that classification belongs entirely to converge()'s own outer
+// DRAINING branch, which never delegates into convergeCartScopedCore in
+// the first place. This is the type system proving convergeCartScopedCore
+// really is a pure "given a target, converge it" primitive with no
+// mode-policy opinion of its own.
+export type DirectCartScopedConvergenceResult =
+  | { outcome: 'CONVERGED' }
+  | { outcome: 'BLOCKED'; blockReason: Extract<CartReservationSyncBlockReason, 'PRODUCT_SUSPECT'> }
+  | { outcome: 'RETRY'; reasonCode: 'CHECKOUT_IN_PROGRESS' | 'UNKNOWN_INFRA_FAILURE'; lastError: string | null };

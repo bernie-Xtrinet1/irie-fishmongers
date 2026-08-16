@@ -9,6 +9,8 @@ import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
@@ -156,6 +158,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     new VendorTierFeaturesRepository(prisma),
     new VendorSalesRepository(prisma),
   );
+  const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
   const ordersService = new OrdersService(
     prisma,
     new OrdersRepository(prisma),
@@ -169,6 +172,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     inventoryReservations,
     eventEmitter,
     syncStateRepository,
+    mutationBarrier,
   );
 
   const checkoutAttemptService = new CheckoutAttemptService(new CheckoutAttemptRepository(prisma));

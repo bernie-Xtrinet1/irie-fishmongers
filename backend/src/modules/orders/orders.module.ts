@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CartModule } from '../cart/cart.module';
+import { CartMutationBarrierModule } from '../cart-mutation-barrier/cart-mutation-barrier.module';
 import { CartReservationSyncModule } from '../cart-reservation-sync/cart-reservation-sync.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -15,6 +16,11 @@ import { VendorOrdersRepository } from './repositories/vendor-orders.repository'
 import { OrdersService } from './services/orders.service';
 import { VendorOrdersService } from './services/vendor-orders.service';
 
+// CART_SCOPED activation-boundary gate (see the gate design review).
+// CartMutationBarrierModule is a confirmed leaf - importing it here
+// introduces no cycle. OrdersService.createOrderInTransaction acquires the
+// barrier's shared advisory lock as the first statement of its own
+// existing, externally-owned transaction.
 @Module({
   imports: [
     AuthModule,
@@ -25,6 +31,7 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     PaymentsModule,
     VendorTiersModule,
     InventoryModule,
+    CartMutationBarrierModule,
   ],
   controllers: [OrdersController, VendorOrdersController],
   providers: [

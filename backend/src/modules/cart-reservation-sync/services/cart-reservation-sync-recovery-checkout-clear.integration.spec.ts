@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { buildLegacyPricingSnapshot } from '../../orders/services/legacy-pricing-snapshot.builder';
@@ -52,6 +54,7 @@ describe('DA.1B repository-wide invariant: checkout clear vs. recovery worker (r
     // here since this test calls createOrderInTransaction directly, the
     // same real method OrdersService.checkout() and
     // CheckoutCoordinatorService both call.
+    const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
     ordersService = new OrdersService(
       prisma,
       ordersRepository,
@@ -65,6 +68,7 @@ describe('DA.1B repository-wide invariant: checkout clear vs. recovery worker (r
       fixture.inventoryReservations,
       new EventEmitter2(),
       fixture.syncStateRepository,
+      mutationBarrier,
     );
   });
 

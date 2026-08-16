@@ -160,6 +160,26 @@ export class CartRepository {
     await client.cartItem.deleteMany({ where: { cartId } });
   }
 
+  // CART_SCOPED activation-boundary gate (see the gate design review's
+  // direct-backfill design). Keyset-paginated by id (never a single
+  // unbounded query) - the enumeration primitive the pre-cutover backfill
+  // uses to walk every durable positive CartItem across the whole
+  // catalogue. Joins Cart.customerId directly (required for a reserve-
+  // shaped convergence call) rather than making the caller issue a
+  // second lookup per row.
+  findPositiveItemsPage(
+    afterId: string | null,
+    limit: number,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<(CartItem & { cart: { customerId: string } })[]> {
+    return client.cartItem.findMany({
+      where: { quantity: { gt: 0 }, ...(afterId ? { id: { gt: afterId } } : {}) },
+      orderBy: { id: 'asc' },
+      take: limit,
+      include: { cart: { select: { customerId: true } } },
+    });
+  }
+
   findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<Cart | null> {
     return client.cart.findUnique({ where: { id } });
   }

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../../../database/prisma.service';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -39,6 +40,7 @@ describe('CartService', () => {
   let syncState: jest.Mocked<
     Pick<CartReservationSyncStateRepository, 'upsertDesiredState' | 'resolveIfCurrentGeneration' | 'markUnresolved'>
   >;
+  let mutationBarrier: jest.Mocked<Pick<CartMutationBarrierService, 'assertNotActive'>>;
   let service: CartService;
 
   beforeEach(() => {
@@ -84,6 +86,7 @@ describe('CartService', () => {
       reject: jest.fn().mockResolvedValue({ count: 1 }),
       complete: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    mutationBarrier = { assertNotActive: jest.fn().mockResolvedValue(undefined) };
 
     service = new CartService(
       prisma as unknown as PrismaService,
@@ -94,6 +97,7 @@ describe('CartService', () => {
       syncState as unknown as CartReservationSyncStateRepository,
       convergence,
       idempotency as unknown as CartItemAddIdempotencyService,
+      mutationBarrier as unknown as CartMutationBarrierService,
     );
   });
 

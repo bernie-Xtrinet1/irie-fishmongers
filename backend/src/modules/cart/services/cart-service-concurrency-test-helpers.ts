@@ -6,6 +6,8 @@ import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { buildLegacyReservationGateway } from '../../checkout-reservation/services/checkout-reservation-facade-test-helpers';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
@@ -110,6 +112,7 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
   const gateway = buildLegacyReservationGateway(inventoryReservations);
   const convergence = new CartReservationConvergenceService(prisma, cartRepository, gateway, syncStateRepository);
   const idempotency = new CartItemAddIdempotencyService(new CartItemAddAttemptRepository(prisma));
+  const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
   const service = new CartService(
     prisma,
     cartRepository,
@@ -119,6 +122,7 @@ export async function setUpConcurrencyFixture(namePrefix: string): Promise<Concu
     syncStateRepository,
     convergence,
     idempotency,
+    mutationBarrier,
   );
 
   return {

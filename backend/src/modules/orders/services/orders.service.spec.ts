@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeafoodLot, Vendor } from '@prisma/client';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
+import { CartMutationBarrierService } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -154,6 +155,7 @@ describe('OrdersService', () => {
   let inventoryEventsRepository: jest.Mocked<Pick<InventoryEventsRepository, 'create'>>;
   let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'release'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
+  let mutationBarrier: jest.Mocked<Pick<CartMutationBarrierService, 'assertNotActive'>>;
   let service: OrdersService;
 
   beforeEach(() => {
@@ -177,6 +179,7 @@ describe('OrdersService', () => {
     inventoryEventsRepository = { create: jest.fn().mockResolvedValue(undefined) };
     inventoryReservations = { release: jest.fn().mockResolvedValue(undefined) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
+    mutationBarrier = { assertNotActive: jest.fn().mockResolvedValue(undefined) };
 
     service = new OrdersService(
       prisma as unknown as PrismaService,
@@ -191,6 +194,7 @@ describe('OrdersService', () => {
       inventoryReservations as unknown as InventoryReservationsService,
       eventEmitter as unknown as EventEmitter2,
       syncStateRepository as unknown as CartReservationSyncStateRepository,
+      mutationBarrier as unknown as CartMutationBarrierService,
     );
   });
 

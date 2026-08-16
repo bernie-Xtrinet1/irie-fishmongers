@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import { Role, RoleName } from '@prisma/client';
 
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
 import { RedisService } from '../../../common/redis/redis.service';
@@ -40,6 +41,7 @@ describe('ReservationEngineModeService (real Postgres integration - append-only 
       repository,
       {} as unknown as RedisService,
       {} as unknown as InventoryReservationsService,
+      new CartMutationBarrierConfigRepository(prisma),
     );
 
     const usersRepository = new UsersRepository(prisma);
@@ -171,7 +173,14 @@ describe('ReservationEngineModeService (real Postgres integration - append-only 
         return realCreate(...args);
       });
 
-      const setModePromise = service.setMode({ targetMode: 'CART_SCOPED', updatedById: adminUserId });
+      // LEGACY, not CART_SCOPED: this suite's own job is proving the
+      // exclusive/shared lock relationship, never the CART_SCOPED
+      // activation-boundary gate (see reservation-engine-mode-cutover.
+      // service.spec.ts for that) - a CART_SCOPED target without a
+      // cutoverAttestation now rejects immediately with
+      // CUTOVER_ATTESTATION_REQUIRED (before ever reaching the create()
+      // spy below), which would make delayStarted never resolve.
+      const setModePromise = service.setMode({ targetMode: 'LEGACY', updatedById: adminUserId });
       await delayStarted; // exclusive lock is held; setMode is paused before its own write
 
       let verifyResolved = false;

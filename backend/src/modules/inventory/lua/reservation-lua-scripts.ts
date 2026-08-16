@@ -20,6 +20,18 @@
 // successful entry mutation. The entry mutation itself (the customer's
 // actual add/renew/release) always completes regardless of this check.
 
+// CART_SCOPED activation-boundary gate (see the gate design review's
+// final, approved atomic-freshness design). ARGV[9] (forceFreshEpoch,
+// '1'/absent) is the ONE additive change to this script: when set AND an
+// existing entry is found, createdAt/absoluteExpiresAt are reset to a
+// fresh now-anchored epoch before the rest of this script's own, entirely
+// unchanged, accounting/index/suspend/checkout-pending logic runs. Every
+// existing ARGV[1..8] caller (ordinary reserveOrRenew) never passes
+// ARGV[9], so their behavior is byte-for-byte unchanged - this is a pure
+// superset, not a second accounting path. Administrative-only in
+// practice: reachable exclusively via InventoryReservationsService's
+// distinct reserveWithFreshEpoch method (see its own doc comment for why
+// it is never a boolean parameter on the ordinary reserveOrRenew call).
 export const RESERVE_OR_RENEW_SCRIPT = `
 local reservationKey, cartIndexKey, productIndexKey, totalKey, suspectKey =
   KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
@@ -29,6 +41,7 @@ local now = tonumber(ARGV[5])
 local rollingTtlMs = tonumber(ARGV[6])
 local maxLifetimeMs = tonumber(ARGV[7])
 local version = tonumber(ARGV[8])
+local forceFreshEpoch = ARGV[9] == '1'
 
 local raw = redis.call('GET', reservationKey)
 local oldQuantity = 0
@@ -40,6 +53,10 @@ if raw then
     return cjson.encode({ err = 'RESERVATION_CHECKOUT_IN_PROGRESS' })
   end
   oldQuantity = entry.quantity
+  if forceFreshEpoch then
+    entry.createdAt = now
+    entry.absoluteExpiresAt = now + maxLifetimeMs
+  end
 else
   entry = {
     version = version,

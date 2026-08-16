@@ -1,8 +1,18 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrderItem, Prisma, VendorOrder } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import {
+  CartMutationBarrierActiveError,
+  CartMutationBarrierService,
+} from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
@@ -24,8 +34,16 @@ import { OrderPricingSnapshot } from '../types/order-pricing-snapshot.types';
 import { mapPrepareFailureToHttpException } from './checkout-preparation-http-mapper';
 import { buildLegacyPricingSnapshot } from './legacy-pricing-snapshot.builder';
 import { validatePricingSnapshot } from './order-pricing-snapshot.validator';
+import { toOrderResponse } from './order-response.mapper';
 
 const CANCELLABLE_STATUS = 'PENDING';
+
+// CART_SCOPED activation-boundary gate (see the gate design review).
+// Matches CartService's own CART_MUTATION_BARRIER_ACTIVE_MESSAGE verbatim -
+// the same maintenance condition, the same customer-facing wording,
+// regardless of which entry point observed it.
+const CART_MUTATION_BARRIER_ACTIVE_MESSAGE =
+  'Cart mutations are temporarily paused for system maintenance; please try again shortly.';
 
 @Injectable()
 export class OrdersService {
@@ -42,6 +60,7 @@ export class OrdersService {
     private readonly inventoryReservations: InventoryReservationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly syncStateRepository: CartReservationSyncStateRepository,
+    private readonly mutationBarrier: CartMutationBarrierService,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
@@ -51,9 +70,17 @@ export class OrdersService {
     }
     const { prepared } = prepareResult;
 
-    const order = await this.prisma.$transaction((tx) =>
-      this.createOrderInTransaction(tx, prepared, buildLegacyPricingSnapshot(prepared.cart)),
-    );
+    let order: OrderWithDetails;
+    try {
+      order = await this.prisma.$transaction((tx) =>
+        this.createOrderInTransaction(tx, prepared, buildLegacyPricingSnapshot(prepared.cart)),
+      );
+    } catch (error) {
+      if (error instanceof CartMutationBarrierActiveError) {
+        throw new ServiceUnavailableException(CART_MUTATION_BARRIER_ACTIVE_MESSAGE);
+      }
+      throw error;
+    }
 
     // No longer "reserved", it's actually decremented now - release the
     // soft holds for exactly the products just purchased so they stop
@@ -84,7 +111,7 @@ export class OrdersService {
     });
 
     return {
-      ...OrdersService.toResponse(order),
+      ...toOrderResponse(order),
       payment,
       paymentRedirectUrl: redirectUrl,
     };
@@ -182,6 +209,7 @@ export class OrdersService {
     prepared: PreparedCheckout,
     pricing: OrderPricingSnapshot,
   ): Promise<OrderWithDetails> {
+    await this.mutationBarrier.assertNotActive(tx);
     const { cart, dto, deliveryZoneId } = prepared;
     const pricingByProductId = validatePricingSnapshot(cart, pricing);
     const vendorGroups = new Map<string, VendorOrderInput>();
@@ -354,7 +382,7 @@ export class OrdersService {
 
   private async toResponseWithPayment(order: OrderWithDetails): Promise<OrderResponseEntity> {
     const payment = await this.paymentsService.getByOrderId(order.id);
-    return { ...OrdersService.toResponse(order), payment: payment ?? undefined };
+    return { ...toOrderResponse(order), payment: payment ?? undefined };
   }
 
   // D.2: exposes toResponse for a caller with a payment result already in
@@ -364,36 +392,7 @@ export class OrdersService {
     payment?: PaymentResponseEntity,
     paymentRedirectUrl?: string,
   ): OrderResponseEntity {
-    return { ...OrdersService.toResponse(order), payment, paymentRedirectUrl };
+    return { ...toOrderResponse(order), payment, paymentRedirectUrl };
   }
 
-  private static toResponse(order: OrderWithDetails): OrderResponseEntity {
-    return {
-      id: order.id,
-      customerId: order.customerId,
-      deliveryAddressLine1: order.deliveryAddressLine1,
-      deliveryAddressLine2: order.deliveryAddressLine2,
-      deliveryParish: order.deliveryParish,
-      deliveryPhone: order.deliveryPhone,
-      deliveryZoneId: order.deliveryZoneId,
-      createdAt: order.createdAt,
-      vendorOrders: order.vendorOrders.map((vendorOrder) => ({
-        id: vendorOrder.id,
-        orderId: vendorOrder.orderId,
-        vendorId: vendorOrder.vendorId,
-        status: vendorOrder.status,
-        subtotal: vendorOrder.subtotal.toString(),
-        createdAt: vendorOrder.createdAt,
-        items: vendorOrder.items.map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          productName: item.productName,
-          unitPrice: item.unitPrice.toString(),
-          unit: item.unit,
-          quantity: item.quantity,
-          subtotal: item.subtotal.toString(),
-        })),
-      })),
-    };
-  }
 }

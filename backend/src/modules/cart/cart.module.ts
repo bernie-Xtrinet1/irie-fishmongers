@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
+import { CartMutationBarrierModule } from '../cart-mutation-barrier/cart-mutation-barrier.module';
 import { CartReservationSyncModule } from '../cart-reservation-sync/cart-reservation-sync.module';
 import { CheckoutReservationModule } from '../checkout-reservation/checkout-reservation.module';
 import { ProductsModule } from '../products/products.module';
@@ -29,6 +30,13 @@ import { CartService } from './services/cart.service';
 // every existing external consumer (OrdersModule, PriceLockModule) exactly
 // as before - same token, same singleton instance, one provider
 // registration in the whole graph.
+//
+// CART_SCOPED activation-boundary gate (see the gate design review).
+// CartMutationBarrierModule is a confirmed leaf (no imports of its own) -
+// importing it here introduces no cycle. CartService's addItem/
+// updateItemQuantity/removeItem each acquire the barrier's shared advisory
+// lock as the first statement of their own existing transaction, never a
+// separate one.
 @Module({
   imports: [
     AuthModule,
@@ -37,6 +45,7 @@ import { CartService } from './services/cart.service';
     CheckoutReservationModule,
     CartReservationSyncModule,
     CartRepositoryModule,
+    CartMutationBarrierModule,
   ],
   controllers: [CartController],
   providers: [

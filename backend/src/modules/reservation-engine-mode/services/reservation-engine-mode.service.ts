@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, ReservationEngineMode } from '@prisma/client';
 
+import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
@@ -9,11 +10,21 @@ import {
   ReservationEngineModeConfigRepository,
 } from '../repositories/reservation-engine-mode-config.repository';
 import {
+  CutoverAttestation,
   ReservationEngineModeSnapshot,
   RollbackVerificationResult,
   SetReservationEngineModeInput,
   SetReservationEngineModeResult,
 } from '../types/reservation-engine-mode.types';
+
+// CART_SCOPED activation-boundary gate (see the gate design review's final
+// atomic-freshness design). Passed explicitly to setMode's own
+// $transaction call - never relied on as Prisma's implicit default -
+// specifically so it can also be the SAME value the post-lock freshness
+// check bounds itself against (postLockNow + this < minimumExpiresAt):
+// one named constant ties transaction lifetime to Redis freshness, rather
+// than two independently-chosen numbers that could silently drift apart.
+export const CUTOVER_TRANSITION_TX_TIMEOUT_MS = 5_000;
 
 const CART_INDEX_KEY_PATTERN = /^inv:reserved:cart-index:\{([^{}]+)\}$/;
 const PRODUCT_TOTAL_KEY_PATTERN = /^inv:reserved:product-total:\{([^{}]+)\}$/;
@@ -57,6 +68,7 @@ export class ReservationEngineModeService {
     private readonly repository: ReservationEngineModeConfigRepository,
     private readonly redis: RedisService,
     private readonly inventoryReservations: InventoryReservationsService,
+    private readonly mutationBarrierRepository: CartMutationBarrierConfigRepository,
   ) {}
 
   // No config row yet means LEGACY, not an error - deliberately different
@@ -103,34 +115,120 @@ export class ReservationEngineModeService {
   // admin-triggered actions, not a hot path - global serialization is an
   // acceptable cost here.
   async setMode(input: SetReservationEngineModeInput): Promise<SetReservationEngineModeResult> {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
+        const postLockNow = Date.now();
 
-      const currentConfig = await this.repository.findCurrent(tx);
-      const currentMode: ReservationEngineMode = currentConfig?.mode ?? 'LEGACY';
-      const { targetMode, updatedById } = input;
+        const currentConfig = await this.repository.findCurrent(tx);
+        const currentMode: ReservationEngineMode = currentConfig?.mode ?? 'LEGACY';
+        const { targetMode, updatedById } = input;
 
-      if (!VALID_TRANSITIONS.has(`${currentMode}->${targetMode}`)) {
-        return { ok: false, code: 'INVALID_TRANSITION', from: currentMode, to: targetMode };
-      }
-
-      if (currentMode === 'DRAINING' && targetMode === 'LEGACY') {
-        const verification = await this.verifyRollbackSafe();
-        if (!verification.clear) {
-          if (verification.structureDriftProductIds.length > 0) {
-            return {
-              ok: false,
-              code: 'ROLLBACK_STRUCTURE_DRIFT',
-              structureDriftProductIds: verification.structureDriftProductIds,
-            };
-          }
-          return { ok: false, code: 'ROLLBACK_BLOCKED', outstandingProductIds: verification.outstandingProductIds };
+        if (!VALID_TRANSITIONS.has(`${currentMode}->${targetMode}`)) {
+          return { ok: false, code: 'INVALID_TRANSITION', from: currentMode, to: targetMode };
         }
-      }
 
-      const created = await this.repository.create({ mode: targetMode, updatedById }, tx);
-      return { ok: true, id: created.id, mode: created.mode, createdAt: created.createdAt };
+        if (currentMode === 'DRAINING' && targetMode === 'LEGACY') {
+          const verification = await this.verifyRollbackSafe();
+          if (!verification.clear) {
+            if (verification.structureDriftProductIds.length > 0) {
+              return {
+                ok: false,
+                code: 'ROLLBACK_STRUCTURE_DRIFT',
+                structureDriftProductIds: verification.structureDriftProductIds,
+              };
+            }
+            return { ok: false, code: 'ROLLBACK_BLOCKED', outstandingProductIds: verification.outstandingProductIds };
+          }
+        }
+
+        if (currentMode === 'MIRROR' && targetMode === 'CART_SCOPED') {
+          const cutoverFailure = await this.verifyCutoverPreconditions(tx, input.cutoverAttestation, postLockNow);
+          if (cutoverFailure) {
+            return cutoverFailure;
+          }
+        }
+
+        const created = await this.repository.create({ mode: targetMode, updatedById }, tx);
+        return { ok: true, id: created.id, mode: created.mode, createdAt: created.createdAt };
+      },
+      { timeout: CUTOVER_TRANSITION_TX_TIMEOUT_MS },
+    );
+  }
+
+  // CART_SCOPED activation-boundary gate (see the gate design review's
+  // final, approved atomic-freshness design). Five checks, in this exact
+  // order, all inside the SAME locked transaction setMode's own
+  // TRANSITION_LOCK_KEY already guards - no new lock, no second
+  // transaction:
+  //   1. attestation supplied at all
+  //   2. barrier still active at EXACTLY the attested revision - a plain
+  //      read (never acquiring the barrier's own shared/exclusive lock;
+  //      that lock's job is admission-race fencing, already discharged
+  //      before this attestation was ever built - see
+  //      CartMutationBarrierService's own protocol comment)
+  //   3. zero unresolved CartReservationSyncState rows (DA.1B hard blocker)
+  //   4. zero unresolved-or-PERMANENT_FAILURE CartReservationCompensation
+  //      rows (C4 hard blocker - necessary, not sufficient on its own,
+  //      which is exactly why checks 2-5 exist at all)
+  //   5. positive-CartItem count still matches the attested target count
+  //      (defensive cross-check - the barrier-revision match already
+  //      proves this structurally, per the gate design review's own
+  //      argument, but costs one cheap COUNT to also verify directly)
+  //   6. freshness: postLockNow + CUTOVER_TRANSITION_TX_TIMEOUT_MS must
+  //      still be before minimumExpiresAt - since Prisma's own explicit
+  //      timeout (the same constant) bounds this whole transaction's
+  //      maximum possible remaining duration from BEFORE this point,
+  //      this is a real, enforced ceiling, never an estimate.
+  private async verifyCutoverPreconditions(
+    tx: Prisma.TransactionClient,
+    attestation: CutoverAttestation | undefined,
+    postLockNow: number,
+  ): Promise<Extract<SetReservationEngineModeResult, { ok: false }> | null> {
+    if (!attestation) {
+      return { ok: false, code: 'CUTOVER_ATTESTATION_REQUIRED' };
+    }
+
+    const barrier = await this.mutationBarrierRepository.findCurrent(tx);
+    if (!barrier?.active || barrier.revision !== attestation.barrierRevision) {
+      return { ok: false, code: 'CUTOVER_BARRIER_REVISION_MISMATCH' };
+    }
+
+    const unresolvedSyncCount = await tx.cartReservationSyncState.count({ where: { resolvedAt: null } });
+    if (unresolvedSyncCount > 0) {
+      return { ok: false, code: 'CUTOVER_SYNC_BACKLOG', unresolvedCount: unresolvedSyncCount };
+    }
+
+    const unresolvedCompensationCount = await tx.cartReservationCompensation.count({
+      where: { status: { in: ['PENDING', 'PROCESSING', 'BLOCKED', 'PERMANENT_FAILURE'] } },
     });
+    if (unresolvedCompensationCount > 0) {
+      return { ok: false, code: 'CUTOVER_COMPENSATION_BACKLOG', unresolvedCount: unresolvedCompensationCount };
+    }
+
+    const positiveTargetCount = await tx.cartItem.count({ where: { quantity: { gt: 0 } } });
+    if (positiveTargetCount !== attestation.targetCount) {
+      return {
+        ok: false,
+        code: 'CUTOVER_TARGET_COUNT_MISMATCH',
+        expected: attestation.targetCount,
+        actual: positiveTargetCount,
+      };
+    }
+
+    if (postLockNow + CUTOVER_TRANSITION_TX_TIMEOUT_MS >= attestation.minimumExpiresAt) {
+      return { ok: false, code: 'CUTOVER_BACKFILL_STALE' };
+    }
+
+    // Defense in depth (never the load-bearing proof - see this method's
+    // own doc comment): a second, tight, margin-free freshness check
+    // using a freshly-captured Date.now(), immediately before the
+    // caller's own mode-row insert.
+    if (Date.now() >= attestation.minimumExpiresAt) {
+      return { ok: false, code: 'CUTOVER_BACKFILL_STALE' };
+    }
+
+    return null;
   }
 
   // Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan's atomic-fencing
