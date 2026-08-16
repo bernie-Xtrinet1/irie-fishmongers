@@ -145,10 +145,15 @@ jobs:
             echo "== root @prisma/client =="
             ls -la /app/node_modules/@prisma/client 2>/dev/null || true
           ' 2>&1 | tee prisma-layout.log
+          # Prove a native Linux Prisma query engine exists without hard-coding
+          # one OpenSSL ABI. bookworm-slim lacks libssl3, so Prisma 6.19.3 emits
+          # the debian-openssl-1.1.x engine (confirmed by prisma-layout.log), not
+          # 3.0.x - match any debian-openssl ABI. backend/node_modules is the
+          # authoritative (non-hoisted) location; root is an optional fallback.
           set +e
           docker run --rm irie-backend:val sh -c \
-            'ls node_modules/.prisma/client/ 2>/dev/null | grep -q "libquery_engine-debian-openssl-3.0.x" \
-             || ls /app/node_modules/.prisma/client/ 2>/dev/null | grep -q "libquery_engine-debian-openssl-3.0.x"'
+            'find /app/backend/node_modules/.prisma/client -maxdepth 1 -type f -name "libquery_engine-debian-openssl-*.so.node" -print -quit 2>/dev/null | grep -q . \
+             || find /app/node_modules/.prisma/client -maxdepth 1 -type f -name "libquery_engine-debian-openssl-*.so.node" -print -quit 2>/dev/null | grep -q .'
           rc=$?; set -e
           bash "$GITHUB_WORKSPACE/assert.sh" prisma-linux-engine-present "$rc"
           set +e
