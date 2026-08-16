@@ -1,0 +1,64 @@
+# Docker build context excludes for the IrieFishmongers monorepo.
+# Build context is always the repository ROOT (all three Dockerfiles resolve
+# npm workspaces + packages/* from here). Exclude host-generated artifacts that
+# are regenerated inside the image, anything secret, and clutter not needed by
+# the workspace build or Prisma generation. Do NOT exclude package manifests,
+# lockfile, source, tsconfig*, next.config, or backend/prisma (schema +
+# migrations are required for `prisma generate`).
+
+# Dependencies — reinstalled in-image via `npm ci`
+**/node_modules
+
+# Build output — regenerated in-image (nest build / next build)
+**/dist
+**/build
+**/.next
+**/out
+**/.turbo
+.turbo
+**/*.tsbuildinfo
+
+# Test / coverage output
+**/coverage
+
+# Secrets & local env — MUST NOT enter the build context. Required public
+# NEXT_PUBLIC_* values are passed as build args, never via copied env files.
+**/.env
+**/.env.*
+
+# Version control / CI metadata
+.git
+.gitignore
+.gitattributes
+.github
+
+# Expo / React Native local caches (mobile app scaffolds)
+**/.expo
+**/.expo-shared
+
+# Logs
+**/*.log
+
+# Editor / OS clutter
+.vscode
+.idea
+**/.DS_Store
+**/Thumbs.db
+~$*
+
+# Agent / local tooling state
+.claude
+.nvmrc
+.prettierignore
+.prettierrc.json
+eslint.config.mjs
+
+# Docs and non-code project folders not needed to build images
+docs
+readme.md
+**/*.md
+Irie-Fishmongers-Logo.jpg
+Personal info
+git-repository
+infrastructure
+Startup instructions.md
