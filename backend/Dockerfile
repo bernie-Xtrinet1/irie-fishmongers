@@ -44,7 +44,9 @@ RUN npm run build -w @iriefishmongers/backend
 # nested backend node_modules, while keeping @prisma/client (a prod dep) and
 # leaving the generated .prisma engine dir untouched - so the generated client
 # stays exactly where it was produced, no cross-stage path overlay needed.
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev \
+    && rm -rf /app/backend/node_modules/prisma /app/node_modules/prisma \
+              /app/backend/node_modules/typescript /app/node_modules/typescript
 
 # ---- runner: minimal, non-root, no build/test tooling ----
 FROM base AS runner
