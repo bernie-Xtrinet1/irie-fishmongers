@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 
 import { RedisModule } from '../common/redis/redis.module';
 import { validateEnv } from '../config/env.validation';
@@ -24,6 +25,14 @@ import { ReservationEngineModeModule } from '../modules/reservation-engine-mode/
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    // Rehearsal finding (staging, 2026-08-16): InventoryModule imports
+    // AuthModule (for reasons unrelated to this CLI), which provides
+    // AuthService, which needs EventEmitter2 - a provider only ever
+    // registered via EventEmitterModule.forRoot() in AppModule until now.
+    // Without this, NestFactory.createApplicationContext throws
+    // UnknownDependenciesException and the CLI cannot boot in ANY
+    // environment. Mirrors AppModule's own registration exactly.
+    EventEmitterModule.forRoot(),
     PrismaModule,
     RedisModule,
     CartMutationBarrierModule,
