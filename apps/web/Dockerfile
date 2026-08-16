@@ -31,7 +31,7 @@ COPY apps/web/package.json ./apps/web/package.json
 COPY apps/admin-dashboard/package.json ./apps/admin-dashboard/package.json
 COPY packages/types/package.json ./packages/types/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
-RUN npm ci
+RUN npm ci --include=dev
 # Only this app's source + the shared packages it transpiles are needed.
 COPY apps/web ./apps/web
 COPY packages ./packages
