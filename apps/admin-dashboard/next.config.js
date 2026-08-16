@@ -1,3 +1,5 @@
+const path = require('path');
+
 const isDev = process.env.NODE_ENV !== 'production';
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 // A relative apiUrl ("/api/v1") means the app calls its OWN origin via the
@@ -29,6 +31,14 @@ const contentSecurityPolicy = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Phase 17B.1: self-contained server bundle for container hosting. In this
+  // npm-workspaces monorepo the traced root must be the repo root so the
+  // standalone output includes the source-consumed workspace packages
+  // (@iriefishmongers/types, @iriefishmongers/ui via transpilePackages) and
+  // the hoisted root node_modules (incl. sharp) - without it tracing misses
+  // them and server.js lands at the wrong relative path.
+  output: 'standalone',
+  outputFileTracingRoot: path.join(__dirname, '../../'),
   transpilePackages: ['@iriefishmongers/types', '@iriefishmongers/ui'],
   images: {
     // Vendor-uploaded product images have no fixed CDN host yet (AWS S3
