@@ -164,6 +164,16 @@ jobs:
       # ---- 6: runtime prisma present, build/test tooling absent ----
       - name: Backend image — dependency tree audit
         run: |
+          # Phase 17B.2V diagnostic: print existence + resolved location of each
+          # audited package in BOTH node_modules trees, BEFORE the unchanged
+          # fail-closed build-test-tooling-absent assertion. Captured to
+          # dependency-tree-audit.log so it survives in the uploaded artifact.
+          docker run --rm irie-backend:val sh -c '
+            for p in @nestjs/cli typescript jest prisma; do
+              for base in /app/node_modules /app/backend/node_modules; do
+                if [ -e "$base/$p" ]; then echo "FOUND $p at $base/$p"; else echo "absent $p at $base/$p"; fi
+              done
+            done' 2>&1 | tee dependency-tree-audit.log
           set +e
           docker run --rm irie-backend:val sh -c 'test -d node_modules/@prisma/client -o -d /app/node_modules/@prisma/client'
           a=$?
@@ -299,5 +309,6 @@ jobs:
             web-build.log
             admin-build.log
             prisma-layout.log
+            dependency-tree-audit.log
             validation-summary.txt
           if-no-files-found: warn
