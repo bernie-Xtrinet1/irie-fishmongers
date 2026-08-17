@@ -46,6 +46,12 @@ async function bootstrap(): Promise<void> {
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup(`${apiPrefix}/docs`, app, swaggerDocument);
 
+  // Wire SIGTERM/SIGINT to Nest's graceful shutdown so provider onModuleDestroy
+  // hooks (PrismaService.$disconnect, RedisService.disconnect) and @Cron
+  // teardown actually run on container stop/scale-in - without this a SIGTERM
+  // kills the process before any cleanup fires.
+  app.enableShutdownHooks();
+
   // Explicitly bind all interfaces so the API is reachable through container
   // and Codespaces port forwarding, not only from the container's loopback.
   await app.listen(port, '0.0.0.0');

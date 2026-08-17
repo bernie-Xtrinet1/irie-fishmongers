@@ -67,4 +67,36 @@ describe('validateEnv', () => {
       /Environment validation failed/,
     );
   });
+
+  it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'FCM_SERVER_KEY'] as const)(
+    'throws when the required notification variable %s is missing',
+    (key) => {
+      const { [key]: _omitted, ...withoutKey } = validConfig;
+      expect(() => validateEnv(withoutKey)).toThrow(/Environment validation failed/);
+    },
+  );
+
+  it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'FCM_SERVER_KEY'] as const)(
+    'throws when the required notification variable %s is empty',
+    (key) => {
+      expect(() => validateEnv({ ...validConfig, [key]: '' })).toThrow(
+        /Environment validation failed/,
+      );
+    },
+  );
+
+  it('accepts the placeholder values documented in backend/.env.example', () => {
+    // Mirrors the example file's notification placeholders so the documented
+    // example provably satisfies the actual validators when populated as shown.
+    const result = validateEnv({
+      ...validConfig,
+      SENDGRID_API_KEY: 'replace-with-sendgrid-api-key',
+      SENDGRID_FROM_EMAIL: 'notifications@iriefishmongers.com',
+      FCM_SERVER_KEY: 'replace-with-fcm-server-key',
+    });
+
+    expect(result.SENDGRID_API_KEY).toBe('replace-with-sendgrid-api-key');
+    expect(result.SENDGRID_FROM_EMAIL).toBe('notifications@iriefishmongers.com');
+    expect(result.FCM_SERVER_KEY).toBe('replace-with-fcm-server-key');
+  });
 });
