@@ -17,7 +17,12 @@
 name: build-images
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      include_frontend:
+        description: "Also build & publish web + admin (Gate B2 — requires the STAGING_NEXT_PUBLIC_* repo vars). Leave false for Gate B1 (backend + migrator only)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -141,6 +146,7 @@ jobs:
 
       - name: Build & push web (staging-specific, public NEXT_PUBLIC_* from vars)
         id: web
+        if: ${{ inputs.include_frontend }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -161,6 +167,7 @@ jobs:
 
       - name: Build & push admin (staging-specific, public NEXT_PUBLIC_* from vars)
         id: admin
+        if: ${{ inputs.include_frontend }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -178,8 +185,9 @@ jobs:
           provenance: true
           sbom: true
 
-      - name: Record immutable image@digest identities (all four images)
+      - name: Record immutable image@digest identities (published images only)
         env:
+          INCLUDE_FRONTEND: ${{ inputs.include_frontend }}
           BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
           MIGRATOR_DIGEST: ${{ steps.migrator.outputs.digest }}
           WEB_DIGEST: ${{ steps.web.outputs.digest }}
@@ -188,27 +196,33 @@ jobs:
           set -euo pipefail
           # The SHA tag is only a source-revision pointer. The authoritative
           # immutable deployment identity is <image>@sha256:<digest>. Fail closed
-          # if any digest is empty (a push that did not yield a digest is not a
-          # publishable artifact and must not be reported as one).
+          # if any REQUIRED digest is empty (a push that did not yield a digest is
+          # not a publishable artifact and must not be reported as one).
+          #
+          # Required set is mode-dependent:
+          #  - always: backend, migrator (Gate B1);
+          #  - additionally when include_frontend==true: web, admin (Gate B2).
+          # Skipped frontend steps (B1) have empty digests and must NOT fail.
+          images="backend:${BACKEND_DIGEST} migrator:${MIGRATOR_DIGEST}"
+          if [ "$INCLUDE_FRONTEND" = "true" ]; then
+            images="${images} web:${WEB_DIGEST} admin:${ADMIN_DIGEST}"
+          fi
           fail=0
           {
             echo "### Published images — source commit ${GITHUB_SHA}"
             echo ""
+            echo "Mode: include_frontend=${INCLUDE_FRONTEND} (B1 = backend+migrator; B2 also web+admin)."
             echo "The immutable identity is the digest; the SHA tag is a"
             echo "source-revision pointer only. Deployment consumes image@digest."
             echo ""
             echo "| image | source tag | immutable identity |"
             echo "|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          for entry in \
-            "backend:${BACKEND_DIGEST}" \
-            "migrator:${MIGRATOR_DIGEST}" \
-            "web:${WEB_DIGEST}" \
-            "admin:${ADMIN_DIGEST}"; do
+          for entry in $images; do
             name="${entry%%:*}"
             digest="${entry#*:}"
             if [ -z "$digest" ]; then
-              echo "FAIL: empty digest for ${name}"
+              echo "FAIL: empty digest for required image ${name}"
               fail=1
               echo "| ${name} | ${GITHUB_SHA} | (MISSING DIGEST) |" >> "$GITHUB_STEP_SUMMARY"
             else
