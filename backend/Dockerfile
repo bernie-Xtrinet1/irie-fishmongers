@@ -39,11 +39,30 @@ COPY packages ./packages
 # native engine.
 RUN npm run prisma:generate -w @iriefishmongers/backend
 RUN npm run build -w @iriefishmongers/backend
-# Convert the install to a production-only tree IN PLACE. Prune removes devDeps
-# (@nestjs/cli, typescript, jest, prisma CLI, ...) from both the root and the
-# nested backend node_modules, while keeping @prisma/client (a prod dep) and
-# leaving the generated .prisma engine dir untouched - so the generated client
-# stays exactly where it was produced, no cross-stage path overlay needed.
+
+# ---- migrator: self-contained `prisma migrate deploy` (Container Apps Job) ----
+# Branches off the UNPRUNED builder, so it keeps the Prisma CLI
+# (backend/node_modules/prisma), the migration + query engines fetched at
+# `npm ci` / `prisma generate`, the schema, and all committed migrations. Runs
+# the LOCAL prisma executable directly (never npm/npx), so it performs NO
+# runtime install or download - the engines are already baked into this image.
+# `migrate deploy` needs only DATABASE_URL (from env), the schema, and the
+# migrations; no shadow database, no generate, no seed.
+FROM builder AS migrator
+ENV NODE_ENV=production
+RUN groupadd --system --gid 1002 migrator \
+  && useradd --system --uid 1002 --gid migrator migrator
+USER migrator
+WORKDIR /app/backend
+CMD ["node_modules/.bin/prisma", "migrate", "deploy"]
+
+# ---- pruned: production-only dependency tree that feeds the runtime image ----
+# The prune/removal that previously ran inline in `builder` lives here now so
+# the migrator stage above could branch off the un-pruned tree. Behaviour is
+# unchanged: removes devDeps (@nestjs/cli, typescript, jest, prisma CLI, ...)
+# from both the root and nested backend node_modules, keeps @prisma/client (a
+# prod dep), and leaves the generated .prisma engine dir untouched.
+FROM builder AS pruned
 RUN npm prune --omit=dev \
     && rm -rf /app/backend/node_modules/prisma /app/node_modules/prisma \
               /app/backend/node_modules/typescript /app/node_modules/typescript
@@ -58,14 +77,14 @@ ENV PORT=3001
 ENV API_PREFIX=api/v1
 RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs nestjs
-# Two node_modules trees, both pruned to production:
+# Two node_modules trees, both pruned to production (sourced from `pruned`):
 #  - root: hoisted runtime deps (@nestjs/*, etc.)
 #  - backend/node_modules: the non-hoisted, generated @prisma/client + engine
 # Node resolves from backend/node_modules upward to the root, so both are needed.
-COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nestjs:nodejs /app/backend/node_modules ./backend/node_modules
-COPY --from=builder --chown=nestjs:nodejs /app/backend/dist ./backend/dist
-COPY --from=builder --chown=nestjs:nodejs /app/backend/package.json ./backend/package.json
+COPY --from=pruned --chown=nestjs:nodejs /app/node_modules ./node_modules
+COPY --from=pruned --chown=nestjs:nodejs /app/backend/node_modules ./backend/node_modules
+COPY --from=pruned --chown=nestjs:nodejs /app/backend/dist ./backend/dist
+COPY --from=pruned --chown=nestjs:nodejs /app/backend/package.json ./backend/package.json
 USER nestjs
 WORKDIR /app/backend
 EXPOSE 3001

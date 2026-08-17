@@ -1,0 +1,220 @@
+# Phase 17D.1 — Image PUBLISHING + migrator readiness (credential-free half).
+#
+# Builds and pushes the four production images (backend, migrator, web, admin)
+# to GHCR, tagged by the FULL commit SHA, and validates the migrator image
+# against a DISPOSABLE PostgreSQL. It NEVER touches Azure, OIDC, Key Vault,
+# Container Apps, a staging database, or any deployment/traffic action. All
+# NEXT_PUBLIC_* values are PUBLIC build configuration sourced from repository
+# `vars` (not secrets). Runtime-image validation stays owned by
+# docker-validation.yml — this workflow does not duplicate it.
+#
+# Trigger: workflow_dispatch only. It runs from the branch/tag chosen in the UI;
+# github.sha is exactly that commit, actions/checkout (default) checks out that
+# commit, and images are tagged :${{ github.sha }} — so checkout, tag, OCI
+# revision metadata, and reported digest all refer to the SAME commit. No `ref`
+# input is accepted, so there is no way to tag a build from one ref with an
+# unrelated SHA.
+name: build-images
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/bernie-xtrinet1/irie-fishmongers
+
+jobs:
+  # ---- migrator readiness: build the migrator image and prove it applies all
+  #      migrations against a FRESH, DISPOSABLE Postgres, then confirms state
+  #      read-only. No seed. This gates publishing.
+  migrator-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: iriemig
+          POSTGRES_PASSWORD: iriemig
+          POSTGRES_DB: iriemig
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iriemig"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable, non-secret local test connection to the service Postgres.
+      MIGRATOR_DATABASE_URL: postgresql://iriemig:iriemig@localhost:5432/iriemig?schema=public
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+
+      - name: Build migrator image (local, not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          target: migrator
+          tags: irie-migrator:val
+          push: false
+          load: true
+
+      - name: migrate deploy against fresh disposable Postgres (expect exit 0)
+        run: |
+          set -euo pipefail
+          # --network host so the container reaches the service Postgres on
+          # localhost:5432. The image runs the LOCAL prisma binary directly;
+          # there is no npm/npx install step at runtime.
+          docker run --rm --network host \
+            -e DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+            irie-migrator:val
+
+      - name: migrate status is up-to-date, read-only (expect exit 0)
+        run: |
+          set -euo pipefail
+          # `prisma migrate status` inspects the _prisma_migrations table and
+          # does NOT modify the database. Overriding the entrypoint command to
+          # run status against the same already-migrated disposable DB.
+          docker run --rm --network host \
+            -e DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+            irie-migrator:val node_modules/.bin/prisma migrate status
+
+  # ---- publish all four images to GHCR by full commit SHA, with BuildKit-
+  #      native provenance + SBOM attestations. Digests are captured/echoed.
+  publish:
+    needs: migrator-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend (runner target)
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          target: runner
+          push: true
+          # The SHA tag is a SOURCE-REVISION pointer only, NOT an immutable
+          # artifact id: rebuilding the same commit later (changed base layers,
+          # repo vars, etc.) can yield a different digest. The authoritative
+          # immutable identity captured below is <image>@sha256:<digest>.
+          tags: ${{ env.IMAGE_NAMESPACE }}/backend:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Build & push migrator (migrator target)
+        id: migrator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          target: migrator
+          push: true
+          tags: ${{ env.IMAGE_NAMESPACE }}/migrator:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Build & push web (staging-specific, public NEXT_PUBLIC_* from vars)
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAMESPACE }}/web:${{ github.sha }}
+          # These images are STAGING-SPECIFIC by construction: NEXT_PUBLIC_* are
+          # inlined into the client bundle at build time. The env label records
+          # that. No secret values appear in labels.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.iriefishmongers.env=staging
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+          provenance: true
+          sbom: true
+
+      - name: Build & push admin (staging-specific, public NEXT_PUBLIC_* from vars)
+        id: admin
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/admin-dashboard/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAMESPACE }}/admin:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.iriefishmongers.env=staging
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_APP_URL=${{ vars.STAGING_NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_ENVIRONMENT=${{ vars.STAGING_NEXT_PUBLIC_ENVIRONMENT }}
+          provenance: true
+          sbom: true
+
+      - name: Record immutable image@digest identities (all four images)
+        env:
+          BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          MIGRATOR_DIGEST: ${{ steps.migrator.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web.outputs.digest }}
+          ADMIN_DIGEST: ${{ steps.admin.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The SHA tag is only a source-revision pointer. The authoritative
+          # immutable deployment identity is <image>@sha256:<digest>. Fail closed
+          # if any digest is empty (a push that did not yield a digest is not a
+          # publishable artifact and must not be reported as one).
+          fail=0
+          {
+            echo "### Published images — source commit ${GITHUB_SHA}"
+            echo ""
+            echo "The immutable identity is the digest; the SHA tag is a"
+            echo "source-revision pointer only. Deployment consumes image@digest."
+            echo ""
+            echo "| image | source tag | immutable identity |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for entry in \
+            "backend:${BACKEND_DIGEST}" \
+            "migrator:${MIGRATOR_DIGEST}" \
+            "web:${WEB_DIGEST}" \
+            "admin:${ADMIN_DIGEST}"; do
+            name="${entry%%:*}"
+            digest="${entry#*:}"
+            if [ -z "$digest" ]; then
+              echo "FAIL: empty digest for ${name}"
+              fail=1
+              echo "| ${name} | ${GITHUB_SHA} | (MISSING DIGEST) |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              ref="${IMAGE_NAMESPACE}/${name}@${digest}"
+              echo "published ${name}: ${ref}"
+              echo "| ${name} | ${GITHUB_SHA} | \`${ref}\` |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          [ "$fail" -eq 0 ]
