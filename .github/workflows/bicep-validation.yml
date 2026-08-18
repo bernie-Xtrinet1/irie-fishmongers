@@ -1,0 +1,94 @@
+# Phase 17E.1V — Bicep compiler VALIDATION ONLY.
+#
+# Compiles, lints, and type-checks the committed Tier-1 Azure IaC
+# (infrastructure/azure/**). It NEVER logs into Azure, uses no
+# credentials/OIDC/secrets, and cannot create or modify any Azure resource:
+# `az bicep` is a LOCAL transpiler/linter only. The job holds no Azure
+# credential, so ARM mutation is impossible, not merely avoided.
+#
+# Tooling is the Azure CLI + Bicep already present on the GitHub-hosted
+# ubuntu-latest (Ubuntu 24.04) runner image. The workflow does NOT install or
+# download a compiler, so validation is reproducible against the declared
+# runner image rather than a moving version.
+name: bicep-validation
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - infrastructure/azure/**
+      - .github/workflows/bicep-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+
+      - name: Record preinstalled Azure CLI + Bicep versions (fail if Bicep missing)
+        run: |
+          set -euo pipefail
+          # Use ONLY the runner's preinstalled tooling. `az bicep version` exits
+          # non-zero if Bicep is unexpectedly unavailable, failing the job.
+          az version
+          az bicep version
+
+      - name: Lint Bicep (local; linter errors fail the job)
+        run: |
+          set -euo pipefail
+          az bicep lint --file infrastructure/azure/main.bicep
+          az bicep lint --file infrastructure/azure/modules/foundation.bicep
+          az bicep lint --file infrastructure/azure/modules/containerApp.bicep
+
+      - name: Compile main.bicep (resources, API versions, scopes, modules, outputs)
+        run: |
+          set -euo pipefail
+          # --stdout prints ARM JSON to stdout and writes NO file into the repo.
+          az bicep build --file infrastructure/azure/main.bicep --stdout > /dev/null
+
+      - name: Compile modules standalone
+        run: |
+          set -euo pipefail
+          az bicep build --file infrastructure/azure/modules/foundation.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/modules/containerApp.bicep --stdout > /dev/null
+
+      - name: Compile + resolve staging.bicepparam against main.bicep
+        run: |
+          set -euo pipefail
+          az bicep build-params --file infrastructure/azure/staging.bicepparam --stdout > /dev/null
+
+      - name: Static safety gate — only the five approved Tier-1 resource types
+        run: |
+          set -euo pipefail
+          # Defense in depth, NOT a substitute for the compiler above.
+          allowed="Microsoft.Resources/resourceGroups Microsoft.OperationalInsights/workspaces Microsoft.App/managedEnvironments Microsoft.App/containerApps Microsoft.Consumption/budgets"
+          declared=$(grep -rhoE "Microsoft\.[A-Za-z]+/[A-Za-z]+" infrastructure/azure --include=*.bicep | sort -u)
+          for t in $declared; do
+            case " $allowed " in
+              *" $t "*) : ;;
+              *) echo "FAIL: unexpected/deferred resource type: $t"; exit 1 ;;
+            esac
+          done
+          echo "resource-type allowlist OK"
+
+      - name: Static safety gate — no secret literals
+        run: |
+          set -euo pipefail
+          if grep -rniE "password:\s*'|primarySharedKey:\s*'|(client|api)[-_]?secret:\s*'|['\"][A-Za-z0-9+/]{40,}={0,2}['\"]" infrastructure/azure --include=*.bicep; then
+            echo "FAIL: possible secret literal in IaC"; exit 1
+          fi
+          echo "no secret literals"
+
+      - name: Confirm no generated ARM JSON entered the tree
+        run: |
+          set -euo pipefail
+          # --stdout must leave the working tree unchanged.
+          if git status --porcelain | grep -E '\.json$'; then
+            echo "FAIL: generated JSON present in working tree"; exit 1
+          fi
+          echo "workspace clean"
