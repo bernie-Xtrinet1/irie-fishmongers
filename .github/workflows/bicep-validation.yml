@@ -62,19 +62,59 @@ jobs:
           set -euo pipefail
           az bicep build-params --file infrastructure/azure/staging.bicepparam --stdout > /dev/null
 
+      # ---- Tier-3 (Phase 17F) application-deployment IaC ----
+      - name: Lint Tier-3 Bicep (linter errors fail the job)
+        run: |
+          set -euo pipefail
+          az bicep lint --file infrastructure/azure/tier3/main.bicep
+          az bicep lint --file infrastructure/azure/tier3/modules/security.bicep
+          az bicep lint --file infrastructure/azure/tier3/modules/data.bicep
+          az bicep lint --file infrastructure/azure/tier3/modules/containerApp.bicep
+          az bicep lint --file infrastructure/azure/tier3/modules/migratorJob.bicep
+
+      - name: Compile Tier-3 main + modules
+        run: |
+          set -euo pipefail
+          az bicep build --file infrastructure/azure/tier3/main.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/tier3/modules/security.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/tier3/modules/data.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/tier3/modules/containerApp.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/tier3/modules/migratorJob.bicep --stdout > /dev/null
+
+      - name: Compile + resolve Tier-3 staging.bicepparam
+        run: |
+          set -euo pipefail
+          az bicep build-params --file infrastructure/azure/tier3/staging.bicepparam --stdout > /dev/null
+
       - name: Static safety gate — only the five approved Tier-1 resource types
         run: |
           set -euo pipefail
-          # Defense in depth, NOT a substitute for the compiler above.
+          # Defense in depth, NOT a substitute for the compiler above. Scoped to
+          # the Tier-1 templates only (Tier-3 deliberately adds more types).
           allowed="Microsoft.Resources/resourceGroups Microsoft.OperationalInsights/workspaces Microsoft.App/managedEnvironments Microsoft.App/containerApps Microsoft.Consumption/budgets"
-          declared=$(grep -rhoE "Microsoft\.[A-Za-z]+/[A-Za-z]+" infrastructure/azure --include=*.bicep | sort -u)
+          declared=$(grep -rhoE "Microsoft\.[A-Za-z]+/[A-Za-z]+" infrastructure/azure/main.bicep infrastructure/azure/modules --include=*.bicep | sort -u)
           for t in $declared; do
             case " $allowed " in
               *" $t "*) : ;;
-              *) echo "FAIL: unexpected/deferred resource type: $t"; exit 1 ;;
+              *) echo "FAIL: unexpected/deferred resource type in Tier-1: $t"; exit 1 ;;
             esac
           done
-          echo "resource-type allowlist OK"
+          echo "Tier-1 resource-type allowlist OK"
+
+      - name: Static safety gate — Tier-3 resource-type allowlist
+        run: |
+          set -euo pipefail
+          # The exact expanded set Tier-3 is authorized to introduce. Anything
+          # else (e.g. an accidental DNS zone or federated credential) fails.
+          allowed="Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers Microsoft.Cache/redisEnterprise Microsoft.App/containerApps Microsoft.App/managedEnvironments Microsoft.App/jobs"
+          declared=$(grep -rhoE "Microsoft\.[A-Za-z]+/[A-Za-z]+" infrastructure/azure/tier3 --include=*.bicep | sort -u)
+          for t in $declared; do
+            case " $allowed " in
+              *" $t "*) : ;;
+              *) echo "FAIL: unexpected resource type in Tier-3: $t"; exit 1 ;;
+            esac
+          done
+          echo "Tier-3 resource-type allowlist OK"
 
       - name: Static safety gate — no secret literals
         run: |
