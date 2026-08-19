@@ -104,10 +104,18 @@ jobs:
       - name: Static safety gate — Tier-3 resource-type allowlist
         run: |
           set -euo pipefail
-          # The exact expanded set Tier-3 is authorized to introduce. Anything
-          # else (e.g. an accidental DNS zone or federated credential) fails.
-          allowed="Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers Microsoft.Cache/redisEnterprise Microsoft.App/containerApps Microsoft.App/managedEnvironments Microsoft.App/jobs"
-          declared=$(grep -rhoE "Microsoft\.[A-Za-z]+/[A-Za-z]+" infrastructure/azure/tier3 --include=*.bicep | sort -u)
+          # Declaration-aware: scan ONLY Bicep `resource` declarations, extract
+          # the quoted '<type>@<apiVersion>' (supporting any number of child
+          # path segments, e.g. .../flexibleServers/databases), and check each
+          # against the explicit allowlist. Type-name strings used inside
+          # functions - e.g. subscriptionResourceId('Microsoft.Authorization/roleDefinitions', ...) -
+          # are NOT resource declarations and are correctly excluded. `existing`
+          # references are included in the scan (Microsoft.App/managedEnvironments
+          # is the Tier-1 environment that Tier-3 references, not creates).
+          allowed="Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers/databases Microsoft.DBforPostgreSQL/flexibleServers/firewallRules Microsoft.Cache/redisEnterprise Microsoft.Cache/redisEnterprise/databases Microsoft.App/containerApps Microsoft.App/managedEnvironments Microsoft.App/jobs"
+          declared=$(grep -rhE "^[[:space:]]*resource[[:space:]]" infrastructure/azure/tier3 --include=*.bicep \
+            | grep -oE "'Microsoft\.[A-Za-z0-9]+(/[A-Za-z0-9]+)+@[0-9a-z-]+'" \
+            | sed -E "s/^'//; s/@[0-9a-z-]+'\$//" | sort -u)
           for t in $declared; do
             case " $allowed " in
               *" $t "*) : ;;
