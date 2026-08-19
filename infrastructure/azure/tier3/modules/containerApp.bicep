@@ -74,12 +74,13 @@ var appSecrets = [
   }
 ]
 
-var containerEnv = concat(plainEnv, [
+var secretEnvVars = [
   for s in secretEnv: {
     name: s.name
     secretRef: s.secretRef
   }
-])
+]
+var containerEnv = concat(plainEnv, secretEnvVars)
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
