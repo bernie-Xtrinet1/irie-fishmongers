@@ -40,6 +40,17 @@ param backendMaxReplicas = 2
 param frontendMinReplicas = 0
 param frontendMaxReplicas = 1
 
+// Payments — WiPay Jamaica SANDBOX base URL (host `jmsb`, not the live `tx`
+// host). The adapter treats this as a base and appends /request, /{ref},
+// /{ref}/refund. The matching WiPay sandbox account number + API key are PUBLIC
+// sandbox values - NOT production merchant credentials - and are populated ONLY
+// via Key Vault (never in Git), under the app's established secret contract.
+// SEPARATE UNRESOLVED FUNCTIONAL-TESTING RISK (NOT fixed by this URL change):
+// wipay.adapter.ts's request body/auth shape may not match WiPay's actual
+// hosted-checkout API; a sandbox transaction test is required before relying on
+// WiPay end-to-end.
+param wipayApiUrl = 'https://jmsb.wipayfinancial.com/plugins/payments'
+
 // Data plane (non-secret bits). The admin PASSWORD is the only externalized
 // secret: supply it at deploy time, e.g. export PG_ADMIN_PASSWORD=...
 param postgresAdminLogin = 'irieadmin'
