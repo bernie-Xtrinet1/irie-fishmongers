@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { DeviceToken } from '@prisma/client';
 import { getApps } from 'firebase-admin/app';
-import { getMessaging } from 'firebase-admin/messaging';
+import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
 
 import { ChannelSendInput } from '../interfaces/notification-channel-adapter.interface';
 import { DeviceTokensRepository } from '../repositories/device-tokens.repository';
@@ -90,12 +90,9 @@ describe('PushChannelAdapter', () => {
       responseSummary: 'FCM accepted 2 message(s); 0 failed',
     });
     expect(sendEachForMulticast).toHaveBeenCalledTimes(1);
-    const payload = sendEachForMulticast.mock.calls[0][0] as {
-      tokens: string[];
-      notification: { title: string; body: string };
-    };
-    expect(payload.tokens).toEqual(['token-a', 'token-b']);
-    expect(payload.notification).toEqual({ title: 'Order placed', body: 'Thanks for your order!' });
+    const [message] = sendEachForMulticast.mock.calls[0] as [MulticastMessage];
+    expect(message.tokens).toEqual(['token-a', 'token-b']);
+    expect(message.notification).toEqual({ title: 'Order placed', body: 'Thanks for your order!' });
   });
 
   it('returns a meaningful error when FCM rejects every message', async () => {
