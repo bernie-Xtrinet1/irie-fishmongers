@@ -220,7 +220,9 @@ jobs:
             -e WIPAY_API_URL="https://sandbox.invalid/api" \
             -e WIPAY_ACCOUNT_NUMBER="validation" -e WIPAY_API_KEY="validation" \
             -e SENDGRID_API_KEY="validation" -e SENDGRID_FROM_EMAIL="val@demo.test" \
-            -e FCM_SERVER_KEY="validation" \
+            -e FIREBASE_PROJECT_ID="validation" \
+            -e FIREBASE_CLIENT_EMAIL="validation@val.iam.gserviceaccount.com" \
+            -e FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nvalidation\n-----END PRIVATE KEY-----\n" \
             irie-backend:val
           ok=1
           for i in $(seq 1 45); do

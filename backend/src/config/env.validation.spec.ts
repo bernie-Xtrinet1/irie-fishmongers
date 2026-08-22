@@ -18,7 +18,9 @@ describe('validateEnv', () => {
     WIPAY_API_KEY: 'test-wipay-key',
     SENDGRID_API_KEY: 'test-sendgrid-key',
     SENDGRID_FROM_EMAIL: 'notifications@iriefishmongers.com',
-    FCM_SERVER_KEY: 'test-fcm-key',
+    FIREBASE_PROJECT_ID: 'test-project',
+    FIREBASE_CLIENT_EMAIL: 'firebase@test-project.iam.gserviceaccount.com',
+    FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----\\n',
   };
 
   it('returns a validated, transformed config for valid input', () => {
@@ -68,7 +70,13 @@ describe('validateEnv', () => {
     );
   });
 
-  it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'FCM_SERVER_KEY'] as const)(
+  it.each([
+    'SENDGRID_API_KEY',
+    'SENDGRID_FROM_EMAIL',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+  ] as const)(
     'throws when the required notification variable %s is missing',
     (key) => {
       const { [key]: _omitted, ...withoutKey } = validConfig;
@@ -76,7 +84,13 @@ describe('validateEnv', () => {
     },
   );
 
-  it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'FCM_SERVER_KEY'] as const)(
+  it.each([
+    'SENDGRID_API_KEY',
+    'SENDGRID_FROM_EMAIL',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+  ] as const)(
     'throws when the required notification variable %s is empty',
     (key) => {
       expect(() => validateEnv({ ...validConfig, [key]: '' })).toThrow(
@@ -92,11 +106,15 @@ describe('validateEnv', () => {
       ...validConfig,
       SENDGRID_API_KEY: 'replace-with-sendgrid-api-key',
       SENDGRID_FROM_EMAIL: 'notifications@iriefishmongers.com',
-      FCM_SERVER_KEY: 'replace-with-fcm-server-key',
+      FIREBASE_PROJECT_ID: 'replace-with-firebase-project-id',
+      FIREBASE_CLIENT_EMAIL: 'replace-with-firebase-client-email',
+      FIREBASE_PRIVATE_KEY: 'replace-with-firebase-private-key',
     });
 
     expect(result.SENDGRID_API_KEY).toBe('replace-with-sendgrid-api-key');
     expect(result.SENDGRID_FROM_EMAIL).toBe('notifications@iriefishmongers.com');
-    expect(result.FCM_SERVER_KEY).toBe('replace-with-fcm-server-key');
+    expect(result.FIREBASE_PROJECT_ID).toBe('replace-with-firebase-project-id');
+    expect(result.FIREBASE_CLIENT_EMAIL).toBe('replace-with-firebase-client-email');
+    expect(result.FIREBASE_PRIVATE_KEY).toBe('replace-with-firebase-private-key');
   });
 });

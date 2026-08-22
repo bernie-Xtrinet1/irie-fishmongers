@@ -97,6 +97,14 @@ export class EnvironmentVariables {
   SENDGRID_FROM_EMAIL!: string;
 
   @IsString()
-  @MinLength(1)
-  FCM_SERVER_KEY!: string;
+@MinLength(1)
+FIREBASE_PROJECT_ID!: string;
+
+@IsString()
+@MinLength(1)
+FIREBASE_CLIENT_EMAIL!: string;
+
+@IsString()
+@MinLength(1)
+FIREBASE_PRIVATE_KEY!: string;
 }

@@ -106,7 +106,9 @@ var backendKeyVaultSecretNames = [
   'wipay-account-number'
   'wipay-api-key'
   'sendgrid-api-key'
-  'fcm-server-key'
+  'firebase-project-id'
+  'firebase-client-email'
+  'firebase-private-key'
   ghcrPatSecretName
 ]
 var frontendKeyVaultSecretNames = [
@@ -177,7 +179,9 @@ module backendApp 'modules/containerApp.bicep' = if (deployApplications) {
       { name: 'WIPAY_ACCOUNT_NUMBER', secretRef: 'wipay-account-number' }
       { name: 'WIPAY_API_KEY', secretRef: 'wipay-api-key' }
       { name: 'SENDGRID_API_KEY', secretRef: 'sendgrid-api-key' }
-      { name: 'FCM_SERVER_KEY', secretRef: 'fcm-server-key' }
+      { name: 'FIREBASE_PROJECT_ID', secretRef: 'firebase-project-id' }
+      { name: 'FIREBASE_CLIENT_EMAIL', secretRef: 'firebase-client-email' }
+      { name: 'FIREBASE_PRIVATE_KEY', secretRef: 'firebase-private-key' }
     ]
     probePath: '/api/v1/health'
     minReplicas: backendMinReplicas

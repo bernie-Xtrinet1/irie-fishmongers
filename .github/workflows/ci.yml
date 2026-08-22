@@ -55,7 +55,11 @@ jobs:
       CORS_ORIGIN: http://localhost:3000,http://localhost:3002
       SENDGRID_API_KEY: SG.ci-test-sendgrid-key
       SENDGRID_FROM_EMAIL: no-reply@iriefishmongers.test
-      FCM_SERVER_KEY: ci-test-fcm-server-key
+      FIREBASE_PROJECT_ID: ci-test-firebase-project
+      FIREBASE_CLIENT_EMAIL: firebase@ci-test-firebase-project.iam.gserviceaccount.com
+      # Single-quoted so the literal \n sequences are preserved (the push
+      # adapter converts \n -> real newlines). Non-secret CI test value.
+      FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nci-test\n-----END PRIVATE KEY-----\n'
 
     steps:
       - uses: actions/checkout@v4

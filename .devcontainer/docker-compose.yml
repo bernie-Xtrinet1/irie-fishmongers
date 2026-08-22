@@ -4,7 +4,7 @@
 # for an ephemeral Codespace:
 #  - the JWT secrets are throwaway demo strings (they only sign demo tokens in a
 #    disposable environment),
-#  - SENDGRID / FCM keys are intentionally invalid so no real email/push is ever
+#  - SENDGRID / Firebase credentials are intentionally invalid so no real email/push is ever
 #    delivered (the providers reject them),
 #  - WiPay points at the sandbox host with placeholder credentials; the demo
 #    payment path is Cash On Delivery, which makes no external call.
@@ -43,7 +43,9 @@ services:
       WIPAY_API_KEY: demo-disabled
       SENDGRID_API_KEY: demo-disabled
       SENDGRID_FROM_EMAIL: demo@demo.iriefishmongers.test
-      FCM_SERVER_KEY: demo-disabled
+      FIREBASE_PROJECT_ID: local-dev-project
+      FIREBASE_CLIENT_EMAIL: firebase@local-dev-project.iam.gserviceaccount.com
+      FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ndemo-disabled\n-----END PRIVATE KEY-----\n'
       # Explicit marker read by scripts/start-codespaces-demo.sh so it knows it is
       # running inside THIS managed demo container - and may therefore safely unset
       # a stray NEXT_PUBLIC_* that would override .env.local. Preferred over a broad

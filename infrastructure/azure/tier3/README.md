@@ -24,7 +24,7 @@ Pass 1  (deployApplications=false):
     --parameters infrastructure/azure/tier3/staging.bicepparam
   -> creates Key Vault, user-assigned identity + RBAC, PostgreSQL, Redis.
 
-  (out of band) az keyvault secret set ...   # set the 9 secret values
+  (out of band) az keyvault secret set ...   # set the 11 secret values
 
 Pass 2  (deployApplications=true):
   az deployment group create -g rg-iriefishmongers-staging \
@@ -74,7 +74,9 @@ rg-iriefishmongers-staging (existing)
 | `wipay-account-number` | backend `WIPAY_ACCOUNT_NUMBER` |
 | `wipay-api-key` | backend `WIPAY_API_KEY` |
 | `sendgrid-api-key` | backend `SENDGRID_API_KEY` |
-| `fcm-server-key` | backend `FCM_SERVER_KEY` |
+| `firebase-project-id` | backend `FIREBASE_PROJECT_ID` |
+| `firebase-client-email` | backend `FIREBASE_CLIENT_EMAIL` |
+| `firebase-private-key` | backend `FIREBASE_PRIVATE_KEY` (store the PEM with literal `\n` sequences; the push adapter converts them to newlines) |
 | `ghcr-pat` | GHCR `read:packages` token (all apps + job registry auth) |
 
 Compose `database-url`/`redis-url` from the deployment outputs
