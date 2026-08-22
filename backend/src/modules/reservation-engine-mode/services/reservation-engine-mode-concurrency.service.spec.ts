@@ -90,7 +90,15 @@ describe('ReservationEngineModeService (real Postgres integration - append-only 
     expect(rejected).toHaveLength(1);
     const rejectedResult = rejected[0]!;
     if (!rejectedResult.ok) {
-      expect(rejectedResult.code).toBe('INVALID_TRANSITION');
+      // Which racer loses is legitimately nondeterministic. The loser is
+      // serialized behind the winner, re-reads the now-current mode, and is
+      // rejected as one of two valid domain outcomes: INVALID_TRANSITION (its
+      // target is not a valid successor of the winner's mode) or
+      // CUTOVER_ATTESTATION_REQUIRED (its target is the attested MIRROR->
+      // CART_SCOPED cutover, refused without an attestation). Either code
+      // proves the stale transition was blocked; asserting exactly one is
+      // timing-dependent and flaky.
+      expect(['INVALID_TRANSITION', 'CUTOVER_ATTESTATION_REQUIRED']).toContain(rejectedResult.code);
     }
 
     const finalConfig = await repository.findCurrent();
