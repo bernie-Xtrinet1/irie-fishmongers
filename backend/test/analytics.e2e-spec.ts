@@ -12,6 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
+import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
   return (res.body as ApiResponse<T>).data as T;
@@ -112,6 +113,7 @@ describe('Analytics (e2e)', () => {
 
   afterAll(async () => {
     if (customerEmails.length > 0) {
+      await cleanupCustomerCartArtifacts(prisma, customerEmails);
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
@@ -282,6 +284,7 @@ describe('Analytics (e2e)', () => {
 
     await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 2 })
       .expect(201);

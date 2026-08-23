@@ -12,6 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
+import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
   return (res.body as ApiResponse<T>).data as T;
@@ -150,6 +151,7 @@ describe('Delivery (e2e)', () => {
     // freeing the Restrict constraint on Delivery.driverId and VendorOrder.vendorId
     // before the vendor/driver user rows are deleted.
     if (customerEmails.length > 0) {
+      await cleanupCustomerCartArtifacts(prisma, customerEmails);
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
@@ -367,6 +369,7 @@ describe('Delivery (e2e)', () => {
   ): Promise<{ orderId: string; vendorOrderId: string }> {
     await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId, quantity: 1 })
       .expect(201);
@@ -409,6 +412,7 @@ describe('Delivery (e2e)', () => {
 
     await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 })
       .expect(201);

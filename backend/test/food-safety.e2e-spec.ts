@@ -12,6 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
+import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
   return (res.body as ApiResponse<T>).data as T;
@@ -117,6 +118,7 @@ describe('Food Safety / Compliance (e2e)', () => {
     // Customers first: cascades Order -> VendorOrder -> OrderItem, freeing
     // the Restrict constraint on Product before products are deleted.
     if (customerEmails.length > 0) {
+      await cleanupCustomerCartArtifacts(prisma, customerEmails);
       await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
     }
     if (vendorUserEmails.length > 0) {
@@ -387,6 +389,7 @@ describe('Food Safety / Compliance (e2e)', () => {
 
     const addToCartRes = await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 });
     expect(addToCartRes.status).toBe(400);
@@ -406,6 +409,7 @@ describe('Food Safety / Compliance (e2e)', () => {
 
     const addToCartAfterRes = await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 });
     expect(addToCartAfterRes.status).toBe(201);
@@ -481,6 +485,7 @@ describe('Food Safety / Compliance (e2e)', () => {
     // affected-orders lookup below has something real to surface.
     await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 })
       .expect(201);
@@ -533,6 +538,7 @@ describe('Food Safety / Compliance (e2e)', () => {
 
     const addToCartRes = await request(server())
       .post('/api/v1/cart/items')
+      .set('idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 });
     expect(addToCartRes.status).toBe(400);
