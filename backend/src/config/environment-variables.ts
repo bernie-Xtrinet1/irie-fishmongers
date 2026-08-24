@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength, ValidateIf } from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
@@ -88,13 +88,29 @@ export class EnvironmentVariables {
   @MinLength(1)
   WIPAY_API_KEY!: string;
 
-  @IsString()
-  @MinLength(1)
-  SENDGRID_API_KEY!: string;
+  // Master switch for transactional email (SendGrid). Optional; anything
+  // other than the string 'false' leaves email ENABLED, so dev/prod behaviour
+  // is unchanged when the var is absent. Set to 'false' in an environment with
+  // no approved email-provider credentials (e.g. Azure staging/UAT) - the
+  // SendGrid credentials below then become optional and the
+  // EmailChannelAdapter no-ops gracefully instead of calling SendGrid. Its own
+  // flag, not derived from NODE_ENV, so email can be toggled independently.
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  EMAIL_ENABLED?: string;
 
+  // Required whenever email is not explicitly disabled (the production
+  // default), so a real deployment can never silently run without a provider
+  // key. Validation is skipped ONLY when EMAIL_ENABLED === 'false'.
+  @ValidateIf((env: EnvironmentVariables) => env.EMAIL_ENABLED !== 'false')
   @IsString()
   @MinLength(1)
-  SENDGRID_FROM_EMAIL!: string;
+  SENDGRID_API_KEY?: string;
+
+  @ValidateIf((env: EnvironmentVariables) => env.EMAIL_ENABLED !== 'false')
+  @IsString()
+  @MinLength(1)
+  SENDGRID_FROM_EMAIL?: string;
 
   @IsString()
 @MinLength(1)

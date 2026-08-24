@@ -62,6 +62,13 @@ param wipayApiUrl string = 'https://tx.wipayfinancial.com/plugins/payments'
 param sendgridFromEmail string = 'notifications@iriefishmongers.com'
 @allowed([ 'true', 'false' ])
 param enableScheduler string = 'true'
+// Transactional email master switch. 'false' (staging/UAT with no approved
+// email-provider credentials) makes the sendgrid-api-key Key Vault secret
+// OPTIONAL - it is neither referenced nor required - and sets EMAIL_ENABLED on
+// the backend so the app boots and no-ops email gracefully. Keep 'true' for any
+// environment that has a real provider key in Key Vault.
+@allowed([ 'true', 'false' ])
+param emailEnabled string = 'true'
 
 // ---- replicas ----
 @description('Backend min replicas. 1 keeps health green and lets the @Cron scheduler fire.')
@@ -98,19 +105,27 @@ var corsOrigin = 'https://${webFqdn},https://${adminFqdn}'
 // Canonical Key Vault secret names (VALUES set out of band; never in Git).
 var ghcrPatSecretName = 'ghcr-pat'
 var databaseUrlSecretName = 'database-url'
-var backendKeyVaultSecretNames = [
-  databaseUrlSecretName
-  'redis-url'
-  'jwt-access-secret'
-  'jwt-refresh-secret'
-  'wipay-account-number'
-  'wipay-api-key'
-  'sendgrid-api-key'
-  'firebase-project-id'
-  'firebase-client-email'
-  'firebase-private-key'
-  ghcrPatSecretName
-]
+var emailOn = emailEnabled == 'true'
+// sendgrid-api-key is included ONLY when email is enabled. When disabled it is
+// neither referenced by the app nor required to exist in Key Vault - no empty
+// or fake secret is created. Order is otherwise preserved.
+var backendKeyVaultSecretNames = concat(
+  [
+    databaseUrlSecretName
+    'redis-url'
+    'jwt-access-secret'
+    'jwt-refresh-secret'
+    'wipay-account-number'
+    'wipay-api-key'
+  ],
+  emailOn ? [ 'sendgrid-api-key' ] : [],
+  [
+    'firebase-project-id'
+    'firebase-client-email'
+    'firebase-private-key'
+    ghcrPatSecretName
+  ]
+)
 var frontendKeyVaultSecretNames = [
   ghcrPatSecretName
 ]
@@ -168,21 +183,29 @@ module backendApp 'modules/containerApp.bicep' = if (deployApplications) {
       { name: 'JWT_REFRESH_EXPIRES_IN', value: jwtRefreshExpiresIn }
       { name: 'WIPAY_API_URL', value: wipayApiUrl }
       { name: 'SENDGRID_FROM_EMAIL', value: sendgridFromEmail }
+      { name: 'EMAIL_ENABLED', value: emailEnabled }
       { name: 'REFRESH_COOKIE_SAMESITE', value: refreshCookieSameSite }
       { name: 'ENABLE_SCHEDULER', value: enableScheduler }
     ]
-    secretEnv: [
-      { name: 'DATABASE_URL', secretRef: databaseUrlSecretName }
-      { name: 'REDIS_URL', secretRef: 'redis-url' }
-      { name: 'JWT_ACCESS_SECRET', secretRef: 'jwt-access-secret' }
-      { name: 'JWT_REFRESH_SECRET', secretRef: 'jwt-refresh-secret' }
-      { name: 'WIPAY_ACCOUNT_NUMBER', secretRef: 'wipay-account-number' }
-      { name: 'WIPAY_API_KEY', secretRef: 'wipay-api-key' }
-      { name: 'SENDGRID_API_KEY', secretRef: 'sendgrid-api-key' }
-      { name: 'FIREBASE_PROJECT_ID', secretRef: 'firebase-project-id' }
-      { name: 'FIREBASE_CLIENT_EMAIL', secretRef: 'firebase-client-email' }
-      { name: 'FIREBASE_PRIVATE_KEY', secretRef: 'firebase-private-key' }
-    ]
+    // SENDGRID_API_KEY is bound ONLY when email is enabled; when disabled the
+    // backend never references the sendgrid-api-key secret. Every other secret
+    // (DATABASE_URL, REDIS_URL, JWT, WiPay, Firebase, ghcr-pat) is unchanged.
+    secretEnv: concat(
+      [
+        { name: 'DATABASE_URL', secretRef: databaseUrlSecretName }
+        { name: 'REDIS_URL', secretRef: 'redis-url' }
+        { name: 'JWT_ACCESS_SECRET', secretRef: 'jwt-access-secret' }
+        { name: 'JWT_REFRESH_SECRET', secretRef: 'jwt-refresh-secret' }
+        { name: 'WIPAY_ACCOUNT_NUMBER', secretRef: 'wipay-account-number' }
+        { name: 'WIPAY_API_KEY', secretRef: 'wipay-api-key' }
+      ],
+      emailOn ? [ { name: 'SENDGRID_API_KEY', secretRef: 'sendgrid-api-key' } ] : [],
+      [
+        { name: 'FIREBASE_PROJECT_ID', secretRef: 'firebase-project-id' }
+        { name: 'FIREBASE_CLIENT_EMAIL', secretRef: 'firebase-client-email' }
+        { name: 'FIREBASE_PRIVATE_KEY', secretRef: 'firebase-private-key' }
+      ]
+    )
     probePath: '/api/v1/health'
     minReplicas: backendMinReplicas
     maxReplicas: backendMaxReplicas

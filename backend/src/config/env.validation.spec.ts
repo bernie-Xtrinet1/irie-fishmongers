@@ -117,4 +117,38 @@ describe('validateEnv', () => {
     expect(result.FIREBASE_CLIENT_EMAIL).toBe('replace-with-firebase-client-email');
     expect(result.FIREBASE_PRIVATE_KEY).toBe('replace-with-firebase-private-key');
   });
+
+  it('allows the SendGrid credentials to be absent when EMAIL_ENABLED is false', () => {
+    // Staging/UAT with no approved email provider: the backend must boot
+    // without a SendGrid key (no fake key is ever supplied).
+    const { SENDGRID_API_KEY: _k, SENDGRID_FROM_EMAIL: _f, ...withoutSendgrid } = validConfig;
+    const result = validateEnv({ ...withoutSendgrid, EMAIL_ENABLED: 'false' });
+
+    expect(result.EMAIL_ENABLED).toBe('false');
+    expect(result.SENDGRID_API_KEY).toBeUndefined();
+  });
+
+  it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const)(
+    'still requires %s when EMAIL_ENABLED is explicitly true',
+    (key) => {
+      const withoutKey: Record<string, unknown> = { ...validConfig, EMAIL_ENABLED: 'true' };
+      delete withoutKey[key];
+      expect(() => validateEnv(withoutKey)).toThrow(/Environment validation failed/);
+    },
+  );
+
+  it('disabling email does NOT relax any non-email required variable', () => {
+    // EMAIL_ENABLED=false must scope only to SendGrid - Firebase (and the rest)
+    // stay mandatory.
+    const { FIREBASE_PRIVATE_KEY: _fpk, ...withoutFirebaseKey } = validConfig;
+    expect(() => validateEnv({ ...withoutFirebaseKey, EMAIL_ENABLED: 'false' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
+
+  it('rejects an EMAIL_ENABLED value other than true/false', () => {
+    expect(() => validateEnv({ ...validConfig, EMAIL_ENABLED: 'maybe' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
 });

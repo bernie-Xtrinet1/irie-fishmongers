@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NotificationChannel } from '@prisma/client';
 
@@ -16,9 +16,26 @@ import {
 export class EmailChannelAdapter implements NotificationChannelAdapter {
   readonly channel = NotificationChannel.EMAIL;
 
+  private readonly logger = new Logger(EmailChannelAdapter.name);
+
   constructor(private readonly configService: ConfigService) {}
 
   async send(input: ChannelSendInput): Promise<ChannelSendResult> {
+    // When email is explicitly disabled (no approved provider credentials -
+    // e.g. Azure staging/UAT), do NOT touch SendGrid config or the network:
+    // short-circuit here so a missing SENDGRID_API_KEY can never throw, and
+    // record a clear, non-fatal disabled result. Push/in-app channels are
+    // unaffected. Never fabricate a provider key to "enable" this path.
+    if (this.configService.get<string>('EMAIL_ENABLED') === 'false') {
+      this.logger.warn(
+        'Email delivery is disabled (EMAIL_ENABLED=false); no email provider configured - skipping SendGrid send.',
+      );
+      return {
+        success: false,
+        errorMessage: 'Email delivery is disabled (no email provider configured)',
+      };
+    }
+
     const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
       method: 'POST',
       headers: {
