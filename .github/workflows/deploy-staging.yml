@@ -1,0 +1,358 @@
+# Phase 17F — Azure staging deployment bridge (GHCR-direct, digest-pinned).
+#
+# Architecture (matches docs/uat/phase-17a-azure-staging-architecture.md and the
+# Tier-3 Bicep in infrastructure/azure/tier3/):
+#
+#   GitHub Actions ──OIDC──▶ Azure
+#        │
+#        └─ resolve ghcr.io/<ns>/<svc>:<sha>  ──▶  immutable @sha256 digest
+#                                                        │
+#                        az containerapp {job,} update --image <svc>@<digest>
+#                                                        │
+#                                              Azure Container Apps
+#                                     (pull from GHCR via the ghcr-pat KV secret
+#                                      already configured by the Tier-3 Bicep)
+#
+# This workflow does NOT introduce or reference Azure Container Registry: the
+# committed design deliberately uses ghcr.io directly (phase-17a line 370,
+# "skip ACR"). It never provisions infrastructure, never sets registry
+# credentials imperatively (that lives in Bicep), and never runs destructive
+# database commands. It only: verifies images + resources, runs the migrator
+# Job, and updates the three existing Container Apps to the selected digest,
+# gating each step on health.
+#
+# It is manual-only. It deploys a specific commit SHA (never `latest`) by
+# resolving that SHA tag to its immutable digest and deploying the digest.
+name: deploy-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Git commit SHA to deploy (the tag build-images.yml pushed, e.g. f5c0063...). Never `latest`."
+        required: true
+        type: string
+      skip_migration:
+        description: "Skip the migrator Job (only for a re-deploy of an already-migrated SHA). Default false."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # OIDC federation to Azure
+  contents: read
+  packages: read    # resolve/verify private GHCR images
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  # Non-secret configuration. Prefer GitHub `staging` environment vars; the
+  # fallbacks are the confirmed staging resource names so the workflow is
+  # runnable once only the OIDC identity vars are set.
+  IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE || 'ghcr.io/bernie-xtrinet1/irie-fishmongers' }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-iriefishmongers-staging' }}
+  BACKEND_APP: ${{ vars.AZURE_BACKEND_APP || 'ca-irie-backend' }}
+  WEB_APP: ${{ vars.AZURE_WEB_APP || 'ca-irie-web' }}
+  ADMIN_APP: ${{ vars.AZURE_ADMIN_APP || 'ca-irie-admin' }}
+  MIGRATOR_JOB: ${{ vars.AZURE_MIGRATOR_JOB || 'ca-irie-db-migrate' }}
+  BACKEND_HEALTH_PATH: /api/v1/health
+  WEB_HEALTH_PATH: /
+  ADMIN_HEALTH_PATH: /login
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      # ----------------------------------------------------------------------
+      # 0. Guard the input: reject `latest`/empty; normalise the SHA.
+      # ----------------------------------------------------------------------
+      - name: Validate deploy input
+        id: input
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          tag="${IMAGE_TAG## }"; tag="${tag%% }"
+          if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
+            echo "::error::image_tag must be a specific commit SHA, never empty or 'latest'."
+            exit 1
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::image_tag '$tag' is not a hex git SHA (7-40 hex chars)."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Deploying source SHA: $tag"
+
+      - name: Checkout (read-only, for scripts)
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------------
+      # 1. Verify the four GHCR images exist for this SHA and resolve each to
+      #    its immutable @sha256 digest. Fail closed if any is missing.
+      #    The GHCR token is fed via --password-stdin and never printed.
+      # ----------------------------------------------------------------------
+      - name: Resolve GHCR image digests
+        id: digests
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_PAT || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.input.outputs.tag }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>&1
+          missing=0
+          for svc in backend migrator web admin; do
+            ref="${IMAGE_NAMESPACE}/${svc}:${TAG}"
+            if digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" && [ -n "$digest" ]; then
+              echo "${svc}=${IMAGE_NAMESPACE}/${svc}@${digest}" >> "$GITHUB_OUTPUT"
+              echo "ok: ${svc} -> ${IMAGE_NAMESPACE}/${svc}@${digest}"
+            else
+              echo "::error::missing GHCR image for '${svc}' at tag '${TAG}' (${ref}). Run build-images.yml for this SHA (include_frontend=true for web+admin)."
+              missing=1
+            fi
+          done
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          [ "$missing" -eq 0 ]
+
+      # ----------------------------------------------------------------------
+      # 2. Authenticate to Azure via OIDC (no client secret).
+      # ----------------------------------------------------------------------
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # ----------------------------------------------------------------------
+      # 3. Verify existing Azure resources (read-only). Do not create anything.
+      # ----------------------------------------------------------------------
+      - name: Verify Azure resources exist
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          az group show -n "$RG" --only-show-errors -o none
+          for app in "$BACKEND_APP" "$WEB_APP" "$ADMIN_APP"; do
+            az containerapp show -n "$app" -g "$RG" --only-show-errors -o none \
+              || { echo "::error::Container App '$app' not found in '$RG'."; exit 1; }
+          done
+          az containerapp job show -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors -o none \
+            || { echo "::error::Migrator Job '$MIGRATOR_JOB' not found. Apply Tier-3 Bicep Pass 2 first."; exit 1; }
+
+      # ----------------------------------------------------------------------
+      # 4. Verify each app is configured for GHCR pull via the ghcr-pat Key
+      #    Vault secret (Tier-3 Bicep). We only READ this; registry config is
+      #    owned by Bicep, never set here. The PAT value is never printed.
+      # ----------------------------------------------------------------------
+      - name: Verify GHCR registry auth is configured (ghcr-pat)
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for app in "$BACKEND_APP" "$WEB_APP" "$ADMIN_APP"; do
+            server="$(az containerapp registry list -n "$app" -g "$RG" --only-show-errors \
+              --query "[?server=='ghcr.io'].server | [0]" -o tsv 2>/dev/null || true)"
+            if [ "$server" != "ghcr.io" ]; then
+              echo "::error::'$app' has no ghcr.io registry configured. Apply Tier-3 Bicep Pass 2 (ghcr-pat) before deploying."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ]
+
+      # ----------------------------------------------------------------------
+      # 5. Build-time frontend URL guard. NEXT_PUBLIC_API_URL is compiled into
+      #    the web/admin bundles at build time; a runtime env var cannot change
+      #    it. Confirm the repo var used to BUILD the images equals the actual
+      #    staging backend FQDN. If not, the images must be rebuilt.
+      # ----------------------------------------------------------------------
+      - name: Verify frontend images were built for this backend FQDN
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          STAGING_API_URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          be_fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          expected="https://${be_fqdn}"
+          if [ -z "$STAGING_API_URL" ]; then
+            echo "::error::vars.STAGING_NEXT_PUBLIC_API_URL is unset; web/admin images cannot have been built with the staging API URL. Set it and rebuild via build-images.yml (include_frontend=true)."
+            exit 1
+          fi
+          if [ "${STAGING_API_URL%/}" != "${expected%/}" ]; then
+            echo "::error::STAGING_NEXT_PUBLIC_API_URL='${STAGING_API_URL}' != backend FQDN '${expected}'. The web/admin images were baked with the wrong API URL. Fix the repo var and REBUILD the images (build-images.yml, include_frontend=true) for this SHA before deploying — a Container App env var cannot fix a build-time Next.js URL."
+            exit 1
+          fi
+          echo "Frontend build-time API URL matches backend FQDN: ${expected}"
+
+      # ----------------------------------------------------------------------
+      # 6. Record current images/revisions for rollback BEFORE any change.
+      # ----------------------------------------------------------------------
+      - name: Capture rollback state
+        id: rollback
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Rollback state (captured before deploy)"
+            echo ""
+            echo "| app | previous image | previous active revision |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pair in "backend:$BACKEND_APP" "web:$WEB_APP" "admin:$ADMIN_APP"; do
+            key="${pair%%:*}"; app="${pair#*:}"
+            img="$(az containerapp show -n "$app" -g "$RG" --only-show-errors \
+              --query 'properties.template.containers[0].image' -o tsv)"
+            rev="$(az containerapp show -n "$app" -g "$RG" --only-show-errors \
+              --query properties.latestReadyRevisionName -o tsv)"
+            echo "prev_${key}_image=${img}" >> "$GITHUB_OUTPUT"
+            echo "prev_${key}_rev=${rev}" >> "$GITHUB_OUTPUT"
+            echo "| ${app} | \`${img}\` | ${rev} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # ----------------------------------------------------------------------
+      # 7. DATABASE MIGRATION GATE — run the existing migrator Job (prisma
+      #    migrate deploy) on the matching digest, and require success.
+      # ----------------------------------------------------------------------
+      - name: Run migrator Job (prisma migrate deploy)
+        if: ${{ !inputs.skip_migration }}
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          MIGRATOR_IMAGE: ${{ steps.digests.outputs.migrator }}
+        run: |
+          set -euo pipefail
+          echo "Pinning migrator Job to ${MIGRATOR_IMAGE}"
+          az containerapp job update -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors \
+            --image "$MIGRATOR_IMAGE" -o none
+          exec_name="$(az containerapp job start -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors \
+            --query name -o tsv)"
+          echo "Started migrator execution: ${exec_name}"
+          # Poll to completion (job replicaTimeout is 1800s; cap our wait at ~20m).
+          deadline=$(( SECONDS + 1200 ))
+          status="Unknown"
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            status="$(az containerapp job execution show -n "$MIGRATOR_JOB" -g "$RG" \
+              --job-execution-name "$exec_name" --only-show-errors \
+              --query properties.status -o tsv 2>/dev/null || echo Unknown)"
+            case "$status" in
+              Succeeded) echo "Migration succeeded."; break ;;
+              Failed|Degraded) echo "::error::Migrator execution '${exec_name}' status=${status}. Deployment aborted; no app was changed."; exit 1 ;;
+              *) echo "  ...migrator status=${status}"; sleep 15 ;;
+            esac
+          done
+          if [ "$status" != "Succeeded" ]; then
+            echo "::error::Migrator did not reach Succeeded within the wait window (last status=${status}). Aborting before any app change."
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------------
+      # 8. Deploy BACKEND first, then gate on /api/v1/health.
+      # ----------------------------------------------------------------------
+      - name: Deploy backend
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          BACKEND_IMAGE: ${{ steps.digests.outputs.backend }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --image "$BACKEND_IMAGE" -o none
+          echo "backend updated to ${BACKEND_IMAGE}"
+
+      - name: Verify backend health
+        id: backend_health
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          echo "backend_fqdn=${fqdn}" >> "$GITHUB_OUTPUT"
+          url="https://${fqdn}${BACKEND_HEALTH_PATH}"
+          bash scripts/verify-azure-staging.sh health "$url"
+
+      - name: Backend failure diagnostics + rollback guidance
+        if: ${{ failure() && steps.backend_health.conclusion == 'failure' }}
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          PREV_IMAGE: ${{ steps.rollback.outputs.prev_backend_image }}
+        run: |
+          echo "::group::backend revisions"
+          az containerapp revision list -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --query "[].{name:name,active:properties.active,health:properties.healthState,created:properties.createdTime}" -o table || true
+          echo "::endgroup::"
+          echo "::error::Backend unhealthy — web/admin NOT deployed. Roll back with:"
+          echo "  az containerapp update -n ${BACKEND_APP} -g ${RG} --image ${PREV_IMAGE}"
+
+      # ----------------------------------------------------------------------
+      # 9. Deploy WEB (only after backend healthy), verify real app + no localhost.
+      # ----------------------------------------------------------------------
+      - name: Deploy web
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          WEB_IMAGE: ${{ steps.digests.outputs.web }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$WEB_APP" -g "$RG" --only-show-errors \
+            --image "$WEB_IMAGE" -o none
+          echo "web updated to ${WEB_IMAGE}"
+
+      - name: Verify web
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          fqdn="$(az containerapp show -n "$WEB_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${WEB_HEALTH_PATH}" web
+
+      # ----------------------------------------------------------------------
+      # 10. Deploy ADMIN, verify /login + no localhost.
+      # ----------------------------------------------------------------------
+      - name: Deploy admin
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          ADMIN_IMAGE: ${{ steps.digests.outputs.admin }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$ADMIN_APP" -g "$RG" --only-show-errors \
+            --image "$ADMIN_IMAGE" -o none
+          echo "admin updated to ${ADMIN_IMAGE}"
+
+      - name: Verify admin
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          fqdn="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${ADMIN_HEALTH_PATH}" admin
+
+      # ----------------------------------------------------------------------
+      # 11. Final summary.
+      # ----------------------------------------------------------------------
+      - name: Deployment summary
+        if: ${{ always() }}
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          TAG: ${{ steps.input.outputs.tag }}
+        run: |
+          {
+            echo ""
+            echo "### Deploy result — SHA ${TAG}"
+            echo ""
+            echo "| service | deployed digest |"
+            echo "|---|---|"
+            echo "| backend  | \`${{ steps.digests.outputs.backend }}\` |"
+            echo "| migrator | \`${{ steps.digests.outputs.migrator }}\` |"
+            echo "| web      | \`${{ steps.digests.outputs.web }}\` |"
+            echo "| admin    | \`${{ steps.digests.outputs.admin }}\` |"
+            echo ""
+            echo "Rollback any app: \`az containerapp update -n <app> -g ${RG} --image <previous-image-from-rollback-state-above>\`"
+          } >> "$GITHUB_STEP_SUMMARY"
