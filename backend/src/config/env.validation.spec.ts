@@ -128,6 +128,14 @@ describe('validateEnv', () => {
     expect(result.SENDGRID_API_KEY).toBeUndefined();
   });
 
+  it('accepts EMAIL_ENABLED=true together with valid-looking SendGrid credentials', () => {
+    const result = validateEnv({ ...validConfig, EMAIL_ENABLED: 'true' });
+
+    expect(result.EMAIL_ENABLED).toBe('true');
+    expect(result.SENDGRID_API_KEY).toBe(validConfig.SENDGRID_API_KEY);
+    expect(result.SENDGRID_FROM_EMAIL).toBe(validConfig.SENDGRID_FROM_EMAIL);
+  });
+
   it.each(['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const)(
     'still requires %s when EMAIL_ENABLED is explicitly true',
     (key) => {

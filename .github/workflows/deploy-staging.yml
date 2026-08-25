@@ -23,6 +23,11 @@
 #
 # It is manual-only. It deploys a specific commit SHA (never `latest`) by
 # resolving that SHA tag to its immutable digest and deploying the digest.
+#
+# Transactional email / SendGrid is NOT a prerequisite of this workflow. When the
+# Tier-3 Bicep is deployed with emailEnabled='false' (staging default), the
+# backend runs with EMAIL_ENABLED=false and no sendgrid-api-key secret is
+# required; this workflow neither references nor verifies any email credential.
 name: deploy-staging
 
 on:
