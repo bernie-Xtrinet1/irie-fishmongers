@@ -35,6 +35,13 @@ param refreshCookieSameSite = 'none'
 
 // Backend runs continuously (health always green + @Cron scheduler active).
 param enableScheduler = 'true'
+
+// Transactional email is DISABLED for staging/UAT: no approved email-provider
+// credentials are currently available (SendGrid account not active). This makes
+// the sendgrid-api-key Key Vault secret OPTIONAL - it is neither referenced nor
+// required - and the backend boots and no-ops email gracefully. No empty or
+// fake secret is created. Flip to 'true' once a real provider key is in place.
+param emailEnabled = 'false'
 param backendMinReplicas = 1
 param backendMaxReplicas = 2
 param frontendMinReplicas = 0

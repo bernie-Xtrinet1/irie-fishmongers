@@ -73,7 +73,7 @@ rg-iriefishmongers-staging (existing)
 | `jwt-refresh-secret` | backend `JWT_REFRESH_SECRET` (≥32 chars) |
 | `wipay-account-number` | backend `WIPAY_ACCOUNT_NUMBER` |
 | `wipay-api-key` | backend `WIPAY_API_KEY` |
-| `sendgrid-api-key` | backend `SENDGRID_API_KEY` |
+| `sendgrid-api-key` | backend `SENDGRID_API_KEY` — **OPTIONAL**: required only when `emailEnabled='true'`. Staging sets `emailEnabled='false'`, so this secret is neither referenced nor required (do not create an empty/fake value). |
 | `firebase-project-id` | backend `FIREBASE_PROJECT_ID` |
 | `firebase-client-email` | backend `FIREBASE_CLIENT_EMAIL` |
 | `firebase-private-key` | backend `FIREBASE_PRIVATE_KEY` (store the PEM with literal `\n` sequences; the push adapter converts them to newlines) |

@@ -3,12 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { ChannelSendInput } from '../interfaces/notification-channel-adapter.interface';
 import { EmailChannelAdapter } from './email-channel.adapter';
 
-function buildConfigService(): { getOrThrow: jest.Mock } {
+function buildConfigService(overrides: Record<string, string> = {}): {
+  get: jest.Mock;
+  getOrThrow: jest.Mock;
+} {
   const values: Record<string, string> = {
     SENDGRID_API_KEY: 'test-sendgrid-key',
     SENDGRID_FROM_EMAIL: 'orders@iriefishmongers.com',
+    ...overrides,
   };
   return {
+    // `get` is used for the optional EMAIL_ENABLED flag (may be undefined).
+    get: jest.fn((key: string) => values[key]),
     getOrThrow: jest.fn((key: string) => values[key]),
   };
 }
@@ -29,7 +35,7 @@ const input: ChannelSendInput = {
 };
 
 describe('EmailChannelAdapter', () => {
-  let configService: { getOrThrow: jest.Mock };
+  let configService: { get: jest.Mock; getOrThrow: jest.Mock };
   let adapter: EmailChannelAdapter;
   let fetchMock: jest.Mock;
 
@@ -67,6 +73,23 @@ describe('EmailChannelAdapter', () => {
     expect(body.from.email).toBe('orders@iriefishmongers.com');
     expect(body.subject).toBe('Order placed');
     expect(body.content[0]).toEqual({ type: 'text/plain', value: 'Thanks for your order!' });
+  });
+
+  it('no-ops gracefully without calling SendGrid when EMAIL_ENABLED is false', async () => {
+    // Staging/UAT with no provider key: send() must not touch config that would
+    // throw (getOrThrow on a missing key) nor hit the network, and must return
+    // a clear non-fatal disabled result.
+    configService = buildConfigService({ EMAIL_ENABLED: 'false' });
+    adapter = new EmailChannelAdapter(configService as unknown as ConfigService);
+
+    const result = await adapter.send(input);
+
+    expect(result).toEqual({
+      success: false,
+      errorMessage: 'Email delivery is disabled (no email provider configured)',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(configService.getOrThrow).not.toHaveBeenCalled();
   });
 
   it('reports failure without throwing when SendGrid responds with a non-ok status', async () => {

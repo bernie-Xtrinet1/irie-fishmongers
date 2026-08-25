@@ -21,6 +21,15 @@ GitHub Actions ──OIDC──▶ Azure
 > subscription but is **not** part of the repository IaC; it is treated as
 > out-of-band drift to reconcile separately and is intentionally unused here.
 
+> **Transactional email is temporarily disabled in staging** because no approved
+> email-provider credentials are currently available. This does not block core
+> UAT. Staging runs with `EMAIL_ENABLED=false` (set via the Tier-3 Bicep
+> `emailEnabled='false'` param), so the backend boots and serves normally,
+> push/in-app notifications are unaffected, and any email send is skipped with a
+> logged warning instead of failing. **No `sendgrid-api-key` secret and no fake
+> key are required.** Re-enable later by setting `emailEnabled='true'` and adding
+> a real provider key to Key Vault.
+
 ## What the workflow does (stages)
 
 1. **Validate input** — require a hex commit SHA; reject empty/`latest`.
@@ -96,9 +105,13 @@ repo does not and cannot execute them here.
    PostgreSQL, Redis) and Pass 2 (the three apps + migrator Job configured with
    the `ghcr-pat` registry credential and Key Vault secret refs). The workflow
    **verifies** this and fails clearly if absent — it never provisions it.
-4. **Key Vault secrets set** — the 11 secrets (incl. `firebase-project-id`,
-   `firebase-client-email`, `firebase-private-key`, and `ghcr-pat` = a GHCR
-   `read:packages` PAT). See `infrastructure/azure/tier3/README.md`.
+4. **Key Vault secrets set** — for staging (`emailEnabled='false'`) that is **10**
+   secrets: `database-url`, `redis-url`, `jwt-access-secret`, `jwt-refresh-secret`,
+   `wipay-account-number`, `wipay-api-key`, `firebase-project-id`,
+   `firebase-client-email`, `firebase-private-key`, and `ghcr-pat` (a GHCR
+   `read:packages` PAT). **`sendgrid-api-key` is NOT required for staging** (see
+   the email note below); it becomes required only when `emailEnabled='true'`. See
+   `infrastructure/azure/tier3/README.md`.
 5. **Frontend images built for staging** — run `build-images.yml` for the SHA with
    `include_frontend=true`, and ensure `STAGING_NEXT_PUBLIC_API_URL` = the backend
    FQDN **before** that build (it is compiled into the bundle).
