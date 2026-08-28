@@ -10,7 +10,7 @@ using './main.bicep'
 param backendImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/backend@sha256:f604046b207c1273f3018d78604cdb9c5ecf3cbcab33ca6e37306f5835297c07'
 param migratorImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/migrator@sha256:b75d8112edf3894d28fb801f2c6b22a7ccb8072bfab68679b13447b685dd9a4e'
 param webImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/web@sha256:ee3ae24758c213cdc71f1385924e4f568d6ce60c895f510647e36b51ef38b08f'
-param adminImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/admin@sha256:f4aeb0a7d031b19f068dc2755feb3a293d6e76bb786e8b4ab39530601be74f2e'
+param adminImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/admin@sha256:b59f164eaced97016db52f417fceccc3849a87b99601034a4483829e210c48fb'
 
 // Pass gate: false = Pass 1 (data plane + Key Vault + identity); true = Pass 2
 // (apps + migrator Job), only after the Key Vault secret values are set.
