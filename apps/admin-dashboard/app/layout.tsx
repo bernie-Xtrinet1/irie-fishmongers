@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { connection } from 'next/server';
 import { Poppins } from 'next/font/google';
 
 import { Providers } from './providers';
@@ -15,11 +16,16 @@ export const metadata: Metadata = {
   description: 'Operator dashboard for the Irie Fishmongers marketplace.',
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  // Nonce-based CSP requires request-time rendering so Next.js can read the
+  // per-request CSP nonce injected by middleware and apply it to framework
+  // and page scripts.
+  await connection();
+
   return (
     <html lang="en" className={poppins.variable}>
       <body>
