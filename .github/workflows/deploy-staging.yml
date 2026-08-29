@@ -94,7 +94,7 @@ jobs:
           echo "Deploying source SHA: $tag"
 
       - name: Checkout (read-only, for scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ----------------------------------------------------------------------
       # 1. Verify the four GHCR images exist for this SHA and resolve each to
