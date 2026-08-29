@@ -9,8 +9,8 @@ using './main.bicep'
 // Immutable Gate B2 image identities, pinned by DIGEST (never mutable tags).
 param backendImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/backend@sha256:f604046b207c1273f3018d78604cdb9c5ecf3cbcab33ca6e37306f5835297c07'
 param migratorImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/migrator@sha256:b75d8112edf3894d28fb801f2c6b22a7ccb8072bfab68679b13447b685dd9a4e'
-param webImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/web@sha256:ee3ae24758c213cdc71f1385924e4f568d6ce60c895f510647e36b51ef38b08f'
-param adminImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/admin@sha256:b59f164eaced97016db52f417fceccc3849a87b99601034a4483829e210c48fb'
+param webImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/web@sha256:832a1a21d7294cf2b4f62893f62f7b84175debd06ea5661013e3e8d69223be40'
+param adminImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/admin@sha256:78ba12f964eace4fd1bb6c41ac3a8769bb16c6700b7755ea72327312d97e636e'
 
 // Pass gate: false = Pass 1 (data plane + Key Vault + identity); true = Pass 2
 // (apps + migrator Job), only after the Key Vault secret values are set.
