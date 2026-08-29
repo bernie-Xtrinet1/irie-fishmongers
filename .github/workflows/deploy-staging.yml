@@ -185,7 +185,7 @@ jobs:
           set -euo pipefail
           be_fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
             --query properties.configuration.ingress.fqdn -o tsv)"
-          expected="https://${be_fqdn}"
+          expected="https://${be_fqdn}/api/v1"
           if [ -z "$STAGING_API_URL" ]; then
             echo "::error::vars.STAGING_NEXT_PUBLIC_API_URL is unset; web/admin images cannot have been built with the staging API URL. Set it and rebuild via build-images.yml (include_frontend=true)."
             exit 1
