@@ -16,7 +16,11 @@ function loginErrorMessage(error: unknown): string {
   return 'We could not sign you in. Please try again.';
 }
 
-export function LoginForm(): React.ReactElement {
+export function LoginForm({
+  registered = false,
+}: {
+  registered?: boolean;
+}): React.ReactElement {
   const router = useRouter();
   const { login } = useAuth();
 
@@ -48,6 +52,15 @@ export function LoginForm(): React.ReactElement {
       }}
       className="space-y-5"
     >
+      {registered ? (
+        <p
+          role="status"
+          className="rounded-md border border-irie-green/30 bg-irie-green/10 px-3 py-2.5 text-sm text-gray-800"
+        >
+          Your account was created successfully. Sign in to continue.
+        </p>
+      ) : null}
+
       <div>
         <label htmlFor="email" className="block text-sm font-medium text-gray-700">
           Email address

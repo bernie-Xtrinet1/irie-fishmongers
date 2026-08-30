@@ -95,6 +95,14 @@ describe('LoginForm', () => {
     expect(screen.getByLabelText('Password')).toBeRequired();
   });
 
+  it('shows a successful registration notice when requested', () => {
+    render(<LoginForm registered />);
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Your account was created successfully. Sign in to continue.',
+    );
+  });
+
   it('links new users to registration', () => {
     render(<LoginForm />);
 

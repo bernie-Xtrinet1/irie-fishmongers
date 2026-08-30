@@ -1,13 +1,24 @@
 import { AuthShell } from '@/components/auth/auth-shell';
 import { LoginForm } from '@/components/auth/login-form';
 
-export default function LoginPage(): React.ReactElement {
+interface LoginPageProps {
+  searchParams: Promise<{
+    registered?: string | string[];
+  }>;
+}
+
+export default async function LoginPage({
+  searchParams,
+}: LoginPageProps): Promise<React.ReactElement> {
+  const params = await searchParams;
+  const registered = params.registered === '1';
+
   return (
     <AuthShell
       title="Sign in"
       description="Sign in to shop fresh Jamaican seafood and manage your Irie Fishmongers account."
     >
-      <LoginForm />
+      <LoginForm registered={registered} />
     </AuthShell>
   );
 }
