@@ -340,7 +340,7 @@ export interface ZoneBreachSummary {
 
 export interface FleetZoneSummary {
   zoneId: string;
-  status: string;
+  status: UserStatus;
   count: number;
 }
 
@@ -905,6 +905,13 @@ export enum UserRole {
   DRIVER = 'DRIVER',
   FISHERMAN = 'FISHERMAN',
   ADMINISTRATOR = 'ADMINISTRATOR',
+}
+
+export enum UserStatus {
+  PENDING_VERIFICATION = 'PENDING_VERIFICATION',
+  ACTIVE = 'ACTIVE',
+  SUSPENDED = 'SUSPENDED',
+  DEACTIVATED = 'DEACTIVATED',
 }
 
 export type SelfRegisterableRole =
