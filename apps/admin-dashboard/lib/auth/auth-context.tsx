@@ -106,11 +106,10 @@ export function AuthProvider({
     return () => {
       cancelled = true;
     };
-    // Intentionally runs once on mount only - this is the silent-refresh
-    // check, not a subscription to reactive dependencies. queryClient is a
-    // stable reference for the lifetime of the app (created once via
-    // useState in Providers).
-  }, []);
+    // queryClient is stable for the lifetime of the app, so this still
+    // behaves as a mount-time silent-refresh check while declaring the
+    // dependency used by the non-admin session cleanup path.
+  }, [queryClient]);
 
   const login = useCallback(
     async (email: string, password: string): Promise<void> => {
