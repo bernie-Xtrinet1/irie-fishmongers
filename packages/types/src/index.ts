@@ -340,7 +340,7 @@ export interface ZoneBreachSummary {
 
 export interface FleetZoneSummary {
   zoneId: string;
-  status: UserStatus;
+  status: string;
   count: number;
 }
 
@@ -926,7 +926,7 @@ export interface AuthUser {
   firstName: string;
   lastName: string;
   phone: string | null;
-  status: string;
+  status: UserStatus;
   roles: UserRole[];
   createdAt: string;
 }
