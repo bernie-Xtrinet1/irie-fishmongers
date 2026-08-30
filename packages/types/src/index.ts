@@ -894,3 +894,53 @@ export interface ComplianceScoreExplanation {
   updatedAt: string | null;
   breakdown: ComplianceScoreBreakdown;
 }
+
+// --- Authentication ---
+
+// Hand-mirrored from the backend authentication response entities and role
+// model. Dates crossing the HTTP boundary are represented as ISO strings.
+export enum UserRole {
+  CUSTOMER = 'CUSTOMER',
+  VENDOR = 'VENDOR',
+  DRIVER = 'DRIVER',
+  FISHERMAN = 'FISHERMAN',
+  ADMINISTRATOR = 'ADMINISTRATOR',
+}
+
+export type SelfRegisterableRole =
+  | UserRole.CUSTOMER
+  | UserRole.VENDOR
+  | UserRole.DRIVER
+  | UserRole.FISHERMAN;
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  status: string;
+  roles: UserRole[];
+  createdAt: string;
+}
+
+export interface AuthTokensResponse {
+  accessToken: string;
+  refreshToken: string;
+  user: AuthUser;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+  confirmPassword: string;
+  firstName: string;
+  lastName: string;
+  phone?: string;
+  role?: SelfRegisterableRole;
+}
