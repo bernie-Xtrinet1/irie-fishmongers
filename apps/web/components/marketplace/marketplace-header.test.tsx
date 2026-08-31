@@ -50,6 +50,7 @@ describe('MarketplaceHeader', () => {
     expect(screen.getByRole('link', { name: 'Irie Fishmongers' })).toHaveAttribute('href', '/');
     expect(screen.getByRole('link', { name: 'Marketplace' })).toHaveAttribute('href', '/');
     expect(screen.getByRole('link', { name: 'Cart' })).toHaveAttribute('href', '/cart');
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign In' })).toHaveAttribute('href', '/login');
     expect(screen.getByRole('link', { name: 'Register' })).toHaveAttribute('href', '/register');
   });
@@ -66,6 +67,7 @@ describe('MarketplaceHeader', () => {
 
     expect(screen.getByText('Loading account…')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sign In' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Register' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Sign Out' })).not.toBeInTheDocument();
@@ -84,6 +86,7 @@ describe('MarketplaceHeader', () => {
     expect(screen.getByText('Irie Customer')).toBeInTheDocument();
     expect(screen.getByText('customer@example.com')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cart' })).toHaveAttribute('href', '/cart');
+    expect(screen.getByRole('link', { name: 'Orders' })).toHaveAttribute('href', '/orders');
     expect(screen.getByRole('button', { name: 'Sign Out' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sign In' })).not.toBeInTheDocument();
   });
@@ -100,6 +103,7 @@ describe('MarketplaceHeader', () => {
 
     expect(screen.getByText('Irie Vendor')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
   });
 
   it('calls logout when Sign Out is selected', () => {
