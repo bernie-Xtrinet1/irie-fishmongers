@@ -54,6 +54,24 @@ describe('LoginForm', () => {
     expect(push).toHaveBeenCalledWith('/');
   });
 
+  it('returns to the requested marketplace page after sign in', async () => {
+    login.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+
+    render(<LoginForm returnUrl="/cart" />);
+
+    await user.type(screen.getByLabelText('Email address'), 'customer@example.com');
+    await user.type(screen.getByLabelText('Password'), 'Password123');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await waitFor(() => {
+      expect(login).toHaveBeenCalledWith('customer@example.com', 'Password123');
+    });
+
+    expect(push).toHaveBeenCalledWith('/cart');
+  });
+
   it('shows a friendly message when credentials are rejected', async () => {
     login.mockRejectedValue(new ApiError('Unauthorized', 401));
 

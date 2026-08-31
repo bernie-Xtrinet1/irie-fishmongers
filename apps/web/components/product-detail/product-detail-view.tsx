@@ -1,14 +1,21 @@
 'use client';
 
-import { Parish, ProductAvailability, type ProductDetail } from '@iriefishmongers/types';
+import {
+  Parish,
+  ProductAvailability,
+  UserRole,
+  type ProductDetail,
+} from '@iriefishmongers/types';
 import { StarRating, VendorTierBadge } from '@iriefishmongers/ui';
 import { useMutation } from '@tanstack/react-query';
 import Image from 'next/image';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
+import { useAuth } from '@/lib/auth/auth-context';
 import { resolveBestVendor } from '@/lib/api/marketplace';
 import { formatComplianceBand, formatDate, formatEnumLabel } from '@/lib/format';
 import { useProductDetail } from '@/lib/hooks/use-product-detail';
@@ -25,10 +32,13 @@ interface PurchaseResult {
 }
 
 export function ProductDetailView({ productId }: { productId: string }): React.ReactElement {
+  const router = useRouter();
+  const { status, user } = useAuth();
   const { data, isPending, isError, error, refetch } = useProductDetail(productId);
   const [quantity, setQuantity] = useState(1);
   const [purchaseOption, setPurchaseOption] = useState<PurchaseOption>('CHOOSE_VENDOR');
   const [deliveryParish, setDeliveryParish] = useState<Parish | ''>('');
+  const [purchaseAccessMessage, setPurchaseAccessMessage] = useState<string | null>(null);
 
   const purchase = useMutation({
     mutationFn: async (): Promise<PurchaseResult> => {
@@ -41,6 +51,28 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
       return { bestAvailable: false, badge: null };
     },
   });
+
+  function handlePurchase(): void {
+    purchase.reset();
+    setPurchaseAccessMessage(null);
+
+    if (status === 'loading') {
+      return;
+    }
+
+    if (status === 'unauthenticated') {
+      const returnUrl = `/products/${productId}`;
+      router.push(`/login?returnUrl=${encodeURIComponent(returnUrl)}`);
+      return;
+    }
+
+    if (!user?.roles.includes(UserRole.CUSTOMER)) {
+      setPurchaseAccessMessage('Shopping is available to customer accounts.');
+      return;
+    }
+
+    purchase.mutate();
+  }
 
   if (isPending) {
     return <ProductDetailSkeleton />;
@@ -113,17 +145,17 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
 
           <div className="mt-6 flex flex-wrap gap-3">
             <Button
-              onClick={() => purchase.mutate()}
+              onClick={handlePurchase}
               loading={purchase.isPending}
-              disabled={purchaseDisabled}
+              disabled={purchaseDisabled || status === 'loading'}
             >
               Add To Cart
             </Button>
             <Button
               variant="secondary"
-              onClick={() => purchase.mutate()}
+              onClick={handlePurchase}
               loading={purchase.isPending}
-              disabled={purchaseDisabled}
+              disabled={purchaseDisabled || status === 'loading'}
             >
               Buy Now
             </Button>
@@ -134,6 +166,12 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
               <Button variant="secondary">View Vendor Profile</Button>
             </Link>
           </div>
+
+          {purchaseAccessMessage ? (
+            <p role="alert" className="mt-3 text-sm text-irie-red">
+              {purchaseAccessMessage}
+            </p>
+          ) : null}
 
           {purchase.isSuccess ? (
             <p className="mt-3 text-sm text-irie-green">

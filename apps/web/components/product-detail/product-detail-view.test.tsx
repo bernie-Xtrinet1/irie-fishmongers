@@ -7,6 +7,9 @@ import {
   SeafoodStorageType,
   VendorComplianceStatusLabel,
   VendorTier,
+  UserRole,
+  UserStatus,
+  type AuthUser,
   type ProductDetail,
 } from '@iriefishmongers/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -16,20 +19,50 @@ import type { ReactNode } from 'react';
 
 import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
+import { useAuth } from '@/lib/auth/auth-context';
 import { resolveBestVendor } from '@/lib/api/marketplace';
 import { fetchProductDetail } from '@/lib/api/products';
 import { fetchProductReviews } from '@/lib/api/reviews';
 import { ProductDetailView } from './product-detail-view';
 
+const push = jest.fn();
+
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push,
+  }),
+}));
+
 jest.mock('@/lib/api/products');
 jest.mock('@/lib/api/cart');
 jest.mock('@/lib/api/marketplace');
 jest.mock('@/lib/api/reviews');
+jest.mock('@/lib/auth/auth-context');
 
 const mockFetchProductDetail = fetchProductDetail as jest.MockedFunction<typeof fetchProductDetail>;
 const mockAddCartItem = addCartItem as jest.MockedFunction<typeof addCartItem>;
 const mockResolveBestVendor = resolveBestVendor as jest.MockedFunction<typeof resolveBestVendor>;
 const mockFetchProductReviews = fetchProductReviews as jest.MockedFunction<typeof fetchProductReviews>;
+const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
+
+const customer: AuthUser = {
+  id: 'customer-1',
+  email: 'customer@example.com',
+  firstName: 'Customer',
+  lastName: 'One',
+  phone: null,
+  status: UserStatus.ACTIVE,
+  roles: [UserRole.CUSTOMER],
+  createdAt: '2026-08-31T00:00:00.000Z',
+};
+
+const vendor: AuthUser = {
+  ...customer,
+  id: 'vendor-user-1',
+  email: 'vendor@example.com',
+  firstName: 'Vendor',
+  roles: [UserRole.VENDOR],
+};
 
 const baseProduct: ProductDetail = {
   id: 'product-1',
@@ -82,6 +115,15 @@ function renderWithClient(ui: ReactNode) {
 describe('ProductDetailView', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    push.mockReset();
+
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: customer,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
     mockFetchProductReviews.mockResolvedValue({
       items: [],
       total: 0,
@@ -165,6 +207,52 @@ describe('ProductDetailView', () => {
     expect(
       screen.getByText('Vendor selected based on availability, freshness, compliance, and delivery capacity.'),
     ).toBeInTheDocument();
+  });
+
+  it('redirects an unauthenticated visitor to sign in before adding to cart', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'unauthenticated',
+      user: null,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    mockFetchProductDetail.mockResolvedValue(baseProduct);
+
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    await screen.findByText('Fresh Snapper');
+    await userEvent.click(screen.getByRole('button', { name: 'Add To Cart' }));
+
+    expect(push).toHaveBeenCalledWith(
+      '/login?returnUrl=%2Fproducts%2Fproduct-1',
+    );
+    expect(mockAddCartItem).not.toHaveBeenCalled();
+    expect(mockResolveBestVendor).not.toHaveBeenCalled();
+  });
+
+  it('prevents a non-customer account from adding items to the cart', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: vendor,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    mockFetchProductDetail.mockResolvedValue(baseProduct);
+
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    await screen.findByText('Fresh Snapper');
+    await userEvent.click(screen.getByRole('button', { name: 'Add To Cart' }));
+
+    expect(
+      await screen.findByText('Shopping is available to customer accounts.'),
+    ).toBeInTheDocument();
+
+    expect(mockAddCartItem).not.toHaveBeenCalled();
+    expect(mockResolveBestVendor).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('adds the product to the cart and shows a success message', async () => {
