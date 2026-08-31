@@ -147,3 +147,14 @@ export async function apiPatch<T>(path: string, body: unknown, init?: RequestIni
     body: JSON.stringify(body),
   });
 }
+
+export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T> {
+  return request<T>(path, {
+    method: 'DELETE',
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...init?.headers,
+    },
+  });
+}

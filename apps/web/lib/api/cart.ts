@@ -1,4 +1,4 @@
-import { apiPost } from '../api-client';
+import { apiDelete, apiGet, apiPatch, apiPost } from '../api-client';
 
 export interface AddCartItemInput {
   productId: string;
@@ -7,15 +7,48 @@ export interface AddCartItemInput {
 
 export interface CartItemResponse {
   id: string;
-  cartId: string;
   productId: string;
+  productName: string;
+  vendorId: string;
+  unitPrice: string;
+  unit: string;
   quantity: number;
+  subtotal: string;
 }
 
-// Calls the existing, unmodified POST /cart/items endpoint (CUSTOMER role,
-// JWT-protected). This app has no authentication flow yet, so an
-// unauthenticated call genuinely returns 401 - callers should surface that
-// as "please sign in", not silently succeed.
-export function addCartItem(input: AddCartItemInput): Promise<CartItemResponse> {
-  return apiPost<CartItemResponse>('/cart/items', input);
+export interface CartResponse {
+  id: string;
+  items: CartItemResponse[];
+  total: string;
+}
+
+function createIdempotencyKey(): string {
+  if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
+    throw new Error('Secure UUID generation is not available in this browser.');
+  }
+
+  return crypto.randomUUID();
+}
+
+export function getCart(): Promise<CartResponse> {
+  return apiGet<CartResponse>('/cart');
+}
+
+export function addCartItem(input: AddCartItemInput): Promise<CartResponse> {
+  return apiPost<CartResponse>('/cart/items', input, {
+    headers: {
+      'Idempotency-Key': createIdempotencyKey(),
+    },
+  });
+}
+
+export function updateCartItemQuantity(
+  itemId: string,
+  quantity: number,
+): Promise<CartResponse> {
+  return apiPatch<CartResponse>(`/cart/items/${itemId}`, { quantity });
+}
+
+export function removeCartItem(itemId: string): Promise<CartResponse> {
+  return apiDelete<CartResponse>(`/cart/items/${itemId}`);
 }

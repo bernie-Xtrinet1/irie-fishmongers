@@ -169,7 +169,11 @@ describe('ProductDetailView', () => {
 
   it('adds the product to the cart and shows a success message', async () => {
     mockFetchProductDetail.mockResolvedValue(baseProduct);
-    mockAddCartItem.mockResolvedValue({ id: 'item-1', cartId: 'cart-1', productId: 'product-1', quantity: 1 });
+    mockAddCartItem.mockResolvedValue({
+      id: 'cart-1',
+      items: [],
+      total: '0.00',
+    });
     renderWithClient(<ProductDetailView productId="product-1" />);
 
     await screen.findByText('Fresh Snapper');
@@ -221,7 +225,11 @@ describe('ProductDetailView', () => {
       totalScore: '88.00',
       fulfillmentDecisionId: 'decision-1',
     });
-    mockAddCartItem.mockResolvedValue({ id: 'item-1', cartId: 'cart-1', productId: 'product-2', quantity: 1 });
+    mockAddCartItem.mockResolvedValue({
+      id: 'cart-1',
+      items: [],
+      total: '0.00',
+    });
     renderWithClient(<ProductDetailView productId="product-1" />);
 
     await screen.findByText('Fresh Snapper');

@@ -1,4 +1,4 @@
-import { apiGet, apiPatch, apiPost, ApiError, configureApiClient } from './api-client';
+import { apiDelete, apiGet, apiPatch, apiPost, ApiError, configureApiClient } from './api-client';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -211,4 +211,31 @@ describe('web api-client', () => {
     expect(requestInit.body).toBe(JSON.stringify({ firstName: 'Test' }));
     expect(requestHeaders.Authorization).toBe('Bearer access-token');
   });
+
+  it('supports authenticated DELETE requests', async () => {
+    configureApiClient({
+      getAccessToken: () => 'access-token',
+      onTokenRefreshed: jest.fn(),
+      onUnauthorized: jest.fn(),
+    });
+
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { success: true, data: { removed: true }, error: null }),
+    );
+
+    const result = await apiDelete<{ removed: boolean }>('/cart/items/item-1');
+
+    expect(result).toEqual({ removed: true });
+
+    const requestUrl = fetchMock.mock.calls[0]?.[0] as string;
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const requestHeaders = requestInit.headers as Record<string, string>;
+
+    expect(requestUrl).toContain('/cart/items/item-1');
+    expect(requestInit.method).toBe('DELETE');
+    expect(requestInit.credentials).toBe('include');
+    expect(requestHeaders.Accept).toBe('application/json');
+    expect(requestHeaders.Authorization).toBe('Bearer access-token');
+  });
+
 });

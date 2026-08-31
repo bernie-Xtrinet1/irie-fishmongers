@@ -1,3 +1,20 @@
+
+import { randomUUID } from 'node:crypto';
+
+if (typeof global.crypto === 'undefined') {
+  Object.defineProperty(global, 'crypto', {
+    value: {},
+    configurable: true,
+  });
+}
+
+if (typeof global.crypto.randomUUID !== 'function') {
+  Object.defineProperty(global.crypto, 'randomUUID', {
+    value: randomUUID,
+    configurable: true,
+  });
+}
+
 import '@testing-library/jest-dom';
 import React from 'react';
 
