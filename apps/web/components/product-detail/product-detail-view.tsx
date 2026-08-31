@@ -151,14 +151,6 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
             >
               Add To Cart
             </Button>
-            <Button
-              variant="secondary"
-              onClick={handlePurchase}
-              loading={purchase.isPending}
-              disabled={purchaseDisabled || status === 'loading'}
-            >
-              Buy Now
-            </Button>
             <Button variant="ghost" disabled title="Saved products are coming soon">
               Save Product
             </Button>

@@ -167,6 +167,21 @@ describe('ProductDetailView', () => {
     expect(screen.getByLabelText('Rated 4.5 out of 5 stars')).toBeInTheDocument();
   });
 
+  it('does not expose Buy Now before checkout is implemented', async () => {
+    mockFetchProductDetail.mockResolvedValue(baseProduct);
+    renderWithClient(<ProductDetailView productId="product-1" />);
+
+    await screen.findByText('Fresh Snapper');
+
+    expect(
+      screen.queryByRole('button', { name: 'Buy Now' }),
+    ).not.toBeInTheDocument();
+
+    expect(
+      screen.getByRole('button', { name: 'Add To Cart' }),
+    ).toBeInTheDocument();
+  });
+
   it('shows the quality & freshness score with its grade and inspection date', async () => {
     mockFetchProductDetail.mockResolvedValue(baseProduct);
     renderWithClient(<ProductDetailView productId="product-1" />);
