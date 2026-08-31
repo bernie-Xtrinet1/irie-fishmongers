@@ -1,10 +1,10 @@
-import { HomeView } from '@/components/home/home-view';
+import { CartView } from '@/components/cart/cart-view';
 import { MarketplaceShell } from '@/components/marketplace/marketplace-shell';
 
-export default function HomePage(): React.ReactElement {
+export default function CartPage(): React.ReactElement {
   return (
     <MarketplaceShell>
-      <HomeView />
+      <CartView />
     </MarketplaceShell>
   );
 }

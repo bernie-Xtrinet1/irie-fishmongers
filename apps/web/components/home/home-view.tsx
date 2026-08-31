@@ -37,24 +37,17 @@ function ProductCard({ product }: { product: ProductResponse }): React.ReactElem
   );
 }
 
-function HomeHeader(): React.ReactElement {
-  return (
-    <header className="border-b border-gray-100 bg-white">
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <h1 className="text-3xl font-semibold text-gray-900">Irie Fishmongers</h1>
-        <p className="mt-1 text-gray-500">Fresh seafood from Jamaica&apos;s waters to your table.</p>
-      </div>
-    </header>
-  );
-}
-
 export function HomeView(): React.ReactElement {
   const { data, isPending, isError } = useProducts();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <HomeHeader />
-      <main className="mx-auto max-w-6xl px-4 py-10">
+    <main className="mx-auto max-w-6xl px-4 py-10">
+        <div className="mb-8">
+          <h1 className="text-3xl font-semibold text-gray-900">Fresh seafood marketplace</h1>
+          <p className="mt-1 text-gray-500">
+            Fresh seafood from Jamaica&apos;s waters to your table.
+          </p>
+        </div>
         {isPending ? (
           <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-4" aria-hidden>
             {Array.from({ length: 8 }).map((_, index) => (
@@ -79,7 +72,6 @@ export function HomeView(): React.ReactElement {
             </ul>
           </>
         )}
-      </main>
-    </div>
+    </main>
   );
 }

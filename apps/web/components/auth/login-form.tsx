@@ -18,8 +18,10 @@ function loginErrorMessage(error: unknown): string {
 
 export function LoginForm({
   registered = false,
+  returnUrl = '/',
 }: {
   registered?: boolean;
+  returnUrl?: string;
 }): React.ReactElement {
   const router = useRouter();
   const { login } = useAuth();
@@ -37,7 +39,7 @@ export function LoginForm({
 
     try {
       await login(email.trim(), password);
-      router.push('/');
+      router.push(returnUrl);
     } catch (error) {
       setErrorMessage(loginErrorMessage(error));
     } finally {
