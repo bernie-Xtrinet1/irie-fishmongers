@@ -160,9 +160,90 @@ describe('CartView', () => {
     renderCart();
 
     expect(await screen.findByText('Red Snapper')).toBeInTheDocument();
-    expect(screen.getByText('Subtotal: 5000.00')).toBeInTheDocument();
-    expect(screen.getByText('5000.00', { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByText('2,500.00 per LB')).toBeInTheDocument();
+    expect(screen.getByText('Subtotal: 5,000.00')).toBeInTheDocument();
+    expect(screen.getByText('5,000.00', { selector: 'span' })).toBeInTheDocument();
     expect(screen.getByDisplayValue('2')).toBeInTheDocument();
+  });
+
+  it('increases an item quantity using the increment control', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: customer,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    mockGetCart.mockResolvedValue(populatedCart);
+
+    const originalItem = populatedCart.items[0];
+
+    if (!originalItem) {
+      throw new Error('Expected populated cart fixture to contain an item.');
+    }
+
+    mockUpdateCartItemQuantity.mockResolvedValue({
+      ...populatedCart,
+      items: [
+        {
+          ...originalItem,
+          quantity: 3,
+          subtotal: '7500.00',
+        },
+      ],
+      total: '7500.00',
+    });
+
+    renderCart();
+
+    const increaseButton = await screen.findByRole('button', {
+      name: 'Increase quantity of Red Snapper',
+    });
+
+    fireEvent.click(increaseButton);
+
+    await waitFor(() => {
+      expect(mockUpdateCartItemQuantity).toHaveBeenCalledWith('item-1', 3);
+    });
+  });
+
+  it('does not allow the decrement control below quantity one', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: customer,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    const originalItem = populatedCart.items[0];
+
+    if (!originalItem) {
+      throw new Error('Expected populated cart fixture to contain an item.');
+    }
+
+    mockGetCart.mockResolvedValue({
+      ...populatedCart,
+      items: [
+        {
+          ...originalItem,
+          quantity: 1,
+          subtotal: '2500.00',
+        },
+      ],
+      total: '2500.00',
+    });
+
+    renderCart();
+
+    const decreaseButton = await screen.findByRole('button', {
+      name: 'Decrease quantity of Red Snapper',
+    });
+
+    expect(decreaseButton).toBeDisabled();
+
+    fireEvent.click(decreaseButton);
+
+    expect(mockUpdateCartItemQuantity).not.toHaveBeenCalled();
   });
 
   it('updates an item quantity through the cart API', async () => {

@@ -15,6 +15,19 @@ import { useAuth } from '@/lib/auth/auth-context';
 
 const CART_QUERY_KEY = ['cart'] as const;
 
+function formatCartAmount(value: string): string {
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount)) {
+    return value;
+  }
+
+  return amount.toLocaleString('en-JM', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function CartView(): React.ReactElement {
   const { status, user } = useAuth();
   const queryClient = useQueryClient();
@@ -48,6 +61,17 @@ export function CartView(): React.ReactElement {
       queryClient.setQueryData<CartResponse>(CART_QUERY_KEY, cart);
     },
   });
+
+  function changeQuantity(itemId: string, quantity: number): void {
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return;
+    }
+
+    updateQuantity.mutate({
+      itemId,
+      quantity,
+    });
+  }
 
   if (status === 'loading') {
     return (
@@ -149,10 +173,15 @@ export function CartView(): React.ReactElement {
 
       <div className="mt-8 space-y-4">
         {cart.items.map((item) => {
-          const itemPending =
-            (updateQuantity.isPending &&
-              updateQuantity.variables?.itemId === item.id) ||
-            (removeItem.isPending && removeItem.variables === item.id);
+          const updating =
+            updateQuantity.isPending &&
+            updateQuantity.variables?.itemId === item.id;
+
+          const removing =
+            removeItem.isPending &&
+            removeItem.variables === item.id;
+
+          const itemPending = updating || removing;
 
           return (
             <article
@@ -167,39 +196,68 @@ export function CartView(): React.ReactElement {
                   >
                     {item.productName}
                   </Link>
+
                   <p className="mt-1 text-sm text-gray-500">
-                    {item.unitPrice} per {item.unit}
+                    {formatCartAmount(item.unitPrice)} per {item.unit}
                   </p>
+
                   <p className="mt-2 font-medium text-gray-900">
-                    Subtotal: {item.subtotal}
+                    Subtotal: {formatCartAmount(item.subtotal)}
                   </p>
+
+                  {itemPending ? (
+                    <p
+                      className="mt-2 text-sm text-gray-500"
+                      aria-live="polite"
+                    >
+                      {removing ? 'Removing…' : 'Updating…'}
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <label
-                    htmlFor={`quantity-${item.id}`}
-                    className="text-sm font-medium text-gray-700"
-                  >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-gray-700">
                     Quantity
-                  </label>
+                  </span>
+
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-label={`Decrease quantity of ${item.productName}`}
+                    disabled={itemPending || item.quantity <= 1}
+                    onClick={() => {
+                      changeQuantity(item.id, item.quantity - 1);
+                    }}
+                  >
+                    −
+                  </Button>
+
                   <input
                     id={`quantity-${item.id}`}
+                    aria-label={`Quantity of ${item.productName}`}
                     type="number"
                     min={1}
                     value={item.quantity}
                     disabled={itemPending}
                     onChange={(event) => {
-                      const quantity = Number(event.target.value);
-
-                      if (Number.isInteger(quantity) && quantity >= 1) {
-                        updateQuantity.mutate({
-                          itemId: item.id,
-                          quantity,
-                        });
-                      }
+                      changeQuantity(item.id, Number(event.target.value));
                     }}
-                    className="w-20 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+                    className="w-20 rounded-md border border-gray-300 px-3 py-1.5 text-center text-sm"
                   />
+
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-label={`Increase quantity of ${item.productName}`}
+                    disabled={itemPending}
+                    onClick={() => {
+                      changeQuantity(item.id, item.quantity + 1);
+                    }}
+                  >
+                    +
+                  </Button>
 
                   <Button
                     variant="ghost"
@@ -220,8 +278,9 @@ export function CartView(): React.ReactElement {
         <div className="w-full rounded-card border border-gray-200 bg-white p-5 sm:w-80">
           <div className="flex items-center justify-between text-lg font-semibold text-gray-900">
             <span>Total</span>
-            <span>{cart.total}</span>
+            <span>{formatCartAmount(cart.total)}</span>
           </div>
+
           <p className="mt-3 text-sm text-gray-500">
             Checkout will be enabled in a later marketplace phase.
           </p>
