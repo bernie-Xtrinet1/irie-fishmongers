@@ -164,6 +164,10 @@ describe('CartView', () => {
     expect(screen.getByText('Subtotal: 5,000.00')).toBeInTheDocument();
     expect(screen.getByText('5,000.00', { selector: 'span' })).toBeInTheDocument();
     expect(screen.getByDisplayValue('2')).toBeInTheDocument();
+
+    expect(
+      screen.getByRole('link', { name: 'Proceed to checkout' }),
+    ).toHaveAttribute('href', '/checkout');
   });
 
   it('increases an item quantity using the increment control', async () => {
