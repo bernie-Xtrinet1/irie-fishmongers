@@ -50,6 +50,15 @@ export function MarketplaceHeader(): React.ReactElement {
                 Orders
               </Link>
             ) : null}
+
+            {status === 'authenticated' && isCustomer ? (
+              <Link
+                href="/account"
+                className="text-sm font-medium text-gray-700 hover:text-irie-green focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
+              >
+                Account
+              </Link>
+            ) : null}
           </nav>
         </div>
 
