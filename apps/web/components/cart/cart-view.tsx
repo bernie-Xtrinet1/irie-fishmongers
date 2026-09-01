@@ -281,8 +281,16 @@ export function CartView(): React.ReactElement {
             <span>{formatCartAmount(cart.total)}</span>
           </div>
 
+          <Link
+            href="/checkout"
+            className="mt-5 block rounded-md bg-irie-green px-4 py-2 text-center font-medium text-white hover:opacity-90"
+          >
+            Proceed to checkout
+          </Link>
+
           <p className="mt-3 text-sm text-gray-500">
-            Checkout will be enabled in a later marketplace phase.
+            You can prepare your delivery details before order placement and
+            payment are enabled.
           </p>
         </div>
       </div>
