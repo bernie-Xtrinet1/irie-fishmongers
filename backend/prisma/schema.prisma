@@ -655,11 +655,20 @@ enum PaymentStatus {
   PARTIALLY_REFUNDED
 }
 
+enum PaymentInitiationStatus {
+  NOT_STARTED
+  INITIATING
+  ESTABLISHED
+  RECONCILE_REQUIRED
+  FAILED
+}
+
 model Payment {
   id                String              @id @default(uuid())
   orderId           String              @unique
   provider          PaymentProviderName
   status            PaymentStatus       @default(PENDING)
+  initiationStatus  PaymentInitiationStatus @default(NOT_STARTED)
   amount            Decimal             @db.Decimal(10, 2)
   currency          String              @default("JMD")
   providerReference String?
