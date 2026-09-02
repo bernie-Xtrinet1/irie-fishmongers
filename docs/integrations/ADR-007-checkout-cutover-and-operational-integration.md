@@ -20,9 +20,10 @@ the following on its own:
 - **`CartService` changes** - the Redis-first write-order question and
   every other `CartService` modification remain unauthorized until Phase C's
   shadow-mode comparison is complete and separately approved.
-- **Payment integration** - Phase E's actual design is deferred to its own
-  planning session (see Decision 4); nothing here authorizes payment-module
-  code changes.
+- **Payment integration** - Phase E's reliability design is recorded in
+  `docs/integrations/phase-e-payment-reliability-design.md`; nothing in that
+  design or this ADR authorizes payment-module code changes, schema migration,
+  provider calls, or checkout activation.
 - **Scheduler implementation** - Phase F (the cron job, the Postgres
   advisory lock, heartbeat-staleness polling) is design-approved in
   direction only; no scheduler code is authorized by this ADR.
@@ -1272,8 +1273,10 @@ the original `checkout()` call rejects/throws; no `Payment` row is
 created; a same-key replay returns the already-committed order
 successfully, without ever repairing the missing payment. D-core does not
 initiate payment a second time under any circumstance. This is confirmed,
-intentional, unfixed scope - it is Phase E's design responsibility (§4,
-open decision 5), not a D-core defect.
+intentional D-core scope - it is not a D-core defect. Phase E's recovery
+behavior is now design-resolved by
+`docs/integrations/phase-e-payment-reliability-design.md` and open decision 5,
+but its implementation remains separately unauthorized.
 
 #### 16.5 D-activation remains blocked
 
@@ -1347,7 +1350,7 @@ them import it back. Not imported by `AppModule` (§16.5).
 | B | `PriceLockService`, cart currency enforcement, price-lock validation | **Complete** - open decisions 4, 8 resolved |
 | C | `CheckoutReservationFacade`, feature flags, shadow mode, combined availability - **no production cutover** | C0-C4.5 (mirror compensation) **complete, unwired**. Shadow mode/feature-flag/combined-availability cutover work itself remains open, blocked on decisions 1 (resolved empirically by C's own shadow comparison, not upfront), 9 (`addItem` idempotency, dependent on 1), 10 (rollout-flag mechanism) |
 | D | `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring, `checkoutMark` integration | **D-core complete and frozen (D.1-D.5, §16) - additive and unwired.** Activation (caller cutover, `CheckoutController`, `AppModule` import) remains blocked on Phase C's unresolved decisions 1/9/10, per §16.5 |
-| E | Payment review (separate planning session), then payment compensation and duplicate-callback protection | Its own planning session - open decision 5. Distinct from Phase F (see §16.4/§21 note below) - never conflate the two |
+| E | Forward-only payment recovery, durable initiation reliability, reconciliation, and duplicate-callback/COD transition protection | **Design complete; implementation not authorized.** Open decision 5 resolved by `phase-e-payment-reliability-design.md`. Distinct from Phase F (see §16.4/§21 note below) - never conflate the two |
 | F | Scheduler, heartbeat recovery, Postgres advisory lock | A. Distinct from C4.5's mirror-compensation scheduler, which is a different subsystem entirely (see §15's naming note) |
 | G | Limited allow-list rollout, shadow validation, monitoring | C, D |
 | H | Maintenance window, legacy Redis drain, production cutover | G at full rollout; open decision 7 (drain wait time) |
@@ -1365,7 +1368,7 @@ resolved.
 2. Server-generated vs. client-generated idempotency keys - **RESOLVED: server-generated** (see Decision 1).
 3. Can a `FAILED` `CheckoutAttempt` retry with the same idempotency key? - **RESOLVED: no - a retry after `FAILED` always uses a new idempotency key.**
 4. Price-lock duration (`PRICE_LOCK_TTL_SECONDS`) - **RESOLVED: 900 seconds** (see Decision 7, item 1), implemented as an independent constant, never derived from `RESERVATION_TTL_SECONDS`.
-5. **Payment-failure compensation behavior** - **OPEN**, blocks Phase E. Explicitly deferred to a dedicated payment-integration planning session (see Decision 4); not designed by this ADR.
+5. **Payment-failure compensation behavior** - **RESOLVED: forward-only, idempotent payment recovery after durable checkout commit.** A committed Order and `COMMITTED` `CheckoutAttempt` are never rolled back solely because payment initiation fails. Provider ambiguity must be persisted and reconciled before another external create attempt; callbacks and COD confirmation must be transition-idempotent, with `PaymentConfirmedEvent` emitted only on the first authoritative transition to `PAID`. See `docs/integrations/phase-e-payment-reliability-design.md`. This resolution removes Phase E's design blocker only; it does not authorize Phase E implementation or checkout activation.
 6. Scheduler distributed-lock mechanism - **RESOLVED: PostgreSQL advisory lock, not Redis** (see Decision 5).
 7. **Legacy-drain wait time** - **OPEN**, blocks Phase H. Direct conflict between a prior session's stated 70 minutes and `reservation-lifecycle.md` §8's approved 20 minutes. One authoritative value must be set before Phase H; not resolved by this ADR.
 8. Does `Product` carry its own currency field, or is currency purely cart-level? - **RESOLVED: yes** - `Product.currency` (`String @default("JMD")`) is a real per-row column, confirmed by direct schema inspection, and is the authoritative source `PriceLockService` reads from (see Decision 7, item 2).
