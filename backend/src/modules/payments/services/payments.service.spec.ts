@@ -19,6 +19,7 @@ function buildPayment(overrides: Partial<PaymentWithOrder> = {}): PaymentWithOrd
     orderId: 'order-1',
     provider: 'CASH_ON_DELIVERY',
     status: 'PENDING',
+    initiationStatus: 'NOT_STARTED',
     amount: new Prisma.Decimal(1000),
     currency: 'JMD',
     providerReference: null,
