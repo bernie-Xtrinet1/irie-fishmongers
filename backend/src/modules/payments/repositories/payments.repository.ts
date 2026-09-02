@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentProviderName, PaymentStatus, Prisma } from '@prisma/client';
+import { PaymentInitiationStatus, PaymentProviderName, PaymentStatus, Prisma } from '@prisma/client';
 
 import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
@@ -48,6 +48,7 @@ export class PaymentsRepository {
     id: string,
     data: Partial<{
       status: PaymentStatus;
+      initiationStatus: PaymentInitiationStatus;
       providerReference: string;
       failureReason: string;
       paidAt: Date;
@@ -58,6 +59,14 @@ export class PaymentsRepository {
       data,
       include: paymentWithOrder.include,
     });
+  }
+
+  async claimInitiation(id: string): Promise<boolean> {
+    const result = await this.prisma.payment.updateMany({
+      where: { id, initiationStatus: 'NOT_STARTED' },
+      data: { initiationStatus: 'INITIATING' },
+    });
+    return result.count === 1;
   }
 
   async sumByStatus(status: PaymentStatus, range?: DateRange): Promise<Prisma.Decimal> {
