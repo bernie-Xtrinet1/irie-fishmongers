@@ -156,6 +156,22 @@ describe('PaymentsRepository', () => {
     await expect(repository.findByProviderReference('missing-ref')).resolves.toBeNull();
   });
 
+  it('claims payment initiation exactly once', async () => {
+    const existing = await repository.findByOrderId(orderId);
+    const paymentId = existing?.id ?? '';
+
+    await repository.update(paymentId, { initiationStatus: 'NOT_STARTED' });
+    await expect(repository.claimInitiation(paymentId)).resolves.toBe(true);
+
+    const claimed = await repository.findById(paymentId);
+    expect(claimed?.initiationStatus).toBe('INITIATING');
+
+    await expect(repository.claimInitiation(paymentId)).resolves.toBe(false);
+
+    const stillClaimed = await repository.findById(paymentId);
+    expect(stillClaimed?.initiationStatus).toBe('INITIATING');
+  });
+
   it('updates a payment status and paidAt', async () => {
     const existing = await repository.findByOrderId(orderId);
     const paidAt = new Date();
