@@ -3,8 +3,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { PaymentsRepository, PaymentWithOrder } from './payments.repository';
 
-describe('PaymentsRepository createOrGetByOrderId', () => {
-  let prisma: { payment: { create: jest.Mock; findUnique: jest.Mock } };
+describe('PaymentsRepository', () => {
+  let prisma: { payment: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock } };
   let repository: PaymentsRepository;
 
   beforeEach(() => {
@@ -12,6 +12,7 @@ describe('PaymentsRepository createOrGetByOrderId', () => {
       payment: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        updateMany: jest.fn(),
       },
     };
 
@@ -26,7 +27,7 @@ describe('PaymentsRepository createOrGetByOrderId', () => {
     });
   }
 
-  function buildPayment(): PaymentWithOrder {
+  function buildPayment(overrides: Partial<PaymentWithOrder> = {}): PaymentWithOrder {
     return {
       id: 'payment-1',
       orderId: 'order-1',
@@ -41,6 +42,7 @@ describe('PaymentsRepository createOrGetByOrderId', () => {
       createdAt: new Date('2026-09-03T00:00:00.000Z'),
       updatedAt: new Date('2026-09-03T00:00:00.000Z'),
       order: { customerId: 'customer-1' },
+      ...overrides,
     };
   }
 
@@ -100,6 +102,129 @@ describe('PaymentsRepository createOrGetByOrderId', () => {
 
     await expect(repository.createOrGetByOrderId(input)).rejects.toThrow(
       'Internal consistency error',
+    );
+  });
+
+  describe('transitionToPaid', () => {
+    it('atomically transitions an eligible payment to PAID', async () => {
+      const paidAt = new Date('2026-09-03T01:00:00.000Z');
+      const payment = buildPayment({ status: 'PAID', paidAt });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(repository.transitionToPaid('payment-1')).resolves.toEqual({
+        payment,
+        transitioned: true,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          status: { in: ['PENDING', 'FAILED'] },
+        },
+        data: {
+          status: 'PAID',
+          paidAt: expect.any(Date) as Date,
+          failureReason: null,
+        },
+      });
+    });
+
+    it('permits FAILED to be recovered by an authoritative PAID transition', async () => {
+      const payment = buildPayment({
+        status: 'PAID',
+        failureReason: null,
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      const result = await repository.transitionToPaid('payment-1');
+
+      expect(result.transitioned).toBe(true);
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: 'payment-1',
+            status: { in: ['PENDING', 'FAILED'] },
+          },
+        }),
+      );
+    });
+
+    it('returns transitioned false when the payment is already PAID', async () => {
+      const payment = buildPayment({
+        status: 'PAID',
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(repository.transitionToPaid('payment-1')).resolves.toEqual({
+        payment,
+        transitioned: false,
+      });
+    });
+  });
+
+  describe('transitionToFailed', () => {
+    it('atomically transitions PENDING to FAILED', async () => {
+      const payment = buildPayment({
+        status: 'FAILED',
+        failureReason: 'Card declined',
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.transitionToFailed('payment-1', 'Card declined'),
+      ).resolves.toEqual({
+        payment,
+        transitioned: true,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          status: 'PENDING',
+        },
+        data: {
+          status: 'FAILED',
+          failureReason: 'Card declined',
+        },
+      });
+    });
+
+    it.each(['PAID', 'PARTIALLY_REFUNDED', 'REFUNDED'] as const)(
+      'does not downgrade %s to FAILED',
+      async (status) => {
+        const payment = buildPayment({ status });
+
+        prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+        prisma.payment.findUnique.mockResolvedValue(payment);
+
+        await expect(
+          repository.transitionToFailed('payment-1', 'Late failure'),
+        ).resolves.toEqual({
+          payment,
+          transitioned: false,
+        });
+
+        expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+          where: {
+            id: 'payment-1',
+            status: 'PENDING',
+          },
+          data: {
+            status: 'FAILED',
+            failureReason: 'Late failure',
+          },
+        });
+      },
     );
   });
 });

@@ -127,14 +127,24 @@ export class PaymentsService {
     if (!payment) {
       throw new BadRequestException('Payment not found');
     }
+
     if (payment.provider !== 'CASH_ON_DELIVERY') {
       throw new BadRequestException('Only cash-on-delivery payments can be confirmed manually');
     }
-    const updated = await this.paymentsRepository.update(paymentId, {
-      status: 'PAID',
-      paidAt: new Date(),
-    });
-    await this.emitPaymentConfirmed(updated);
+
+    const { payment: updated, transitioned } =
+      await this.paymentsRepository.transitionToPaid(paymentId);
+
+    if (!updated) {
+      throw new Error(
+        `Internal consistency error: payment "${paymentId}" disappeared after PAID transition`,
+      );
+    }
+
+    if (transitioned) {
+      await this.emitPaymentConfirmed(updated);
+    }
+
     return PaymentsService.toPaymentResponse(updated);
   }
 
@@ -150,16 +160,23 @@ export class PaymentsService {
     }
 
     if (payload.status === 'success') {
-      const updated = await this.paymentsRepository.update(payment.id, {
-        status: 'PAID',
-        paidAt: new Date(),
-      });
-      await this.emitPaymentConfirmed(updated);
+      const { payment: updated, transitioned } =
+        await this.paymentsRepository.transitionToPaid(payment.id);
+
+      if (!updated) {
+        throw new Error(
+          `Internal consistency error: payment "${payment.id}" disappeared after PAID transition`,
+        );
+      }
+
+      if (transitioned) {
+        await this.emitPaymentConfirmed(updated);
+      }
     } else {
-      await this.paymentsRepository.update(payment.id, {
-        status: 'FAILED',
-        failureReason: payload.message ?? 'Payment failed',
-      });
+      await this.paymentsRepository.transitionToFailed(
+        payment.id,
+        payload.message ?? 'Payment failed',
+      );
     }
   }
 

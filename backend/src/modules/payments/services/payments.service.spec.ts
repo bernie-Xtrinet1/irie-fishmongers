@@ -55,6 +55,8 @@ describe('PaymentsService', () => {
       | 'findById'
       | 'findByOrderId'
       | 'findByProviderReference'
+      | 'transitionToPaid'
+      | 'transitionToFailed'
       | 'update'
     >
   >;
@@ -71,6 +73,8 @@ describe('PaymentsService', () => {
       findById: jest.fn(),
       findByOrderId: jest.fn(),
       findByProviderReference: jest.fn(),
+      transitionToPaid: jest.fn(),
+      transitionToFailed: jest.fn(),
       update: jest.fn(),
     };
     refundsRepository = { sumCompletedByPaymentId: jest.fn(), create: jest.fn() };
@@ -522,76 +526,218 @@ describe('PaymentsService', () => {
   });
 
   describe('markCashOnDeliveryPaid', () => {
-    it('marks a cash-on-delivery payment as paid', async () => {
-      paymentsRepository.findById.mockResolvedValue(buildPayment());
-      paymentsRepository.update.mockResolvedValue(buildPayment({ status: 'PAID', paidAt: new Date() }));
+    it('emits payment.confirmed when this caller transitions COD to PAID', async () => {
+      const pending = buildPayment();
+      const paid = buildPayment({
+        status: 'PAID',
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
+      paymentsRepository.findById.mockResolvedValue(pending);
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: paid,
+        transitioned: true,
+      });
 
       const result = await service.markCashOnDeliveryPaid('payment-1');
+
+      expect(paymentsRepository.transitionToPaid).toHaveBeenCalledWith('payment-1');
       expect(result.status).toBe('PAID');
+      expect(eventEmitter.emitAsync).toHaveBeenCalledTimes(1);
       expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         'payment.confirmed',
         expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
       );
     });
 
+    it('does not emit again when COD is already PAID', async () => {
+      const paid = buildPayment({
+        status: 'PAID',
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
+      paymentsRepository.findById.mockResolvedValue(paid);
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: paid,
+        transitioned: false,
+      });
+
+      const result = await service.markCashOnDeliveryPaid('payment-1');
+
+      expect(result.status).toBe('PAID');
+      expect(paymentsRepository.transitionToPaid).toHaveBeenCalledWith('payment-1');
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+    });
+
     it('throws when the payment does not exist', async () => {
       paymentsRepository.findById.mockResolvedValue(null);
-      await expect(service.markCashOnDeliveryPaid('missing')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+
+      await expect(
+        service.markCashOnDeliveryPaid('missing'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(paymentsRepository.transitionToPaid).not.toHaveBeenCalled();
     });
 
     it('throws when the payment is not cash on delivery', async () => {
-      paymentsRepository.findById.mockResolvedValue(buildPayment({ provider: 'WIPAY' }));
-      await expect(service.markCashOnDeliveryPaid('payment-1')).rejects.toBeInstanceOf(
-        BadRequestException,
+      paymentsRepository.findById.mockResolvedValue(
+        buildPayment({ provider: 'WIPAY' }),
       );
+
+      await expect(
+        service.markCashOnDeliveryPaid('payment-1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(paymentsRepository.transitionToPaid).not.toHaveBeenCalled();
+    });
+
+    it('throws an internal consistency error when the payment disappears after transition', async () => {
+      paymentsRepository.findById.mockResolvedValue(buildPayment());
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: null,
+        transitioned: true,
+      });
+
+      await expect(
+        service.markCashOnDeliveryPaid('payment-1'),
+      ).rejects.toThrow('Internal consistency error');
+
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
     });
   });
 
   describe('handleWiPayWebhook', () => {
     it('throws when the signature is invalid', async () => {
       wiPayAdapter.verifyWebhookSignature.mockReturnValue(false);
-      await expect(service.handleWiPayWebhook('{}', 'bad-signature')).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
+
+      await expect(
+        service.handleWiPayWebhook('{}', 'bad-signature'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(paymentsRepository.findByProviderReference).not.toHaveBeenCalled();
     });
 
-    it('marks the payment paid on a successful webhook', async () => {
+    it('emits payment.confirmed when this callback transitions the payment to PAID', async () => {
+      const pending = buildPayment({
+        provider: 'WIPAY',
+        providerReference: 'txn-1',
+      });
+      const paid = buildPayment({
+        provider: 'WIPAY',
+        providerReference: 'txn-1',
+        status: 'PAID',
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
       wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
-      paymentsRepository.findByProviderReference.mockResolvedValue(buildPayment({ provider: 'WIPAY' }));
-      paymentsRepository.update.mockResolvedValue(
-        buildPayment({ provider: 'WIPAY', status: 'PAID', paidAt: new Date() }),
-      );
+      paymentsRepository.findByProviderReference.mockResolvedValue(pending);
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: paid,
+        transitioned: true,
+      });
 
       await service.handleWiPayWebhook(
         JSON.stringify({ transaction_id: 'txn-1', status: 'success' }),
         'good-signature',
       );
 
-      expect(paymentsRepository.update).toHaveBeenCalledWith('payment-1', {
-        status: 'PAID',
-        paidAt: expect.any(Date) as Date,
-      });
+      expect(paymentsRepository.transitionToPaid).toHaveBeenCalledWith('payment-1');
+      expect(eventEmitter.emitAsync).toHaveBeenCalledTimes(1);
       expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         'payment.confirmed',
         expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
       );
     });
 
-    it('marks the payment failed on a failed webhook', async () => {
+    it('does not emit again when a duplicate success callback loses the PAID transition', async () => {
+      const observed = buildPayment({
+        provider: 'WIPAY',
+        providerReference: 'txn-1',
+      });
+      const paid = buildPayment({
+        provider: 'WIPAY',
+        providerReference: 'txn-1',
+        status: 'PAID',
+        paidAt: new Date('2026-09-03T01:00:00.000Z'),
+      });
+
       wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
-      paymentsRepository.findByProviderReference.mockResolvedValue(buildPayment({ provider: 'WIPAY' }));
+      paymentsRepository.findByProviderReference.mockResolvedValue(observed);
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: paid,
+        transitioned: false,
+      });
 
       await service.handleWiPayWebhook(
-        JSON.stringify({ transaction_id: 'txn-1', status: 'failed', message: 'Card declined' }),
+        JSON.stringify({ transaction_id: 'txn-1', status: 'success' }),
         'good-signature',
       );
 
-      expect(paymentsRepository.update).toHaveBeenCalledWith('payment-1', {
-        status: 'FAILED',
-        failureReason: 'Card declined',
+      expect(paymentsRepository.transitionToPaid).toHaveBeenCalledWith('payment-1');
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+    });
+
+    it('routes a failed callback through the protected FAILED transition', async () => {
+      wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
+      paymentsRepository.findByProviderReference.mockResolvedValue(
+        buildPayment({
+          provider: 'WIPAY',
+          providerReference: 'txn-1',
+        }),
+      );
+      paymentsRepository.transitionToFailed.mockResolvedValue({
+        payment: buildPayment({
+          provider: 'WIPAY',
+          providerReference: 'txn-1',
+          status: 'FAILED',
+          failureReason: 'Card declined',
+        }),
+        transitioned: true,
       });
+
+      await service.handleWiPayWebhook(
+        JSON.stringify({
+          transaction_id: 'txn-1',
+          status: 'failed',
+          message: 'Card declined',
+        }),
+        'good-signature',
+      );
+
+      expect(paymentsRepository.transitionToFailed).toHaveBeenCalledWith(
+        'payment-1',
+        'Card declined',
+      );
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+    });
+
+    it('uses the default failure reason when WiPay supplies no message', async () => {
+      wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
+      paymentsRepository.findByProviderReference.mockResolvedValue(
+        buildPayment({
+          provider: 'WIPAY',
+          providerReference: 'txn-1',
+        }),
+      );
+      paymentsRepository.transitionToFailed.mockResolvedValue({
+        payment: buildPayment({
+          provider: 'WIPAY',
+          providerReference: 'txn-1',
+          status: 'FAILED',
+          failureReason: 'Payment failed',
+        }),
+        transitioned: true,
+      });
+
+      await service.handleWiPayWebhook(
+        JSON.stringify({ transaction_id: 'txn-1', status: 'failed' }),
+        'good-signature',
+      );
+
+      expect(paymentsRepository.transitionToFailed).toHaveBeenCalledWith(
+        'payment-1',
+        'Payment failed',
+      );
     });
 
     it('does nothing when no payment matches the webhook transaction id', async () => {
@@ -603,7 +749,32 @@ describe('PaymentsService', () => {
         'good-signature',
       );
 
-      expect(paymentsRepository.update).not.toHaveBeenCalled();
+      expect(paymentsRepository.transitionToPaid).not.toHaveBeenCalled();
+      expect(paymentsRepository.transitionToFailed).not.toHaveBeenCalled();
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
+    });
+
+    it('throws an internal consistency error when a successful payment disappears after transition', async () => {
+      wiPayAdapter.verifyWebhookSignature.mockReturnValue(true);
+      paymentsRepository.findByProviderReference.mockResolvedValue(
+        buildPayment({
+          provider: 'WIPAY',
+          providerReference: 'txn-1',
+        }),
+      );
+      paymentsRepository.transitionToPaid.mockResolvedValue({
+        payment: null,
+        transitioned: true,
+      });
+
+      await expect(
+        service.handleWiPayWebhook(
+          JSON.stringify({ transaction_id: 'txn-1', status: 'success' }),
+          'good-signature',
+        ),
+      ).rejects.toThrow('Internal consistency error');
+
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
     });
   });
 
