@@ -104,6 +104,45 @@ export class PaymentsRepository {
     return result.count === 1;
   }
 
+  async transitionToPaid(
+    id: string,
+  ): Promise<{ payment: PaymentWithOrder | null; transitioned: boolean }> {
+    const paidAt = new Date();
+    const result = await this.prisma.payment.updateMany({
+      where: {
+        id,
+        status: { in: ['PENDING', 'FAILED'] },
+      },
+      data: {
+        status: 'PAID',
+        paidAt,
+        failureReason: null,
+      },
+    });
+
+    const payment = await this.findById(id);
+    return { payment, transitioned: result.count === 1 };
+  }
+
+  async transitionToFailed(
+    id: string,
+    failureReason: string,
+  ): Promise<{ payment: PaymentWithOrder | null; transitioned: boolean }> {
+    const result = await this.prisma.payment.updateMany({
+      where: {
+        id,
+        status: 'PENDING',
+      },
+      data: {
+        status: 'FAILED',
+        failureReason,
+      },
+    });
+
+    const payment = await this.findById(id);
+    return { payment, transitioned: result.count === 1 };
+  }
+
   async sumByStatus(status: PaymentStatus, range?: DateRange): Promise<Prisma.Decimal> {
     const result = await this.prisma.payment.aggregate({
       _sum: { amount: true },
