@@ -26,6 +26,41 @@ export class PaymentsRepository {
     return this.prisma.payment.create({ data: input, include: paymentWithOrder.include });
   }
 
+  async createOrGetByOrderId(
+    input: CreatePaymentInput,
+  ): Promise<{ payment: PaymentWithOrder; created: boolean }> {
+    try {
+      const payment = await this.prisma.payment.create({
+        data: input,
+        include: paymentWithOrder.include,
+      });
+      return { payment, created: true };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        Array.isArray(error.meta?.target) &&
+        (error.meta.target as string[]).includes('orderId')
+      ) {
+        const existing = await this.prisma.payment.findUnique({
+          where: { orderId: input.orderId },
+          include: paymentWithOrder.include,
+        });
+
+        if (existing === null) {
+          throw new Error(
+            `Internal consistency error: orderId unique constraint was violated for ` +
+              `"${input.orderId}" but no payment row was found on re-read`,
+          );
+        }
+
+        return { payment: existing, created: false };
+      }
+
+      throw error;
+    }
+  }
+
   findById(id: string): Promise<PaymentWithOrder | null> {
     return this.prisma.payment.findUnique({ where: { id }, include: paymentWithOrder.include });
   }

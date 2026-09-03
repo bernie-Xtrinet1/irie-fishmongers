@@ -41,39 +41,68 @@ export class PaymentsService {
   async initiatePayment(
     input: PaymentCreateInput & { provider: PaymentProviderName },
   ): Promise<PaymentInitiationResponseEntity> {
-    const existing = await this.paymentsRepository.findByOrderId(input.orderId);
-    if (existing && existing.status === 'PAID') {
+    const { payment } = await this.paymentsRepository.createOrGetByOrderId({
+      orderId: input.orderId,
+      provider: input.provider,
+      amount: input.amount,
+      currency: input.currency,
+    });
+
+    if (payment.status === 'PAID') {
       throw new ConflictException('This order has already been paid');
     }
 
-    const adapter = this.getAdapter(input.provider);
-    const result = await adapter.createPayment(input);
+    if (payment.provider !== input.provider) {
+      throw new ConflictException('This order already has a payment using a different provider');
+    }
+
+    if (payment.initiationStatus !== 'NOT_STARTED') {
+      return { payment: PaymentsService.toPaymentResponse(payment) };
+    }
+
+    const claimed = await this.paymentsRepository.claimInitiation(payment.id);
+    if (!claimed) {
+      const current = await this.paymentsRepository.findById(payment.id);
+      if (!current) {
+        throw new Error(
+          `Internal consistency error: payment "${payment.id}" disappeared after initiation claim`,
+        );
+      }
+      return { payment: PaymentsService.toPaymentResponse(current) };
+    }
+
+    const adapter = this.getAdapter(payment.provider);
+
+    let result;
+    try {
+      result = await adapter.createPayment({
+        orderId: payment.orderId,
+        amount: payment.amount.toNumber(),
+        currency: payment.currency,
+      });
+    } catch (error) {
+      await this.paymentsRepository.update(payment.id, {
+        initiationStatus: 'RECONCILE_REQUIRED',
+      });
+      throw error;
+    }
+
     const isPaid = result.status === 'PAID';
-
-    const payment = existing
-      ? await this.paymentsRepository.update(existing.id, {
-          status: isPaid ? 'PAID' : 'PENDING',
-          providerReference: result.providerReference,
-          ...(isPaid ? { paidAt: new Date() } : {}),
-        })
-      : await this.paymentsRepository.create({
-          orderId: input.orderId,
-          provider: input.provider,
-          amount: input.amount,
-          currency: input.currency,
-          providerReference: result.providerReference,
-        });
-
-    const finalPayment =
-      !existing && isPaid
-        ? await this.paymentsRepository.update(payment.id, { status: 'PAID', paidAt: new Date() })
-        : payment;
+    const finalPayment = await this.paymentsRepository.update(payment.id, {
+      initiationStatus: 'ESTABLISHED',
+      status: isPaid ? 'PAID' : 'PENDING',
+      providerReference: result.providerReference,
+      ...(isPaid ? { paidAt: new Date() } : {}),
+    });
 
     if (isPaid) {
       await this.emitPaymentConfirmed(finalPayment);
     }
 
-    return { payment: PaymentsService.toPaymentResponse(finalPayment), redirectUrl: result.redirectUrl };
+    return {
+      payment: PaymentsService.toPaymentResponse(finalPayment),
+      redirectUrl: result.redirectUrl,
+    };
   }
 
   async getByOrderId(orderId: string): Promise<PaymentResponseEntity | null> {

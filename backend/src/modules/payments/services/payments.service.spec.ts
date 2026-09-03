@@ -48,7 +48,15 @@ function buildRefund(overrides: Partial<Refund> = {}): Refund {
 
 describe('PaymentsService', () => {
   let paymentsRepository: jest.Mocked<
-    Pick<PaymentsRepository, 'create' | 'findById' | 'findByOrderId' | 'findByProviderReference' | 'update'>
+    Pick<
+      PaymentsRepository,
+      | 'createOrGetByOrderId'
+      | 'claimInitiation'
+      | 'findById'
+      | 'findByOrderId'
+      | 'findByProviderReference'
+      | 'update'
+    >
   >;
   let refundsRepository: jest.Mocked<Pick<RefundsRepository, 'sumCompletedByPaymentId' | 'create'>>;
   let wiPayAdapter: jest.Mocked<Pick<WiPayAdapter, 'createPayment' | 'refundPayment' | 'verifyWebhookSignature'>>;
@@ -58,7 +66,8 @@ describe('PaymentsService', () => {
 
   beforeEach(() => {
     paymentsRepository = {
-      create: jest.fn(),
+      createOrGetByOrderId: jest.fn(),
+      claimInitiation: jest.fn(),
       findById: jest.fn(),
       findByOrderId: jest.fn(),
       findByProviderReference: jest.fn(),
@@ -83,13 +92,60 @@ describe('PaymentsService', () => {
   });
 
   describe('initiatePayment', () => {
-    it('creates a new pending payment for cash on delivery', async () => {
-      paymentsRepository.findByOrderId.mockResolvedValue(null);
+    it('creates the durable payment before claiming provider initiation', async () => {
+      const payment = buildPayment();
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
       cashOnDeliveryAdapter.createPayment.mockResolvedValue({
         providerReference: 'cod-order-1',
         status: 'PENDING',
       });
-      paymentsRepository.create.mockResolvedValue(buildPayment({ providerReference: 'cod-order-1' }));
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({
+          initiationStatus: 'ESTABLISHED',
+          providerReference: 'cod-order-1',
+        }),
+      );
+
+      await service.initiatePayment({
+        orderId: 'order-1',
+        amount: 1000,
+        currency: 'JMD',
+        provider: 'CASH_ON_DELIVERY',
+      });
+
+      expect(paymentsRepository.createOrGetByOrderId).toHaveBeenCalledWith({
+        orderId: 'order-1',
+        provider: 'CASH_ON_DELIVERY',
+        amount: 1000,
+        currency: 'JMD',
+      });
+      expect(paymentsRepository.claimInitiation).toHaveBeenCalledWith(payment.id);
+      expect(cashOnDeliveryAdapter.createPayment).toHaveBeenCalledTimes(1);
+    });
+
+    it('persists ESTABLISHED after the provider successfully creates a pending payment', async () => {
+      const payment = buildPayment();
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
+      cashOnDeliveryAdapter.createPayment.mockResolvedValue({
+        providerReference: 'cod-order-1',
+        status: 'PENDING',
+      });
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({
+          initiationStatus: 'ESTABLISHED',
+          providerReference: 'cod-order-1',
+        }),
+      );
 
       const result = await service.initiatePayment({
         orderId: 'order-1',
@@ -98,26 +154,70 @@ describe('PaymentsService', () => {
         provider: 'CASH_ON_DELIVERY',
       });
 
-      expect(result.payment.status).toBe('PENDING');
-      expect(result.redirectUrl).toBeUndefined();
-      expect(paymentsRepository.create).toHaveBeenCalledWith({
-        orderId: 'order-1',
-        provider: 'CASH_ON_DELIVERY',
-        amount: 1000,
-        currency: 'JMD',
+      expect(paymentsRepository.update).toHaveBeenCalledWith(payment.id, {
+        initiationStatus: 'ESTABLISHED',
+        status: 'PENDING',
         providerReference: 'cod-order-1',
+      });
+      expect(result.payment.status).toBe('PENDING');
+    });
+
+    it('uses the durable payment values for the provider request', async () => {
+      const payment = buildPayment({
+        amount: new Prisma.Decimal(1250),
+        currency: 'JMD',
+      });
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
+      cashOnDeliveryAdapter.createPayment.mockResolvedValue({
+        providerReference: 'cod-order-1',
+        status: 'PENDING',
+      });
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({
+          amount: new Prisma.Decimal(1250),
+          initiationStatus: 'ESTABLISHED',
+          providerReference: 'cod-order-1',
+        }),
+      );
+
+      await service.initiatePayment({
+        orderId: 'order-1',
+        amount: 9999,
+        currency: 'JMD',
+        provider: 'CASH_ON_DELIVERY',
+      });
+
+      expect(cashOnDeliveryAdapter.createPayment).toHaveBeenCalledWith({
+        orderId: 'order-1',
+        amount: 1250,
+        currency: 'JMD',
       });
     });
 
-    it('returns a redirect url for a hosted checkout provider', async () => {
-      paymentsRepository.findByOrderId.mockResolvedValue(null);
+    it('returns the hosted checkout redirect to the winning caller', async () => {
+      const payment = buildPayment({ provider: 'WIPAY' });
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
       wiPayAdapter.createPayment.mockResolvedValue({
         providerReference: 'txn-1',
         redirectUrl: 'https://tx.wipayfinancial.com/checkout/txn-1',
         status: 'PENDING',
       });
-      paymentsRepository.create.mockResolvedValue(
-        buildPayment({ provider: 'WIPAY', providerReference: 'txn-1' }),
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({
+          provider: 'WIPAY',
+          initiationStatus: 'ESTABLISHED',
+          providerReference: 'txn-1',
+        }),
       );
 
       const result = await service.initiatePayment({
@@ -130,8 +230,103 @@ describe('PaymentsService', () => {
       expect(result.redirectUrl).toBe('https://tx.wipayfinancial.com/checkout/txn-1');
     });
 
-    it('throws when the order has already been paid', async () => {
-      paymentsRepository.findByOrderId.mockResolvedValue(buildPayment({ status: 'PAID' }));
+    it('does not call the provider again for an ESTABLISHED payment', async () => {
+      const payment = buildPayment({
+        initiationStatus: 'ESTABLISHED',
+        providerReference: 'cod-order-1',
+      });
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
+      });
+
+      const result = await service.initiatePayment({
+        orderId: 'order-1',
+        amount: 1000,
+        currency: 'JMD',
+        provider: 'CASH_ON_DELIVERY',
+      });
+
+      expect(result.payment.id).toBe(payment.id);
+      expect(paymentsRepository.claimInitiation).not.toHaveBeenCalled();
+      expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+    });
+
+    it.each(['INITIATING', 'RECONCILE_REQUIRED'] as const)(
+      'does not call the provider again when initiation is %s',
+      async (initiationStatus) => {
+        const payment = buildPayment({ initiationStatus });
+
+        paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+          payment,
+          created: false,
+        });
+
+        await service.initiatePayment({
+          orderId: 'order-1',
+          amount: 1000,
+          currency: 'JMD',
+          provider: 'CASH_ON_DELIVERY',
+        });
+
+        expect(paymentsRepository.claimInitiation).not.toHaveBeenCalled();
+        expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+      },
+    );
+
+    it('re-reads the authoritative payment when another caller wins the initiation claim', async () => {
+      const payment = buildPayment();
+      const current = buildPayment({ initiationStatus: 'INITIATING' });
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(false);
+      paymentsRepository.findById.mockResolvedValue(current);
+
+      const result = await service.initiatePayment({
+        orderId: 'order-1',
+        amount: 1000,
+        currency: 'JMD',
+        provider: 'CASH_ON_DELIVERY',
+      });
+
+      expect(paymentsRepository.findById).toHaveBeenCalledWith(payment.id);
+      expect(result.payment.id).toBe(current.id);
+      expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+    });
+
+    it('throws an internal consistency error if the payment disappears after a lost claim', async () => {
+      const payment = buildPayment();
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(false);
+      paymentsRepository.findById.mockResolvedValue(null);
+
+      await expect(
+        service.initiatePayment({
+          orderId: 'order-1',
+          amount: 1000,
+          currency: 'JMD',
+          provider: 'CASH_ON_DELIVERY',
+        }),
+      ).rejects.toThrow('Internal consistency error');
+
+      expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+    });
+
+    it('rejects an attempt to switch providers for an existing payment', async () => {
+      const payment = buildPayment({ provider: 'WIPAY' });
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
+      });
 
       await expect(
         service.initiatePayment({
@@ -141,41 +336,123 @@ describe('PaymentsService', () => {
           provider: 'CASH_ON_DELIVERY',
         }),
       ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(paymentsRepository.claimInitiation).not.toHaveBeenCalled();
+      expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+      expect(wiPayAdapter.createPayment).not.toHaveBeenCalled();
     });
 
-    it('updates an existing unpaid payment when retried', async () => {
-      const existing = buildPayment({ status: 'PENDING' });
-      paymentsRepository.findByOrderId.mockResolvedValue(existing);
-      cashOnDeliveryAdapter.createPayment.mockResolvedValue({
-        providerReference: 'cod-order-1',
-        status: 'PENDING',
-      });
-      paymentsRepository.update.mockResolvedValue(buildPayment({ providerReference: 'cod-order-1' }));
+    it('throws when the durable payment has already been paid', async () => {
+      const payment = buildPayment({ status: 'PAID' });
 
-      await service.initiatePayment({
-        orderId: 'order-1',
-        amount: 1000,
-        currency: 'JMD',
-        provider: 'CASH_ON_DELIVERY',
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: false,
       });
 
-      expect(paymentsRepository.update).toHaveBeenCalledWith(existing.id, {
+      await expect(
+        service.initiatePayment({
+          orderId: 'order-1',
+          amount: 1000,
+          currency: 'JMD',
+          provider: 'CASH_ON_DELIVERY',
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(paymentsRepository.claimInitiation).not.toHaveBeenCalled();
+      expect(cashOnDeliveryAdapter.createPayment).not.toHaveBeenCalled();
+    });
+
+    it('does not mark RECONCILE_REQUIRED when persistence fails after provider success', async () => {
+      const payment = buildPayment({ provider: 'WIPAY' });
+      const persistenceError = new Error('database write failed');
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
+      wiPayAdapter.createPayment.mockResolvedValue({
+        providerReference: 'txn-1',
+        redirectUrl: 'https://tx.wipayfinancial.com/checkout/txn-1',
         status: 'PENDING',
-        providerReference: 'cod-order-1',
+      });
+      paymentsRepository.update.mockRejectedValue(persistenceError);
+
+      await expect(
+        service.initiatePayment({
+          orderId: 'order-1',
+          amount: 1000,
+          currency: 'JMD',
+          provider: 'WIPAY',
+        }),
+      ).rejects.toBe(persistenceError);
+
+      expect(paymentsRepository.update).toHaveBeenCalledTimes(1);
+      expect(paymentsRepository.update).toHaveBeenCalledWith(payment.id, {
+        initiationStatus: 'ESTABLISHED',
+        status: 'PENDING',
+        providerReference: 'txn-1',
+      });
+
+      expect(paymentsRepository.update).not.toHaveBeenCalledWith(
+        payment.id,
+        expect.objectContaining({
+          initiationStatus: 'RECONCILE_REQUIRED',
+        }),
+      );
+    });
+
+    it('marks initiation RECONCILE_REQUIRED and rethrows when provider creation throws', async () => {
+      const payment = buildPayment({ provider: 'WIPAY' });
+      const providerError = new Error('provider request timed out');
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
+      wiPayAdapter.createPayment.mockRejectedValue(providerError);
+      paymentsRepository.update.mockResolvedValue(
+        buildPayment({
+          provider: 'WIPAY',
+          initiationStatus: 'RECONCILE_REQUIRED',
+        }),
+      );
+
+      await expect(
+        service.initiatePayment({
+          orderId: 'order-1',
+          amount: 1000,
+          currency: 'JMD',
+          provider: 'WIPAY',
+        }),
+      ).rejects.toBe(providerError);
+
+      expect(paymentsRepository.update).toHaveBeenCalledWith(payment.id, {
+        initiationStatus: 'RECONCILE_REQUIRED',
       });
     });
 
-    it('emits payment.confirmed when the adapter reports the payment as already paid', async () => {
-      paymentsRepository.findByOrderId.mockResolvedValue(null);
+    it('persists PAID and emits payment.confirmed when the provider reports paid', async () => {
+      const payment = buildPayment();
+
+      paymentsRepository.createOrGetByOrderId.mockResolvedValue({
+        payment,
+        created: true,
+      });
+      paymentsRepository.claimInitiation.mockResolvedValue(true);
       cashOnDeliveryAdapter.createPayment.mockResolvedValue({
         providerReference: 'cod-order-1',
         status: 'PAID',
       });
-      paymentsRepository.create.mockResolvedValue(
-        buildPayment({ providerReference: 'cod-order-1', status: 'PENDING' }),
-      );
       paymentsRepository.update.mockResolvedValue(
-        buildPayment({ providerReference: 'cod-order-1', status: 'PAID' }),
+        buildPayment({
+          initiationStatus: 'ESTABLISHED',
+          providerReference: 'cod-order-1',
+          status: 'PAID',
+          paidAt: new Date(),
+        }),
       );
 
       await service.initiatePayment({
@@ -185,9 +462,18 @@ describe('PaymentsService', () => {
         provider: 'CASH_ON_DELIVERY',
       });
 
+      expect(paymentsRepository.update).toHaveBeenCalledWith(payment.id, {
+        initiationStatus: 'ESTABLISHED',
+        status: 'PAID',
+        providerReference: 'cod-order-1',
+        paidAt: expect.any(Date) as Date,
+      });
       expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         'payment.confirmed',
-        expect.objectContaining({ customerId: 'user-1', orderId: 'order-1' }),
+        expect.objectContaining({
+          customerId: 'user-1',
+          orderId: 'order-1',
+        }),
       );
     });
   });
