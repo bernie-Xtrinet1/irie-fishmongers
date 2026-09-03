@@ -301,14 +301,33 @@ export class CheckoutCoordinatorService {
       new OrderPlacedEvent(customerId, order.id, total.toFixed(2), itemCount),
     );
 
-    const { payment, redirectUrl } = await this.paymentsService.initiatePayment({
-      orderId: order.id,
-      amount: total,
-      currency: plan.currency,
-      provider: dto.paymentMethod,
-    });
+    try {
+      const { payment, redirectUrl } = await this.paymentsService.initiatePayment({
+        orderId: order.id,
+        amount: total,
+        currency: plan.currency,
+        provider: dto.paymentMethod,
+      });
 
-    return { ok: true, order: this.ordersService.toOrderResponseWithPayment(order, payment, redirectUrl) };
+      return { ok: true, order: this.ordersService.toOrderResponseWithPayment(order, payment, redirectUrl) };
+    } catch (paymentError) {
+      const payment = await this.paymentsService.getByOrderId(order.id);
+
+      if (payment?.initiationStatus !== 'RECONCILE_REQUIRED') {
+        throw paymentError;
+      }
+
+      this.logger.warn('Payment initiation requires reconciliation after a committed checkout', {
+        orderId: order.id,
+        paymentId: payment.id,
+        message: sanitizeErrorMessage(
+          CheckoutCoordinatorService.errorMessage(paymentError),
+          MAX_LOG_MESSAGE_LENGTH,
+        ),
+      });
+
+      return { ok: true, order: this.ordersService.toOrderResponseWithPayment(order, payment) };
+    }
   }
 
   private async markAttemptFailed(

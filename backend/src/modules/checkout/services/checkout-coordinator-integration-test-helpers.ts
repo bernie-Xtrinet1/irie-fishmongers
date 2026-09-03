@@ -130,6 +130,7 @@ export interface RealCoordinatorHandles {
   syncStateRepository: CartReservationSyncStateRepository;
   eventEmitter: EventEmitter2;
   paymentsService: PaymentsService;
+  cashOnDeliveryAdapter: CashOnDeliveryAdapter;
 }
 
 // Builds a fully real CheckoutCoordinatorService and its dependencies -
@@ -146,11 +147,12 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
   const eventEmitter = new EventEmitter2();
   const syncStateRepository = new CartReservationSyncStateRepository(prisma);
 
+  const cashOnDeliveryAdapter = new CashOnDeliveryAdapter();
   const paymentsService = new PaymentsService(
     new PaymentsRepository(prisma),
     new RefundsRepository(prisma),
     new WiPayAdapter({ get: () => undefined } as unknown as ConfigService),
-    new CashOnDeliveryAdapter(),
+    cashOnDeliveryAdapter,
     eventEmitter,
   );
   const vendorPermissionsService = new VendorPermissionsService(
@@ -208,6 +210,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     syncStateRepository,
     eventEmitter,
     paymentsService,
+    cashOnDeliveryAdapter,
   };
 }
 
