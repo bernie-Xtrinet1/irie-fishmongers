@@ -117,6 +117,64 @@ export class PaymentsRepository {
     });
   }
 
+  async claimForRecovery(
+    id: string,
+    now: Date,
+    staleBefore: Date,
+  ): Promise<PaymentWithOrder | null> {
+    const result = await this.prisma.payment.updateMany({
+      where: {
+        id,
+        provider: 'WIPAY',
+        providerReference: { not: null },
+        OR: [
+          { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+          {
+            initiationStatus: 'RECONCILE_REQUIRED',
+            status: { in: ['PENDING', 'FAILED'] },
+          },
+        ],
+        AND: [
+          {
+            OR: [
+              { recoveryStartedAt: null },
+              { recoveryStartedAt: { lt: staleBefore } },
+            ],
+          },
+        ],
+      },
+      data: {
+        recoveryStartedAt: now,
+        recoveryAttemptCount: { increment: 1 },
+      },
+    });
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    return this.prisma.payment.findUniqueOrThrow({
+      where: { id },
+      include: paymentWithOrder.include,
+    });
+  }
+
+  async releaseRecoveryClaimIfCurrent(
+    id: string,
+    claimedRecoveryAttemptCount: number,
+  ): Promise<boolean> {
+    const result = await this.prisma.payment.updateMany({
+      where: {
+        id,
+        recoveryAttemptCount: claimedRecoveryAttemptCount,
+        recoveryStartedAt: { not: null },
+      },
+      data: { recoveryStartedAt: null },
+    });
+
+    return result.count === 1;
+  }
+
   async transitionToPaid(
     id: string,
   ): Promise<{ payment: PaymentWithOrder | null; transitioned: boolean }> {

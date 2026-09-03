@@ -8,6 +8,7 @@ describe('PaymentsRepository', () => {
     payment: {
       create: jest.Mock;
       findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       findMany: jest.Mock;
       updateMany: jest.Mock;
     };
@@ -19,6 +20,7 @@ describe('PaymentsRepository', () => {
       payment: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         findMany: jest.fn(),
         updateMany: jest.fn(),
       },
@@ -47,6 +49,8 @@ describe('PaymentsRepository', () => {
       providerReference: null,
       failureReason: null,
       paidAt: null,
+      recoveryAttemptCount: 0,
+      recoveryStartedAt: null,
       createdAt: new Date('2026-09-03T00:00:00.000Z'),
       updatedAt: new Date('2026-09-03T00:00:00.000Z'),
       order: { customerId: 'customer-1' },
@@ -154,6 +158,139 @@ describe('PaymentsRepository', () => {
       );
 
       expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('claimForRecovery', () => {
+    const now = new Date('2026-09-03T02:00:00.000Z');
+    const staleBefore = new Date('2026-09-03T01:55:00.000Z');
+
+    it('atomically claims an eligible ESTABLISHED WiPay payment', async () => {
+      const claimed = buildPayment({
+        initiationStatus: 'ESTABLISHED',
+        providerReference: 'wipay-ref-1',
+        recoveryAttemptCount: 1,
+        recoveryStartedAt: now,
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUniqueOrThrow.mockResolvedValue(claimed);
+
+      await expect(
+        repository.claimForRecovery('payment-1', now, staleBefore),
+      ).resolves.toEqual(claimed);
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          provider: 'WIPAY',
+          providerReference: { not: null },
+          OR: [
+            { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+            {
+              initiationStatus: 'RECONCILE_REQUIRED',
+              status: { in: ['PENDING', 'FAILED'] },
+            },
+          ],
+          AND: [
+            {
+              OR: [
+                { recoveryStartedAt: null },
+                { recoveryStartedAt: { lt: staleBefore } },
+              ],
+            },
+          ],
+        },
+        data: {
+          recoveryStartedAt: now,
+          recoveryAttemptCount: { increment: 1 },
+        },
+      });
+
+      expect(prisma.payment.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'payment-1' },
+        include: { order: { select: { customerId: true } } },
+      });
+    });
+
+    it('returns null when another worker wins the claim', async () => {
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        repository.claimForRecovery('payment-1', now, staleBefore),
+      ).resolves.toBeNull();
+
+      expect(prisma.payment.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('permits stale RECONCILE_REQUIRED payments with a provider reference to be reclaimed', async () => {
+      const claimed = buildPayment({
+        initiationStatus: 'RECONCILE_REQUIRED',
+        providerReference: 'wipay-ref-2',
+        recoveryAttemptCount: 2,
+        recoveryStartedAt: now,
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUniqueOrThrow.mockResolvedValue(claimed);
+
+      await expect(
+        repository.claimForRecovery('payment-1', now, staleBefore),
+      ).resolves.toEqual(claimed);
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          provider: 'WIPAY',
+          providerReference: { not: null },
+          OR: [
+            { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+            {
+              initiationStatus: 'RECONCILE_REQUIRED',
+              status: { in: ['PENDING', 'FAILED'] },
+            },
+          ],
+          AND: [
+            {
+              OR: [
+                { recoveryStartedAt: null },
+                { recoveryStartedAt: { lt: staleBefore } },
+              ],
+            },
+          ],
+        },
+        data: {
+          recoveryStartedAt: now,
+          recoveryAttemptCount: { increment: 1 },
+        },
+      });
+    });
+  });
+
+  describe('releaseRecoveryClaimIfCurrent', () => {
+    it('releases only the currently fenced recovery attempt', async () => {
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        repository.releaseRecoveryClaimIfCurrent('payment-1', 3),
+      ).resolves.toBe(true);
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          recoveryAttemptCount: 3,
+          recoveryStartedAt: { not: null },
+        },
+        data: { recoveryStartedAt: null },
+      });
+    });
+
+    it('does not release a newer recovery attempt with a stale fence', async () => {
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        repository.releaseRecoveryClaimIfCurrent('payment-1', 2),
+      ).resolves.toBe(false);
     });
   });
 
