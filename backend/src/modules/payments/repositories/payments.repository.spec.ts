@@ -224,4 +224,44 @@ describe('PaymentsRepository', () => {
       expect(sums.WIPAY.toNumber()).toBe(0);
     });
   });
+
+  describe('findRecoveryCandidates', () => {
+    it('finds a stale WiPay initiation-recovery candidate and excludes it after the cutoff', async () => {
+      const existing = await repository.findByOrderId(orderId);
+      expect(existing).not.toBeNull();
+
+      const staleAt = new Date('2026-01-01T00:00:00.000Z');
+      const staleBefore = new Date('2026-01-02T00:00:00.000Z');
+
+      try {
+        await prisma.payment.update({
+          where: { id: existing!.id },
+          data: {
+            provider: 'WIPAY',
+            initiationStatus: 'RECONCILE_REQUIRED',
+            updatedAt: staleAt,
+          },
+        });
+
+        const candidates = await repository.findRecoveryCandidates(staleBefore, 10);
+
+        expect(candidates.map((payment) => payment.id)).toContain(existing!.id);
+
+        const beforeCandidateAge = await repository.findRecoveryCandidates(
+          new Date('2025-12-31T23:59:59.000Z'),
+          10,
+        );
+
+        expect(beforeCandidateAge.map((payment) => payment.id)).not.toContain(existing!.id);
+      } finally {
+        await prisma.payment.update({
+          where: { id: existing!.id },
+          data: {
+            provider: existing!.provider,
+            initiationStatus: existing!.initiationStatus,
+          },
+        });
+      }
+    });
+  });
 });
