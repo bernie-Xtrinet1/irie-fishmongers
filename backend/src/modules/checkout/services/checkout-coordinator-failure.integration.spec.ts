@@ -127,33 +127,56 @@ describe('CheckoutCoordinatorService failure windows / event emission (real Post
   });
 
   describe('failure window E - payment initiation throws after durable commit', () => {
-    it('order and attempt remain COMMITTED; checkout() itself rejects - the documented Phase-E gap, not fixed here', async () => {
+    it('returns the committed order with RECONCILE_REQUIRED and same-key replay never reinitiates payment', async () => {
       const scenario = await seedReadyCheckout(fixture, handles);
       const idempotencyKey = randomUUID();
-      const spy = jest
-        .spyOn(handles.paymentsService, 'initiatePayment')
+      const providerSpy = jest
+        .spyOn(handles.cashOnDeliveryAdapter, 'createPayment')
         .mockRejectedValueOnce(new Error('simulated payment gateway outage'));
 
-      await expect(
-        handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date()),
-      ).rejects.toThrow('simulated payment gateway outage');
-      spy.mockRestore();
+      try {
+        const first = await handles.coordinator.checkout(
+          scenario.customerId,
+          idempotencyKey,
+          checkoutDto,
+          new Date(),
+        );
 
-      const attempt = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { idempotencyKey } });
-      expect(attempt.status).toBe('COMMITTED');
-      const order = await prisma.order.findUnique({ where: { id: attempt.orderId ?? '' } });
-      expect(order).not.toBeNull();
+        expect(first.ok).toBe(true);
+        expect(providerSpy).toHaveBeenCalledTimes(1);
 
-      // No payment record exists - the order is durably committed but
-      // unpaid, exactly the gap ADR-007 documents as deferred to Phase E.
-      const payments = await prisma.payment.findMany({ where: { orderId: attempt.orderId ?? '' } });
-      expect(payments).toHaveLength(0);
+        const attempt = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { idempotencyKey } });
+        expect(attempt.status).toBe('COMMITTED');
 
-      // A same-key retry now finds ALREADY_COMMITTED and returns the order
-      // successfully without ever repairing the missing payment - also
-      // documented Phase-E territory, not addressed here.
-      const retry = await handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date());
-      expect(retry).toMatchObject({ ok: true });
+        const order = await prisma.order.findUnique({ where: { id: attempt.orderId ?? '' } });
+        expect(order).not.toBeNull();
+
+        const payments = await prisma.payment.findMany({ where: { orderId: attempt.orderId ?? '' } });
+        expect(payments).toHaveLength(1);
+        expect(payments[0]?.initiationStatus).toBe('RECONCILE_REQUIRED');
+
+        if (first.ok) {
+          expect(first.order.payment?.initiationStatus).toBe('RECONCILE_REQUIRED');
+          expect(first.order.paymentRedirectUrl).toBeUndefined();
+        }
+
+        const retry = await handles.coordinator.checkout(
+          scenario.customerId,
+          idempotencyKey,
+          checkoutDto,
+          new Date(),
+        );
+
+        expect(retry).toMatchObject({ ok: true });
+        expect(providerSpy).toHaveBeenCalledTimes(1);
+
+        if (retry.ok) {
+          expect(retry.order.payment?.initiationStatus).toBe('RECONCILE_REQUIRED');
+          expect(retry.order.paymentRedirectUrl).toBeUndefined();
+        }
+      } finally {
+        providerSpy.mockRestore();
+      }
     });
   });
 });

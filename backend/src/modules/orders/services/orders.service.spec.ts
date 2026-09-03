@@ -125,6 +125,7 @@ function buildPaymentResponse(): {
   orderId: string;
   provider: 'CASH_ON_DELIVERY';
   status: 'PENDING';
+  initiationStatus: 'ESTABLISHED';
   amount: string;
   currency: string;
   paidAt: Date | null;
@@ -135,6 +136,7 @@ function buildPaymentResponse(): {
     orderId: 'order-1',
     provider: 'CASH_ON_DELIVERY',
     status: 'PENDING',
+    initiationStatus: 'ESTABLISHED',
     amount: '1000',
     currency: 'JMD',
     paidAt: null,

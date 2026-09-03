@@ -266,6 +266,7 @@ export class PaymentsService {
       orderId: payment.orderId,
       provider: payment.provider,
       status: payment.status,
+      initiationStatus: payment.initiationStatus,
       amount: payment.amount.toString(),
       currency: payment.currency,
       paidAt: payment.paidAt,

@@ -32,7 +32,7 @@ describe('CheckoutCoordinatorService', () => {
     Pick<OrdersService, 'prepareCheckout' | 'createOrderInTransaction' | 'getCustomerOrderById' | 'toOrderResponseWithPayment'>
   >;
   let prisma: { $transaction: jest.Mock };
-  let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment'>>;
+  let paymentsService: jest.Mocked<Pick<PaymentsService, 'initiatePayment' | 'getByOrderId'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let service: CheckoutCoordinatorService;
 
@@ -79,6 +79,7 @@ describe('CheckoutCoordinatorService', () => {
     prisma = { $transaction: jest.fn().mockImplementation((callback: (tx: unknown) => unknown) => callback({})) };
     paymentsService = {
       initiatePayment: jest.fn().mockResolvedValue({ payment: { id: 'payment-1' }, redirectUrl: undefined }),
+      getByOrderId: jest.fn().mockResolvedValue(null),
     };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
 
@@ -147,6 +148,78 @@ describe('CheckoutCoordinatorService', () => {
       });
       expect(checkoutAttempt.createOrResume).not.toHaveBeenCalled();
       expect(checkoutReservationState.checkoutMark).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Phase E.5 payment recovery after durable commit', () => {
+    const reconciliationPayment = {
+      id: 'payment-1',
+      orderId: 'order-1',
+      provider: 'WIPAY' as const,
+      status: 'PENDING' as const,
+      initiationStatus: 'RECONCILE_REQUIRED' as const,
+      amount: '1000',
+      currency: 'JMD',
+      paidAt: null,
+      createdAt: new Date('2026-08-10T12:00:00.000Z'),
+    };
+
+    it('preserves the normal successful payment response including redirectUrl', async () => {
+      const payment = {
+        ...reconciliationPayment,
+        initiationStatus: 'ESTABLISHED' as const,
+      };
+      paymentsService.initiatePayment.mockResolvedValue({
+        payment,
+        redirectUrl: 'https://pay.example.test/redirect',
+      });
+
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+
+      expect(result).toEqual({ ok: true, order: { id: 'order-1' } });
+      expect(ordersService.toOrderResponseWithPayment).toHaveBeenCalledWith(
+        expect.anything(),
+        payment,
+        'https://pay.example.test/redirect',
+      );
+      expect(paymentsService.getByOrderId).not.toHaveBeenCalled();
+    });
+
+    it('returns the committed order when the durable payment requires reconciliation', async () => {
+      const providerError = new Error('simulated payment gateway outage');
+      paymentsService.initiatePayment.mockRejectedValue(providerError);
+      paymentsService.getByOrderId.mockResolvedValue(reconciliationPayment);
+
+      const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
+
+      expect(result).toEqual({ ok: true, order: { id: 'order-1' } });
+      expect(paymentsService.getByOrderId).toHaveBeenCalledWith('order-1');
+      expect(ordersService.toOrderResponseWithPayment).toHaveBeenCalledWith(
+        expect.anything(),
+        reconciliationPayment,
+      );
+      expect(ordersService.toOrderResponseWithPayment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        reconciliationPayment,
+        expect.anything(),
+      );
+      expect(paymentsService.initiatePayment).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['no durable payment', null],
+      ['INITIATING', { ...reconciliationPayment, initiationStatus: 'INITIATING' as const }],
+      ['ESTABLISHED', { ...reconciliationPayment, initiationStatus: 'ESTABLISHED' as const }],
+      ['FAILED', { ...reconciliationPayment, initiationStatus: 'FAILED' as const }],
+    ])('rethrows the original initiation error for %s', async (_label, durablePayment) => {
+      const providerError = new Error('original payment error');
+      paymentsService.initiatePayment.mockRejectedValue(providerError);
+      paymentsService.getByOrderId.mockResolvedValue(durablePayment);
+
+      await expect(service.checkout('user-1', 'key-1', checkoutDto, now)).rejects.toBe(providerError);
+
+      expect(paymentsService.getByOrderId).toHaveBeenCalledWith('order-1');
+      expect(ordersService.toOrderResponseWithPayment).not.toHaveBeenCalled();
     });
   });
 

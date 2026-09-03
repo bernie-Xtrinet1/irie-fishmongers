@@ -11,6 +11,7 @@ const payment: PaymentResponseEntity = {
   orderId: 'order-1',
   provider: 'CASH_ON_DELIVERY',
   status: 'PAID',
+  initiationStatus: 'ESTABLISHED',
   amount: '1000',
   currency: 'JMD',
   paidAt: new Date(),

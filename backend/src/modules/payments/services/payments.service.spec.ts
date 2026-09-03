@@ -487,6 +487,7 @@ describe('PaymentsService', () => {
       paymentsRepository.findByOrderId.mockResolvedValue(buildPayment());
       const result = await service.getByOrderId('order-1');
       expect(result?.id).toBe('payment-1');
+      expect(result?.initiationStatus).toBe('NOT_STARTED');
     });
 
     it('returns null when no payment exists for the order', async () => {
