@@ -104,6 +104,19 @@ export class PaymentsRepository {
     return result.count === 1;
   }
 
+  findRecoveryCandidates(staleBefore: Date, limit: number): Promise<PaymentWithOrder[]> {
+    return this.prisma.payment.findMany({
+      where: {
+        provider: 'WIPAY',
+        initiationStatus: { in: ['INITIATING', 'RECONCILE_REQUIRED'] },
+        updatedAt: { lte: staleBefore },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+      include: paymentWithOrder.include,
+    });
+  }
+
   async transitionToPaid(
     id: string,
   ): Promise<{ payment: PaymentWithOrder | null; transitioned: boolean }> {

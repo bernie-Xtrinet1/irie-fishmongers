@@ -4,7 +4,14 @@ import { PrismaService } from '../../../database/prisma.service';
 import { PaymentsRepository, PaymentWithOrder } from './payments.repository';
 
 describe('PaymentsRepository', () => {
-  let prisma: { payment: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock } };
+  let prisma: {
+    payment: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      updateMany: jest.Mock;
+    };
+  };
   let repository: PaymentsRepository;
 
   beforeEach(() => {
@@ -12,6 +19,7 @@ describe('PaymentsRepository', () => {
       payment: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        findMany: jest.fn(),
         updateMany: jest.fn(),
       },
     };
@@ -103,6 +111,50 @@ describe('PaymentsRepository', () => {
     await expect(repository.createOrGetByOrderId(input)).rejects.toThrow(
       'Internal consistency error',
     );
+  });
+
+  describe('findRecoveryCandidates', () => {
+    it('finds only stale WiPay initiation-recovery candidates in oldest-first order', async () => {
+      const staleBefore = new Date('2026-09-03T01:00:00.000Z');
+      const candidates = [
+        buildPayment({
+          id: 'payment-oldest',
+          initiationStatus: 'INITIATING',
+          updatedAt: new Date('2026-09-02T23:00:00.000Z'),
+        }),
+        buildPayment({
+          id: 'payment-newer',
+          initiationStatus: 'RECONCILE_REQUIRED',
+          updatedAt: new Date('2026-09-03T00:30:00.000Z'),
+        }),
+      ];
+
+      prisma.payment.findMany.mockResolvedValue(candidates);
+
+      await expect(repository.findRecoveryCandidates(staleBefore, 25)).resolves.toEqual(candidates);
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: {
+          provider: 'WIPAY',
+          initiationStatus: { in: ['INITIATING', 'RECONCILE_REQUIRED'] },
+          updatedAt: { lte: staleBefore },
+        },
+        orderBy: { updatedAt: 'asc' },
+        take: 25,
+        include: { order: { select: { customerId: true } } },
+      });
+    });
+
+    it('is read-only and does not mutate candidate state', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+
+      await repository.findRecoveryCandidates(
+        new Date('2026-09-03T01:00:00.000Z'),
+        10,
+      );
+
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    });
   });
 
   describe('transitionToPaid', () => {
