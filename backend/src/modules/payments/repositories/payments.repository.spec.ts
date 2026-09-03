@@ -264,4 +264,122 @@ describe('PaymentsRepository', () => {
       }
     });
   });
+
+  describe('recovery claim fencing', () => {
+    it('allows one worker to claim, permits stale reclaim, and fences stale release', async () => {
+      const existing = await repository.findByOrderId(orderId);
+      expect(existing).not.toBeNull();
+
+      const paymentId = existing!.id;
+      const firstNow = new Date('2026-09-03T10:00:00.000Z');
+      const firstStaleBefore = new Date('2026-09-03T09:55:00.000Z');
+      const secondNow = new Date('2026-09-03T10:10:00.000Z');
+      const secondStaleBefore = new Date('2026-09-03T10:05:00.000Z');
+
+      try {
+        await prisma.payment.update({
+          where: { id: paymentId },
+          data: {
+            provider: 'WIPAY',
+            status: 'PENDING',
+            initiationStatus: 'ESTABLISHED',
+            providerReference: `wipay-recovery-${randomUUID()}`,
+            recoveryAttemptCount: 0,
+            recoveryStartedAt: null,
+          },
+        });
+
+        const competingClaims = await Promise.all([
+          repository.claimForRecovery(
+            paymentId,
+            firstNow,
+            firstStaleBefore,
+          ),
+          repository.claimForRecovery(
+            paymentId,
+            firstNow,
+            firstStaleBefore,
+          ),
+        ]);
+
+        const winners = competingClaims.filter(
+          (payment): payment is NonNullable<typeof payment> => payment !== null,
+        );
+
+        expect(winners).toHaveLength(1);
+        const winner = winners[0];
+        expect(winner).toBeDefined();
+        expect(winner!.recoveryAttemptCount).toBe(1);
+        expect(winner!.recoveryStartedAt?.getTime()).toBe(firstNow.getTime());
+
+        await expect(
+          repository.claimForRecovery(
+            paymentId,
+            new Date('2026-09-03T10:01:00.000Z'),
+            firstStaleBefore,
+          ),
+        ).resolves.toBeNull();
+
+        const staleReclaim = await repository.claimForRecovery(
+          paymentId,
+          secondNow,
+          secondStaleBefore,
+        );
+
+        expect(staleReclaim).not.toBeNull();
+        expect(staleReclaim!.recoveryAttemptCount).toBe(2);
+        expect(staleReclaim!.recoveryStartedAt?.getTime()).toBe(
+          secondNow.getTime(),
+        );
+
+        await expect(
+          repository.releaseRecoveryClaimIfCurrent(paymentId, 1),
+        ).resolves.toBe(false);
+
+        const afterStaleRelease = await repository.findById(paymentId);
+        expect(afterStaleRelease!.recoveryStartedAt?.getTime()).toBe(
+          secondNow.getTime(),
+        );
+
+        await expect(
+          repository.releaseRecoveryClaimIfCurrent(paymentId, 2),
+        ).resolves.toBe(true);
+
+        const afterCurrentRelease = await repository.findById(paymentId);
+        expect(afterCurrentRelease!.recoveryStartedAt).toBeNull();
+
+        await prisma.payment.update({
+          where: { id: paymentId },
+          data: {
+            status: 'PAID',
+            initiationStatus: 'RECONCILE_REQUIRED',
+            recoveryStartedAt: null,
+          },
+        });
+
+        await expect(
+          repository.claimForRecovery(
+            paymentId,
+            new Date('2026-09-03T10:20:00.000Z'),
+            new Date('2026-09-03T10:15:00.000Z'),
+          ),
+        ).resolves.toBeNull();
+      } finally {
+        await prisma.payment.update({
+          where: { id: paymentId },
+          data: {
+            provider: existing!.provider,
+            status: existing!.status,
+            initiationStatus: existing!.initiationStatus,
+            providerReference: existing!.providerReference,
+            failureReason: existing!.failureReason,
+            paidAt: existing!.paidAt,
+            recoveryAttemptCount: 0,
+            recoveryStartedAt: null,
+          },
+        });
+      }
+    });
+  });
+
 });

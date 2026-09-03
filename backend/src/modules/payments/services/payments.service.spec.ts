@@ -25,6 +25,8 @@ function buildPayment(overrides: Partial<PaymentWithOrder> = {}): PaymentWithOrd
     providerReference: null,
     failureReason: null,
     paidAt: null,
+    recoveryAttemptCount: 0,
+    recoveryStartedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     order: { customerId: 'user-1' },

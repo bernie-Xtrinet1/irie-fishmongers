@@ -671,11 +671,13 @@ model Payment {
   initiationStatus  PaymentInitiationStatus @default(NOT_STARTED)
   amount            Decimal             @db.Decimal(10, 2)
   currency          String              @default("JMD")
-  providerReference String?
-  failureReason     String?
-  paidAt            DateTime?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  providerReference     String?
+  failureReason         String?
+  paidAt                DateTime?
+  recoveryAttemptCount  Int                 @default(0)
+  recoveryStartedAt     DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   refunds Refund[]
