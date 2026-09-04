@@ -33,8 +33,8 @@ param adminFqdn = 'ca-irie-admin.agreeablerock-458effa7.eastus2.azurecontainerap
 // security preference.
 param refreshCookieSameSite = 'none'
 
-// Backend runs continuously (health always green + @Cron scheduler active).
-param enableScheduler = 'true'
+// Backend remains continuously available, but scheduled jobs are temporarily disabled during controlled Phase F payment-reconciliation activation.
+param enableScheduler = 'false'
 
 // Transactional email is DISABLED for staging/UAT: no approved email-provider
 // credentials are currently available (SendGrid account not active). This makes
