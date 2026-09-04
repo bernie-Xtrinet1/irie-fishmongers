@@ -16,6 +16,7 @@ import { RefundResponseEntity } from '../entities/refund-response.entity';
 import {
   PaymentCreateInput,
   PaymentProviderAdapter,
+  PaymentVerifyResult,
 } from '../interfaces/payment-provider.interface';
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
@@ -206,6 +207,19 @@ export class PaymentsService {
       throw new BadRequestException('Refund amount exceeds the remaining refundable balance');
     }
     return PaymentsService.toRefundResponse(refund);
+  }
+
+  async verifyProviderPayment(
+    provider: PaymentProviderName,
+    providerReference: string,
+  ): Promise<PaymentVerifyResult> {
+    return this.getAdapter(provider).verifyPayment(providerReference);
+  }
+
+  async emitRecoveredPaymentConfirmed(
+    payment: PaymentWithOrder,
+  ): Promise<void> {
+    await this.emitPaymentConfirmed(payment);
   }
 
   private async executeRefund(

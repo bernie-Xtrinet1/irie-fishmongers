@@ -6,6 +6,8 @@ import { CashOnDeliveryAdapter } from './providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from './providers/wipay.adapter';
 import { PaymentsRepository } from './repositories/payments.repository';
 import { RefundsRepository } from './repositories/refunds.repository';
+import { PaymentReconciliationBatchService } from './services/payment-reconciliation-batch.service';
+import { PaymentReconciliationService } from './services/payment-reconciliation.service';
 import { PaymentsService } from './services/payments.service';
 
 @Module({
@@ -13,11 +15,18 @@ import { PaymentsService } from './services/payments.service';
   controllers: [PaymentsController],
   providers: [
     PaymentsService,
+    PaymentReconciliationService,
+    PaymentReconciliationBatchService,
     PaymentsRepository,
     RefundsRepository,
     WiPayAdapter,
     CashOnDeliveryAdapter,
   ],
-  exports: [PaymentsService, PaymentsRepository],
+  exports: [
+    PaymentsService,
+    PaymentReconciliationService,
+    PaymentReconciliationBatchService,
+    PaymentsRepository,
+  ],
 })
 export class PaymentsModule {}

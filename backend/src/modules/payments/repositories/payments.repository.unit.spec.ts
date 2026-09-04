@@ -161,6 +161,268 @@ describe('PaymentsRepository', () => {
     });
   });
 
+  describe('findAutomaticRecoveryCandidates', () => {
+    it('finds only stale automatically verifiable WiPay payments with provider references', async () => {
+      const staleBefore = new Date('2026-09-03T02:00:00.000Z');
+      const candidates = [
+        buildPayment({
+          id: 'payment-established',
+          initiationStatus: 'ESTABLISHED',
+          status: 'PENDING',
+          providerReference: 'wipay-ref-1',
+        }),
+        buildPayment({
+          id: 'payment-reconcile',
+          initiationStatus: 'RECONCILE_REQUIRED',
+          status: 'FAILED',
+          providerReference: 'wipay-ref-2',
+        }),
+      ];
+
+      prisma.payment.findMany.mockResolvedValue(candidates);
+
+      await expect(
+        repository.findAutomaticRecoveryCandidates(staleBefore, 20),
+      ).resolves.toEqual(candidates);
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: {
+          provider: 'WIPAY',
+          providerReference: { not: null },
+          updatedAt: { lte: staleBefore },
+          OR: [
+            { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+            {
+              initiationStatus: 'RECONCILE_REQUIRED',
+              status: { in: ['PENDING', 'FAILED'] },
+            },
+          ],
+        },
+        orderBy: { updatedAt: 'asc' },
+        take: 20,
+        include: { order: { select: { customerId: true } } },
+      });
+    });
+
+    it('is read-only', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+
+      await repository.findAutomaticRecoveryCandidates(
+        new Date('2026-09-03T02:00:00.000Z'),
+        10,
+      );
+
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('applyRecoveryVerificationIfCurrent', () => {
+    const now = new Date('2026-09-03T03:00:00.000Z');
+
+    it('atomically applies PAID and reports this worker as the PAID transition winner', async () => {
+      const payment = buildPayment({
+        status: 'PAID',
+        initiationStatus: 'ESTABLISHED',
+        providerReference: 'wipay-ref-1',
+        recoveryAttemptCount: 3,
+        recoveryStartedAt: null,
+        paidAt: now,
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.applyRecoveryVerificationIfCurrent(
+          'payment-1',
+          3,
+          'wipay-ref-1',
+          'PAID',
+          now,
+        ),
+      ).resolves.toEqual({
+        payment,
+        applied: true,
+        transitionedToPaid: true,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          provider: 'WIPAY',
+          providerReference: 'wipay-ref-1',
+          recoveryAttemptCount: 3,
+          recoveryStartedAt: { not: null },
+          OR: [
+            { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+            {
+              initiationStatus: 'RECONCILE_REQUIRED',
+              status: { in: ['PENDING', 'FAILED'] },
+            },
+          ],
+        },
+        data: {
+          initiationStatus: 'ESTABLISHED',
+          status: 'PAID',
+          recoveryStartedAt: null,
+          failureReason: null,
+          paidAt: now,
+        },
+      });
+    });
+
+    it('normalizes RECONCILE_REQUIRED FAILED back to PENDING when provider reports PENDING', async () => {
+      const payment = buildPayment({
+        status: 'PENDING',
+        initiationStatus: 'ESTABLISHED',
+        providerReference: 'wipay-ref-2',
+        recoveryAttemptCount: 4,
+        recoveryStartedAt: null,
+        failureReason: null,
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.applyRecoveryVerificationIfCurrent(
+          'payment-1',
+          4,
+          'wipay-ref-2',
+          'PENDING',
+          now,
+        ),
+      ).resolves.toEqual({
+        payment,
+        applied: true,
+        transitionedToPaid: false,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            initiationStatus: 'ESTABLISHED',
+            status: 'PENDING',
+            recoveryStartedAt: null,
+            failureReason: null,
+          },
+        }),
+      );
+    });
+
+    it('applies authoritative provider FAILED and clears the recovery claim', async () => {
+      const payment = buildPayment({
+        status: 'FAILED',
+        initiationStatus: 'ESTABLISHED',
+        providerReference: 'wipay-ref-3',
+        recoveryAttemptCount: 5,
+        recoveryStartedAt: null,
+        failureReason: 'Provider verification reported payment failure',
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.applyRecoveryVerificationIfCurrent(
+          'payment-1',
+          5,
+          'wipay-ref-3',
+          'FAILED',
+          now,
+        ),
+      ).resolves.toEqual({
+        payment,
+        applied: true,
+        transitionedToPaid: false,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            initiationStatus: 'ESTABLISHED',
+            status: 'FAILED',
+            recoveryStartedAt: null,
+            failureReason: 'Provider verification reported payment failure',
+          },
+        }),
+      );
+    });
+
+    it('does not apply a stale worker result when its recovery fence has been superseded', async () => {
+      const payment = buildPayment({
+        recoveryAttemptCount: 7,
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.applyRecoveryVerificationIfCurrent(
+          'payment-1',
+          6,
+          'wipay-ref-1',
+          'PAID',
+          now,
+        ),
+      ).resolves.toEqual({
+        payment,
+        applied: false,
+        transitionedToPaid: false,
+      });
+    });
+
+    it('does not apply verification against a different provider reference', async () => {
+      const payment = buildPayment({
+        providerReference: 'wipay-ref-current',
+      });
+
+      prisma.payment.updateMany.mockResolvedValue({ count: 0 });
+      prisma.payment.findUnique.mockResolvedValue(payment);
+
+      await expect(
+        repository.applyRecoveryVerificationIfCurrent(
+          'payment-1',
+          3,
+          'wipay-ref-stale',
+          'PAID',
+          now,
+        ),
+      ).resolves.toEqual({
+        payment,
+        applied: false,
+        transitionedToPaid: false,
+      });
+
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'payment-1',
+          provider: 'WIPAY',
+          providerReference: 'wipay-ref-stale',
+          recoveryAttemptCount: 3,
+          recoveryStartedAt: { not: null },
+          OR: [
+            {
+              initiationStatus: 'ESTABLISHED',
+              status: 'PENDING',
+            },
+            {
+              initiationStatus: 'RECONCILE_REQUIRED',
+              status: { in: ['PENDING', 'FAILED'] },
+            },
+          ],
+        },
+        data: {
+          initiationStatus: 'ESTABLISHED',
+          status: 'PAID',
+          paidAt: now,
+          failureReason: null,
+          recoveryStartedAt: null,
+        },
+      });
+    });
+  });
+
   describe('claimForRecovery', () => {
     const now = new Date('2026-09-03T02:00:00.000Z');
     const staleBefore = new Date('2026-09-03T01:55:00.000Z');
