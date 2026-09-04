@@ -8,6 +8,7 @@ import { PaymentsRepository } from './repositories/payments.repository';
 import { RefundsRepository } from './repositories/refunds.repository';
 import { PaymentReconciliationBatchService } from './services/payment-reconciliation-batch.service';
 import { PaymentReconciliationService } from './services/payment-reconciliation.service';
+import { PaymentReconciliationSchedulerService } from './services/payment-reconciliation-scheduler.service';
 import { PaymentsService } from './services/payments.service';
 
 @Module({
@@ -17,6 +18,7 @@ import { PaymentsService } from './services/payments.service';
     PaymentsService,
     PaymentReconciliationService,
     PaymentReconciliationBatchService,
+    PaymentReconciliationSchedulerService,
     PaymentsRepository,
     RefundsRepository,
     WiPayAdapter,
