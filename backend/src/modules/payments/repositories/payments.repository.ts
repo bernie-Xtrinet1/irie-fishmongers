@@ -117,6 +117,79 @@ export class PaymentsRepository {
     });
   }
 
+  findAutomaticRecoveryCandidates(
+    staleBefore: Date,
+    limit: number,
+  ): Promise<PaymentWithOrder[]> {
+    return this.prisma.payment.findMany({
+      where: {
+        provider: 'WIPAY',
+        providerReference: { not: null },
+        updatedAt: { lte: staleBefore },
+        OR: [
+          { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+          {
+            initiationStatus: 'RECONCILE_REQUIRED',
+            status: { in: ['PENDING', 'FAILED'] },
+          },
+        ],
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+      include: paymentWithOrder.include,
+    });
+  }
+
+  async applyRecoveryVerificationIfCurrent(
+    id: string,
+    claimedRecoveryAttemptCount: number,
+    expectedProviderReference: string,
+    verifiedStatus: 'PENDING' | 'PAID' | 'FAILED',
+    now: Date,
+  ): Promise<{
+    payment: PaymentWithOrder | null;
+    applied: boolean;
+    transitionedToPaid: boolean;
+  }> {
+    const paidAt = verifiedStatus === 'PAID' ? now : undefined;
+
+    const result = await this.prisma.payment.updateMany({
+      where: {
+        id,
+        provider: 'WIPAY',
+        providerReference: expectedProviderReference,
+        recoveryAttemptCount: claimedRecoveryAttemptCount,
+        recoveryStartedAt: { not: null },
+        OR: [
+          { initiationStatus: 'ESTABLISHED', status: 'PENDING' },
+          {
+            initiationStatus: 'RECONCILE_REQUIRED',
+            status: { in: ['PENDING', 'FAILED'] },
+          },
+        ],
+      },
+      data: {
+        initiationStatus: 'ESTABLISHED',
+        status: verifiedStatus,
+        recoveryStartedAt: null,
+        failureReason:
+          verifiedStatus === 'FAILED'
+            ? 'Provider verification reported payment failure'
+            : null,
+        ...(paidAt ? { paidAt } : {}),
+      },
+    });
+
+    const payment = await this.findById(id);
+
+    return {
+      payment,
+      applied: result.count === 1,
+      transitionedToPaid:
+        result.count === 1 && verifiedStatus === 'PAID',
+    };
+  }
+
   async claimForRecovery(
     id: string,
     now: Date,
