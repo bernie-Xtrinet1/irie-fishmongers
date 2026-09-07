@@ -1,5 +1,5 @@
 import * as bcrypt from 'bcrypt';
-import { createHmac, randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { Server } from 'http';
 
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -413,7 +413,7 @@ describe('Payments (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('blocks vendor acceptance until an online payment is confirmed paid, then unblocks it via the WiPay webhook', async () => {
+  it('blocks vendor acceptance until an online payment is confirmed paid, then unblocks it via the verified WiPay browser return', async () => {
     const adminToken = await createAdminAndLogin();
     const customerToken = await createCustomerAndLogin();
     const vendor = await createApprovedVendorAndLogin(adminToken, 'WiPay Gate Vendor');
@@ -422,7 +422,7 @@ describe('Payments (e2e)', () => {
     // Checkout as cash-on-delivery (no live gateway available in this environment),
     // then simulate that the order was actually paid for online via WiPay by
     // updating the persisted payment record directly - this isolates the business
-    // rule under test (the acceptance gate + webhook handling) from the unrelated
+    // rule under test (the acceptance gate + browser return handling) from the unrelated
     // concern of reaching a live WiPay sandbox.
     const order = await checkoutSingleVendorOrder(
       customerToken,
@@ -442,23 +442,58 @@ describe('Payments (e2e)', () => {
       .set('Authorization', `Bearer ${vendor.accessToken}`);
     expect(blockedAcceptRes.status).toBe(403);
 
-    const rawBody = JSON.stringify({ transaction_id: providerReference, status: 'success' });
-    const signature = createHmac('sha256', wiPayApiKey).update(rawBody).digest('hex');
-
-    const webhookRes = await request(server())
-      .post('/api/v1/payments/webhooks/wipay')
-      .set('Content-Type', 'application/json')
-      .set('x-wipay-signature', signature)
-      .send(rawBody);
-    expect(webhookRes.status).toBe(200);
-
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: order.payment!.id } });
+    const hash = createHash('md5')
+      .update(providerReference + stored.amount.toFixed(2) + wiPayApiKey)
+      .digest('hex');
+    const query = {
+      transaction_id: providerReference,
+      status: 'success',
+      hash,
+      total: '0.01',
+      currency: 'USD',
+      order_id: 'untrusted',
+      customerId: 'untrusted',
+      provider: 'CASH_ON_DELIVERY',
+    };
+    for (const invalidHash of ['', 'malformed', '0'.repeat(32)]) {
+      await request(server()).get('/api/v1/payments/returns/wipay')
+        .query({ ...query, hash: invalidHash }).expect(401);
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: stored.id } })).toEqual(stored);
+    }
+    await request(server()).get('/api/v1/payments/returns/wipay')
+      .query({ ...query, transaction_id: 'unknown-transaction' }).expect(401);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const returnRes = await request(server())
+        .get('/api/v1/payments/returns/wipay')
+        .query(query)
+        .expect(200);
+      expect(returnRes.headers['cache-control']).toBe('no-store');
+      expect(data<{ status: string }>(returnRes)).toEqual({ status: 'VERIFIED' });
+      expect(JSON.stringify(returnRes.body).includes(wiPayApiKey)).toBe(false);
+    }
+    const paid = await prisma.payment.findUniqueOrThrow({ where: { id: stored.id } });
+    expect(paid).toMatchObject({
+      status: 'PAID',
+      orderId: stored.orderId,
+      provider: 'WIPAY',
+      currency: stored.currency,
+      amount: stored.amount,
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await request(server())
+        .get('/api/v1/payments/returns/wipay')
+        .query({ transaction_id: providerReference, status: 'failed' })
+        .expect(200);
+    }
+    expect(await prisma.payment.findUniqueOrThrow({ where: { id: stored.id } })).toEqual(paid);
     const acceptRes = await request(server())
       .patch(`/api/v1/vendor-orders/${vendorOrderId}/accept`)
       .set('Authorization', `Bearer ${vendor.accessToken}`);
     expect(acceptRes.status).toBe(200);
   });
 
-  it('rejects a WiPay webhook with an invalid signature', async () => {
+  it('fails closed on the unsupported legacy WiPay webhook', async () => {
     const rawBody = JSON.stringify({ transaction_id: 'txn-does-not-exist', status: 'success' });
 
     const res = await request(server())
@@ -466,7 +501,7 @@ describe('Payments (e2e)', () => {
       .set('Content-Type', 'application/json')
       .set('x-wipay-signature', 'not-a-real-signature')
       .send(rawBody);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(501);
   });
 
   it('rejects a WiPay webhook with no signature header', async () => {

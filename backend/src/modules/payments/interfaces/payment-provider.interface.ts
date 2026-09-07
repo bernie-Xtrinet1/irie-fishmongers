@@ -4,6 +4,8 @@ export interface PaymentCreateInput {
   orderId: string;
   amount: number;
   currency: string;
+  /** Loaded from the stored order's customer by PaymentsService; required by WiPay. */
+  customerEmail?: string;
 }
 
 export interface PaymentCreateResult {

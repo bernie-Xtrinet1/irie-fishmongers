@@ -1,8 +1,14 @@
-import { createHmac } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+  NotImplementedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PaymentProviderName } from '@prisma/client';
+import { isEmail } from 'class-validator';
 
 import {
   PaymentCreateInput,
@@ -12,25 +18,29 @@ import {
   PaymentVerifyResult,
 } from '../interfaces/payment-provider.interface';
 
-interface WiPayRequestResponse {
-  transaction_id: string;
-  url: string;
+export const WIPAY_SANDBOX_API_URL = 'https://jmsb.wipayfinancial.com/plugins/payments';
+
+// URL validation follows the configured Jamaica environment. This does not
+// authorize live initiation: createPayment retains its explicit F.4 sandbox gate.
+export function isWiPayCheckoutUrl(url: string, apiUrl: string): boolean {
+  if (![WIPAY_SANDBOX_API_URL, 'https://jm.wipayfinancial.com/plugins/payments'].includes(apiUrl)) {
+    return false;
+  }
+  try {
+    const checkoutUrl = new URL(url);
+    return (
+      checkoutUrl.protocol === 'https:' &&
+      !checkoutUrl.username &&
+      !checkoutUrl.password &&
+      checkoutUrl.origin === new URL(apiUrl).origin
+    );
+  } catch {
+    return false;
+  }
 }
 
-interface WiPayStatusResponse {
-  transaction_id: string;
-  status: 'pending' | 'success' | 'failed';
-}
-
-interface WiPayRefundResponse {
-  refund_id: string;
-  status: 'pending' | 'success' | 'failed';
-}
-
-// Hosted-checkout request/callback shape based on WiPay's standard merchant
-// integration pattern (account_number + total + currency + order reference,
-// HMAC-signed callbacks). Endpoint paths and field names should be confirmed
-// against a live WiPay merchant sandbox before production use.
+// Payments API v1.0.11; this adapter intentionally supports Jamaica sandbox only.
+// See docs/integrations/payment-providers.md for sources and unsupported operations.
 @Injectable()
 export class WiPayAdapter implements PaymentProviderAdapter {
   readonly name = PaymentProviderName.WIPAY;
@@ -38,80 +48,111 @@ export class WiPayAdapter implements PaymentProviderAdapter {
   constructor(private readonly configService: ConfigService) {}
 
   async createPayment(input: PaymentCreateInput): Promise<PaymentCreateResult> {
-    const response = await fetch(`${this.apiUrl()}/request`, {
+    const apiUrl = this.configService.getOrThrow<string>('WIPAY_API_URL');
+    const feeStructure = this.configService.getOrThrow<string>('WIPAY_FEE_STRUCTURE');
+    if (apiUrl !== WIPAY_SANDBOX_API_URL || input.currency !== 'JMD') {
+      throw new BadRequestException('WiPay supports Jamaica JMD sandbox payments only');
+    }
+    if (!['customer_pay', 'merchant_absorb', 'split'].includes(feeStructure)) {
+      throw new BadRequestException('WiPay fee structure must be explicitly configured');
+    }
+    if (
+      !Number.isFinite(input.amount) ||
+      input.amount <= 0 ||
+      !input.customerEmail ||
+      !isEmail(input.customerEmail) ||
+      input.customerEmail.length > 50
+    ) {
+      throw new BadRequestException(
+        'WiPay requires a positive total and valid customer email (max 50 characters)',
+      );
+    }
+    const appBaseUrl = this.configService.getOrThrow<string>('APP_BASE_URL').replace(/\/$/, '');
+    const apiPrefix = this.configService.getOrThrow<string>('API_PREFIX').replace(/^\/+|\/+$/g, '');
+    const response = await fetch(`${apiUrl}/request`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      // Do not follow a provider redirect that could repeat this non-idempotent POST.
+      redirect: 'error',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: new URLSearchParams({
         account_number: this.configService.getOrThrow<string>('WIPAY_ACCOUNT_NUMBER'),
-        order_id: input.orderId,
-        total: input.amount.toFixed(2),
+        country_code: 'JM',
         currency: input.currency,
-        response_url: `${this.configService.getOrThrow<string>('APP_BASE_URL')}/api/v1/payments/webhooks/wipay`,
-      }),
+        environment: 'sandbox',
+        fee_structure: feeStructure,
+        method: 'credit_card_co',
+        order_id: input.orderId,
+        origin: 'IrieFishmongers',
+        response_url: `${appBaseUrl}/${apiPrefix}/payments/returns/wipay`,
+        total: input.amount.toFixed(2),
+        email: input.customerEmail,
+      }).toString(),
     });
 
     if (!response.ok) {
       throw new BadGatewayException('WiPay rejected the payment request');
     }
 
-    const data = (await response.json()) as WiPayRequestResponse;
-    return { providerReference: data.transaction_id, redirectUrl: data.url, status: 'PENDING' };
-  }
-
-  async verifyPayment(providerReference: string): Promise<PaymentVerifyResult> {
-    const response = await fetch(`${this.apiUrl()}/${providerReference}`, {
-      headers: { Authorization: `Bearer ${this.apiKey()}` },
-    });
-
-    if (!response.ok) {
-      throw new BadGatewayException('Unable to verify payment status with WiPay');
+    try {
+      const data: unknown = await response.json();
+      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
+      const { transaction_id: reference, url } = data as Record<string, unknown>;
+      if (
+        typeof reference !== 'string' ||
+        !reference.trim() ||
+        reference !== reference.trim() ||
+        typeof url !== 'string' ||
+        !url.trim()
+      )
+        throw new Error();
+      if (!isWiPayCheckoutUrl(url, apiUrl)) throw new Error();
+      return { providerReference: reference, redirectUrl: url, status: 'PENDING' };
+    } catch {
+      // The session may exist even when the bootstrap is unusable. Never retry here.
+      throw new BadGatewayException('WiPay returned an invalid hosted checkout response');
     }
-
-    const data = (await response.json()) as WiPayStatusResponse;
-    return { providerReference: data.transaction_id, status: WiPayAdapter.mapStatus(data.status) };
   }
 
-  async refundPayment(
-    providerReference: string,
-    amount: number,
-    reason: string,
+  verifyPayment(_providerReference: string): Promise<PaymentVerifyResult> {
+    return Promise.reject(
+      new NotImplementedException(
+        'WiPay Payments API status lookup is unsupported; reconciliation remains unresolved',
+      ),
+    );
+  }
+
+  refundPayment(
+    _providerReference: string,
+    _amount: number,
+    _reason: string,
   ): Promise<PaymentRefundResult> {
-    const response = await fetch(`${this.apiUrl()}/${providerReference}/refund`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey()}`,
-      },
-      body: JSON.stringify({ amount: amount.toFixed(2), reason }),
-    });
-
-    if (!response.ok) {
-      throw new BadGatewayException('WiPay rejected the refund request');
-    }
-
-    const data = (await response.json()) as WiPayRefundResponse;
-    return {
-      providerReference: data.refund_id,
-      status: data.status === 'success' ? 'COMPLETED' : data.status === 'failed' ? 'FAILED' : 'PENDING',
-    };
+    return Promise.reject(
+      new NotImplementedException('WiPay Payments API refunds are unsupported'),
+    );
   }
 
-  verifyWebhookSignature(rawBody: string, signature: string): boolean {
-    const expected = createHmac('sha256', this.apiKey()).update(rawBody).digest('hex');
-    return expected === signature;
-  }
-
-  private apiUrl(): string {
-    return this.configService.getOrThrow<string>('WIPAY_API_URL');
-  }
-
-  private apiKey(): string {
-    return this.configService.getOrThrow<string>('WIPAY_API_KEY');
-  }
-
-  private static mapStatus(status: WiPayStatusResponse['status']): PaymentVerifyResult['status'] {
-    if (status === 'success') return 'PAID';
-    if (status === 'failed') return 'FAILED';
-    return 'PENDING';
+  verifyTransactionResponse(
+    payload: Record<string, unknown>,
+    providerReference: string,
+    originalTotal: string,
+  ): boolean {
+    if (
+      payload.status !== 'success' ||
+      payload.transaction_id !== providerReference ||
+      !providerReference ||
+      !/^\d+\.\d{2}$/.test(originalTotal) ||
+      typeof payload.hash !== 'string' ||
+      !/^[a-fA-F0-9]{32}$/.test(payload.hash)
+    )
+      return false;
+    const expected = createHash('md5')
+      .update(
+        providerReference + originalTotal + this.configService.getOrThrow<string>('WIPAY_API_KEY'),
+      )
+      .digest();
+    return timingSafeEqual(expected, Buffer.from(payload.hash, 'hex'));
   }
 }

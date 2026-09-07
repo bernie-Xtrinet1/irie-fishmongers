@@ -13,7 +13,8 @@ describe('validateEnv', () => {
     JWT_REFRESH_EXPIRES_IN: '7d',
     APP_BASE_URL: 'http://localhost:3001',
     CORS_ORIGIN: 'http://localhost:3000',
-    WIPAY_API_URL: 'https://tx.wipayfinancial.com/plugins/payments',
+    WIPAY_API_URL: 'https://jmsb.wipayfinancial.com/plugins/payments',
+    WIPAY_FEE_STRUCTURE: 'merchant_absorb',
     WIPAY_ACCOUNT_NUMBER: 'test-account-number',
     WIPAY_API_KEY: 'test-wipay-key',
     SENDGRID_API_KEY: 'test-sendgrid-key',
@@ -32,6 +33,24 @@ describe('validateEnv', () => {
     expect(result.DATABASE_URL).toBe(validConfig.DATABASE_URL);
     expect(result.REDIS_URL).toBe(validConfig.REDIS_URL);
   });
+
+  it.each(['customer_pay', 'merchant_absorb', 'split'])(
+    'accepts explicit WiPay fee structure %s',
+    (value) => {
+      expect(validateEnv({ ...validConfig, WIPAY_FEE_STRUCTURE: value }).WIPAY_FEE_STRUCTURE).toBe(
+        value,
+      );
+    },
+  );
+
+  it.each([undefined, '', 'automatic'])(
+    'rejects missing/invalid WiPay fee structure %s',
+    (value) => {
+      expect(() => validateEnv({ ...validConfig, WIPAY_FEE_STRUCTURE: value })).toThrow(
+        /WIPAY_FEE_STRUCTURE/,
+      );
+    },
+  );
 
   it('throws when NODE_ENV is not one of the allowed values', () => {
     expect(() => validateEnv({ ...validConfig, NODE_ENV: 'staging' })).toThrow(

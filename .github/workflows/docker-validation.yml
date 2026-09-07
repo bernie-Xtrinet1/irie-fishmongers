@@ -217,7 +217,8 @@ jobs:
             -e JWT_REFRESH_EXPIRES_IN=7d \
             -e APP_BASE_URL="http://localhost:3001" \
             -e CORS_ORIGIN="http://localhost:3000" \
-            -e WIPAY_API_URL="https://sandbox.invalid/api" \
+            -e WIPAY_API_URL="https://jmsb.wipayfinancial.com/plugins/payments" \
+            -e WIPAY_FEE_STRUCTURE="merchant_absorb" \
             -e WIPAY_ACCOUNT_NUMBER="validation" -e WIPAY_API_KEY="validation" \
             -e SENDGRID_API_KEY="validation" -e SENDGRID_FROM_EMAIL="val@demo.test" \
             -e FIREBASE_PROJECT_ID="validation" \

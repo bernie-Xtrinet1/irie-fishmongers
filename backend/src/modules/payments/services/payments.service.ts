@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotImplementedException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -22,12 +23,6 @@ import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
 import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
 import { RefundsRepository } from '../repositories/refunds.repository';
-
-export interface WiPayWebhookPayload {
-  transaction_id: string;
-  status: 'success' | 'failed';
-  message?: string;
-}
 
 @Injectable()
 export class PaymentsService {
@@ -80,6 +75,13 @@ export class PaymentsService {
         orderId: payment.orderId,
         amount: payment.amount.toNumber(),
         currency: payment.currency,
+        ...(payment.provider === 'WIPAY'
+          ? {
+              customerEmail: await this.paymentsRepository.findCustomerEmailForOrder(
+                payment.orderId,
+              ),
+            }
+          : {}),
       });
     } catch (error) {
       await this.paymentsRepository.update(payment.id, {
@@ -149,36 +151,58 @@ export class PaymentsService {
     return PaymentsService.toPaymentResponse(updated);
   }
 
-  async handleWiPayWebhook(rawBody: string, signature: string): Promise<void> {
-    if (!this.wiPayAdapter.verifyWebhookSignature(rawBody, signature)) {
-      throw new UnauthorizedException('Invalid webhook signature');
-    }
+  handleWiPayWebhook(_rawBody: string, _signature: string): Promise<void> {
+    // The former x-wipay-signature/API-key HMAC scheme is not WiPay's webhook contract.
+    return Promise.reject(
+      new NotImplementedException('WiPay webhook integration is not implemented'),
+    );
+  }
 
-    const payload = JSON.parse(rawBody) as WiPayWebhookPayload;
+  async handleWiPayReturn(
+    payload: Record<string, unknown>,
+  ): Promise<{ status: 'VERIFIED' | 'UNVERIFIED' }> {
+    if (
+      typeof payload.transaction_id !== 'string' ||
+      !payload.transaction_id.trim() ||
+      !['success', 'failed', 'error'].includes(payload.status as string)
+    ) {
+      throw new BadRequestException('Invalid WiPay transaction response');
+    }
     const payment = await this.paymentsRepository.findByProviderReference(payload.transaction_id);
-    if (!payment) {
-      return;
+    if (
+      !payment ||
+      payment.provider !== 'WIPAY' ||
+      payment.providerReference !== payload.transaction_id
+    ) {
+      throw new UnauthorizedException('Unverifiable WiPay transaction response');
     }
 
-    if (payload.status === 'success') {
-      const { payment: updated, transitioned } =
-        await this.paymentsRepository.transitionToPaid(payment.id);
+    // Failure/error returns carry no authenticated hash. They cannot mutate payment state.
+    if (payload.status !== 'success') return { status: 'UNVERIFIED' };
+    if (
+      !this.wiPayAdapter.verifyTransactionResponse(
+        payload,
+        payment.providerReference,
+        payment.amount.toFixed(2),
+      )
+    ) {
+      throw new UnauthorizedException('Invalid WiPay transaction response hash');
+    }
 
-      if (!updated) {
-        throw new Error(
-          `Internal consistency error: payment "${payment.id}" disappeared after PAID transition`,
-        );
-      }
+    const { payment: updated, transitioned } = await this.paymentsRepository.transitionToPaid(
+      payment.id,
+    );
 
-      if (transitioned) {
-        await this.emitPaymentConfirmed(updated);
-      }
-    } else {
-      await this.paymentsRepository.transitionToFailed(
-        payment.id,
-        payload.message ?? 'Payment failed',
+    if (!updated) {
+      throw new Error(
+        `Internal consistency error: payment "${payment.id}" disappeared after PAID transition`,
       );
     }
+
+    if (transitioned) {
+      await this.emitPaymentConfirmed(updated);
+    }
+    return { status: 'VERIFIED' };
   }
 
   async refundForOrder(orderId: string, amount: number, reason: string): Promise<Refund | null> {

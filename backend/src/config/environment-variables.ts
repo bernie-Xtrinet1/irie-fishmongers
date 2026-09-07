@@ -69,7 +69,7 @@ export class EnvironmentVariables {
   // Comma-separated allowlist of origins allowed to call this API
   // cross-origin (e.g. the customer web app + the admin dashboard).
   // Distinct from APP_BASE_URL, which is this backend's OWN base URL
-  // (used for webhook callback links). Never '*' - incompatible with the
+  // (used for payment browser return links). Never '*' - incompatible with the
   // credentials: true CORS config main.ts uses for cookie-based auth.
   @IsString()
   @Matches(/^https?:\/\/[^\s,]+(,\s*https?:\/\/[^\s,]+)*$/, {
@@ -79,6 +79,10 @@ export class EnvironmentVariables {
 
   @IsUrl({ require_tld: false })
   WIPAY_API_URL!: string;
+
+  // Explicit sandbox fee choice; no implicit business-policy default.
+  @IsIn(['customer_pay', 'merchant_absorb', 'split'])
+  WIPAY_FEE_STRUCTURE!: string;
 
   @IsString()
   @MinLength(1)

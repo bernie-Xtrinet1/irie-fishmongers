@@ -188,22 +188,22 @@ Business rules encoded here:
   refunds that vendor's share, not the whole order (business-rules2.md:
   "Vendor rejects order" is a full-refund-eligible reason, scoped here to the
   rejected portion). A no-op if that order was never paid.
-- WiPay payment confirmation is webhook-driven, not polled:
-  `POST /payments/webhooks/wipay` verifies an HMAC-SHA256 signature (keyed
-  with `WIPAY_API_KEY`) over the exact raw request bytes (`main.ts` enables
-  `rawBody: true` so the raw buffer survives past body-parsing) before
-  trusting the payload.
+- WiPay sandbox confirmation uses `GET /payments/returns/wipay`, the hosted
+  browser return. Success requires the documented MD5 response hash using the
+  stored provider reference, original Payment.amount formatted to two decimals,
+  and server-side API key. Unsigned failure/error returns do not mutate state.
+  The former API-key HMAC webhook route is disabled; official webhook lifecycle
+  delivery is a separate, unimplemented integration.
 - Cash-on-delivery has no external gateway to poll or webhook from, so an
   admin confirms collection manually via `PATCH /payments/:id/mark-paid`
   (admin only, audit-logged like all admin actions per security.md).
 - `POST /payments/:id/refund` (admin only) covers business-rules2.md's
   "Administrator-approved exceptional circumstances" partial-refund case,
   independent of the automatic vendor-rejection refund above.
-- The WiPay adapter's request/response shape (`account_number` + `total` +
-  `currency`, HMAC-signed callbacks) follows WiPay's standard hosted-checkout
-  integration pattern but has not been verified against a live WiPay merchant
-  sandbox - field names and endpoint paths should be confirmed before
-  production use.
+- Phase F.4 aligns the hosted Payments API contract with official documentation;
+  it does not activate production or change this database schema. WiPay status
+  lookup and refunds fail closed; ambiguous initiation cannot automatically retry
+  or refund. See [payment provider capabilities](integrations/payment-providers.md).
 
 ---
 

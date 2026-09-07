@@ -84,7 +84,8 @@ PATCH /vendor-orders/:id/preparing (owning vendor only)
 
 PATCH /vendor-orders/:id/ready (owning vendor only)
 
-POST /payments/webhooks/wipay (public - HMAC-signed WiPay callback)
+GET /payments/returns/wipay (public - hosted browser return; server verifies success hash)
+POST /payments/webhooks/wipay (legacy, disabled; valid-shaped requests return 501)
 
 PATCH /payments/:id/mark-paid (admin only - confirm cash-on-delivery collection)
 

@@ -101,7 +101,11 @@ together with `Secure`, which `auth.controller.ts` **forces on** whenever
 different CSRF posture than `strict` (documented in ADR-004), accepted here as
 the price of cross-site operation. Backend env therefore sets
 `CORS_ORIGIN` = web+admin FQDNs, `APP_BASE_URL` = backend FQDN (its own base URL,
-used for WiPay webhook callbacks), `REFRESH_COOKIE_SAMESITE=none`.
+used for WiPay browser return URLs), `REFRESH_COOKIE_SAMESITE=none`.
+`wipayFeeStructure` is required and explicitly set to `merchant_absorb` in staging
+for sandbox testing only. The adapter only initiates Jamaica JMD sandbox payments;
+status lookup, refunds and legacy webhook processing fail closed. See
+[payment contract details](../../../docs/integrations/payment-providers.md).
 
 ## Deferred / decisions
 

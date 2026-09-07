@@ -136,6 +136,13 @@ retry.
 
 ## 5. WiPay uncertainty rule
 
+Phase F.4 contract alignment: the hosted Payments API adapter now verifies browser
+success returns with the documented response hash. Unsigned failed/error returns
+do not change payment state. Status/refund operations fail closed without HTTP;
+the existing reconciliation error path releases its claim and leaves the outcome
+unresolved. No provider idempotency or safe create retry has been established.
+See [payment-providers.md](payment-providers.md) for sources and operational limits.
+
 No implementation may assume WiPay supports provider-side idempotency unless
 the actual merchant sandbox/API contract confirms it.
 
