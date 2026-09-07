@@ -10,6 +10,36 @@ Date:
 
 ## Implementation prohibition (read first)
 
+### G.0A current-status supersession (2026-09-07)
+
+The approved [Phase G limited rollout design](phase-g-limited-rollout-design.md)
+records the current activation architecture at baseline `879674d`. It supersedes
+historical statements below that cart write ordering/add-item idempotency are
+undecided, that all facade callers remain unwired, or that Phase E/F.4 payment
+reliability has no implementation. Those historical sections are retained for
+traceability, not as current implementation status or new authorization.
+
+Cart mutations now commit Postgres state before fenced Redis convergence; backend
+add-item retries have durable idempotency. The facade is wired into cart mutation
+and admission. DB-backed `ReservationEngineMode` remains global authority, not a
+customer allow-list. Its `MIRROR` mode may write cart-scoped state and is NOT the
+read-only checkout `SHADOW` policy defined by Phase G.
+
+D-core production caller activation, server-issued checkout keys, and price-lock
+preparation remain open. Checkout heartbeat/stale-page/pending-reconciliation
+primitives exist, but their operational distributed-owner worker remains a G.PR1
+prerequisite, distinct from compensation, cart-sync, and payment recovery.
+Phase E/F.4 durable payment initiation and transition protection exist; provider
+limitations remain documented in [payment-providers.md](payment-providers.md).
+
+Phase G preserves one shared inventory authority, durable attempt path ownership,
+and the existing DRAINING rollback gates. Its emergency control stops NEW
+admissions while preserving replay/recovery. G.1 is inactive persistence/audit
+only and requires separate implementation authorization. G.6 requires separate
+explicit activation approval. G.0A itself authorizes documentation edits only.
+
+### Historical authorization boundary
+
 This ADR is a design record, not a blanket implementation authorization.
 Approving this ADR approves the architecture below - it authorizes none of
 the following on its own:
@@ -1348,11 +1378,11 @@ them import it back. Not imported by `AppModule` (§16.5).
 |---|---|---|
 | A | `CheckoutAttemptRepository`, `CheckoutAttemptService`, repository tests | **Complete** |
 | B | `PriceLockService`, cart currency enforcement, price-lock validation | **Complete** - open decisions 4, 8 resolved |
-| C | `CheckoutReservationFacade`, feature flags, shadow mode, combined availability - **no production cutover** | C0-C4.5 (mirror compensation) **complete, unwired**. Shadow mode/feature-flag/combined-availability cutover work itself remains open, blocked on decisions 1 (resolved empirically by C's own shadow comparison, not upfront), 9 (`addItem` idempotency, dependent on 1), 10 (rollout-flag mechanism) |
-| D | `CheckoutCoordinatorService`, `CheckoutAttempt` lifecycle wiring, `checkoutMark` integration | **D-core complete and frozen (D.1-D.5, §16) - additive and unwired.** Activation (caller cutover, `CheckoutController`, `AppModule` import) remains blocked on Phase C's unresolved decisions 1/9/10, per §16.5 |
-| E | Forward-only payment recovery, durable initiation reliability, reconciliation, and duplicate-callback/COD transition protection | **Design complete; implementation not authorized.** Open decision 5 resolved by `phase-e-payment-reliability-design.md`. Distinct from Phase F (see §16.4/§21 note below) - never conflate the two |
-| F | Scheduler, heartbeat recovery, Postgres advisory lock | A. Distinct from C4.5's mirror-compensation scheduler, which is a different subsystem entirely (see §15's naming note) |
-| G | Limited allow-list rollout, shadow validation, monitoring | C, D |
+| C | Facade, mode-aware cart admission/mutation, MIRROR diagnostics and compensation | Implemented, including later cart wiring and durable sync recovery. Decisions 1 and backend 9 resolved; checkout SHADOW and participant rollout remain separate Phase G work. |
+| D | `CheckoutCoordinatorService`, attempt lifecycle and checkout mark | D-core implemented; production caller remains unwired. Activation requires the caller, ownership, authority-compatibility, and recovery prerequisites in the Phase G design. |
+| E / F.4 | Durable initiation, forward-only payment recovery, transition protection, sandbox contract alignment | Implemented at baseline `879674d`; unsupported WiPay lookup/refunds and disabled legacy webhooks remain explicit boundaries. No new provider or production activation authorization. |
+| F / G.PR1 | Checkout heartbeat/stale-attempt/CHECKOUT_PENDING operational recovery | Primitives exist; operational distributed-owner worker wiring remains open. Separate from compensation, cart-sync, and payment recovery. |
+| G | Inactive participant policy, read-only checkout shadow, monitoring and staged rollout | Follow G.0A -> G.1 -> G.2a -> G.PR1 -> G.2b -> G.3 -> G.4 -> G.5 -> G.6 in [the approved design](phase-g-limited-rollout-design.md#approved-implementation-sequence). G.1 changes no routing; G.6 requires separate explicit approval. |
 | H | Maintenance window, legacy Redis drain, production cutover | G at full rollout; open decision 7 (drain wait time) |
 
 ## Open decisions
@@ -1364,7 +1394,7 @@ above resolved it) - nothing is silently dropped from the original
 12-item list. Nothing marked **OPEN** may be implemented against until
 resolved.
 
-1. **Redis-first vs. Postgres-first cart writes** - **OPEN**, blocks completion of Phase C (the step that replaces `CartService`'s legacy calls) and, transitively, Phase D. Deferred to Phase C's own shadow-mode comparison rather than decided upfront (see Decision 2 above).
+1. **Redis-first vs. Postgres-first cart writes** - **RESOLVED by implementation**: `CartService` commits CartItem/sync-generation changes before `CartReservationConvergenceService` performs Redis convergence, with fenced compensation and unresolved markers. The earlier deferral to shadow comparison is superseded by the G.0A current-status note and Phase G design.
 2. Server-generated vs. client-generated idempotency keys - **RESOLVED: server-generated** (see Decision 1).
 3. Can a `FAILED` `CheckoutAttempt` retry with the same idempotency key? - **RESOLVED: no - a retry after `FAILED` always uses a new idempotency key.**
 4. Price-lock duration (`PRICE_LOCK_TTL_SECONDS`) - **RESOLVED: 900 seconds** (see Decision 7, item 1), implemented as an independent constant, never derived from `RESERVATION_TTL_SECONDS`.
@@ -1372,8 +1402,8 @@ resolved.
 6. Scheduler distributed-lock mechanism - **RESOLVED: PostgreSQL advisory lock, not Redis** (see Decision 5).
 7. **Legacy-drain wait time** - **OPEN**, blocks Phase H. Direct conflict between a prior session's stated 70 minutes and `reservation-lifecycle.md` §8's approved 20 minutes. One authoritative value must be set before Phase H; not resolved by this ADR.
 8. Does `Product` carry its own currency field, or is currency purely cart-level? - **RESOLVED: yes** - `Product.currency` (`String @default("JMD")`) is a real per-row column, confirmed by direct schema inspection, and is the authoritative source `PriceLockService` reads from (see Decision 7, item 2).
-9. **`addItem`'s non-idempotent increment semantics** - **OPEN**, blocks Phase C/D. Depends on open decision 1's outcome (the write-order/idempotency redesign); not resolved separately from it.
-10. **Rollout-flag mechanism (exact implementation)** - **OPEN**, blocks Phase C. Decision 2 above settles the *direction* (allowlist-based, evaluated per-request, not a bootstrap-level toggle) but not the *mechanism* - env var, DB-backed allowlist table (following the `MarketplaceModeConfig` precedent), or something else. This is a new pattern for this codebase with no existing precedent (`ENABLE_SCHEDULER` is the only prior art, and it is bootstrap-level/all-or-nothing, which this explicitly is not) and needs its own explicit sign-off before Phase C begins.
+9. **`addItem`'s non-idempotent increment semantics** - **RESOLVED for the backend contract**: `CartController.addItem` requires a key; `CartItemAddAttempt` is unique by customer/key; classification and transactional completion prevent duplicate mutation. Browser retention of a logical key across ambiguous user retries remains a separate integration detail; the old backend design blocker is closed.
+10. **Rollout mechanism** - **PARTIALLY RESOLVED**: DB-backed, revisioned `ReservationEngineModeConfig` and `ReservationEngineModeService` already govern global reservation authority. Customer participation is a separate Phase G policy and must not split shared inventory authority. G.0A approves inactive persistence/audit boundaries, durable path ownership, read-only checkout SHADOW, and new-admission stop semantics; exact audit representation remains a G.1 detail. See [Phase G design](phase-g-limited-rollout-design.md). No caller activation is authorized.
 11. Ownership of the combined-availability bridge - **RESOLVED, corrected during C2**: originally assigned to `CheckoutReservationFacade.getAvailability` computing one global formula (see the superseded text in Decision 6); actually implemented as the standalone `ReservationAvailabilityService` (Decision 6's mode-specific authority matrix, §9) inside `ReservationEngineModeModule`. `CheckoutReservationFacade` does not yet exist; when C3 builds it, its `getAvailability` is expected to delegate to `ReservationAvailabilityService` rather than reimplement the calculation. This closes what was open decision 9 in the original read-only plan; recorded here so it is traceable rather than silently dropped.
 
 ## Document authority
