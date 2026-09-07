@@ -47,7 +47,7 @@ else
 fi
 
 # --- 2. Backend runtime env (verified contract, see backend/src/config) ---
-# APP_BASE_URL is the backend's OWN base URL (WiPay webhook response_url).
+# APP_BASE_URL is the backend's OWN base URL (WiPay browser response_url).
 export APP_BASE_URL="${API_ROOT}"
 export CORS_ORIGIN="${WEB_URL},${ADMIN_URL}"
 # Safe demo fallbacks so live email/push/payments can never be contacted if
@@ -59,6 +59,7 @@ export FIREBASE_CLIENT_EMAIL="${FIREBASE_CLIENT_EMAIL:-firebase@local-dev-projec
 export FIREBASE_PRIVATE_KEY="${FIREBASE_PRIVATE_KEY:------BEGIN PRIVATE KEY-----\ndemo-disabled\n-----END PRIVATE KEY-----\n}"
 export WIPAY_ACCOUNT_NUMBER="${WIPAY_ACCOUNT_NUMBER:-demo-disabled}"
 export WIPAY_API_KEY="${WIPAY_API_KEY:-demo-disabled}"
+export WIPAY_FEE_STRUCTURE="${WIPAY_FEE_STRUCTURE:-merchant_absorb}"
 export ENABLE_SCHEDULER="${ENABLE_SCHEDULER:-true}"
 
 # --- 3. Frontend env via .env.local (git-ignored; Next loads these itself) ---

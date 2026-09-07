@@ -47,16 +47,13 @@ param backendMaxReplicas = 2
 param frontendMinReplicas = 0
 param frontendMaxReplicas = 1
 
-// Payments — WiPay Jamaica SANDBOX base URL (host `jmsb`, not the live `tx`
-// host). The adapter treats this as a base and appends /request, /{ref},
-// /{ref}/refund. The matching WiPay sandbox account number + API key are PUBLIC
-// sandbox values - NOT production merchant credentials - and are populated ONLY
-// via Key Vault (never in Git), under the app's established secret contract.
-// SEPARATE UNRESOLVED FUNCTIONAL-TESTING RISK (NOT fixed by this URL change):
-// wipay.adapter.ts's request body/auth shape may not match WiPay's actual
-// hosted-checkout API; a sandbox transaction test is required before relying on
-// WiPay end-to-end.
+// Jamaica sandbox hosted Payments API: only /request is called.
+// Account/key remain in the existing Key Vault contract; no secret changes.
+// Status/refund and webhook integration remain unsupported in Phase F.4.
+// A real sandbox checkout remains a separate validation gate, not production activation.
 param wipayApiUrl = 'https://jmsb.wipayfinancial.com/plugins/payments'
+// Explicit test setting only, not an approved production fee policy.
+param wipayFeeStructure = 'merchant_absorb'
 
 // Data plane (non-secret bits). The admin PASSWORD is the only externalized
 // secret: supply it at deploy time, e.g. export PG_ADMIN_PASSWORD=...

@@ -58,7 +58,10 @@ param adminFqdn string
 param refreshCookieSameSite string = 'none'
 param jwtAccessExpiresIn string = '15m'
 param jwtRefreshExpiresIn string = '7d'
-param wipayApiUrl string = 'https://tx.wipayfinancial.com/plugins/payments'
+param wipayApiUrl string = 'https://jmsb.wipayfinancial.com/plugins/payments'
+@description('Explicit sandbox fee choice; not a production fee policy.')
+@allowed([ 'customer_pay', 'merchant_absorb', 'split' ])
+param wipayFeeStructure string
 param sendgridFromEmail string = 'notifications@iriefishmongers.com'
 @allowed([ 'true', 'false' ])
 param enableScheduler string = 'true'
@@ -182,6 +185,7 @@ module backendApp 'modules/containerApp.bicep' = if (deployApplications) {
       { name: 'JWT_ACCESS_EXPIRES_IN', value: jwtAccessExpiresIn }
       { name: 'JWT_REFRESH_EXPIRES_IN', value: jwtRefreshExpiresIn }
       { name: 'WIPAY_API_URL', value: wipayApiUrl }
+      { name: 'WIPAY_FEE_STRUCTURE', value: wipayFeeStructure }
       { name: 'SENDGRID_FROM_EMAIL', value: sendgridFromEmail }
       { name: 'EMAIL_ENABLED', value: emailEnabled }
       { name: 'REFRESH_COOKIE_SAMESITE', value: refreshCookieSameSite }

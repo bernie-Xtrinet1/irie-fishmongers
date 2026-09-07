@@ -38,7 +38,8 @@ services:
       APP_BASE_URL: http://localhost:3001
       CORS_ORIGIN: http://localhost:3000,http://localhost:3002
       # External integrations disabled for the demo (see file header).
-      WIPAY_API_URL: https://tx.wipayfinancial.com/plugins/payments
+      WIPAY_API_URL: https://jmsb.wipayfinancial.com/plugins/payments
+      WIPAY_FEE_STRUCTURE: merchant_absorb
       WIPAY_ACCOUNT_NUMBER: demo-disabled
       WIPAY_API_KEY: demo-disabled
       SENDGRID_API_KEY: demo-disabled

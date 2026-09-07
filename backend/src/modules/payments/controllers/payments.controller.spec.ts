@@ -36,13 +36,17 @@ function buildWebhookRequest(rawBody?: Buffer, signature?: string): RawBodyReque
 
 describe('PaymentsController', () => {
   let paymentsService: jest.Mocked<
-    Pick<PaymentsService, 'handleWiPayWebhook' | 'markCashOnDeliveryPaid' | 'refundByPaymentId'>
+    Pick<
+      PaymentsService,
+      'handleWiPayWebhook' | 'handleWiPayReturn' | 'markCashOnDeliveryPaid' | 'refundByPaymentId'
+    >
   >;
   let controller: PaymentsController;
 
   beforeEach(() => {
     paymentsService = {
       handleWiPayWebhook: jest.fn().mockResolvedValue(undefined),
+      handleWiPayReturn: jest.fn().mockResolvedValue({ status: 'VERIFIED' }),
       markCashOnDeliveryPaid: jest.fn().mockResolvedValue(payment),
       refundByPaymentId: jest.fn().mockResolvedValue(refund),
     };
@@ -78,6 +82,12 @@ describe('PaymentsController', () => {
   it('confirms a cash-on-delivery payment', async () => {
     await expect(controller.markCashOnDeliveryPaid('payment-1')).resolves.toEqual(payment);
     expect(paymentsService.markCashOnDeliveryPaid).toHaveBeenCalledWith('payment-1');
+  });
+
+  it('delegates browser query verification without reinterpreting payment data', async () => {
+    const query = { transaction_id: 'txn-1', status: 'success', hash: 'hash' };
+    await expect(controller.wiPayReturn(query)).resolves.toEqual({ status: 'VERIFIED' });
+    expect(paymentsService.handleWiPayReturn).toHaveBeenCalledWith(query);
   });
 
   it('issues a refund', async () => {

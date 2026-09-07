@@ -22,6 +22,14 @@ export type PaymentWithOrder = Prisma.PaymentGetPayload<typeof paymentWithOrder>
 export class PaymentsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findCustomerEmailForOrder(orderId: string): Promise<string> {
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: { customer: { select: { email: true } } },
+    });
+    return order.customer.email;
+  }
+
   create(input: CreatePaymentInput): Promise<PaymentWithOrder> {
     return this.prisma.payment.create({ data: input, include: paymentWithOrder.include });
   }

@@ -2,11 +2,14 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
   Patch,
   Post,
+  Query,
   RawBodyRequest,
   Req,
   UseGuards,
@@ -37,7 +40,7 @@ export class PaymentsController {
 
   @Post('webhooks/wipay')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Receive WiPay payment.success / payment.failed callbacks' })
+  @ApiOperation({ summary: 'Unsupported legacy WiPay webhook route (fails closed)' })
   async wiPayWebhook(@Req() req: RawBodyRequest<Request>): Promise<{ received: true }> {
     const signature = req.headers[WIPAY_SIGNATURE_HEADER];
     if (!req.rawBody || typeof signature !== 'string') {
@@ -46,6 +49,16 @@ export class PaymentsController {
 
     await this.paymentsService.handleWiPayWebhook(req.rawBody.toString('utf8'), signature);
     return { received: true };
+  }
+
+  @Get('returns/wipay')
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @ApiOperation({ summary: 'Verify the WiPay hosted checkout browser return' })
+  wiPayReturn(
+    @Query() query: Record<string, unknown>,
+  ): Promise<{ status: 'VERIFIED' | 'UNVERIFIED' }> {
+    return this.paymentsService.handleWiPayReturn(query);
   }
 
   @Patch(':id/mark-paid')
