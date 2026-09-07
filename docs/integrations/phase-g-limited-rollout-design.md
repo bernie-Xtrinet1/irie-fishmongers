@@ -176,15 +176,44 @@ createdAt
 updatedAt
 ```
 
-Choose ONE audit representation in G.1:
+G.1 selects **B: append-only participant revisions**, following the existing DB
+configuration pattern. `CheckoutRolloutParticipant` stores `id`, `customerId`,
+`enabled`, nullable `cohort`, required `reason`, `actorId`, per-customer `revision`,
+and `createdAt`. Highest revision per customer is the sole current authority;
+prior state is the preceding row. First/latest revisions supply creation/update
+actor and timestamp without redundant mutable fields.
+
+Writes acquire a transaction-scoped advisory lock on the namespaced customer ID,
+read current state under ReadCommitted, compare the expected revision, and insert
+one row. `null` expects no membership. Stale callers conflict; there is no automatic
+retry over a newer revision. A unique `(customerId, revision)` index is a second
+fence. There is no mutable current row or separate audit table, so a failed insert
+cannot advance current policy independently of history. Normal repository APIs
+expose no historical update/delete; privileged database maintenance is not
+restricted by an immutability trigger.
+
+IDs use existing User TEXT/UUID conventions and restrictive FKs. Account status
+updates preserve history. Membership is not authentication, role validation, or
+admin authorization; future callers retain those duties and pass trusted IDs.
+Cohort is null or a 1-64 character alphanumeric/underscore/hyphen label beginning
+alphanumeric. Reason is trimmed and 3-500 characters. SQL adds domain CHECKs along
+with the unique index and FKs. History is keyset-paged by revision (default 50,
+maximum 200). Every accepted state submission appends a reasoned revision,
+including same-state submissions with the current expected revision.
+
+`evaluateParticipation(customerId)` distinguishes ENABLED, DISABLED, NOT_FOUND,
+and LOOKUP_FAILED, with explicit enabled boolean and nullable membership metadata.
+Malformed IDs are rejected; lookup errors never become NOT_FOUND. No cache exists.
+The module has no controller or production importer and cannot change attempts,
+orders, payments, reservations, or engine mode.
+
+The alternatives approved in G.0A were:
 
 A. Mutable participant state plus immutable history committed atomically; or
 B. Append-only participant revisions following a proven configuration pattern.
 
-Do not maintain competing authorities. The preferred unique-customer shape is
-for current participant state; an append-only design must adapt uniqueness and
-current-revision selection coherently rather than prohibit revision history.
-That exact schema decision is not made here.
+Only B is implemented. The preferred unique-customer current-row sketch above is
+replaced by per-customer revision uniqueness, not a second current-state model.
 
 Policy identity derives from authenticated/server context. No email matching,
 client-supplied cohort authority, percentage rollout, or wildcard participants.
@@ -235,7 +264,7 @@ These are deliberately not resolved by architecture approval:
 
 | Detail | Owning slice |
 |---|---|
-| Exact participant audit representation and schema constraints | G.1 |
+| Participant audit representation and schema constraints | Resolved in G.1 above: append-only per-customer revisions |
 | Exact durable field/location for selected path | G.2b |
 | Exact server-issued checkout-key endpoint/contract | G.2b |
 | Exact shadow comparison data obtainable without mutation | G.2a |

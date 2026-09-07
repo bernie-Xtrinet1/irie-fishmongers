@@ -1392,3 +1392,53 @@ one at a time via the existing `assign()` flow).
   batch runner. The platform-wide dashboard average is scoped to APPROVED
   vendors. Recall counts are deduped per distinct recall (one recall across
   three lots deducts once).
+
+## Phase G.1: Inactive checkout rollout policy
+
+`CheckoutRolloutParticipant` maps to `checkout_rollout_participants`. It is an
+append-only membership history, not a checkout dispatcher or reservation mode.
+The highest revision for a customer is the sole current authority. Earlier rows
+preserve prior state; no separate mutable current row or competing audit table
+exists. See [Phase G design](integrations/phase-g-limited-rollout-design.md).
+
+| Column | Constraint / meaning |
+|---|---|
+| id | TEXT primary key; Prisma-generated UUID, matching User ID conventions |
+| customerId | Required User FK, ON DELETE RESTRICT / ON UPDATE CASCADE |
+| enabled | Required boolean, default false; eligibility information only |
+| cohort | Nullable VARCHAR(64); diagnostic label, never independent authority |
+| reason | Required VARCHAR(500); trimmed 3-500 character operational audit reason |
+| actorId | Required User FK, ON DELETE RESTRICT / ON UPDATE CASCADE; trusted server actor |
+| revision | Positive INTEGER; increments from 1 within each customer's history |
+| createdAt | TIMESTAMP(3), default CURRENT_TIMESTAMP; timestamp of this revision |
+
+The unique `(customerId, revision)` index supports current/history queries and
+prevents duplicate revision authority. Migration
+`20260907000000_add_checkout_rollout_policy` adds only this table, index, foreign
+keys, and CHECKs for positive revision, cohort syntax, and trimmed reason length.
+The CHECKs are SQL-maintained because Prisma schema syntax does not represent
+them. Cohort syntax is `[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}` or null.
+
+`CheckoutRolloutParticipantsRepository.appendIfCurrent` opens a ReadCommitted
+transaction with a 5-second timeout, takes
+`pg_advisory_xact_lock(hashtext('checkout_rollout_participant:' + customerId))`,
+then reads and compares the current revision before appending. Null expected
+revision means create only; stale create/update fails. Hash collisions merely
+serialize unrelated customers. The lock releases on transaction end. No separate
+audit insert can fail after a current-state update: the revision itself is both
+state and audit. Prior state is available from revision N-1.
+
+Repository APIs never update/delete history. This is the existing application
+immutability convention, not protection against privileged SQL maintenance.
+Service writes take customer/actor separately from state payloads; G.3 remains
+responsible for authorizing actors. User status changes are supported without
+erasing history; membership does not replace account/role authorization.
+
+Policy evaluation freshly reads by server customer ID and returns ENABLED,
+DISABLED, NOT_FOUND, or LOOKUP_FAILED. The last three never enable membership.
+It accepts no email/cohort authority and uses no cache or Redis. History reads
+are ascending revision pages, default 50 and maximum 200.
+
+The module is inactive and has no controllers or production importers. Disable
+means ineligible for future new-path admission only. No attempts, orders,
+payments, reservations, routing, or schedulers are changed by participation.

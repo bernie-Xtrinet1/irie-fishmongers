@@ -75,6 +75,8 @@ model User {
   reviewsAuthored              Review[]                      @relation("ReviewAuthor")
   reviewsRemoved               Review[]                      @relation("ReviewRemovedBy")
   reviewModerationActions      ReviewAuditLog[]              @relation("ReviewModerationActor")
+  checkoutRolloutRevisions     CheckoutRolloutParticipant[]  @relation("CheckoutRolloutCustomer")
+  checkoutRolloutChanges       CheckoutRolloutParticipant[]  @relation("CheckoutRolloutActor")
 
   @@map("users")
 }
@@ -2085,6 +2087,26 @@ model VendorDowngradeEvent {
 // VendorAssignment created) - a "no eligible vendor" outcome is itself an
 // auditable fact, not an error to discard.
 // -----------------------------------------------------------------------------
+
+// G.1: append-only policy history, not a routing or reservation-mode switch.
+// Highest revision per customer is current; prior state is the preceding revision.
+// Writes compare expected revision under a per-customer transaction advisory lock.
+model CheckoutRolloutParticipant {
+  id         String   @id @default(uuid())
+  customerId String
+  enabled    Boolean  @default(false)
+  cohort     String?  @db.VarChar(64)
+  reason     String   @db.VarChar(500)
+  actorId    String
+  revision   Int
+  createdAt  DateTime @default(now())
+
+  customer User @relation("CheckoutRolloutCustomer", fields: [customerId], references: [id], onDelete: Restrict)
+  actor    User @relation("CheckoutRolloutActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, revision])
+  @@map("checkout_rollout_participants")
+}
 
 // Append-only, mirrors SettlementRateConfig/PlatformCommissionConfig:
 // toggling a mode creates a new row rather than mutating the current one.
