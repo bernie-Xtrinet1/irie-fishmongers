@@ -267,7 +267,7 @@ These are deliberately not resolved by architecture approval:
 | Participant audit representation and schema constraints | Resolved in G.1 above: append-only per-customer revisions |
 | Exact durable field/location for selected path | G.2b |
 | Exact server-issued checkout-key endpoint/contract | G.2b |
-| Exact shadow comparison data obtainable without mutation | G.2a |
+| Exact shadow comparison data obtainable without mutation | G.2a inactive boundary below |
 | Exact checkout worker schedule and batch values | G.PR1 |
 | Exact advisory-lock key and transaction/session semantics | G.PR1 |
 | Exact telemetry sink/dashboard implementation | G.2a, verified in G.5 |
@@ -276,3 +276,120 @@ These are deliberately not resolved by architecture approval:
 The closed architecture decisions permit consideration of inactive G.1 without
 requiring later caller/worker implementation first. They do not assert that
 those activation prerequisites are complete or authorize implementation now.
+
+## G.2a implemented boundary — inactive read-only observations
+
+`CheckoutShadowModule` has no controller and is absent from the production Nest
+module graph. Only its comparison service is exported. There is no runtime hook,
+request DTO, public API, or authoritative caller. `POST /orders/checkout` still
+calls `OrdersService.checkout()`; production customer behavior is unchanged.
+G.2a does not complete G.2b, recovery, admin controls, rollback, or G.6 activation.
+
+The internal `compare({ authenticatedCustomerId, cartId })` boundary expects
+server-authenticated identity, verifies persisted cart ownership, and reads
+quantities from persisted CartItems. It does not trust supplied quantities,
+cohorts, or rollout flags. A future caller must derive identity from the existing
+authenticated server context, never a client claim. G.1 policy is deliberately
+not consulted or mutated here: invoking this inactive diagnostic is not evidence
+of participation and cannot authorize a path. G.1 remains inactive and unchanged.
+
+### Inspected read capabilities
+
+| Dependency | Exact operation and purpose |
+|---|---|
+| CartRepository | `findById`: existing cart identity, customer ownership, currency |
+| PriceLockRepository | `findCartWideLockState`: persisted item set, quantities, lock fields |
+| ProductsRepository | `findById`: existence, active status, stock, current price/currency |
+| ReservationEngineModeConfigRepository | `findCurrent`: highest revision, default LEGACY if absent |
+| RedisService | `hgetall` on the legacy product hash; `get` on own reservation, product total, and suspect key |
+
+The adapter exposes only these read capabilities. It reuses the existing Redis
+key builders, reservation entry version, and price-lock TTL. No shared read or
+mutation implementation was changed. It does not call `OrdersService.prepareCheckout()`
+because that reaches `findOrCreateByCustomerId()`. It does not call
+`getActiveReservation()` or cart-excluding availability because those may release
+expired reservations or set suspect flags for malformed entries. It reads the
+stored representation without repair, renewal, expiry cleanup, or reconciliation.
+No coordinator, attempt, payment, reservation mutation, or G.1 service is injected.
+
+### Supported comparisons and limits
+
+Each comparable persisted cart line reports its observation-local ordinal,
+requested quantity, product stock, legacy available quantity, cart-scoped
+available quantity, each engine's quantity-admissibility boolean, and whether
+the existing valid locked price/currency equals current product price/currency.
+No customer/cart/product identifiers or price amounts are included in the result.
+
+Legacy availability ignores expired entries, excludes the requesting cart, and
+floors stock minus others' reservations at zero. Cart-scoped availability floors
+stock minus (stored product total minus validated own active quantity) at zero.
+Missing total or own entry is not invented as a trustworthy zero. Suspect,
+malformed, negative/nonfinite, inconsistent total, expired own, and
+CHECKOUT_PENDING state produce UNAVAILABLE without any write. A suspect marker
+is observed; divergence history, sync backlog, and aggregate freshness are not
+reconciled or certified. Missing/inactive products and DRAINING are unavailable.
+
+Existing complete, unexpired locks can be compared read-only. Missing locks
+produce `PRICE_LOCK_REQUIRED`; partial/currency-invalid/future-dated locks produce
+`PRICE_LOCK_INVALID`; expired locks produce `PRICE_LOCK_EXPIRED`. No lock is
+issued, repaired, or reconfirmed. Price mismatch is diagnostic, not permission
+to replace a customer's locked price.
+
+Observations span separate database and Redis reads and are **not atomic**.
+There is one persisted cart item set, not a proof that two engine snapshots saw
+the same set. MATCH means only the reported availability and price observations
+agree; both engines may agree that quantity is insufficient. The result always
+includes `checkoutEligibility: 'UNAVAILABLE'`. Full eligibility (vendor/lot safety,
+sales limits, delivery constraints, price issuance, pending-attempt ownership,
+marking, transaction races and order/payment outcomes) is not simulated. No result
+is an admission grant or a substitute for authoritative validation.
+
+`CheckoutShadowResult` is discriminated by `status`:
+
+- MATCH: `MATCH`.
+- MISMATCH: `AVAILABILITY_DIFFERS` or `PRICE_DIFFERS`, with availability taking
+  precedence when both differ.
+- UNAVAILABLE: `CART_MISSING`, `OWNERSHIP_MISMATCH`, `CART_EMPTY`,
+  `PRODUCT_MISSING`, `PRODUCT_INACTIVE`, `MISSING_REQUIRED_READ_DATA`,
+  `NO_COMPARABLE_CART_SCOPED_STATE`, `RESERVATION_SUSPECT`,
+  `RESERVATION_STATE_INVALID`, `RESERVATION_EXPIRED`,
+  `CHECKOUT_PENDING_NOT_COMPARED`, `PRICE_LOCK_REQUIRED`, `PRICE_LOCK_INVALID`,
+  `PRICE_LOCK_EXPIRED`, or `MODE_NOT_ADMITTING`.
+- ERROR: `READ_FAILURE`; raw exceptions and partial data are discarded.
+
+UNAVAILABLE may retain already-completed earlier line observations; callers must
+not treat these as a complete cart comparison. Every result includes engine mode
+(or null when unknown), comparisons, and the unavailable full-eligibility marker.
+
+### Structured telemetry and future integration
+
+The Nest Logger sink emits only `checkout_shadow_comparison` with an explicit
+allowlist: `event`, `schemaVersion: 1`, ISO `timestamp`, bounded `engineMode` or
+null, bounded `outcome`, bounded `reasonCode`, and finite nonnegative `durationMs`
+capped at one day. It never spreads caller data or logs comparisons, IDs, raw
+exceptions, credentials, tokens, idempotency keys, provider queries, or PII.
+
+`checkout_path_selected`, `checkout_success`, `checkout_failure`, and
+`reservation_conflict` names are reserved in the shared contract, not emitted.
+Their event-specific payload integration remains future work. No path is selected.
+No established injectable request/operation correlation provider was found, so
+requestId/operationId are omitted instead of inventing another correlation system.
+selectedPath/policyRevision/cohort are also omitted because no authoritative
+selection or policy observation occurred. Future integration must reuse the
+approved server correlation source before supplying these fields. No metrics
+framework or labels were added; there is no high-cardinality metric risk.
+
+Read exceptions become ERROR. Telemetry validation, serialization, and logger
+exceptions are swallowed at both the telemetry and comparison boundaries. The
+inactive service cannot affect an HTTP response, transaction, rollback, or route.
+There is no production latency claim: any later runtime observation hook requires
+separate approval for ownership-checked input acquisition, a bounded/non-blocking
+execution budget, correlation propagation, and failure isolation outside the
+authoritative transaction. Do not insert a call into OrdersService or its
+controller as part of this slice.
+
+Checkout SHADOW is strictly read-only. Reservation MIRROR remains its existing
+dual-write mechanism; MIRROR and CART_SCOPED semantics and the reservation mode
+enum are unchanged. Tests cover guarded real repository/Redis wrappers, real
+Postgres READ ONLY transactions and Redis state snapshots, bounded comparison
+failures and telemetry, and the actual Nest module graph's inactive boundary.
