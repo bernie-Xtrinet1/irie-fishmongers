@@ -35,6 +35,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      selectedPath: 'CART_SCOPED',
       id: 'attempt-1',
       idempotencyKey,
       cartId,
@@ -56,6 +57,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
     prisma.checkoutAttempt.findUnique.mockResolvedValue(existing);
 
     const result = await repository.createOrGetByIdempotencyKey({
+      selectedPath: 'CART_SCOPED',
       idempotencyKey,
       cartId,
       customerId,
@@ -71,7 +73,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
     prisma.checkoutAttempt.create.mockRejectedValue(error);
 
     await expect(
-      repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now }),
+      repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now }),
     ).rejects.toBe(error);
     expect(prisma.checkoutAttempt.findUnique).not.toHaveBeenCalled();
   });
@@ -84,7 +86,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
     prisma.checkoutAttempt.create.mockRejectedValue(error);
 
     await expect(
-      repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now }),
+      repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now }),
     ).rejects.toBe(error);
     expect(prisma.checkoutAttempt.findUnique).not.toHaveBeenCalled();
   });
@@ -94,7 +96,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
     prisma.checkoutAttempt.create.mockRejectedValue(error);
 
     await expect(
-      repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now }),
+      repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now }),
     ).rejects.toBe(error);
   });
 
@@ -103,7 +105,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
     prisma.checkoutAttempt.findUnique.mockResolvedValue(null);
 
     await expect(
-      repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now }),
+      repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now }),
     ).rejects.toThrow('Internal consistency error');
   });
 });

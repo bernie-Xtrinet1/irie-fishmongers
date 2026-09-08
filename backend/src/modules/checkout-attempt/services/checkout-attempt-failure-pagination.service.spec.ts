@@ -27,6 +27,7 @@ describe('CheckoutAttemptService (failure transition and stale pagination)', () 
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      selectedPath: 'CART_SCOPED',
       id: attemptId,
       idempotencyKey: 'idem-key-1',
       cartId: 'cart-1',
@@ -227,6 +228,7 @@ describe('CheckoutAttemptService (failure transition and stale pagination)', () 
         ok: true,
         page: {
           items: rows.map((row) => ({
+            selectedPath: 'CART_SCOPED',
             id: row.id,
             idempotencyKey: row.idempotencyKey,
             cartId: row.cartId,

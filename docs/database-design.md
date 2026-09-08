@@ -1442,3 +1442,14 @@ are ascending revision pages, default 50 and maximum 200.
 The module is inactive and has no controllers or production importers. Disable
 means ineligible for future new-path admission only. No attempts, orders,
 payments, reservations, routing, or schedulers are changed by participation.
+
+### G.PR0 checkout path ownership
+
+CheckoutAttempt.selectedPath is nullable CheckoutPath (LEGACY or CART_SCOPED).
+The additive migration preserves historical rows as NULL, with no default or
+backfill. New application creation requires a server-selected path; normal
+lifecycle APIs never update it. Unknown ownership fails closed for replay and
+recovery. Atomic stale fencing reuses PROCESSING -> FAILED with the fixed
+STALE_RECOVERY_FENCED code and exact observed-heartbeat/customer/path predicates;
+no revision/lease column or other table change is introduced. See the Phase G
+limited-rollout design for concurrency and future cleanup responsibilities.

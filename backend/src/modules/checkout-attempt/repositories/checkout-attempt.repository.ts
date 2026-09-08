@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { CheckoutAttempt, Prisma } from '@prisma/client';
+import { CheckoutAttempt, CheckoutPath, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
-import { StaleCheckoutAttemptCursor } from '../types/checkout-attempt.types';
+import { FenceStaleCheckoutAttemptInput, StaleCheckoutAttemptCursor } from '../types/checkout-attempt.types';
 
 export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
@@ -24,14 +24,19 @@ export class CheckoutAttemptRepository {
   // just created. Never a find-then-create sequence, which would leave an
   // unguarded race window.
   async createOrGetByIdempotencyKey(input: {
+    selectedPath: CheckoutPath;
     idempotencyKey: string;
     cartId: string;
     customerId: string;
     now: Date;
   }): Promise<{ attempt: CheckoutAttempt; created: boolean }> {
+    if (!Object.values(CheckoutPath).includes(input.selectedPath)) {
+      throw new Error('Explicit server-selected checkout path required');
+    }
     try {
       const attempt = await this.prisma.checkoutAttempt.create({
         data: {
+          selectedPath: input.selectedPath,
           idempotencyKey: input.idempotencyKey,
           cartId: input.cartId,
           customerId: input.customerId,
@@ -65,6 +70,28 @@ export class CheckoutAttemptRepository {
 
   findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<CheckoutAttempt | null> {
     return client.checkoutAttempt.findUnique({ where: { id } });
+  }
+
+  // Consume the observation by terminally fencing PROCESSING. Merely checking
+  // H1 without changing state would allow duplicate claims and late commits.
+  // No reservation, order, payment, or path write is performed here.
+  fenceStaleProcessing(input: FenceStaleCheckoutAttemptInput): Promise<{ count: number }> {
+    // Prisma omits undefined filter values: never let an untyped caller turn
+    // a missing path/heartbeat into an unconditional PROCESSING transition.
+    if (!input.attemptId || !input.customerId || !Object.values(CheckoutPath).includes(input.selectedPath) ||
+        !(input.observedHeartbeatAt instanceof Date) || !Number.isFinite(input.observedHeartbeatAt.getTime()) ||
+        !(input.staleBefore instanceof Date) || !Number.isFinite(input.staleBefore.getTime()) ||
+        !(input.now instanceof Date) || !Number.isFinite(input.now.getTime()) ||
+        input.observedHeartbeatAt >= input.staleBefore || input.staleBefore > input.now) {
+      return Promise.resolve({ count: 0 });
+    }
+    return this.prisma.checkoutAttempt.updateMany({
+      where: { id: input.attemptId, customerId: input.customerId,
+        selectedPath: input.selectedPath, status: 'PROCESSING', orderId: null,
+        lastHeartbeatAt: { equals: input.observedHeartbeatAt, lt: input.staleBefore } },
+      data: { status: 'FAILED', failureCode: 'STALE_RECOVERY_FENCED',
+        failureMessage: null, updatedAt: input.now },
+    });
   }
 
   // Phase 16A.0-D.2.1. Read-only - no write, no lastHeartbeatAt mutation.

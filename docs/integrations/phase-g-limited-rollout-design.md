@@ -85,7 +85,8 @@ fail safely rather than create another order.
 
 The selected path must ultimately be recorded against an authoritative checkout
 identity/attempt so dispatchers, retries, recovery, and emergency stops agree.
-The exact field/location is open for G.2b. No dispatcher is implemented in G.0A.
+G.PR0 records this as nullable `CheckoutAttempt.selectedPath` (details below).
+No dispatcher is implemented in G.0A or G.PR0.
 
 ## Decision 3: Checkout SHADOW is read-only
 
@@ -233,6 +234,7 @@ information, not permission to bypass caller/recovery prerequisites.
 | G.0A | Architecture decision closure; documentation only. |
 | G.1 | Inactive participant/policy persistence, immutable audit, unit/repository tests; no routing. |
 | G.2a | Read-only checkout shadow comparison and structured rollout telemetry; legacy authoritative. |
+| G.PR0 | Inactive durable attempt path ownership and atomic stale-observation fencing prerequisite. |
 | G.PR1 | Distributed ownership and stale-attempt/heartbeat/CHECKOUT_PENDING operational worker. |
 | G.2b | Caller preparation and inactive dispatcher: issued key, price-lock boundary, durable path ownership, coordinator integration; activation disabled. |
 | G.3 | Admin participant controls and new-admission stop. |
@@ -265,7 +267,7 @@ These are deliberately not resolved by architecture approval:
 | Detail | Owning slice |
 |---|---|
 | Participant audit representation and schema constraints | Resolved in G.1 above: append-only per-customer revisions |
-| Exact durable field/location for selected path | G.2b |
+| Exact durable field/location for selected path | Resolved in G.PR0 below |
 | Exact server-issued checkout-key endpoint/contract | G.2b |
 | Exact shadow comparison data obtainable without mutation | G.2a inactive boundary below |
 | Exact checkout worker schedule and batch values | G.PR1 |
@@ -393,3 +395,84 @@ dual-write mechanism; MIRROR and CART_SCOPED semantics and the reservation mode
 enum are unchanged. Tests cover guarded real repository/Redis wrappers, real
 Postgres READ ONLY transactions and Redis state snapshots, bounded comparison
 failures and telemetry, and the actual Nest module graph's inactive boundary.
+
+## G.PR0 — durable path ownership and stale-observation fencing
+
+G.PR0 is non-activating. G.PR1's distributed scheduler remains unimplemented;
+G.2b routing and G.6 activation remain separate. OrdersController and legacy
+OrdersService.checkout() are unchanged; the coordinator remains inactive.
+
+Creation inspection found one application chain: CheckoutCoordinatorService ->
+CheckoutAttemptService.createOrResume -> CheckoutAttemptRepository.createOrGetByIdempotencyKey.
+Legacy checkout does not create CheckoutAttempt. Repository/concurrency tests also
+create attempts directly through the repository. No application seed/manual tool
+or SQL migration that creates attempt data was found. This proves the current
+application chain, not the provenance of every persisted historical row.
+
+`CheckoutPath` has only LEGACY and CART_SCOPED. Nullable `selectedPath` represents
+unknown historical ownership; SHADOW never owns an attempt. The additive migration
+adds the enum and nullable column without a default or backfill. Older writers
+therefore also leave unknown ownership, which fails closed. No unrelated table,
+version column, index, or reservation mode is added. Classifying unknown rows later
+requires separately reviewed provenance; runtime code must never guess their path.
+
+New repository/service creation requires an explicit server-selected path. The
+inactive coordinator hardcodes CART_SCOPED, ignoring extra client DTO fields. New
+admission will eventually select a path before or at creation; no LEGACY admission
+caller is added here. Path is returned by inspection/replay and stale discovery.
+Existing unknown or different ownership is rejected by the coordinator before
+cart preparation, order replay, reservations, or payment calls. A race that finds
+an existing differently owned key at creation also fails closed.
+
+Normal application APIs cannot rewrite selectedPath: creation writes it once;
+create-or-get never updates existing rows; heartbeat, commit, failure and fencing
+updates omit it. This is application API immutability, not a database trigger
+preventing privileged administrative SQL. Participant disable affects future
+admission only. Neither replay nor fencing consults rollout policy; disable or
+lookup failure cannot move an existing operation to LEGACY.
+
+### Atomic stale fence
+
+CheckoutAttemptStaleFencingService.fence accepts server-owned attempt/customer/path,
+observedHeartbeatAt, staleBefore and now. Dates must be valid and ordered:
+observedHeartbeatAt < staleBefore <= now. lastHeartbeatAt is non-null in the schema.
+The repository guards missing/undefined filters as well, because Prisma would
+otherwise omit them. One conditional UPDATE requires all of:
+
+- matching attempt ID, customer and selectedPath;
+- PROCESSING, no orderId;
+- lastHeartbeatAt exactly equals observedHeartbeatAt and is before staleBefore.
+
+Success changes only attempt status to FAILED, failureCode to STALE_RECOVERY_FENCED,
+failureMessage to null, and updatedAt. It returns FENCED. This is a terminal fence,
+not a renewable claim or a no-op eligibility check. It deliberately consumes the
+observation without a new version/lease column. The original heartbeat and path
+remain unchanged. Duplicate fencing returns ALREADY_FAILED. There is no automatic
+reset to PROCESSING, no replacement attempt, and no reservation/order/payment write.
+
+On zero matched rows, a diagnostic reread returns NOT_FOUND, OWNERSHIP_MISMATCH,
+UNKNOWN_PATH, PATH_MISMATCH, ALREADY_COMMITTED, ALREADY_FAILED or STALE_OBSERVATION.
+It never retries using the refreshed heartbeat. Invalid input returns INVALID_INPUT.
+Storage failures propagate to the future worker; they do not authorize cleanup.
+A later diagnostic read may see newer state; only FENCED proves this invocation
+won the atomic transition.
+
+A heartbeat H2 that wins first makes an H1 fence fail. A commit that wins first
+leaves the committed attempt/order/payment intact. If the fence wins, existing
+PROCESSING guards reject later heartbeats and commit. The coordinator already
+rolls back order creation when markCommittedInTransaction rejects that transition.
+These races use ordinary PostgreSQL conditional-update row locking, not scheduler
+advisory locks.
+
+FENCED does not mean Redis recovery completed. G.PR1 must separately discover and
+idempotently clean up FAILED attempts (including STALE_RECOVERY_FENCED) after a
+crash between fencing and cleanup. It must also discover pending/committed cleanup
+work; stale PROCESSING paging alone is insufficient. Unknown paths require manual
+classification, never guessed cleanup. No pending lease is weakened or extended by
+G.PR0, and no payment is initiated, reconciled, refunded or downgraded.
+
+G.PR1's distributed scheduler lock will serialize worker cycles. This per-attempt
+fence protects against live coordinator/heartbeat races. They solve different
+problems and both are required; neither activates new admissions. Pending lease
+extension and committed cleanup still need their own reviewed G.PR1 execution
+boundary. G.PR0 does not claim the entire recovery worker is complete.

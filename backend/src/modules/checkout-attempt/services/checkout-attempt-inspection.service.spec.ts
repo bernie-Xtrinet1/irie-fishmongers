@@ -25,6 +25,7 @@ describe('CheckoutAttemptService.inspectByIdempotencyKey', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      selectedPath: 'CART_SCOPED',
       id: 'attempt-1',
       idempotencyKey,
       cartId,

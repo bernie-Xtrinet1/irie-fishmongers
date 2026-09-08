@@ -543,6 +543,11 @@ enum CheckoutAttemptStatus {
   FAILED
 }
 
+enum CheckoutPath {
+  LEGACY
+  CART_SCOPED
+}
+
 model CheckoutAttempt {
   id              String                @id @default(uuid())
   idempotencyKey  String                @unique
@@ -555,6 +560,8 @@ model CheckoutAttempt {
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
   lastHeartbeatAt DateTime              @default(now())
+  // NULL means historical ownership is unknown; never infer from current policy.
+  selectedPath    CheckoutPath?
 
   cart     Cart   @relation(fields: [cartId], references: [id], onDelete: Restrict)
   customer User   @relation(fields: [customerId], references: [id], onDelete: Restrict)

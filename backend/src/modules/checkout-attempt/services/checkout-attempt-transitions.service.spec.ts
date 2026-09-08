@@ -32,6 +32,7 @@ describe('CheckoutAttemptService (heartbeat and commit transitions)', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      selectedPath: 'CART_SCOPED',
       id: attemptId,
       idempotencyKey: 'idem-key-1',
       cartId: 'cart-1',

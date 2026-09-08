@@ -93,6 +93,9 @@ export class CheckoutCoordinatorService {
     // an artificial global lock, merely to force every concurrent loser
     // toward one specific response shape.
     const preflight = await this.checkoutAttempt.inspectByIdempotencyKey(customerId, idempotencyKey);
+    if ('attempt' in preflight && preflight.attempt.selectedPath !== 'CART_SCOPED') {
+      return { ok: false, code: 'CHECKOUT_PATH_MISMATCH' };
+    }
     if (preflight.action === 'ALREADY_COMMITTED') {
       return this.replayCommitted(customerId, preflight.attempt.id, preflight.attempt.orderId);
     }
@@ -130,13 +133,14 @@ export class CheckoutCoordinatorService {
     const { plan } = reconciliation;
 
     const attemptResult = await this.checkoutAttempt.createOrResume({
+      selectedPath: 'CART_SCOPED',
       idempotencyKey,
       cartId: prepared.cart.id,
       customerId,
       now,
     });
     if (!attemptResult.ok) {
-      return { ok: false, code: 'IDEMPOTENCY_KEY_CONFLICT' };
+      return { ok: false, code: attemptResult.code };
     }
 
     if (attemptResult.action === 'RESUMED_PROCESSING') {

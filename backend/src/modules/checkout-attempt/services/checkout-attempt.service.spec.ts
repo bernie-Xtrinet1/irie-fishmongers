@@ -27,6 +27,7 @@ describe('CheckoutAttemptService', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      selectedPath: 'CART_SCOPED',
       id: 'attempt-1',
       idempotencyKey,
       cartId,
@@ -54,10 +55,11 @@ describe('CheckoutAttemptService', () => {
       const attempt = buildAttempt();
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: true });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: true, action: 'CREATED', attempt: toSummary(attempt) });
       expect(repository.createOrGetByIdempotencyKey).toHaveBeenCalledWith({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -69,7 +71,7 @@ describe('CheckoutAttemptService', () => {
       const attempt = buildAttempt({ status: 'PROCESSING' });
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: false });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: true, action: 'RESUMED_PROCESSING', attempt: toSummary(attempt) });
     });
@@ -78,7 +80,7 @@ describe('CheckoutAttemptService', () => {
       const attempt = buildAttempt({ status: 'COMMITTED', orderId: 'order-1' });
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: false });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: true, action: 'ALREADY_COMMITTED', attempt: toSummary(attempt) });
     });
@@ -91,7 +93,7 @@ describe('CheckoutAttemptService', () => {
       });
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: false });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: true, action: 'ALREADY_FAILED', attempt: toSummary(attempt) });
       expect(JSON.stringify(result)).not.toContain('internal diagnostic detail');
@@ -101,7 +103,7 @@ describe('CheckoutAttemptService', () => {
       const attempt = buildAttempt({ customerId: 'someone-else' });
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: false });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: false, code: 'IDEMPOTENCY_KEY_CONFLICT' });
       expect(JSON.stringify(result)).not.toContain('someone-else');
@@ -111,7 +113,7 @@ describe('CheckoutAttemptService', () => {
       const attempt = buildAttempt({ cartId: 'a-different-cart' });
       repository.createOrGetByIdempotencyKey.mockResolvedValue({ attempt, created: false });
 
-      const result = await service.createOrResume({ idempotencyKey, cartId, customerId, now });
+      const result = await service.createOrResume({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       expect(result).toEqual({ ok: false, code: 'IDEMPOTENCY_KEY_CONFLICT' });
       expect(JSON.stringify(result)).not.toContain('a-different-cart');

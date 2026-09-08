@@ -38,6 +38,7 @@ export class CheckoutAttemptService {
     input: CreateOrResumeCheckoutAttemptInput,
   ): Promise<CreateOrResumeCheckoutAttemptResult> {
     const { attempt, created } = await this.repository.createOrGetByIdempotencyKey({
+      selectedPath: input.selectedPath,
       idempotencyKey: input.idempotencyKey,
       cartId: input.cartId,
       customerId: input.customerId,
@@ -54,6 +55,10 @@ export class CheckoutAttemptService {
     }
 
     const summary = CheckoutAttemptService.toSummary(attempt);
+
+    if (attempt.selectedPath === null || attempt.selectedPath !== input.selectedPath) {
+      return { ok: false, code: 'CHECKOUT_PATH_MISMATCH' };
+    }
 
     if (created) {
       return { ok: true, action: 'CREATED', attempt: summary };
@@ -108,6 +113,7 @@ export class CheckoutAttemptService {
   // never includes failureMessage (see CheckoutAttemptSummary).
   private static toSummary(attempt: CheckoutAttempt): CheckoutAttemptSummary {
     return {
+      selectedPath: attempt.selectedPath,
       id: attempt.id,
       idempotencyKey: attempt.idempotencyKey,
       cartId: attempt.cartId,
@@ -280,6 +286,7 @@ export class CheckoutAttemptService {
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
     const items = pageRows.map((row) => ({
+      selectedPath: row.selectedPath,
       id: row.id,
       idempotencyKey: row.idempotencyKey,
       cartId: row.cartId,

@@ -80,6 +80,7 @@ describe('CheckoutAttemptRepository', () => {
       const now = new Date();
 
       const { attempt, created } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -98,9 +99,10 @@ describe('CheckoutAttemptRepository', () => {
     it('resumes the same row on a same key/same ownership retry, without mutating it', async () => {
       const idempotencyKey = idem();
       const now = new Date();
-      const first = await repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now });
+      const first = await repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now });
 
       const second = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -116,6 +118,7 @@ describe('CheckoutAttemptRepository', () => {
       const idempotencyKey = idem();
       const now = new Date();
       const original = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -123,6 +126,7 @@ describe('CheckoutAttemptRepository', () => {
       });
 
       const reused = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId: otherCartId,
         customerId: otherCustomerId,
@@ -138,6 +142,7 @@ describe('CheckoutAttemptRepository', () => {
       const idempotencyKey = idem();
       const now = new Date();
       const original = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -145,6 +150,7 @@ describe('CheckoutAttemptRepository', () => {
       });
 
       const reused = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId: otherCartId,
         customerId,
@@ -166,6 +172,7 @@ describe('CheckoutAttemptRepository', () => {
       const idempotencyKey = idem();
       const now = new Date();
       const { attempt: created } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey,
         cartId,
         customerId,
@@ -183,6 +190,7 @@ describe('CheckoutAttemptRepository', () => {
     it('updates a PROCESSING row owned by the given customer', async () => {
       const now = new Date();
       const { attempt } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey: idem(),
         cartId,
         customerId,
@@ -200,6 +208,7 @@ describe('CheckoutAttemptRepository', () => {
     it('matches zero rows for a regressive heartbeat', async () => {
       const now = new Date();
       const { attempt } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey: idem(),
         cartId,
         customerId,
@@ -215,6 +224,7 @@ describe('CheckoutAttemptRepository', () => {
     it('matches zero rows for a different customer', async () => {
       const now = new Date();
       const { attempt } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey: idem(),
         cartId,
         customerId,
@@ -231,6 +241,7 @@ describe('CheckoutAttemptRepository', () => {
     it('transitions PROCESSING to FAILED', async () => {
       const now = new Date();
       const { attempt } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey: idem(),
         cartId,
         customerId,
@@ -254,6 +265,7 @@ describe('CheckoutAttemptRepository', () => {
     it('matches zero rows once already FAILED', async () => {
       const now = new Date();
       const { attempt } = await repository.createOrGetByIdempotencyKey({
+        selectedPath: 'CART_SCOPED',
         idempotencyKey: idem(),
         cartId,
         customerId,

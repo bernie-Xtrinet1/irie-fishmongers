@@ -66,7 +66,7 @@ export function buildPriceLockOk(
 export function buildAttemptSummary(
   overrides: Partial<{ id: string; orderId: string | null; failureCode: string | null }> = {},
 ) {
-  return {
+  return { selectedPath: 'CART_SCOPED' as const,
     id: 'attempt-1',
     idempotencyKey: 'key-1',
     cartId: 'cart-1',

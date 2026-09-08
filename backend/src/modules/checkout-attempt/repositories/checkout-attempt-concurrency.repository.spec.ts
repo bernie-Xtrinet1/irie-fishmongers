@@ -60,7 +60,7 @@ describe('CheckoutAttemptRepository (concurrency, pagination, transactions)', ()
 
     const results = await Promise.all(
       Array.from({ length: 5 }, () =>
-        repository.createOrGetByIdempotencyKey({ idempotencyKey, cartId, customerId, now }),
+        repository.createOrGetByIdempotencyKey({ selectedPath: 'CART_SCOPED', idempotencyKey, cartId, customerId, now }),
       ),
     );
 
@@ -75,6 +75,7 @@ describe('CheckoutAttemptRepository (concurrency, pagination, transactions)', ()
     const attempts = await Promise.all(
       Array.from({ length: 5 }, () =>
         repository.createOrGetByIdempotencyKey({
+          selectedPath: 'CART_SCOPED',
           idempotencyKey: idem(),
           cartId,
           customerId,
@@ -109,6 +110,7 @@ describe('CheckoutAttemptRepository (concurrency, pagination, transactions)', ()
     const idempotencyKey = idem();
     const now = new Date();
     const { attempt } = await repository.createOrGetByIdempotencyKey({
+      selectedPath: 'CART_SCOPED',
       idempotencyKey,
       cartId,
       customerId,
@@ -144,6 +146,7 @@ describe('CheckoutAttemptRepository (concurrency, pagination, transactions)', ()
     const idempotencyKey = idem();
     const now = new Date();
     const { attempt } = await repository.createOrGetByIdempotencyKey({
+      selectedPath: 'CART_SCOPED',
       idempotencyKey,
       cartId,
       customerId,

@@ -369,6 +369,21 @@ describe('CheckoutCoordinatorService', () => {
   });
 
   describe('structural', () => {
+    it.each([null, 'LEGACY'] as const)('rejects replay with %s ownership before cart/order/payment calls', async (selectedPath) => {
+      checkoutAttempt.inspectByIdempotencyKey.mockResolvedValue({ action: 'ALREADY_COMMITTED',
+        attempt: { ...buildAttemptSummary(), selectedPath, orderId: 'existing-order' } });
+      expect(await service.checkout('user-1', 'key-1', checkoutDto, now))
+        .toEqual({ ok: false, code: 'CHECKOUT_PATH_MISMATCH' });
+      expect(ordersService.prepareCheckout).not.toHaveBeenCalled();
+      expect(ordersService.getCustomerOrderById).not.toHaveBeenCalled();
+      expect(checkoutAttempt.createOrResume).not.toHaveBeenCalled();
+      expect(checkoutReservationState.checkoutMark).not.toHaveBeenCalled();
+      expect(paymentsService.initiatePayment).not.toHaveBeenCalled();
+    });
+    it('chooses CART_SCOPED internally rather than trusting extra request fields', async () => {
+      await service.checkout('user-1', 'key-1', { ...checkoutDto, selectedPath: 'LEGACY' } as typeof checkoutDto, now);
+      expect(checkoutAttempt.createOrResume).toHaveBeenCalledWith(expect.objectContaining({ selectedPath: 'CART_SCOPED' }));
+    });
     it('depends on exactly the approved dependency set - no ReservationGateway, lease/reconciliation, mode, or mirror-compensation service', () => {
       expect(CheckoutCoordinatorService.length).toBe(8);
     });

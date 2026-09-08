@@ -1,4 +1,4 @@
-import { CheckoutAttemptStatus } from '@prisma/client';
+import { CheckoutAttemptStatus, CheckoutPath } from '@prisma/client';
 
 // Public result/type contracts for CheckoutAttemptRepository/
 // CheckoutAttemptService (Phase 16A.0-A - see
@@ -25,6 +25,7 @@ export interface CheckoutAttemptInputValidationFailure {
 // Callers that need the raw stored failureMessage for internal/operational purposes must read
 // it through a dedicated, explicitly-scoped method - none exists yet.
 export interface CheckoutAttemptSummary {
+  selectedPath: CheckoutPath | null;
   id: string;
   idempotencyKey: string;
   cartId: string;
@@ -44,6 +45,7 @@ export interface CheckoutAttemptSummary {
 // privacy requirement. Structured logs, not this result, may distinguish
 // the mismatch type.
 export interface CreateOrResumeCheckoutAttemptInput {
+  selectedPath: CheckoutPath;
   idempotencyKey: string;
   cartId: string;
   customerId: string;
@@ -55,7 +57,7 @@ export type CreateOrResumeCheckoutAttemptResult =
   | { ok: true; action: 'RESUMED_PROCESSING'; attempt: CheckoutAttemptSummary }
   | { ok: true; action: 'ALREADY_COMMITTED'; attempt: CheckoutAttemptSummary }
   | { ok: true; action: 'ALREADY_FAILED'; attempt: CheckoutAttemptSummary }
-  | { ok: false; code: 'IDEMPOTENCY_KEY_CONFLICT' };
+  | { ok: false; code: 'IDEMPOTENCY_KEY_CONFLICT' | 'CHECKOUT_PATH_MISMATCH' };
 
 // inspectByIdempotencyKey (Phase 16A.0-D.2.1) - a read-only preflight so a
 // caller can resolve an already-COMMITTED/PROCESSING/FAILED attempt
@@ -111,6 +113,7 @@ export interface FindStaleCheckoutAttemptsInput {
 // Only the fields a scheduler needs to act - never failureCode/
 // failureMessage, keeping the bulk-scan payload lean.
 export interface CheckoutAttemptStaleCandidate {
+  selectedPath: CheckoutPath | null;
   id: string;
   idempotencyKey: string;
   cartId: string;
@@ -125,4 +128,20 @@ export interface StaleCheckoutAttemptPage {
 
 export type FindStaleCheckoutAttemptsResult =
   | { ok: true; page: StaleCheckoutAttemptPage }
+  | CheckoutAttemptInputValidationFailure;
+
+// Server-internal input: no public request DTO or rollout-policy dependency.
+export interface FenceStaleCheckoutAttemptInput {
+  attemptId: string;
+  customerId: string;
+  selectedPath: CheckoutPath;
+  observedHeartbeatAt: Date;
+  staleBefore: Date;
+  now: Date;
+}
+
+export type FenceStaleCheckoutAttemptResult =
+  | { ok: true; outcome: 'FENCED' }
+  | { ok: false; code: 'STALE_OBSERVATION' | 'ALREADY_COMMITTED' | 'ALREADY_FAILED' |
+      'NOT_FOUND' | 'OWNERSHIP_MISMATCH' | 'UNKNOWN_PATH' | 'PATH_MISMATCH' }
   | CheckoutAttemptInputValidationFailure;
