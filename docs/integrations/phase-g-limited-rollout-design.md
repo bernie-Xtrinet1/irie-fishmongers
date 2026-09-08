@@ -484,7 +484,7 @@ It imports only configuration, PostgreSQL, Redis and CheckoutAttemptModule;
 it provides the existing key-scoped reservation recovery service directly.
 OrdersController still calls OrdersService.checkout(). No coordinator admission,
 participant routing, payment call, or new checkout endpoint is introduced.
-G.2b/G.3/G.4/G.5/G.6 remain separate, incomplete phases.
+G.2b's inactive dispatcher is described below; G.3/G.4/G.5/G.6 remain incomplete.
 
 The scheduler runs once per minute. Existing conditional ScheduleModule wiring
 honors ENABLE_SCHEDULER at application startup; this is not a live emergency stop.
@@ -556,7 +556,7 @@ provider payloads, secrets or raw exceptions.
 ## G.PR2 — durable operation issuance and price-lock binding (inactive)
 
 G.PR2 resolves the G.2b identity/replay stop condition with one additive
-CheckoutOperation model. G.2b itself remains unimplemented. CheckoutOperationModule
+CheckoutOperation model. G.2b's inactive integration is described below. CheckoutOperationModule
 has no controller and is not registered in the production import graph. Existing
 POST /orders/checkout still calls OrdersService.checkout(); no participant/cohort
 is routed and CART_SCOPED production admission remains disabled.
@@ -643,5 +643,91 @@ No participant policy is imported or consulted. G.PR1 still recovers solely from
 CheckoutAttempt and does not depend on CheckoutOperation. No payment initiation,
 WiPay, refund, webhook, reservation mode, frontend or CI behavior changes. No new
 telemetry or high-cardinality labels are emitted. Future transport exposure of the
-server identity is undecided. G.2b dispatcher/admission integration and
-G.3/G.4/G.5/G.6 remain separate work.
+server identity is undecided. G.2b's internal dispatcher is described below;
+production admission integration and G.3/G.4/G.5/G.6 remain separate work.
+
+## G.2b — internal caller preparation and inactive dispatcher
+
+CheckoutDispatchModule packages CheckoutDispatchService with CheckoutModule,
+CheckoutAttemptModule, CheckoutOperationModule, CheckoutShadowModule and the
+existing OrdersModule. It has no controller and is absent from AppModule's actual
+production import graph. POST /orders/checkout still calls OrdersService.checkout().
+There is no issuance endpoint, frontend/admin change, participant routing or
+CART_SCOPED customer activation. G.3/G.4/G.5/G.6 are not implemented.
+
+The internal input contains authenticated/server-owned customerId and cartId,
+client retryKey, CheckoutDto and server time. It rejects extra outer/DTO fields
+(including operationKey, selectedPath, participant/cohort and attempt identity),
+invalid identity/time and invalid DTO values. A future HTTP adapter must obtain
+customerId from authenticated context, never trust a body-supplied identity.
+There is no HTTP binding here. G.PR2 issue() remains the sole retry hashing,
+ownership and server operation identity authority; there is no second key or map.
+
+Ordering is explicit: issue/resolve operation, inspect CheckoutAttempt by the
+stored operationKey, and only then consider new admission/preparation if no
+attempt exists. issue() still validates the durable cart/customer relation; it
+does not require cart lines. Existing attempts are protected by restrictive cart
+foreign keys, and a committed checkout clears lines rather than deleting its cart.
+
+Existing attempts require matching customer, cart, operationKey/idempotencyKey and
+non-NULL equal executable paths. Unknown attempt paths, NULL operation paths or
+any disagreement return PATH_MISMATCH without repair, assignment or fallback.
+CheckoutAttempt remains authoritative: an operation is never overwritten to fit
+an attempt. COMMITTED uses the same customer-owned order read as coordinator
+replay, without preparing the cleared cart or calling the coordinator/payment
+again. PROCESSING returns CHECKOUT_ALREADY_IN_PROGRESS. FAILED returns
+CHECKOUT_ALREADY_FAILED with the existing failureCode. All three bypass admission,
+participant state, shadow comparison and price preparation.
+
+CheckoutAdmissionService is a server-side injectable abstraction with LEGACY,
+CART_SCOPED, SHADOW and DENY outcomes. Its installed implementation always returns
+LEGACY; tests inject decisions. No G.1 service or participant repository is imported.
+Decision failure returns UNAVAILABLE, not an activating fallback. A previously
+assigned operation path cannot be replaced by a different admission decision.
+
+For a new CART_SCOPED execution, assignPath performs G.PR2's assign-once operation,
+prepare validates/binds the current price fingerprint, and the coordinator receives
+exactly customerId, operation.operationKey, trusted CheckoutDto and now. The
+coordinator alone creates the attempt at its existing lifecycle point. Preparation
+rejection returns RECONFIRM_REQUIRED without coordinator or legacy execution.
+After coordinator interaction the dispatcher rechecks durable ownership/path and,
+for success, the committed order ID. A coordinator rejection before attempt creation
+is allowed; success without its consistent committed attempt fails closed.
+
+LEGACY assigns the operation's LEGACY path and calls the existing OrdersService
+checkout method. It creates no synthetic CheckoutAttempt and requires no price
+locks. Existing legacy retry guarantees are unchanged: G.PR2 operation issuance
+alone does not make legacy order creation exactly-once or add a durable legacy
+result mapping.
+
+SHADOW calls only G.2a compare() for observation, then invokes authoritative legacy
+checkout. The comparison neither assigns CheckoutPath nor prepares prices, creates
+attempts/orders/payments, mutates reservations or invokes the coordinator. Its
+failure cannot turn a successful legacy result into failure. The authoritative
+legacy executor still performs its normal writes. DENY returns ADMISSION_DENIED;
+only the already-issued operation may exist, with no path assignment, preparation,
+attempt, order or payment from that branch.
+
+The dispatcher emits no logs or rollout telemetry, returns no operation key, and
+maps unexpected failures to UNAVAILABLE without raw error content. Existing
+components retain their own established logging and domain responses. A failure
+after coordinator commit is resolved by the next same-operation attempt-first
+replay, never by a new key or legacy fallback. G.PR1 recovery is unchanged and
+continues to depend only on CheckoutAttempt. WiPay/payment implementation is
+unchanged; the only new CART_SCOPED execution call is through the existing saga.
+
+Preparation is an execution-time check, not a cart freeze or cross-system
+transaction. A concurrent winner can appear after the initial attempt lookup;
+existing coordinator unique-key guards remain authoritative, and a concurrent
+preparation loser may need a same-key retry. No new guarantee is added for mixed
+concurrent legacy/shadow/admission decisions. Transport exposure, real admission
+configuration, operational rollout controls and production activation remain
+separately reviewed work.
+
+Tests exercise the actual inactive Nest module graph and a real service-level
+PostgreSQL/Redis saga: issue operation, assign CART_SCOPED, bind fingerprint,
+commit attempt/order/payment, clear cart lines, disable participation/change cohort,
+then replay with a failing admission provider and a preparation tripwire. Replay
+returns the same order with one operation, attempt, order and payment and no second
+coordinator/payment call. Other tests cover existing status/path failures, client
+overrides, expiry/cart-change rejection, safe default and legacy/shadow/deny effects.
