@@ -46,6 +46,7 @@ model User {
   cart                         Cart?
   orders                       Order[]
   checkoutAttempts             CheckoutAttempt[]
+  checkoutOperations           CheckoutOperation[]
   cartItemAddAttempts          CartItemAddAttempt[]
   temperatureReadings          TemperatureReading[]
   qualityInspections           QualityInspection[]
@@ -257,6 +258,7 @@ model Cart {
   customer              User                          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items                 CartItem[]
   checkoutAttempts      CheckoutAttempt[]
+  checkoutOperations    CheckoutOperation[]
   compensations         CartReservationCompensation[]
   reservationSyncStates CartReservationSyncState[]
   itemAddAttempts       CartItemAddAttempt[]
@@ -340,7 +342,7 @@ enum CartReservationSyncBlockReason {
 // DA.1B's recovery worker exists - included in this migration now so
 // DA.1B never needs a second schema change for the same table.
 model CartReservationSyncState {
-  id                      String                    @id @default(uuid())
+  id                      String                          @id @default(uuid())
   cartId                  String
   productId               String
   // The CartItem.mutationVersion this row's expectedQuantity reflects as
@@ -355,7 +357,7 @@ model CartReservationSyncState {
   // absolute-quantity contract, which is what makes idempotent
   // reassertion safe in the first place.
   expectedQuantity        Int?
-  status                  CartReservationSyncStatus @default(PENDING)
+  status                  CartReservationSyncStatus       @default(PENDING)
   // Phase 16A.0-DA, Unit DA.4B. Why this row is currently BLOCKED - null
   // whenever status is not BLOCKED. See CartReservationSyncBlockReason.
   blockReason             CartReservationSyncBlockReason?
@@ -374,16 +376,16 @@ model CartReservationSyncState {
   // The permanent logical generation for this (cartId, productId) pair -
   // see the model-level comment. Advances on every write to this row,
   // including compensation attempts, for as long as the row exists.
-  generation              Int                       @default(0)
-  attemptCount            Int                       @default(0)
+  generation              Int                             @default(0)
+  attemptCount            Int                             @default(0)
   lastError               String?
   processingStartedAt     DateTime?
   // Non-null once the current generation's desired Redis state has been
   // confirmed - never deleted, only set. A later mutation's upsert clears
   // it back to null (there is new, unconfirmed desired state again).
   resolvedAt              DateTime?
-  createdAt               DateTime                  @default(now())
-  updatedAt               DateTime                  @updatedAt
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
 
   cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -436,22 +438,22 @@ enum CartItemAddAttemptStatus {
 // deleting or re-creating the row, so its identity and audit trail survive
 // exactly like every other permanent attempt/marker table in this schema.
 model CartItemAddAttempt {
-  id                String                    @id @default(uuid())
-  idempotencyKey    String
-  customerId        String
-  cartId            String
-  productId         String
-  requestedQuantity Int
-  status            CartItemAddAttemptStatus  @default(PROCESSING)
-  attemptCount      Int                       @default(1)
-  rejectionCode     String?
-  rejectionMessage  String?
-  resultCartItemId  String?
-  resultQuantity    Int?
+  id                    String                   @id @default(uuid())
+  idempotencyKey        String
+  customerId            String
+  cartId                String
+  productId             String
+  requestedQuantity     Int
+  status                CartItemAddAttemptStatus @default(PROCESSING)
+  attemptCount          Int                      @default(1)
+  rejectionCode         String?
+  rejectionMessage      String?
+  resultCartItemId      String?
+  resultQuantity        Int?
   resultMutationVersion Int?
-  resultGeneration  Int?
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
+  resultGeneration      Int?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
   customer User    @relation(fields: [customerId], references: [id], onDelete: Restrict)
   cart     Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
@@ -546,6 +548,25 @@ enum CheckoutAttemptStatus {
 enum CheckoutPath {
   LEGACY
   CART_SCOPED
+}
+
+model CheckoutOperation {
+  id                   String        @id @default(uuid())
+  customerId           String
+  cartId               String
+  retryKeyHash         String        @db.VarChar(64)
+  operationKey         String        @unique @db.VarChar(36)
+  selectedPath         CheckoutPath?
+  priceLockFingerprint String?       @db.VarChar(64)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  cart     Cart @relation(fields: [cartId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, retryKeyHash])
+  @@index([cartId])
+  @@map("checkout_operations")
 }
 
 model CheckoutAttempt {
@@ -673,20 +694,20 @@ enum PaymentInitiationStatus {
 }
 
 model Payment {
-  id                String              @id @default(uuid())
-  orderId           String              @unique
-  provider          PaymentProviderName
-  status            PaymentStatus       @default(PENDING)
-  initiationStatus  PaymentInitiationStatus @default(NOT_STARTED)
-  amount            Decimal             @db.Decimal(10, 2)
-  currency          String              @default("JMD")
-  providerReference     String?
-  failureReason         String?
-  paidAt                DateTime?
-  recoveryAttemptCount  Int                 @default(0)
-  recoveryStartedAt     DateTime?
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  id                   String                  @id @default(uuid())
+  orderId              String                  @unique
+  provider             PaymentProviderName
+  status               PaymentStatus           @default(PENDING)
+  initiationStatus     PaymentInitiationStatus @default(NOT_STARTED)
+  amount               Decimal                 @db.Decimal(10, 2)
+  currency             String                  @default("JMD")
+  providerReference    String?
+  failureReason        String?
+  paidAt               DateTime?
+  recoveryAttemptCount Int                     @default(0)
+  recoveryStartedAt    DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   refunds Refund[]

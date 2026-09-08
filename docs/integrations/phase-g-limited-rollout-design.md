@@ -552,3 +552,96 @@ and checkout_recovery_failed. The allowlisted envelope contains event,
 schemaVersion, timestamp, bounded reasonCode/outcome/selectedPath and clamped
 nonnegative durationMs. It contains no customer/cart/attempt IDs, checkout keys,
 provider payloads, secrets or raw exceptions.
+
+## G.PR2 — durable operation issuance and price-lock binding (inactive)
+
+G.PR2 resolves the G.2b identity/replay stop condition with one additive
+CheckoutOperation model. G.2b itself remains unimplemented. CheckoutOperationModule
+has no controller and is not registered in the production import graph. Existing
+POST /orders/checkout still calls OrdersService.checkout(); no participant/cohort
+is routed and CART_SCOPED production admission remains disabled.
+
+The client retry identity is only a customer-scoped lookup handle. Internal issue
+accepts authenticated customerId, cartId and retryKey, rejects extra fields, and
+validates persisted cart ownership. Retry keys contain 1–128 printable ASCII
+characters excluding spaces (bytes 0x21–0x7e). No trimming, case folding or Unicode
+normalization occurs. The stored lookup is lowercase hex SHA-256 over UTF-8
+`checkout-retry-v1` followed by one NUL byte and the exact retry key. Raw retry
+material is never persisted or logged. Hash equality defines retry equality;
+a theoretical SHA-256 collision within one customer resolves to the same mapping
+(and fails closed for a different cart). This relies on SHA-256 collision
+resistance, not recoverable encryption. The hash is not an authentication token.
+
+The repository creates a cryptographically random UUID v4 operationKey using
+Node crypto.randomUUID(), independent of all customer text. This 36-character
+identity is globally unique and compatible with the coordinator's key validator;
+it is intended to become CheckoutAttempt.idempotencyKey in G.2b. The distinct
+row id is also a UUID. A unique (customerId,retryKeyHash) mapping makes response-loss
+retries return the same committed operation; a conflicting cart is rejected.
+Cart ownership is checked before resolution, so another customer's cart is
+rejected without revealing a mapping. Existing Cart.customerId uniqueness means
+one current cart per customer. Restrictive user/cart foreign keys preserve durable
+audit ownership; no historical attempts are backfilled or rewritten.
+
+Issuance, path assignment and preparation use PostgreSQL SERIALIZABLE transactions.
+Serialization/unique-constraint races have at most three attempts; exhaustion is
+an infrastructure failure, never a fresh identity fallback. Only the committed
+unique-key winner is returned. All retried callbacks perform database work only.
+There is no Redis or provider operation inside these transactions.
+
+selectedPath starts NULL. A trusted server-only assignPath method uses a conditional
+NULL-to-path update: LEGACY and CART_SCOPED are accepted, same-path replay succeeds,
+and switching paths fails. SHADOW is rejected. Issuance cannot accept a client path,
+operation key, fingerprint or cohort override. There is no HTTP binding to the
+assignment method. No CheckoutAttempt is pre-created. Once an attempt exists its
+selectedPath remains authoritative; future G.2b must require operation/attempt
+path agreement and may not recompute ownership from policy.
+
+Preparation preserves the existing PriceLockService lifecycle. An optional
+transaction client allows creation and cart-wide validation to share the operation
+transaction; existing callers retain their original behavior. First preparation
+creates only missing locks through the existing service, which rejects partial,
+expired and inconsistent locks. It validates the complete cart and binds the
+fingerprint only when the stored value is NULL. No operation-specific price-lock
+rows or new price-lock lifecycle is introduced. A normal rejected preparation may
+leave earlier valid locks from the same transaction; they are reused on retry.
+An exception rolls the whole transaction back.
+
+Fingerprint v1 is lowercase hex SHA-256 of UTF-8 JSON with this fixed array layout:
+
+```text
+["checkout-price-lock-v1", cartId, cartCurrency,
+ [[cartItemId, productId, quantity, mutationVersion,
+   lockedUnitPrice, lockedCurrency, priceLockedAt], ...]]
+```
+
+Lines sort by cartItemId using ordinal string comparison. Prices use the existing
+validated Prisma Decimal.toString() representation; timestamps use ISO UTC with
+millisecond precision. The payload contains no locale-dependent formatting or
+object-key ordering. mutationVersion comes from the same serializable snapshot
+and catches quantity changes even when a later change restores the old quantity.
+Line identity detects removal/recreation. Lock timestamp detects reconfirmation.
+
+After binding, replay only reads/validates and compares fingerprints. Changed
+contents, quantity/version, locked price, currency, lock timestamp, missing/partial
+locks or expiry return RECONFIRM_REQUIRED. The fingerprint is never overwritten;
+replay never creates a missing lock, silently refreshes an expired lock or reads
+current product prices to reprice an existing lock. Vendor price changes alone do
+not invalidate a still-valid stored lock, preserving existing pricing semantics.
+
+Crash boundaries: committed issuance survives response loss; valid locks committed
+before interruption can be bound later without repricing; failure before binding
+inside the preparation transaction rolls back newly created locks; committed
+binding survives interruption and subsequent workers validate the same digest.
+These guarantees are PostgreSQL-only, not cross-system atomicity. Preparation is
+a point-in-time binding, not a cart freeze. A later mutation requires revalidation;
+future G.2b must validate at its execution boundary and respect committed-attempt
+replay before reading a cart cleared by checkout. Expired/changed operations need
+an explicitly reviewed reconfirmation/new-operation flow; none is activated here.
+
+No participant policy is imported or consulted. G.PR1 still recovers solely from
+CheckoutAttempt and does not depend on CheckoutOperation. No payment initiation,
+WiPay, refund, webhook, reservation mode, frontend or CI behavior changes. No new
+telemetry or high-cardinality labels are emitted. Future transport exposure of the
+server identity is undecided. G.2b dispatcher/admission integration and
+G.3/G.4/G.5/G.6 remain separate work.

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { CartItem } from '@prisma/client';
+import { CartItem, Prisma } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
@@ -35,8 +35,8 @@ export class PriceLockService {
     private readonly priceLockRepository: PriceLockRepository,
   ) {}
 
-  async createPriceLock(input: CreatePriceLockInput): Promise<CreatePriceLockResult> {
-    return this.prisma.$transaction(async (tx) => {
+  async createPriceLock(input: CreatePriceLockInput, client?: Prisma.TransactionClient): Promise<CreatePriceLockResult> {
+    const execute = async (tx: Prisma.TransactionClient): Promise<CreatePriceLockResult> => {
       const item = await this.cartRepository.findItemById(input.cartId, input.cartItemId, tx);
       if (!item) {
         return { ok: false, code: 'CART_ITEM_NOT_FOUND' };
@@ -141,7 +141,8 @@ export class PriceLockService {
         winnerClassification,
         input.now,
       );
-    });
+    };
+    return client ? execute(client) : this.prisma.$transaction(execute);
   }
 
   async reconfirmPrice(input: ReconfirmPriceInput): Promise<ReconfirmPriceResult> {
@@ -261,8 +262,9 @@ export class PriceLockService {
     cartId: string,
     customerId: string,
     now: Date,
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
   ): Promise<ValidateCartPriceLocksResult> {
-    const cart = await this.cartRepository.findById(cartId);
+    const cart = await this.cartRepository.findById(cartId, client);
     if (!cart) {
       return { ok: false, code: 'CART_NOT_FOUND' };
     }
@@ -270,7 +272,7 @@ export class PriceLockService {
       return { ok: false, code: 'OWNERSHIP_MISMATCH' };
     }
 
-    const items = await this.priceLockRepository.findCartWideLockState(cartId);
+    const items = await this.priceLockRepository.findCartWideLockState(cartId, client);
     if (items.length === 0) {
       return { ok: false, code: 'CART_EMPTY' };
     }
