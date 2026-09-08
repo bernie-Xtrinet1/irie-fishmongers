@@ -398,7 +398,7 @@ failures and telemetry, and the actual Nest module graph's inactive boundary.
 
 ## G.PR0 — durable path ownership and stale-observation fencing
 
-G.PR0 is non-activating. G.PR1's distributed scheduler remains unimplemented;
+G.PR0 is non-activating. G.PR1's recovery-only scheduler is described below;
 G.2b routing and G.6 activation remain separate. OrdersController and legacy
 OrdersService.checkout() are unchanged; the coordinator remains inactive.
 
@@ -476,3 +476,79 @@ fence protects against live coordinator/heartbeat races. They solve different
 problems and both are required; neither activates new admissions. Pending lease
 extension and committed cleanup still need their own reviewed G.PR1 execution
 boundary. G.PR0 does not claim the entire recovery worker is complete.
+
+## G.PR1 — operational recovery, without checkout admission
+
+`CheckoutRecoveryModule` is imported by AppModule and exposes no controller.
+It imports only configuration, PostgreSQL, Redis and CheckoutAttemptModule;
+it provides the existing key-scoped reservation recovery service directly.
+OrdersController still calls OrdersService.checkout(). No coordinator admission,
+participant routing, payment call, or new checkout endpoint is introduced.
+G.2b/G.3/G.4/G.5/G.6 remain separate, incomplete phases.
+
+The scheduler runs once per minute. Existing conditional ScheduleModule wiring
+honors ENABLE_SCHEDULER at application startup; this is not a live emergency stop.
+A local overlap guard is an optimization. Distributed ownership uses PostgreSQL
+`pg_try_advisory_lock(1128811348, 1)` (CHKT namespace, recovery version 1) on a
+separate Prisma client with a one-connection pool. This requires a direct session,
+not a transaction pooler; explicit `pgbouncer=true` fails closed. Acquisition is
+nonblocking and contention is a successful skip. The same session holds the lock
+through discovery, fencing and Redis cleanup, releases in finally, and disconnects.
+PostgreSQL termination releases ownership. PID and pg_locks assertions reject
+reconnected/lost sessions before subsequent work and after external effects.
+An already-dispatched Redis command cannot be recalled after connection loss;
+key-scoped idempotence and the durable fence make such overlap safe. Fencing uses
+the normal repository connection and commits before Redis: an outer transaction
+must never roll back the fence after cleanup has happened.
+
+Each cycle fetches at most 100 FAILED cleanup obligations and 100 stale PROCESSING
+candidates (plus the existing one-row stale-page lookahead: 201 fetched rows).
+There are at most 100 fence calls and 200 cleanup calls, with no table-draining
+loop. Stale paging retains the existing strict heartbeat cutoff (180 seconds),
+ascending `(lastHeartbeatAt,id)` keyset order, default 100 and cap 200. It excludes
+FAILED and COMMITTED. A narrow repository query adds FAILED discovery using
+`failureCode=STALE_RECOVERY_FENCED`, `orderId=null`, the same ordering and cap.
+No migration or cleanup-complete column is required.
+
+For PROCESSING CART_SCOPED candidates, only G.PR0's FENCED result authorizes
+cleanup. Its atomic exact-heartbeat/owner/path/status guard changes PROCESSING to
+FAILED, persists STALE_RECOVERY_FENCED, and preserves heartbeat and selectedPath.
+A heartbeat or commit race rejects cleanup; the worker never refreshes and retries
+the fence merely to force success. NULL ownership is UNKNOWN_PATH; unsupported
+LEGACY is UNSUPPORTED_LEGACY. Both are skipped without mutation or policy lookup.
+Participant enablement, disablement, cohort, revision and lookup health cannot
+change durable recovery ownership.
+
+A fence followed by a crash before Redis leaves a discoverable FAILED obligation.
+A new worker resumes it using the durable cart ID and checkout idempotency key,
+never logging either. Existing checkoutRevert restores matching unexpired pending
+reservations to ACTIVE or deletes expired matching reservations and decrements
+reservation totals once. Other checkout keys and ACTIVE reservations are untouched.
+Repeated cleanup is idempotent. Completed obligations remain in the bounded query:
+in-memory cursors rotate through the backlog, then reset for retries; process
+restart resets cursors and safely repeats earlier rows. There is no persistent
+completion watermark. Repeated restarts can delay later pages, and a growing
+historical backlog increases sweep latency. Limits bound candidate count, not
+wall-clock cycle duration or the number of reservations within an existing cart.
+
+The worker does not globally discover pending or committed reservations. The
+existing pending reconciler remains unchanged: freshness and initial lease are
+180 seconds, hard pending limit 600 seconds, future skew allowance 30 seconds.
+There is no safe global bounded discovery contract for those inputs in this phase;
+no Redis scan, lease extension, committed finalization or guessed ownership is
+added. `checkout_pending_recovered` denotes cleanup of a previously fenced FAILED
+obligation only, not general pending reconciliation.
+
+Payment reconciliation stays in its existing domain. Recovery does not create
+attempts, orders or payments, call WiPay, recreate ambiguous initiation, cancel a
+committed order, or downgrade PAID. COMMITTED attempts are outside both queries.
+One cleanup failure produces a bounded outcome and leaves the obligation for a
+later sweep while other candidates continue. Discovery or advisory ownership
+failure aborts the cycle and releases the lock. Logger failure is contained.
+
+Telemetry events are scheduler_lock_acquired, scheduler_lock_skipped,
+checkout_attempt_recovered, checkout_pending_recovered, checkout_recovery_skipped
+and checkout_recovery_failed. The allowlisted envelope contains event,
+schemaVersion, timestamp, bounded reasonCode/outcome/selectedPath and clamped
+nonnegative durationMs. It contains no customer/cart/attempt IDs, checkout keys,
+provider payloads, secrets or raw exceptions.

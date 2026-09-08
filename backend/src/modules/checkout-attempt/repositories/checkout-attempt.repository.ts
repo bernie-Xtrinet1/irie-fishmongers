@@ -165,4 +165,33 @@ export class CheckoutAttemptRepository {
       take: input.limit,
     });
   }
+
+  // Durable G.PR0 obligations, including fences followed by a process crash.
+  // Completed rows remain safe to revisit; keyset sweep progress is not a claim.
+  findFencedCleanupPage(input: {
+    cursor: StaleCheckoutAttemptCursor | null;
+    limit?: number;
+  }): Promise<CheckoutAttempt[]> {
+    const limit = input.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new Error('Cleanup page limit must be between 1 and 200');
+    }
+    return this.prisma.checkoutAttempt.findMany({
+      where: {
+        status: 'FAILED',
+        failureCode: 'STALE_RECOVERY_FENCED',
+        orderId: null,
+        ...(input.cursor
+          ? {
+              OR: [
+                { lastHeartbeatAt: { gt: input.cursor.lastHeartbeatAt } },
+                { lastHeartbeatAt: input.cursor.lastHeartbeatAt, id: { gt: input.cursor.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ lastHeartbeatAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+  }
 }
