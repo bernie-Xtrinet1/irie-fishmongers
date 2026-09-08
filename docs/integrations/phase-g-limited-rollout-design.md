@@ -237,7 +237,8 @@ information, not permission to bypass caller/recovery prerequisites.
 | G.PR0 | Inactive durable attempt path ownership and atomic stale-observation fencing prerequisite. |
 | G.PR1 | Distributed ownership and stale-attempt/heartbeat/CHECKOUT_PENDING operational worker. |
 | G.2b | Caller preparation and inactive dispatcher: issued key, price-lock boundary, durable path ownership, coordinator integration; activation disabled. |
-| G.3 | Admin participant controls and new-admission stop. |
+| G.3a | Inactive durable admin control plane; advisory evaluation only. |
+| G.3b | Future atomic policy check and executable path assignment; not implemented. |
 | G.4 | Rollback/drain/failure-injection verification; no bypass of Phase H gates. |
 | G.5 | Isolated integration/regression evidence and acceptance thresholds. |
 | G.6 | Staged activation only after separate explicit approval. |
@@ -731,3 +732,88 @@ then replay with a failing admission provider and a preparation tripwire. Replay
 returns the same order with one operation, attempt, order and payment and no second
 coordinator/payment call. Other tests cover existing status/path failures, client
 overrides, expiry/cart-change rejection, safe default and legacy/shadow/deny effects.
+
+## G.3a — inactive rollout control plane
+
+CheckoutRolloutAdminModule is reachable from AppModule for authenticated admin
+policy administration only. It imports authentication, Prisma and the existing
+G.1 participant module. It does not import CheckoutDispatchModule or invoke
+coordinator, order, payment, reservation or price preparation execution. Earlier
+G.1 module nonreachability statements describe that slice's original boundary;
+participant administration is now reachable, while participant-based routing is
+still inactive. G.3b/G.4/G.5/G.6 remain unimplemented.
+
+CheckoutRolloutControlRevision stores append-only global revisions with an id,
+unique revision, newAdmissionStopped, policy behavior, nullable eligible cohort,
+reason, authenticated actor and createdAt. CheckoutRolloutBehavior is separate
+from CheckoutPath and includes LEGACY, CART_SCOPED, SHADOW and DENY. No operation
+or attempt schema changed. The additive migration requires no backfill. Database
+CHECKs mirror G.1's positive revision, cohort-label and trimmed reason constraints;
+the actor FK is restrictive.
+
+The first revision is 1. expectedRevision=null means first-write only; subsequent
+writes must match the current revision exactly. A short ReadCommitted transaction
+acquires pg_advisory_xact_lock(1196634962, 1), reads the latest revision, checks the
+expectation and actor, and appends current+1. Concurrent writers have one winner;
+stale writers receive HTTP 409. The two-int key is a dedicated global rollout
+namespace reserved for future G.3b synchronization. Transaction commit/rollback
+releases the lock. No external calls or telemetry run while it is held. State is
+read from PostgreSQL without a positive process-local authority cache.
+
+All six routes use JwtAuthGuard, RolesGuard and ADMINISTRATOR under API_PREFIX:
+
+| Method | Route | Purpose |
+|---|---|---|
+| POST | /checkout-rollout/control-revisions | Append global revision |
+| GET | /checkout-rollout/status | Configured/absent/unavailable state and activation |
+| GET | /checkout-rollout/control-revisions | Global revision history |
+| POST | /checkout-rollout/participants/:customerId/revisions | Existing G.1 append |
+| GET | /checkout-rollout/participants/:customerId | Current participant or absence |
+| GET | /checkout-rollout/participants/:customerId/revisions | G.1 history |
+
+Actor comes from CurrentUser, never request-body identity. Strict DTOs reject
+unknown fields and validate revision, reason, behavior, cohort and customer UUID.
+Histories use afterRevision (default 0) and limit (default 50, maximum 200).
+There are no update/delete history APIs and no frontend/admin UI changes.
+
+Status distinguishes CONFIGURED, ABSENT and UNAVAILABLE. The latter two return
+control=null and newAdmissionStopped=null, not a fabricated stopped database
+record. In every case productionDispatcherActive=false and
+legacyEndpointAffected=false. Participant lookup errors remain errors rather than
+being reported as absence. The current production POST /orders/checkout still
+calls OrdersService.checkout(); global stop is not a platform-wide checkout stop.
+
+InactiveRolloutPolicyService evaluates only hypothetical unassigned work. Missing
+global state or global/participant lookup failure returns an unavailable DENY.
+Global stop and explicit DENY precede participant reads. Missing/disabled
+participation and eligible-cohort mismatch deny. A null eligible cohort imposes no
+cohort restriction, but still requires enabled participation. Otherwise the stored
+LEGACY/CART_SCOPED/SHADOW behavior is returned with advisoryOnly=true and
+productionDispatcherActive=false. The evaluator has no operation/attempt mutation
+dependencies and is not wired to CheckoutAdmissionService or CheckoutDispatchService.
+SHADOW remains policy behavior only, never an executable CheckoutPath.
+
+G.3b must later combine fresh authoritative global and participant reads,
+synchronization and NULL-to-executable-path assignment in the approved atomic
+protocol. Durable admission is the committed first executable path assignment
+under that policy check. A G.3a preliminary evaluation is not admission authority.
+G.PR2 assignPath and the current G.2b flow are unchanged here; this phase implements
+neither their atomic integration nor assigned-operation policy bypass. Existing
+attempts retain path/replay authority. Recovery and payment reconciliation remain
+independent of administrative stops. No scheduler or reservation mode changed.
+
+Administrative rows preserve resulting state, actor, reason, revision and time.
+The application offers append/read only. The inspected migration/scripts provide
+no dedicated append-only database role, UPDATE/DELETE revocation or immutability
+trigger for these tables. CHECKs, uniqueness and FKs enforce data integrity, not
+tamper-proof history; privileged SQL can still modify rows. Deployment privileges
+require separate operational review. Bounded telemetry records only mutation or
+evaluation category/outcome and productionDispatcherActive=false; no actor,
+customer, cart, retry/operation key, provider identifier, arbitrary cohort or
+free-text reason is copied into operational logs. Immutable administrative audit
+is separate from these best-effort events.
+
+LEGACY checkout still lacks a durable attempt/result mapping for lost-response
+replay. Policy administration does not solve legacy exactly-once, and does not
+route production legacy requests through the dispatcher. Production activation,
+atomic admission, rollback/drain and evidence thresholds remain separate work.

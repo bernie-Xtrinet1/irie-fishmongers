@@ -5,7 +5,7 @@ import { CheckoutRolloutParticipantsRepository } from './repositories/checkout-r
 import { CheckoutRolloutParticipantsService } from './services/checkout-rollout-participants.service';
 import { CheckoutRolloutPolicyService } from './services/checkout-rollout-policy.service';
 
-// G.1 inactive module: not imported by AppModule or any production caller.
+// Participant persistence is reachable through G.3a admin APIs only; no admission routing.
 @Module({
   imports: [PrismaModule],
   providers: [

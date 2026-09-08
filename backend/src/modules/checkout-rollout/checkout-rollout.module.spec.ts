@@ -2,6 +2,8 @@ import { Test } from '@nestjs/testing';
 import { ModulesContainer } from '@nestjs/core';
 
 import { AppModule } from '../../app.module';
+import { CheckoutDispatchModule } from '../checkout-dispatch/checkout-dispatch.module';
+import { CheckoutRolloutAdminModule } from '../checkout-rollout-admin/checkout-rollout-admin.module';
 import { PrismaModule } from '../../database/prisma.module';
 import { PrismaService } from '../../database/prisma.service';
 import { CheckoutRolloutModule } from './checkout-rollout.module';
@@ -15,7 +17,9 @@ describe('CheckoutRolloutModule inactive boundary', () => {
       .overrideProvider(PrismaService)
       .useValue({})
       .compile();
-    expect(moduleRef.get(CheckoutRolloutPolicyService)).toBeInstanceOf(CheckoutRolloutPolicyService);
+    expect(moduleRef.get(CheckoutRolloutPolicyService)).toBeInstanceOf(
+      CheckoutRolloutPolicyService,
+    );
     expect(moduleRef.get(CheckoutRolloutParticipantsService)).toBeInstanceOf(
       CheckoutRolloutParticipantsService,
     );
@@ -35,7 +39,7 @@ describe('CheckoutRolloutModule inactive boundary', () => {
     await moduleRef.close();
   });
 
-  it('is absent from the actual production Nest module import graph', () => {
+  it('is reachable for administration without making the dispatcher reachable', () => {
     const seen = new Set<unknown>();
     function visit(entry: unknown): void {
       if (!entry || seen.has(entry)) return;
@@ -50,12 +54,14 @@ describe('CheckoutRolloutModule inactive boundary', () => {
         if (dynamic.module) visit(dynamic.module);
         dynamic.imports?.forEach(visit);
       } else if (typeof entry === 'function') {
-        expect(entry).not.toBe(CheckoutRolloutModule);
+        expect(entry).not.toBe(CheckoutDispatchModule);
         const imports = (Reflect.getMetadata('imports', entry) as unknown[] | undefined) ?? [];
         imports.forEach(visit);
       }
     }
     visit(AppModule);
     expect(seen.has(PrismaModule)).toBe(true);
+    expect(seen.has(CheckoutRolloutModule)).toBe(true);
+    expect(seen.has(CheckoutRolloutAdminModule)).toBe(true);
   });
 });

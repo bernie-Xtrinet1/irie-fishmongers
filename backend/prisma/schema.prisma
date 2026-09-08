@@ -55,29 +55,30 @@ model User {
   notifications                Notification[]
   notificationPreference       NotificationPreference?
   deviceTokens                 DeviceToken[]
-  verifiedDocuments            VendorDocument[]              @relation("DocumentVerifiedBy")
-  reviewedUpgradeRequests      VendorUpgradeRequest[]        @relation("UpgradeRequestReviewedBy")
-  triggeredDowngrades          VendorDowngradeEvent[]        @relation("DowngradeTriggeredBy")
+  verifiedDocuments            VendorDocument[]                 @relation("DocumentVerifiedBy")
+  reviewedUpgradeRequests      VendorUpgradeRequest[]           @relation("UpgradeRequestReviewedBy")
+  triggeredDowngrades          VendorDowngradeEvent[]           @relation("DowngradeTriggeredBy")
   marketplaceModeUpdates       MarketplaceModeConfig[]
   reservationEngineModeUpdates ReservationEngineModeConfig[]
   cartMutationBarrierUpdates   CartMutationBarrierConfig[]
   vendorSelectionWeightUpdates VendorSelectionWeightConfig[]
   fulfillmentDecisions         FulfillmentDecision[]
   triggeredInventoryEvents     InventoryEvent[]
-  vendorConfirmedDeliveries    Delivery[]                    @relation("DeliveryVendorConfirmedBy")
-  resolvedDeliveryExceptions   DeliveryException[]           @relation("DeliveryExceptionResolvedBy")
-  resolvedSLABreaches          SLABreach[]                   @relation("SLABreachResolvedBy")
+  vendorConfirmedDeliveries    Delivery[]                       @relation("DeliveryVendorConfirmedBy")
+  resolvedDeliveryExceptions   DeliveryException[]              @relation("DeliveryExceptionResolvedBy")
+  resolvedSLABreaches          SLABreach[]                      @relation("SLABreachResolvedBy")
   complianceAuditLogs          ComplianceAuditLog[]
   uploadedComplianceDocuments  ComplianceDocument[]
-  custodyEventsAsSender        ChainOfCustodyEvent[]         @relation("CustodyEventFrom")
-  custodyEventsAsRecipient     ChainOfCustodyEvent[]         @relation("CustodyEventTo")
+  custodyEventsAsSender        ChainOfCustodyEvent[]            @relation("CustodyEventFrom")
+  custodyEventsAsRecipient     ChainOfCustodyEvent[]            @relation("CustodyEventTo")
   assignedEmergencyResponses   EmergencyResponse[]
   recordedWasteDisposals       WasteDisposalRecord[]
-  reviewsAuthored              Review[]                      @relation("ReviewAuthor")
-  reviewsRemoved               Review[]                      @relation("ReviewRemovedBy")
-  reviewModerationActions      ReviewAuditLog[]              @relation("ReviewModerationActor")
-  checkoutRolloutRevisions     CheckoutRolloutParticipant[]  @relation("CheckoutRolloutCustomer")
-  checkoutRolloutChanges       CheckoutRolloutParticipant[]  @relation("CheckoutRolloutActor")
+  reviewsAuthored              Review[]                         @relation("ReviewAuthor")
+  reviewsRemoved               Review[]                         @relation("ReviewRemovedBy")
+  reviewModerationActions      ReviewAuditLog[]                 @relation("ReviewModerationActor")
+  checkoutRolloutRevisions     CheckoutRolloutParticipant[]     @relation("CheckoutRolloutCustomer")
+  checkoutRolloutChanges       CheckoutRolloutParticipant[]     @relation("CheckoutRolloutActor")
+  checkoutRolloutControls      CheckoutRolloutControlRevision[]
 
   @@map("users")
 }
@@ -2115,6 +2116,28 @@ model VendorDowngradeEvent {
 // VendorAssignment created) - a "no eligible vendor" outcome is itself an
 // auditable fact, not an error to discard.
 // -----------------------------------------------------------------------------
+
+// G.3a policy behavior, separate from executable CheckoutPath.
+enum CheckoutRolloutBehavior {
+  LEGACY
+  CART_SCOPED
+  SHADOW
+  DENY
+}
+
+model CheckoutRolloutControlRevision {
+  id                  String                  @id @default(uuid())
+  revision            Int                     @unique
+  newAdmissionStopped Boolean
+  behavior            CheckoutRolloutBehavior
+  eligibleCohort      String?                 @db.VarChar(64)
+  reason              String                  @db.VarChar(500)
+  actorId             String
+  createdAt           DateTime                @default(now())
+  actor               User                    @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@map("checkout_rollout_control_revisions")
+}
 
 // G.1: append-only policy history, not a routing or reservation-mode switch.
 // Highest revision per customer is current; prior state is the preceding revision.
