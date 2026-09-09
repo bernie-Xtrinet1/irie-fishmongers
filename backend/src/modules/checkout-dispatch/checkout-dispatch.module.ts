@@ -5,14 +5,18 @@ import { CheckoutOperationModule } from '../checkout-operation/checkout-operatio
 import { CheckoutShadowModule } from '../checkout-shadow/checkout-shadow.module';
 import { OrdersModule } from '../orders/orders.module';
 import { CheckoutDispatchService } from './services/checkout-dispatch.service';
-import {
-  CheckoutAdmissionService,
-  InactiveCheckoutAdmissionService,
-} from './services/checkout-admission.service';
+import { CheckoutAdmissionService } from './services/checkout-admission.service';
+import { AtomicCheckoutAdmissionService } from './services/atomic-checkout-admission.service';
+import { PrismaModule } from '../../database/prisma.module';
+import { CheckoutOperationRepository } from '../checkout-operation/repositories/checkout-operation.repository';
+import { CheckoutAttemptRepository } from '../checkout-attempt/repositories/checkout-attempt.repository';
+import { CheckoutRolloutParticipantsRepository } from '../checkout-rollout/repositories/checkout-rollout-participants.repository';
+import { RolloutControlsRepository } from '../checkout-rollout-admin/repositories/rollout-controls.repository';
 
 // Internal only. No controller and no production importer.
 @Module({
   imports: [
+    PrismaModule,
     CheckoutModule,
     CheckoutAttemptModule,
     CheckoutOperationModule,
@@ -21,7 +25,11 @@ import {
   ],
   providers: [
     CheckoutDispatchService,
-    { provide: CheckoutAdmissionService, useClass: InactiveCheckoutAdmissionService },
+    CheckoutOperationRepository,
+    CheckoutAttemptRepository,
+    CheckoutRolloutParticipantsRepository,
+    RolloutControlsRepository,
+    { provide: CheckoutAdmissionService, useClass: AtomicCheckoutAdmissionService },
   ],
   exports: [CheckoutDispatchService],
 })

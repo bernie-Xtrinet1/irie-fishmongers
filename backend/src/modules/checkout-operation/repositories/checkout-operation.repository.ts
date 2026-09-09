@@ -54,11 +54,22 @@ export class CheckoutOperationRepository {
     customerId: string,
     selectedPath: CheckoutPath,
     tx: Prisma.TransactionClient,
-  ) {
+  ): Promise<Prisma.BatchPayload> {
     return tx.checkoutOperation.updateMany({
       where: { id, customerId, selectedPath: null },
       data: { selectedPath },
     });
+  }
+
+  async lockOwned(
+    id: string,
+    customerId: string,
+    tx: Prisma.TransactionClient,
+  ): Promise<CheckoutOperation | null> {
+    // Ownership filter prevents locking another customer's operation. Admission
+    // holds this row until commit, including against other assignPath writers.
+    await tx.$queryRaw`SELECT "id" FROM "checkout_operations" WHERE "id" = ${id} AND "customerId" = ${customerId} FOR UPDATE`;
+    return this.findOwned(id, customerId, tx);
   }
 
   bindFingerprint(

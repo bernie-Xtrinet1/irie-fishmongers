@@ -99,8 +99,8 @@ export class CheckoutAttemptRepository {
   // unique), but this is an internal persistence primitive only - the
   // caller (CheckoutAttemptService.inspectByIdempotencyKey) must
   // cross-check ownership before exposing anything about the result.
-  findByIdempotencyKey(idempotencyKey: string): Promise<CheckoutAttempt | null> {
-    return this.prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  findByIdempotencyKey(idempotencyKey: string, client: PrismaClientOrTx = this.prisma): Promise<CheckoutAttempt | null> {
+    return client.checkoutAttempt.findUnique({ where: { idempotencyKey } });
   }
 
   updateHeartbeatIfProcessing(id: string, customerId: string, now: Date): Promise<{ count: number }> {

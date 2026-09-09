@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../../database/prisma.service';
 import { CheckoutDispatchService } from './checkout-dispatch.service';
+import { AtomicCheckoutAdmissionService } from './atomic-checkout-admission.service';
+import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
+import { RolloutControlsRepository } from '../../checkout-rollout-admin/repositories/rollout-controls.repository';
 import { CheckoutOperationRepository } from '../../checkout-operation/repositories/checkout-operation.repository';
 import { CheckoutOperationService } from '../../checkout-operation/services/checkout-operation.service';
 import { PriceLockRepository } from '../../price-lock/repositories/price-lock.repository';
@@ -31,21 +34,36 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
   let operations: CheckoutOperationService;
   let dispatcher: CheckoutDispatchService;
   const keys = new Set<string>();
-  const admission = { decide: jest.fn() };
+  let admission: AtomicCheckoutAdmissionService;
+  const controls = new RolloutControlsRepository(prisma);
   const shadow = { compare: jest.fn() };
   beforeAll(async () => {
     await prisma.$connect();
     redis = await connectRealRedis();
     fixture = await setUpCheckoutIntegrationFixture(prisma);
   });
-  beforeEach(() => {
-    admission.decide.mockReset().mockResolvedValue('CART_SCOPED');
+  beforeEach(async () => {
+    if (await controls.findCurrent()) throw new Error('Requires isolated global rollout controls');
+    await controls.appendIfCurrent(fixture.userIds[0]!, {
+      expectedRevision: null,
+      newAdmissionStopped: false,
+      behavior: 'CART_SCOPED',
+      eligibleCohort: null,
+      reason: 'Integration admission',
+    });
     handles = buildRealCoordinator(prisma, redis);
     operations = new CheckoutOperationService(
       new CheckoutOperationRepository(prisma),
       handles.cartRepository,
       new PriceLockRepository(prisma),
       handles.priceLockService,
+    );
+    admission = new AtomicCheckoutAdmissionService(
+      prisma,
+      new CheckoutOperationRepository(prisma),
+      new CheckoutAttemptRepository(prisma),
+      controls,
+      new CheckoutRolloutParticipantsRepository(prisma),
     );
     dispatcher = new CheckoutDispatchService(
       operations,
@@ -56,7 +74,12 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
       shadow as unknown as CheckoutShadowComparisonService,
     );
   });
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await prisma.checkoutRolloutControlRevision.deleteMany({
+      where: { actorId: fixture.userIds[0]! },
+    });
+  });
   afterAll(async () => {
     await prisma.checkoutOperation.deleteMany({ where: { customerId: { in: fixture.userIds } } });
     await prisma.checkoutRolloutParticipant.deleteMany({
@@ -69,6 +92,14 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
   });
   async function scenario() {
     const ready = await seedReadyCheckout(fixture, handles);
+    await new CheckoutRolloutParticipantsService(
+      new CheckoutRolloutParticipantsRepository(prisma),
+    ).setParticipation(ready.customerId, ready.customerId, {
+      enabled: true,
+      cohort: 'pilot',
+      reason: 'Integration participant',
+      expectedRevision: null,
+    });
     trackKeysFor(keys, ready.cartId, ready.productId);
     return { ...ready, retryKey: randomUUID(), dto: checkoutDto, now: new Date() };
   }
@@ -100,24 +131,25 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
       new CheckoutRolloutParticipantsRepository(prisma),
     );
     await administration.setParticipation(ready.customerId, ready.customerId, {
-      enabled: true,
-      cohort: 'pilot',
-      reason: 'fixture enable',
-      expectedRevision: null,
-    });
-    await administration.setParticipation(ready.customerId, ready.customerId, {
       enabled: false,
       cohort: 'changed',
       reason: 'fixture disable',
       expectedRevision: 1,
     });
-    admission.decide.mockClear().mockRejectedValue(new Error('lookup unavailable'));
+    await controls.appendIfCurrent(fixture.userIds[0]!, {
+      expectedRevision: 1,
+      newAdmissionStopped: true,
+      behavior: 'DENY',
+      eligibleCohort: null,
+      reason: 'Stop after commit',
+    });
+    const admit = jest.spyOn(admission, 'admit').mockRejectedValue(new Error('lookup unavailable'));
     const prepare = jest
       .spyOn(operations, 'prepare')
       .mockRejectedValue(new Error('cleared cart must not be prepared'));
     const execute = jest.spyOn(handles.coordinator, 'checkout');
     expect(await dispatcher.checkout(input)).toEqual({ ok: true, order: first.order });
-    expect(admission.decide).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
     expect(await prisma.checkoutOperation.count({ where: { customerId: ready.customerId } })).toBe(

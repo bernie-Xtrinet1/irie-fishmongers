@@ -67,17 +67,31 @@ export class CheckoutDispatchService {
       );
       if (existing.action !== 'NOT_FOUND') return await this.replay(operation, existing);
 
-      const decision = await this.admission.decide({
+      const admitted = await this.admission.admit({
         customerId: input.customerId,
         cartId: input.cartId,
+        operationId: operation.id,
       });
-      if (decision === 'DENY') return { ok: false, code: 'ADMISSION_DENIED' };
-      if (!['LEGACY', 'CART_SCOPED', 'SHADOW'].includes(decision))
-        return { ok: false, code: 'UNAVAILABLE' };
-      const executablePath = decision === 'SHADOW' ? 'LEGACY' : decision;
-      if (operation.selectedPath !== null && operation.selectedPath !== executablePath)
+      if (!admitted.ok) return admitted;
+      const { decision } = admitted;
+      if (
+        admitted.operation.id !== operation.id ||
+        admitted.operation.customerId !== input.customerId ||
+        admitted.operation.cartId !== input.cartId ||
+        admitted.operation.operationKey !== operation.operationKey ||
+        (operation.selectedPath !== null &&
+          operation.selectedPath !== admitted.operation.selectedPath)
+      )
         return { ok: false, code: 'PATH_MISMATCH' };
+      operation = admitted.operation;
+      if (decision === 'EXISTING_ATTEMPT')
+        return await this.replay(
+          operation,
+          await this.attempts.inspectByIdempotencyKey(input.customerId, operation.operationKey),
+        );
       if (decision === 'SHADOW') {
+        if (admitted.durable || operation.selectedPath !== null)
+          return { ok: false, code: 'PATH_MISMATCH' };
         try {
           await this.shadow.compare({
             authenticatedCustomerId: input.customerId,
@@ -88,10 +102,12 @@ export class CheckoutDispatchService {
         }
         return { ok: true, order: await this.orders.checkout(input.customerId, input.dto) };
       }
-      const assigned = await this.operations.assignPath(input.customerId, operation.id, decision);
-      if (!assigned.ok) return { ok: false, code: 'PATH_MISMATCH' };
-      operation = assigned.operation;
-      if (operation.selectedPath !== decision) return { ok: false, code: 'PATH_MISMATCH' };
+      if (
+        !admitted.durable ||
+        operation.selectedPath !== decision ||
+        !['LEGACY', 'CART_SCOPED'].includes(decision)
+      )
+        return { ok: false, code: 'PATH_MISMATCH' };
       if (decision === 'LEGACY')
         return { ok: true, order: await this.orders.checkout(input.customerId, input.dto) };
 

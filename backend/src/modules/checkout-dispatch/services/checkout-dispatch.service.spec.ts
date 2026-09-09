@@ -15,7 +15,7 @@ describe('G.2b inactive dispatcher', () => {
   let attempts: { inspectByIdempotencyKey: jest.Mock };
   let coordinator: { checkout: jest.Mock };
   let orders: { checkout: jest.Mock; getCustomerOrderById: jest.Mock };
-  let admission: { decide: jest.Mock };
+  let admission: { admit: jest.Mock };
   let shadow: { compare: jest.Mock };
   let dispatcher: CheckoutDispatchService;
   const order = { id: 'order' };
@@ -74,7 +74,16 @@ describe('G.2b inactive dispatcher', () => {
       checkout: jest.fn().mockResolvedValue(order),
       getCustomerOrderById: jest.fn().mockResolvedValue(order),
     };
-    admission = { decide: jest.fn().mockResolvedValue('CART_SCOPED') };
+    admission = {
+      admit: jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          decision: 'CART_SCOPED',
+          operation: { ...operation, selectedPath: 'CART_SCOPED' },
+          durable: true,
+        }),
+      ),
+    };
     shadow = { compare: jest.fn().mockResolvedValue({ status: 'MATCH' }) };
     dispatcher = new CheckoutDispatchService(
       operations as unknown as CheckoutOperationService,
@@ -85,13 +94,14 @@ describe('G.2b inactive dispatcher', () => {
       shadow as unknown as CheckoutShadowComparisonService,
     );
   });
-  it('defaults to LEGACY without reading policy', async () => {
+  it('a detached default cannot grant executable ownership', async () => {
     expect(
-      await new InactiveCheckoutAdmissionService().decide({
+      await new InactiveCheckoutAdmissionService().admit({
         customerId: operation.customerId,
         cartId: operation.cartId,
+        operationId: operation.id,
       }),
-    ).toBe('LEGACY');
+    ).toEqual({ ok: false, code: 'UNAVAILABLE' });
     const safeDispatcher = new CheckoutDispatchService(
       operations as unknown as CheckoutOperationService,
       attempts as unknown as CheckoutAttemptService,
@@ -100,23 +110,24 @@ describe('G.2b inactive dispatcher', () => {
       new InactiveCheckoutAdmissionService(),
       shadow as unknown as CheckoutShadowComparisonService,
     );
-    expect(await safeDispatcher.checkout(input())).toEqual({ ok: true, order });
+    expect(await safeDispatcher.checkout(input())).toEqual({ ok: false, code: 'UNAVAILABLE' });
     expect(coordinator.checkout).not.toHaveBeenCalled();
     expect(operations.prepare).not.toHaveBeenCalled();
-    expect(orders.checkout).toHaveBeenCalledTimes(1);
+    expect(orders.checkout).not.toHaveBeenCalled();
   });
-  it('orders issue, inspect, admission, assign, prepare and coordinator; passes only the durable server key', async () => {
+  it('orders issue, inspect, atomic admission, prepare and coordinator; passes only the durable server key', async () => {
     expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
     expect(operations.issue).toHaveBeenCalledWith({
       customerId: operation.customerId,
       cartId: operation.cartId,
       retryKey: 'client-retry',
     });
-    expect(operations.assignPath).toHaveBeenCalledWith(
-      operation.customerId,
-      operation.id,
-      'CART_SCOPED',
-    );
+    expect(operations.assignPath).not.toHaveBeenCalled();
+    expect(admission.admit).toHaveBeenCalledWith({
+      customerId: operation.customerId,
+      cartId: operation.cartId,
+      operationId: operation.id,
+    });
     expect(operations.prepare).toHaveBeenCalledWith(operation.customerId, operation.id, now);
     expect(coordinator.checkout).toHaveBeenCalledWith(
       operation.customerId,
@@ -127,8 +138,7 @@ describe('G.2b inactive dispatcher', () => {
     const calls = [
       operations.issue,
       attempts.inspectByIdempotencyKey,
-      admission.decide,
-      operations.assignPath,
+      admission.admit,
       operations.prepare,
       coordinator.checkout,
     ].map((mock) => mock.mock.invocationCallOrder[0]!);
@@ -139,20 +149,16 @@ describe('G.2b inactive dispatcher', () => {
     'replays %s before preparation or changed/failing policy',
     async (status) => {
       operation.selectedPath = 'CART_SCOPED';
-      attempts.inspectByIdempotencyKey
-        .mockReset()
-        .mockResolvedValue({
-          action:
-            status === 'COMMITTED'
-              ? 'ALREADY_COMMITTED'
-              : status === 'PROCESSING'
-                ? 'RESUMED_PROCESSING'
-                : 'ALREADY_FAILED',
-          attempt: attempt(status),
-        });
-      admission.decide.mockRejectedValue(
-        new Error('participant lookup failed after cohort change'),
-      );
+      attempts.inspectByIdempotencyKey.mockReset().mockResolvedValue({
+        action:
+          status === 'COMMITTED'
+            ? 'ALREADY_COMMITTED'
+            : status === 'PROCESSING'
+              ? 'RESUMED_PROCESSING'
+              : 'ALREADY_FAILED',
+        attempt: attempt(status),
+      });
+      admission.admit.mockRejectedValue(new Error('participant lookup failed after cohort change'));
       operations.prepare.mockRejectedValue(new Error('cart was cleared'));
       const result = await dispatcher.checkout(input());
       if (status === 'COMMITTED') expect(result).toEqual({ ok: true, order });
@@ -167,7 +173,7 @@ describe('G.2b inactive dispatcher', () => {
       for (const mock of [
         operations.assignPath,
         operations.prepare,
-        admission.decide,
+        admission.admit,
         coordinator.checkout,
         orders.checkout,
         shadow.compare,
@@ -191,7 +197,7 @@ describe('G.2b inactive dispatcher', () => {
     for (const mock of [
       operations.assignPath,
       operations.prepare,
-      admission.decide,
+      admission.admit,
       coordinator.checkout,
       orders.checkout,
       orders.getCustomerOrderById,
@@ -206,21 +212,32 @@ describe('G.2b inactive dispatcher', () => {
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'PATH_MISMATCH' });
   });
   it('LEGACY uses the existing executor, without coordinator or price locks', async () => {
-    admission.decide.mockResolvedValue('LEGACY');
+    admission.admit.mockResolvedValue({
+      ok: true,
+      decision: 'LEGACY',
+      operation: { ...operation, selectedPath: 'LEGACY' },
+      durable: true,
+    });
     expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
     expect(orders.checkout).toHaveBeenCalledWith(operation.customerId, checkoutDto);
-    expect(operations.assignPath).toHaveBeenCalledWith(
-      operation.customerId,
-      operation.id,
-      'LEGACY',
-    );
+    expect(operations.assignPath).not.toHaveBeenCalled();
+    expect(admission.admit).toHaveBeenCalledWith({
+      customerId: operation.customerId,
+      cartId: operation.cartId,
+      operationId: operation.id,
+    });
     expect(operations.prepare).not.toHaveBeenCalled();
     expect(coordinator.checkout).not.toHaveBeenCalled();
   });
   it.each([false, true])(
     'SHADOW comparison failure=%s cannot authorize writes or fail legacy',
     async (failure) => {
-      admission.decide.mockResolvedValue('SHADOW');
+      admission.admit.mockResolvedValue({
+        ok: true,
+        decision: 'SHADOW',
+        operation,
+        durable: false,
+      });
       if (failure) shadow.compare.mockRejectedValue(new Error('private diagnostic failure'));
       expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
       expect(shadow.compare).toHaveBeenCalledWith({
@@ -233,7 +250,7 @@ describe('G.2b inactive dispatcher', () => {
     },
   );
   it('DENY performs no execution, path assignment or preparation', async () => {
-    admission.decide.mockResolvedValue('DENY');
+    admission.admit.mockResolvedValue({ ok: false, code: 'ADMISSION_DENIED' });
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'ADMISSION_DENIED' });
     for (const mock of [
       operations.assignPath,
@@ -246,7 +263,12 @@ describe('G.2b inactive dispatcher', () => {
   });
   it('never falls back from a previously selected CART_SCOPED operation', async () => {
     operation.selectedPath = 'CART_SCOPED';
-    admission.decide.mockResolvedValue('LEGACY');
+    admission.admit.mockResolvedValue({
+      ok: true,
+      decision: 'LEGACY',
+      operation: { ...operation, selectedPath: 'LEGACY' },
+      durable: true,
+    });
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'PATH_MISMATCH' });
     expect(orders.checkout).not.toHaveBeenCalled();
   });
@@ -291,7 +313,56 @@ describe('G.2b inactive dispatcher', () => {
   it('fails closed on lookup failure and does not expose raw errors', async () => {
     attempts.inspectByIdempotencyKey.mockReset().mockRejectedValue(new Error('secret raw input'));
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'UNAVAILABLE' });
-    expect(admission.decide).not.toHaveBeenCalled();
+    expect(admission.admit).not.toHaveBeenCalled();
     expect(orders.checkout).not.toHaveBeenCalled();
+  });
+  it('replays an attempt discovered inside admission without touching cleared-cart preparation', async () => {
+    admission.admit.mockResolvedValue({
+      ok: true,
+      decision: 'EXISTING_ATTEMPT',
+      operation: { ...operation, selectedPath: 'CART_SCOPED' },
+      durable: true,
+    });
+    operations.prepare.mockRejectedValue(new Error('cleared cart'));
+    expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
+    expect(operations.prepare).not.toHaveBeenCalled();
+    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(orders.checkout).not.toHaveBeenCalled();
+  });
+  it('refuses executable admission without durable assignment', async () => {
+    admission.admit.mockResolvedValue({
+      ok: true,
+      decision: 'CART_SCOPED',
+      operation,
+      durable: false,
+    });
+    expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'PATH_MISMATCH' });
+    expect(operations.prepare).not.toHaveBeenCalled();
+    expect(coordinator.checkout).not.toHaveBeenCalled();
+  });
+  it('does not begin external work until the admission promise commits', async () => {
+    let commit!: (result: unknown) => void;
+    let entered!: () => void;
+    const admissionEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    admission.admit.mockImplementation(() => {
+      entered();
+      return new Promise((resolve) => {
+        commit = resolve;
+      });
+    });
+    const pending = dispatcher.checkout(input());
+    await admissionEntered;
+    expect(operations.prepare).not.toHaveBeenCalled();
+    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(orders.checkout).not.toHaveBeenCalled();
+    commit({
+      ok: true,
+      decision: 'CART_SCOPED',
+      operation: { ...operation, selectedPath: 'CART_SCOPED' },
+      durable: true,
+    });
+    expect(await pending).toEqual({ ok: true, order });
   });
 });

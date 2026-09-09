@@ -9,13 +9,11 @@ import { RedisModule } from '../../common/redis/redis.module';
 import { REDIS_CLIENT } from '../../common/redis/redis.constants';
 import { CheckoutDispatchModule } from './checkout-dispatch.module';
 import { CheckoutDispatchService } from './services/checkout-dispatch.service';
-import {
-  CheckoutAdmissionService,
-  InactiveCheckoutAdmissionService,
-} from './services/checkout-admission.service';
+import { AtomicCheckoutAdmissionService } from './services/atomic-checkout-admission.service';
+import { CheckoutAdmissionService } from './services/checkout-admission.service';
 
-describe('G.2b inactive module', () => {
-  it('resolves through the real Nest graph with safe default admission', async () => {
+describe('G.2b/G.3b inactive module', () => {
+  it('resolves through the real Nest graph with atomic admission and no production activation', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
@@ -33,7 +31,7 @@ describe('G.2b inactive module', () => {
     try {
       expect(moduleRef.get(CheckoutDispatchService)).toBeInstanceOf(CheckoutDispatchService);
       expect(moduleRef.get(CheckoutAdmissionService)).toBeInstanceOf(
-        InactiveCheckoutAdmissionService,
+        AtomicCheckoutAdmissionService,
       );
     } finally {
       await moduleRef.close();

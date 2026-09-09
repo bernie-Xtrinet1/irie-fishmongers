@@ -238,7 +238,7 @@ information, not permission to bypass caller/recovery prerequisites.
 | G.PR1 | Distributed ownership and stale-attempt/heartbeat/CHECKOUT_PENDING operational worker. |
 | G.2b | Caller preparation and inactive dispatcher: issued key, price-lock boundary, durable path ownership, coordinator integration; activation disabled. |
 | G.3a | Inactive durable admin control plane; advisory evaluation only. |
-| G.3b | Future atomic policy check and executable path assignment; not implemented. |
+| G.3b | Internal atomic policy check and executable path assignment; production dispatcher remains inactive. |
 | G.4 | Rollback/drain/failure-injection verification; no bypass of Phase H gates. |
 | G.5 | Isolated integration/regression evidence and acceptance thresholds. |
 | G.6 | Staged activation only after separate explicit approval. |
@@ -817,3 +817,79 @@ LEGACY checkout still lacks a durable attempt/result mapping for lost-response
 replay. Policy administration does not solve legacy exactly-once, and does not
 route production legacy requests through the dispatcher. Production activation,
 atomic admission, rollback/drain and evidence thresholds remain separate work.
+
+## G.3b — atomic admission integration, still inactive
+
+G.3b replaces the internal dispatcher's split policy-read/assignPath sequence with
+AtomicCheckoutAdmissionService. This section supersedes G.3a's historical notes
+about missing atomic integration and assigned-operation policy bypass. AppModule
+and POST /orders/checkout are unchanged; CheckoutDispatchModule is still outside
+the production import graph. G.4/G.5/G.6 remain future work.
+
+Admission accepts trusted customerId, cartId and operationId only. It does not
+accept client path, cohort, retry hash, or server operationKey authority. Issuance
+still uses G.PR2. Dispatcher inspection of CheckoutAttempt remains FIRST, before
+admission or price preparation. Existing attempts retain COMMITTED/PROCESSING/
+FAILED semantics and must agree with operation customer/cart/key/path ownership.
+
+The database-only ReadCommitted transaction has a 5-second execution timeout and
+5-second acquisition maxWait. It acquires locks in this fixed order:
+
+1. pg_advisory_xact_lock_shared(1196634962, 1).
+2. G.1's exact pg_advisory_xact_lock(hashtext('checkout_rollout_participant:' + customerId)).
+3. The owned CheckoutOperation row via SELECT ... FOR UPDATE.
+
+Global control writers use the exclusive form of the SAME two-int global key.
+Participant writers now acquire the shared global lock before their unchanged
+per-customer lock. Common primitives prevent namespace or ordering drift. No
+reverse acquisition order is introduced. Locks release on commit/rollback; no
+Redis, coordinator, payment, reservation, HTTP, price preparation or telemetry
+executes inside admission transactions. There is no positive authority cache.
+
+After locking, admission rechecks ownership and looks for an attempt using its
+stored operationKey. If an attempt appeared since dispatcher inspection, the
+service returns an existing-attempt signal with the refreshed operation, and the
+dispatcher replays before preparation. Invalid/null/conflicting attempt paths
+fail closed; disagreement is never repaired. An assigned operation without an
+attempt returns its durable LEGACY/CART_SCOPED path WITHOUT reading policy.
+
+Only unassigned operations read latest global and participant revisions fresh
+inside the transaction. Missing/unavailable global state fails closed; stop and
+explicit DENY reject before participant lookup. Missing/disabled participation or
+cohort mismatch denies; participant database failure is unavailable. Eligible
+LEGACY/CART_SCOPED performs the existing conditional NULL-to-path repository write
+and verifies its result. The successful transaction commit is the durable
+admission point. G.3a's advisory evaluator is not used as admission authority.
+
+Eligible SHADOW returns without assignment and has no durable grandfathering.
+Later stop/disable can change a retry's SHADOW decision. Comparison stays G.2a's
+read-only boundary; its failure remains nonfatal to authoritative legacy execution.
+The comparison itself never creates orders, payments, reservations, price locks
+or attempts. The existing legacy executor still has its normal side effects.
+
+The dispatcher branches only after the admission transaction resolves. CART_SCOPED
+prepares/revalidates G.PR2 prices then calls the coordinator with the same stored
+operationKey; LEGACY uses existing OrdersService.checkout(). DENY/unavailable
+performs no execution. No dispatcher-side assignPath or fallback remains.
+
+Race ordering is determined by conflicting PostgreSQL lock ownership. If stop
+commits first, a new admission observes it and denies; if assignment commits first,
+the operation is grandfathered. Participant disable follows the same rule at the
+customer lock. Two admissions of one operation serialize and observe one durable
+path with one NULL-to-path write. Exceptions after the write but before commit
+roll back assignment. Lost responses after commit retry the stored path. No policy
+change can flip an assigned path or migrate reservation-accounting authority.
+
+No schema/migration, operation identity, price fingerprint, stale fence, recovery
+ownership, payment/WiPay or reservation-mode changes were made. The repository
+changes only expose transaction-aware reads, the owned-row lock, and shared
+rollout synchronization. No new admission telemetry was added. Existing admin
+telemetry remains outside its transaction.
+
+The stop controls new dispatcher admission only. Recovery/reconciliation continue,
+and the current production legacy endpoint is outside this control. LEGACY still
+has no durable result mapping for a lost response; operation assignment does not
+make it exactly-once. Preparation still does not freeze the cart. An attempt that
+appears after the admission transaction can require another same-key retry if
+preparation sees a cleared/changed cart; there is never a fallback or new identity.
+SHADOW/legacy response-loss and mixed-execution guarantees are not expanded here.

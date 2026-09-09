@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { CheckoutRolloutParticipant } from '@prisma/client';
+import { CheckoutRolloutParticipant, Prisma } from '@prisma/client';
+import { lockRolloutGlobal, lockRolloutParticipant } from '../checkout-rollout-locks';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { AppendParticipationResult, SetParticipationInput } from '../types/checkout-rollout.types';
@@ -8,8 +9,11 @@ import { AppendParticipationResult, SetParticipationInput } from '../types/check
 export class CheckoutRolloutParticipantsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  findCurrent(customerId: string): Promise<CheckoutRolloutParticipant | null> {
-    return this.prisma.checkoutRolloutParticipant.findFirst({
+  findCurrent(
+    customerId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<CheckoutRolloutParticipant | null> {
+    return client.checkoutRolloutParticipant.findFirst({
       where: { customerId },
       orderBy: { revision: 'desc' },
     });
@@ -36,12 +40,9 @@ export class CheckoutRolloutParticipantsRepository {
   ): Promise<AppendParticipationResult> {
     return this.prisma.$transaction(
       async (tx) => {
-        const lockKey = `checkout_rollout_participant:${customerId}`;
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
-        const current = await tx.checkoutRolloutParticipant.findFirst({
-          where: { customerId },
-          orderBy: { revision: 'desc' },
-        });
+        await lockRolloutGlobal(tx);
+        await lockRolloutParticipant(tx, customerId);
+        const current = await this.findCurrent(customerId, tx);
         const currentRevision = current?.revision ?? null;
         if (currentRevision !== input.expectedRevision) {
           return { ok: false, code: 'STALE_REVISION', currentRevision };

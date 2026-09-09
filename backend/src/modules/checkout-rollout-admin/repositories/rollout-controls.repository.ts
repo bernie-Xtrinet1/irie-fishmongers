@@ -1,18 +1,22 @@
 import { Injectable } from '@nestjs/common';
+import { CheckoutRolloutControlRevision, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { CreateRolloutControlDto } from '../dto/rollout-control.dto';
 
-// Stable, separate two-int advisory namespace. G.3b must use this exact pair
-// for its future shared admission lock; G.3a implements only exclusive writers.
-export const ROLLOUT_CONTROL_LOCK_NAMESPACE = 1196634962;
-export const ROLLOUT_CONTROL_LOCK_ID = 1;
+import { lockRolloutGlobal } from '../../checkout-rollout/checkout-rollout-locks';
+export {
+  ROLLOUT_CONTROL_LOCK_NAMESPACE,
+  ROLLOUT_CONTROL_LOCK_ID,
+} from '../../checkout-rollout/checkout-rollout-locks';
 
 @Injectable()
 export class RolloutControlsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  findCurrent() {
-    return this.prisma.checkoutRolloutControlRevision.findFirst({ orderBy: { revision: 'desc' } });
+  findCurrent(
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<CheckoutRolloutControlRevision | null> {
+    return client.checkoutRolloutControlRevision.findFirst({ orderBy: { revision: 'desc' } });
   }
 
   listHistory(afterRevision: number, limit: number) {
@@ -26,10 +30,8 @@ export class RolloutControlsRepository {
   appendIfCurrent(actorId: string, input: CreateRolloutControlDto) {
     return this.prisma.$transaction(
       async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ROLLOUT_CONTROL_LOCK_NAMESPACE}::integer, ${ROLLOUT_CONTROL_LOCK_ID}::integer)`;
-        const current = await tx.checkoutRolloutControlRevision.findFirst({
-          orderBy: { revision: 'desc' },
-        });
+        await lockRolloutGlobal(tx, true);
+        const current = await this.findCurrent(tx);
         if ((current?.revision ?? null) !== input.expectedRevision)
           return { ok: false as const, code: 'STALE_REVISION' as const };
         if (!(await tx.user.findUnique({ where: { id: actorId }, select: { id: true } })))
