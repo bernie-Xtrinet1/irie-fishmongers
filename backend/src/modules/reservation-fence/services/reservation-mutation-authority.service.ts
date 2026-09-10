@@ -9,10 +9,11 @@ import { REGISTER_MUTATION_PERMIT_LUA } from '../lua/reservation-mutation-guard.
 import { executionGateKey, MUTATION_HISTORY_KEY, mutationPermitKey, resourceGuardKey } from '../lua/reservation-mutation-common.lua';
 import { FenceTuple, legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { MutationEffect, MutationPermit, MutationResult, ResourceAuthority, MUTATION_EFFECTS,
-  MAX_PERMIT_RESOURCES, MAX_PERMIT_TTL_MS, IssuerPurpose } from '../types/reservation-mutation.types';
+  MAX_PERMIT_RESOURCES, MAX_PERMIT_TTL_MS, IssuerPurpose, MutationAuthorization,
+  DRAINING_MUTATION_EFFECTS } from '../types/reservation-mutation.types';
 import { decodeMutationResult } from './reservation-fenced-executor.service';
 
-const deny = (reason: 'UNKNOWN_CAPABILITY' | 'DURABLE_REDIS_DISAGREEMENT' | 'PERMIT_SCOPE_MISMATCH' | 'EFFECT_MISMATCH') =>
+const deny = (reason: 'UNKNOWN_CAPABILITY' | 'DURABLE_REDIS_DISAGREEMENT' | 'PERMIT_SCOPE_MISMATCH' | 'EFFECT_MISMATCH' | 'PHASE_DENIED') =>
   ({ code: 'FENCE_REJECTED', reason }) as const;
 const isTrue = (value: unknown): value is true => value === true;
 const cartEffects: MutationEffect[] = ['RESERVE', 'RENEW', 'REDUCTION_RECREATE', 'RELEASE'];
@@ -88,32 +89,36 @@ export class ReservationMutationAuthorityService {
     });
   }
 
-  registerCart(effect: MutationEffect, resources: ResourceAuthority[], replayId: string) {
-    if (!cartEffects.includes(effect)) return Promise.resolve(deny('EFFECT_MISMATCH'));
-    return this.register('CART_CONVERGENCE', effect, resources, replayId);
+  registerCart(authorization: MutationAuthorization, resources: ResourceAuthority[], replayId: string) {
+    if (!cartEffects.includes(authorization.effect)) return Promise.resolve(deny('EFFECT_MISMATCH'));
+    return this.register('CART_CONVERGENCE', authorization, resources, replayId);
   }
-  registerCheckout(effect: MutationEffect, resources: ResourceAuthority[], replayId: string,
+  registerCheckout(authorization: MutationAuthorization, resources: ResourceAuthority[], replayId: string,
     operationId: string, attemptId: string) {
+    const { effect } = authorization;
     const purpose = executionEffects.includes(effect) ? 'CHECKOUT_EXECUTION' :
       settlementEffects.includes(effect) ? 'CHECKOUT_SETTLEMENT' : null;
     if (!purpose) return Promise.resolve(deny('EFFECT_MISMATCH'));
-    return this.register(purpose, effect, resources, replayId, { operationId, attemptId });
+    return this.register(purpose, authorization, resources, replayId, { operationId, attemptId });
   }
-  registerRepair(effect: MutationEffect, resources: ResourceAuthority[], replayId: string) {
+  registerRepair(authorization: MutationAuthorization, resources: ResourceAuthority[], replayId: string) {
     // Other administrative effect predicates belong to caller integration.
     // Representing a class does not grant an unimplemented authority path.
-    if (!['MALFORMED_SUSPECT', 'RECONCILE_NONINCREASING'].includes(effect))
+    if (!['MALFORMED_SUSPECT', 'RECONCILE_NONINCREASING', 'RECONCILE_POSITIVE'].includes(authorization.effect))
       return Promise.resolve(deny('EFFECT_MISMATCH'));
-    return this.register('RESOURCE_REPAIR', effect, resources, replayId);
+    return this.register('RESOURCE_REPAIR', authorization, resources, replayId);
   }
 
-  private register(purpose: IssuerPurpose, effect: MutationEffect, resources: ResourceAuthority[], replayId: string,
+  private register(purpose: IssuerPurpose, authorization: MutationAuthorization, resources: ResourceAuthority[], replayId: string,
     execution?: { operationId: string; attemptId: string }): Promise<MutationResult<MutationPermit>> {
     return this.repository.locked(async tx => {
+      const { effect, authorizationPhase, constraint } = authorization;
       if (!UUID_PATTERN.test(replayId) || !MUTATION_EFFECTS.includes(effect) || !resources.length ||
         resources.length > MAX_PERMIT_RESOURCES) return deny('PERMIT_SCOPE_MISMATCH');
       const tuple = await this.acknowledged(tx);
-      if (!tuple || tuple.phase !== 'OPEN') return deny('DURABLE_REDIS_DISAGREEMENT');
+      if (!tuple || tuple.phase !== authorizationPhase) return deny('DURABLE_REDIS_DISAGREEMENT');
+      if (authorizationPhase !== 'OPEN' &&
+        (authorizationPhase !== 'DRAINING' || !DRAINING_MUTATION_EFFECTS.includes(effect))) return deny('PHASE_DENIED');
       const normalized: ResourceAuthority[] = [];
       for (const r of resources) {
         if (![r.customerId, r.cartId, r.productId, r.markerId, r.holdInstanceId].every(id => UUID_PATTERN.test(id)) ||
@@ -126,7 +131,9 @@ export class ReservationMutationAuthorityService {
           markerId: r.markerId, generation: r.generation, holdInstanceId: r.holdInstanceId });
       }
       if (execution) {
-        if ((await this.repository.mode(tx)).mode !== 'CART_SCOPED') return deny('DURABLE_REDIS_DISAGREEMENT');
+        const mode = (await this.repository.mode(tx)).mode;
+        if (mode !== 'CART_SCOPED' && !(mode === 'DRAINING' && authorizationPhase === 'DRAINING'))
+          return deny('DURABLE_REDIS_DISAGREEMENT');
         const op = await tx.checkoutOperation.findUnique({ where: { id: execution.operationId } });
         const attempt = await tx.checkoutAttempt.findUnique({ where: { id: execution.attemptId } });
         if (!op || !attempt || op.selectedPath !== 'CART_SCOPED' || attempt.selectedPath !== 'CART_SCOPED' ||
@@ -138,10 +145,12 @@ export class ReservationMutationAuthorityService {
         if (purpose === 'CHECKOUT_SETTLEMENT' && (effect === 'CHECKOUT_FINALIZE'
           ? attempt.status !== 'COMMITTED' || !attempt.orderId : attempt.status !== 'FAILED')) return deny('UNKNOWN_CAPABILITY');
       }
-      const permit: MutationPermit = { tuple, effect, purpose, resources: normalized,
+      // Copy only contract fields. Lua strictly validates the discriminant and
+      // constraint shape before registration; caller extras cannot add authority.
+      const permit = { tuple, effect, authorizationPhase, constraint, purpose, resources: normalized,
         family: execution ? 'CHECKOUT_EXECUTION_OR_SETTLEMENT' : purpose === 'CART_CONVERGENCE' ? 'PRE_CHECKOUT_CART' : 'ADMIN_OR_RECOVERY',
         execution: execution ? { operationId: execution.operationId, attemptId: execution.attemptId, gateId: execution.operationId } : null,
-        replayId, permitId: randomUUID(), expiresAt: 1 };
+        replayId, permitId: randomUUID(), expiresAt: 1 } as MutationPermit;
       try {
         return decodeMutationResult(await this.redis.eval(REGISTER_MUTATION_PERMIT_LUA,
           [RESERVATION_FENCE_KEY, mutationPermitKey(permit.permitId)], [JSON.stringify(permit), String(MAX_PERMIT_TTL_MS)]),

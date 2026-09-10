@@ -1,4 +1,4 @@
-# G.4b.1 / G.4b.2a inactive reservation fence infrastructure
+# G.4b.1 / G.4b.2a / G.4b.2a.1 inactive reservation fence infrastructure
 
 This module is not imported by AppModule, checkout admission, recovery, or any
 reservation writer. It does not make the G.4a activation blockers safe and does
@@ -130,16 +130,64 @@ also binds operation and attempt identity, selectedPath=CART_SCOPED and matching
 immutable execution E. Registration does not bind an operation or create an
 attempt. The reservation lifetime/freshness epoch is unrelated to execution E.
 
-All approved effects are represented as a closed TypeScript enum union. Only
-the implemented issuer-purpose/effect combinations can register: cart effects,
-checkout execution/settlement effects, and conservative repair effects. Other
-administrative/claim-specific predicates remain G.4b.2c work and fail closed.
-DRAINING is deliberately denied by this infrastructure slice until its exact
-durable effect predicates are integrated. Neither this default nor a caller
-effect string grants conditional cleanup authority. Future writer conversion
-must still validate actual quantity/effect, ownership, accounting and lease
-bounds before its first write; a resource permit is not proof that arbitrary
-business arguments are safe.
+All effects are represented as a closed TypeScript union. G.4b.2a.1 adds an
+explicit `authorizationPhase: 'OPEN' | 'DRAINING'` to each permit. It must match
+both the acknowledged durable phase and installed Redis tuple. It is never
+inferred from an effect, defaulted from an older permit, or used to transition
+the fence. FROZEN and RETIRED cannot authorize any mutation. OPEN permits die
+on transition to DRAINING; DRAINING permits die on transition to FROZEN.
+
+| Issuer purpose | OPEN effects | DRAINING subset |
+|---|---|---|
+| CART_CONVERGENCE | RESERVE, RENEW, REDUCTION_RECREATE, RELEASE | RELEASE only (full release, no recreation) |
+| CHECKOUT_EXECUTION | CHECKOUT_MARK, CHECKOUT_LEASE_EXTEND | CHECKOUT_LEASE_EXTEND only, with fixed bound and ENABLED gate |
+| CHECKOUT_SETTLEMENT | CHECKOUT_REVERT_RESTORE_ACTIVE, CHECKOUT_REVERT_DELETE_ONLY, CHECKOUT_FINALIZE | CHECKOUT_REVERT_DELETE_ONLY, CHECKOUT_FINALIZE |
+| RESOURCE_REPAIR | MALFORMED_SUSPECT, RECONCILE_NONINCREASING, RECONCILE_POSITIVE | MALFORMED_SUSPECT, RECONCILE_NONINCREASING |
+
+There is no wildcard: other represented effects (including BACKFILL and generic
+recovery/compensation classes) cannot register. RECONCILE_POSITIVE is OPEN-only
+under RESOURCE_REPAIR; it does not grant generic maintenance authority. DRAINING
+never permits creation/increase of ACTIVE holds. The compiled actual effect
+must equal the registered effect, independently of caller assertions.
+
+This is physical representation and phase policy, not implementation of the
+G.4b.2c durable business predicates. Production permit issuance remains inactive.
+Existing owned resource/generation, immutable operation/attempt epoch, attempt
+status and gate checks remain required. Known CART_SCOPED operations can retain
+their epoch when durable mode is DRAINING with acknowledged DRAINING control;
+no new operation, attempt, epoch or gate is issued by registration. G.4b.2c must
+decide whether each specific settlement/cleanup action deserves authority.
+Future G.4b.2b writers must validate actual quantity/effect, ownership,
+accounting and lease bounds before their first write.
+
+## G.4b.2a.1 typed lease constraints and serialization
+
+The permit has eleven exact fields: tuple, authorizationPhase, family, purpose,
+effect, constraint, resources, execution, permitId, replayId and expiresAt.
+`CHECKOUT_LEASE_EXTEND` requires `constraint: { kind: 'LEASE_CEILING', ceilingMs }`.
+All other effects require exactly `constraint: { kind: 'NONE' }`. There is no
+generic metadata bag. Missing fields, extra constraint fields, unknown kinds,
+and non-positive/non-integer ceilings or values above 9,999,999,999,999 fail
+closed. This thirteen-digit bound preserves exact Redis cjson round trips,
+including at the maximum; serialization cannot round a bound upward. No old-permit
+compatibility default exists.
+
+`ceilingMs` is a fixed absolute Unix epoch millisecond timestamp, logically bound
+to the server-stored permit. It is not a duration or a sliding refresh. The
+existing W7 model calculates `min(now + additionalMs, checkoutPendingAt +
+maxPendingMs)` per entry. Its later conversion must keep that hard ceiling,
+ownership/status validation and monotonic no-op behavior, and may not produce
+any target above the permit bound. The lease guard reserves ARGV[2] for the
+requested absolute target, validates it against the stored ceiling, and exposes
+`authorizedLeaseTargetMs` to the body. Future W7 must use that checked target
+(further limited by each entry's hard ceiling), never an unchecked alternative.
+The synthetic test writes that exact checked value. W7 itself is unchanged.
+
+Both registration and execution validate the complete serialized constraint.
+Execution compares the expected constraint and phase with the stored record;
+changing a caller copy cannot widen its ceiling. A lease target above the stored
+ceiling fails before the body. Permit expiry and lease expiry are distinct: the
+5-second permit TTL never refreshes or extends the fixed lease ceiling.
 
 Permit expiry is computed and checked with Redis TIME (maximum 5 seconds).
 TTL limits exposure; it does not revoke a capability. Replay UUID is bound and
@@ -173,11 +221,13 @@ implicit guarantee made by this infrastructure slice.
 
 `mutationGuard(effect)` emits the common Lua prefix with a hardcoded validated
 effect. The prefix checks complete control tuple, registered permit, owner/scope,
-purpose/effect consistency, replay identity, expiry, resource guards and execution
-gate before the synthetic/future writer body. `compileFencedMutation` creates
+purpose/effect consistency, replay identity, expiry, exact phase/constraint
+binding, resource guards and execution gate before the synthetic/future writer
+body. The lease variant then checks the requested target. `compileFencedMutation` creates
 frozen registered script objects; the shared executor rejects uncompiled objects.
 KEYS[1] is control, KEYS[2] is permit, ARGV[1] is the complete expected permit;
-later keys/arguments belong to the writer. Dynamic resource/gate keys are for
+ARGV[2] is reserved for the lease target in the lease variant; other later
+keys/arguments belong to the writer. Dynamic resource/gate keys are for
 standalone Redis only, with no Redis Cluster claim.
 
 The decoder preserves FENCE_REJECTED reason codes, OWNERSHIP_CONFLICT and bounded

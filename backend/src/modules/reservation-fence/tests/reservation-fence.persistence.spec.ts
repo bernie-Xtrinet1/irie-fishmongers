@@ -83,6 +83,52 @@ async function operation(f: Fixture, selectedPath?: 'LEGACY' | 'CART_SCOPED') {
 }
 
 describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
+  it('G.4b.2a.1 binds registration to acknowledged phase and a fixed lease ceiling without reopening gates', () => isolated(async f => {
+    const current = await open(f);
+    const marker = await f.prisma.cartReservationSyncState.create({ data: { cartId: f.cartId,
+      productId: f.productId, expectedMutationVersion: 1, expectedQuantity: 2, generation: 1 } });
+    f.extraKeys.push(resourceGuardKey(marker.id));
+    const initialized = await f.mutations.initializeResource(marker.id, f.customerId, 1, randomUUID());
+    if (initialized.code !== 'ACCEPTED') throw new Error('Resource fixture denied');
+    const resources = [initialized.value];
+    const positive = { effect: 'RECONCILE_POSITIVE', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } } as const;
+    const repair = await f.mutations.registerRepair(positive, resources, randomUUID());
+    if (repair.code !== 'ACCEPTED') throw new Error('Positive permit denied');
+    f.extraKeys.push(mutationPermitKey(repair.value.permitId));
+    expect(repair.value.authorizationPhase).toBe('OPEN');
+    expect((await f.mutations.registerCart(positive, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    const release = { effect: 'RELEASE', authorizationPhase: 'DRAINING', constraint: { kind: 'NONE' } } as const;
+    expect((await f.mutations.registerCart(release, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    const id = await operation(f);
+    success(await f.capabilities.bind(id, f.customerId, current.epoch));
+    const attempt = success(await f.capabilities.createAttempt(id, f.customerId, current.epoch));
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    const draining = success(await f.service.prepare(current, 'DRAINING', f.ack.actorId));
+    // PREPARED cannot issue, even before its Redis CAS.
+    expect((await f.mutations.registerCart(release, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.service.reconcile()).code).toBe('ACCEPTED');
+    const before = await f.redis.get(RESERVATION_FENCE_KEY);
+    const cleanup = await f.mutations.registerCart(release, resources, randomUUID());
+    if (cleanup.code !== 'ACCEPTED') throw new Error('DRAINING release denied');
+    f.extraKeys.push(mutationPermitKey(cleanup.value.permitId));
+    expect(cleanup.value.tuple).toEqual(draining);
+    expect((await f.mutations.registerRepair(positive, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.mutations.registerRepair({ ...positive, authorizationPhase: 'DRAINING' }, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    const lease = { effect: 'CHECKOUT_LEASE_EXTEND', authorizationPhase: 'DRAINING',
+      constraint: { kind: 'LEASE_CEILING', ceilingMs: Date.now() + 30000 } } as const;
+    const bound = await f.mutations.registerCheckout(lease, resources, randomUUID(), id, attempt.id);
+    if (bound.code !== 'ACCEPTED') throw new Error('Bound lease denied');
+    f.extraKeys.push(mutationPermitKey(bound.value.permitId));
+    expect(bound.value.constraint).toEqual(lease.constraint);
+    expect(await f.redis.get(RESERVATION_FENCE_KEY)).toBe(before);
+    expect((await f.mutations.closeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    const gate = await f.redis.get(executionGateKey(id));
+    expect((await f.mutations.registerCheckout(lease, resources, randomUUID(), id, attempt.id)).code).toBe('FENCE_REJECTED');
+    expect(await f.redis.get(executionGateKey(id))).toBe(gate);
+    success(await f.service.prepare(draining, 'FROZEN', f.ack.actorId));
+    expect((await f.service.reconcile()).code).toBe('ACCEPTED');
+    expect((await f.mutations.registerCart(release, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+  }));
   it('G.4b.2a registers only acknowledged owned scope, not caller tuple assertions', () => isolated(async f => {
     const current = await open(f);
     const marker = await f.prisma.cartReservationSyncState.create({ data: { cartId: f.cartId,
@@ -91,21 +137,21 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     const initialized = await f.mutations.initializeResource(marker.id, f.customerId, 1, randomUUID());
     if (initialized.code !== 'ACCEPTED') throw new Error('Resource fixture denied');
     const resources = [initialized.value];
-    const cart = await f.mutations.registerCart('RESERVE', resources, randomUUID());
+    const cart = await f.mutations.registerCart({ effect: 'RESERVE', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, resources, randomUUID());
     if (cart.code !== 'ACCEPTED') throw new Error('Cart permit denied');
     f.extraKeys.push(mutationPermitKey(cart.value.permitId));
     expect(cart.value.family).toBe('PRE_CHECKOUT_CART');
-    const repair = await f.mutations.registerRepair('MALFORMED_SUSPECT', resources, randomUUID());
+    const repair = await f.mutations.registerRepair({ effect: 'MALFORMED_SUSPECT', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, resources, randomUUID());
     if (repair.code !== 'ACCEPTED') throw new Error('Repair permit denied');
     f.extraKeys.push(mutationPermitKey(repair.value.permitId));
     expect(repair.value.family).toBe('ADMIN_OR_RECOVERY');
-    expect((await f.mutations.registerCart('CHECKOUT_MARK', resources, randomUUID())).code).toBe('FENCE_REJECTED');
-    expect((await f.mutations.registerCart('RESERVE', [{ ...resources[0]!, customerId: randomUUID() }], randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.mutations.registerCart({ effect: 'CHECKOUT_MARK', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.mutations.registerCart({ effect: 'RESERVE', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, [{ ...resources[0]!, customerId: randomUUID() }], randomUUID())).code).toBe('FENCE_REJECTED');
     const id = await operation(f);
     success(await f.capabilities.bind(id, f.customerId, current.epoch));
     expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
     const attempt = success(await f.capabilities.createAttempt(id, f.customerId, current.epoch));
-    const checkout = await f.mutations.registerCheckout('CHECKOUT_MARK', resources, randomUUID(), id, attempt.id);
+    const checkout = await f.mutations.registerCheckout({ effect: 'CHECKOUT_MARK', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, resources, randomUUID(), id, attempt.id);
     if (checkout.code !== 'ACCEPTED') throw new Error('Execution permit denied');
     f.extraKeys.push(mutationPermitKey(checkout.value.permitId));
     expect(checkout.value.family).toBe('CHECKOUT_EXECUTION_OR_SETTLEMENT');
@@ -114,7 +160,7 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     expect(raw!.includes(op.operationKey)).toBe(false);
     expect(raw!.includes(op.retryKeyHash)).toBe(false);
     await f.service.prepare(current, 'FROZEN', f.ack.actorId);
-    expect((await f.mutations.registerCart('RESERVE', resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.mutations.registerCart({ effect: 'RESERVE', authorizationPhase: 'OPEN', constraint: { kind: 'NONE' } }, resources, randomUUID())).code).toBe('FENCE_REJECTED');
   }));
   it('G.4b.2a closes Redis before DB revocation, survives DB failure and retries without reopening', () => isolated(async f => {
     const current = await open(f);

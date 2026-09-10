@@ -13,6 +13,8 @@ export type IssuerPurpose = 'CART_CONVERGENCE' | 'CHECKOUT_EXECUTION' | 'CHECKOU
 export type ExecutionGateState = 'ENABLED' | 'CLOSED' | 'REVOKED';
 export const MAX_PERMIT_RESOURCES = 100;
 export const MAX_PERMIT_TTL_MS = 5000;
+// Thirteen decimal digits stay exact through Redis cjson's number encoding.
+export const MAX_LEASE_CEILING_MS = 9999999999999;
 
 // UUID identities only: never operationKey, retry keys, payloads or credentials.
 export interface ResourceAuthority {
@@ -28,17 +30,27 @@ export interface ExecutionAuthority {
   attemptId: string;
   gateId: string;
 }
-export interface MutationPermit {
+export type MutationAuthorizationPhase = 'OPEN' | 'DRAINING';
+export const DRAINING_MUTATION_EFFECTS: readonly MutationEffect[] = [
+  'RELEASE', 'CHECKOUT_REVERT_DELETE_ONLY', 'CHECKOUT_FINALIZE',
+  'CHECKOUT_LEASE_EXTEND', 'RECONCILE_NONINCREASING', 'MALFORMED_SUSPECT',
+];
+export type MutationEffectAuthorization =
+  | { effect: 'CHECKOUT_LEASE_EXTEND'; constraint: { kind: 'LEASE_CEILING'; ceilingMs: number } }
+  | { effect: Exclude<MutationEffect, 'CHECKOUT_LEASE_EXTEND'>; constraint: { kind: 'NONE' } };
+export type MutationAuthorization = MutationEffectAuthorization & { authorizationPhase: MutationAuthorizationPhase };
+
+interface MutationPermitIdentity {
   tuple: FenceTuple;
   family: AuthorityFamily;
   purpose: IssuerPurpose;
-  effect: MutationEffect;
   resources: ResourceAuthority[];
   execution: ExecutionAuthority | null;
   permitId: string;
   replayId: string;
   expiresAt: number;
 }
+export type MutationPermit = MutationPermitIdentity & MutationAuthorization;
 export const MUTATION_REJECTIONS = [
   'WRONG_INCARNATION', 'EPOCH_MISMATCH', 'STALE_REVISION', 'CAPABILITY_REVOKED',
   'PHASE_DENIED', 'MISSING_CONTROL', 'MALFORMED_CONTROL', 'PROTOCOL_MISMATCH',
