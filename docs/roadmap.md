@@ -140,9 +140,10 @@ pre-production requirement: the operational marketplace through which
 community fishers, seafood vendors, and commercial fishing businesses
 publish daily available seafood, and customers search, reserve, purchase,
 and receive or collect those products. Full requirements, sub-phase
-breakdown (16A–16F), and design docs: see
+breakdown (16A–16G), and design docs: see
 `docs/product/jamaican-seafood-marketplace-requirements.md` and the linked
-operations/UX/domain documents it indexes. This phase must be implemented,
+operations/UX/domain documents it indexes for 16A–16F, and the Phase 16G
+commercial marketplace scope below. This phase must be implemented,
 and its own acceptance criteria met, before Phase 17 (UAT) begins — UAT
 must validate the platform as it is actually intended to operate, which
 means the marketplace operating model has to exist first.
@@ -155,11 +156,217 @@ Sub-phases:
 - 16D — Weight, Reservation, and Order Adjustment
 - 16E — Platform-Managed Pickup and Collection
 - 16F — Marketplace Protection and Operational Controls
+- 16G — B2B Commercial Marketplace, Credit & Settlement
 
 Dependencies: Species, Category, Product, Catch, CatchItem, SeafoodLot,
 Inventory (reservations), MarketplaceModeConfig / vendor-scoring /
 allocation engine — all already exist and are the intended reuse surface;
 see the ADRs below for what is reused vs. newly modeled.
+
+Phase 16G — B2B Commercial Marketplace, Credit & Settlement
+Status: NOT STARTED
+
+Purpose: extend the Jamaican Seafood Marketplace Operating Model to serve
+hotels, restaurants, supermarkets, retailers, processors, institutions,
+government entities, hospitality operators, and other approved commercial
+customers. Reuse the existing marketplace, inventory, reservation, checkout,
+payment, delivery, vendor, and settlement architecture. Do not create a
+second independent marketplace or checkout engine.
+
+CUSTOMER ACCOUNTS RECEIVABLE and SUPPLIER PAYABLE/SETTLEMENT are separate
+financial domains. They must not be modeled as the same ledger or payment
+status. The following capabilities are planned deliverables, not implemented
+features or authorization to begin Phase 16G.
+
+16G.1 Business Accounts and Approval
+
+- Business identity, company/business name, TRN/tax/reference information
+  where applicable, billing contacts, delivery locations, and authorized
+  purchasers.
+- Account approval, status and suspension; payment terms, approved credit
+  limit and available credit; authorization isolation between business
+  accounts; audit history for account and financial-policy changes.
+
+16G.2 Commercial Pricing
+
+- Public marketplace, customer-specific negotiated, contract, and volume/
+  tier pricing; quotation-required products; effective and expiry dates;
+  minimum quantities where applicable.
+- Capture a durable order price snapshot. Later catalogue or contract
+  price changes must not alter an accepted order.
+
+16G.3 B2B Orders and Purchase Orders
+
+- Ordinary commercial and bulk orders with PO number, optional PO attachment,
+  internal customer reference, authorized purchaser, delivery/pickup
+  instructions, and billing details.
+- A PURCHASE ORDER IS COMMERCIAL AUTHORIZATION. IT IS NOT PROOF OF PAYMENT.
+
+16G.4 Quotes
+
+- Lifecycle: DRAFT → QUOTE_REQUESTED → QUOTED → ACCEPTED / REJECTED / EXPIRED.
+  Only an ACCEPTED quote may proceed to ORDER through the shared checkout.
+- Capture customer, products, quantity/estimated weight, quoted price,
+  taxes/fees, delivery charges, validity period, commercial terms, issuer,
+  and acceptance identity/time. Quote acceptance produces a durable price
+  snapshot.
+
+16G.5 B2B Payment Methods
+
+- Configure permitted methods per commercial account: online platform-provider
+  payment; approved Cash on Delivery; bank transfer/manual reconciliation;
+  approved trade credit; deposit plus balance; and purchase-order/invoice
+  settlement.
+- A pre-funded account/wallet requires separate design and approval.
+- Trade credit, PO ordering, receivables and bank transfer must not be
+  fabricated as successful payment-provider transactions.
+
+16G.6 Commercial Credit
+
+- Approved credit limit; Net 7 / Net 15 / Net 30 or configurable terms;
+  outstanding receivables; committed/pending credit exposure; available
+  credit; overdue balances; credit hold; suspension; audited manual adjustments.
+- Available credit includes both posted receivables and applicable committed/
+  unsettled orders, without double-counting exposure when an order is invoiced.
+- Credit authorization/consumption must be transactionally concurrency-safe:
+  two simultaneous orders cannot both consume the same available credit.
+
+16G.7 Mixed Payment and Credit
+
+- Where account policy permits, explicitly allocate each funding portion.
+  Example: JMD 400,000 order = JMD 100,000 immediate payment + JMD 300,000
+  commercial credit.
+- Prevent duplicate payment, duplicate credit consumption, and incorrect
+  outstanding balances across retries, partial payments and adjustments.
+
+16G.8 Accounts Receivable
+
+- A distinct Accounts Receivable domain, separate from provider payments and
+  supplier payables: invoices and invoice numbers, issue/due dates, original
+  and outstanding amounts, partial payments, adjustments, credit notes,
+  overdue status, payment allocation, statements, and ageing.
+- Ageing must support Current, 1–30 days, 31–60 days, 61–90 days, and 90+ days.
+  Define non-overlapping bucket boundaries in implementation so day 90 is
+  counted once. Financial changes remain auditable.
+
+16G.9 Commercial Invoices and Statements
+
+- Irie Fishmongers invoice number; customer details; PO/reference and order
+  reference; items; final quantities/weights; prices; applicable taxes;
+  delivery/service charges; adjustments; total; payments/credits; balance
+  due; issue/due dates; payment terms.
+- Customer account statements for a selected period must reconcile to the
+  underlying financial records.
+
+16G.10 Payment Allocation and Reconciliation
+
+- Support externally received payments, including bank transfers. Capture
+  payment reference, method, amount, received date, customer, allocation to
+  invoice(s), unapplied amount where necessary, reconciliation status,
+  administrator/accounting confirmation, and audit history.
+- A customer's claim that a bank transfer was made must not mark an invoice
+  PAID. Confirm receipt and allocate the payment through reconciliation.
+
+16G.11 Customer Receivable vs Supplier Settlement
+
+- ACCOUNTS RECEIVABLE = money the commercial customer owes Irie Fishmongers.
+- SUPPLIER PAYABLE = money Irie Fishmongers owes marketplace suppliers/vendors.
+- Customer payment timing must not automatically determine supplier settlement
+  eligibility. Apply the separately defined supplier settlement policy and
+  fulfilment evidence rather than copying a customer payment status.
+
+16G.12 Supplier Settlement
+
+- Integrate B2B orders with the existing marketplace settlement architecture;
+  plan for per-order, scheduled, weekly, and net settlement.
+- Calculate gross merchandise entitlement, marketplace commission, refunds,
+  returns, order adjustments, applicable delivery adjustments, prior balance
+  adjustments, and resulting supplier payable.
+- Settlement must be idempotent and auditable, normally requiring appropriate
+  fulfilment evidence before eligibility.
+
+16G.13 Final Weight and Financial Adjustment
+
+- Integrate explicitly with Phase 16D:
+  estimated weight → reservation → preparation/weighing → final weight →
+  final order amount → invoice/payment adjustment → customer receivable
+  adjustment → supplier entitlement adjustment.
+- Prevent duplicate capture, duplicate receivable creation and duplicate
+  supplier settlement. Preserve the accepted pricing basis while applying
+  explicit, auditable final-weight adjustments.
+
+16G.14 Delivery and Proof of Delivery
+
+- Reuse existing delivery/pickup infrastructure: business delivery locations,
+  receiving contact, instructions, delivery window where applicable, proof
+  of delivery, receiving person, timestamp, and shortages/rejections/exceptions.
+- Account policy may require proof of fulfilment before invoicing and/or
+  supplier settlement.
+
+16G.15 Returns, Shortages and Credit Notes
+
+- Rejected quantities, shortages, quality disputes, permitted returns, price
+  adjustments, invoice credit notes, receivable adjustments, and corresponding
+  supplier settlement adjustments.
+- Do not silently rewrite historical financial transactions.
+
+16G.16 B2B Administration
+
+- Business account approval, credit limits, payment terms, credit holds,
+  customer-specific pricing, quotations, invoices, reconciliation, receivables,
+  ageing, overdue accounts, statements, settlement visibility, and audit history.
+- Sensitive financial changes require authorization and audit logging.
+
+16G.17 Reporting
+
+- B2B sales, sales by commercial customer, outstanding receivables, receivables
+  ageing, credit utilization, overdue accounts, payments received, unapplied
+  payments, supplier payables, supplier settlements, marketplace commission,
+  and adjustments/credit notes. Reports must reconcile to financial records.
+
+16G.18 Audit and Financial Safety
+
+- Financial operations must be authenticated, authorized, auditable,
+  idempotent where applicable, transactionally safe, concurrency-safe, and
+  recoverable/reconcilable.
+- Never simply delete or overwrite historical financial records to correct
+  balances. Use reversals, adjustments, credit notes or compensating ledger
+  entries as appropriate.
+
+16G.19 Checkout Integration
+
+- Reuse the hardened checkout architecture without bypassing inventory
+  availability, reservation ownership, price locking, checkout operation
+  ownership, payment reconciliation, or order creation guarantees.
+- Existing Phase G checkout-safety work remains authoritative for checkout
+  execution. Commercial credit authorization is an additional funding
+  authority, not an exemption from checkout correctness.
+- This roadmap addition does not change Phase G implementation or status,
+  activate a checkout path, or implement any Phase G details.
+
+16G.20 Acceptance Criteria
+
+1. An approved commercial customer can place a B2B order.
+2. Business users cannot access another business account.
+3. Commercial pricing is correctly snapshotted and later price changes cannot
+   alter the accepted order's pricing basis.
+4. PO ordering works without treating a PO as payment.
+5. Online B2B payment works through the platform payment provider.
+6. Approved trade-credit ordering respects credit limits.
+7. Concurrent orders cannot overspend available credit.
+8. Net terms generate correct invoice due dates.
+9. Partial/mixed payments and their funding allocations are represented correctly.
+10. Bank/manual payments reconcile without fake provider transactions.
+11. Invoices and statements reconcile to customer balances.
+12. Customer receivables remain separate from supplier payables.
+13. Final-weight adjustments correctly update financial obligations.
+14. Delivery/pickup evidence integrates with financial policy.
+15. Supplier settlement is idempotent and auditable.
+16. Returns, shortages and credits produce auditable adjustments.
+17. Authorized admins can manage B2B financial operations.
+18. B2B reporting and ageing reconcile to financial records.
+19. Existing B2C checkout, payment and delivery behavior remains green.
+20. The complete B2B workflow is included in Phase 17 UAT.
 
 ------------------------------------------------------------
 
@@ -168,11 +375,24 @@ UAT and Production Readiness — PLANNING (revised from the prior draft on
 the now-superseded `phase-17-uat-production-readiness` branch, renumbered
 to follow the Marketplace Operating Model rather than precede it). Full
 plan: `docs/uat/phase-17-uat-production-readiness.md`. UAT validates the
-complete Phase 16 workflow — catalogue → daily listing → available-today
+complete Phase 16 B2C workflow — catalogue → daily listing → available-today
 marketplace → customer selection → reservation → payment → vendor
 acceptance → preparation → delivery or platform-managed pickup → QR/PIN or
 proof of delivery → settlement → reporting — not the pre-Phase-17
 transactional flow alone. Blocked on Phase 16 being implemented.
+
+Phase 17 must explicitly validate both the existing B2C marketplace workflow
+and the Phase 16G B2B commercial workflow. The B2B UAT path is:
+business account → commercial pricing/quote → order → reservation →
+PO/payment/credit authorization → vendor acceptance → preparation/final weight →
+delivery or pickup → proof of fulfilment → invoice → customer settlement →
+supplier settlement → reporting/reconciliation.
+
+Exercise the enabled commercial payment methods, credit concurrency, partial
+funding, reconciliation, financial adjustments and account isolation against
+16G.20. The UAT path does not make PO authorization proof of payment or couple
+customer payment timing to supplier settlement eligibility. Phase 17 must not be considered complete until the Phase 16G end-to-end B2B workflow has passed UAT. Existing B2C acceptance requirements remain
+in force.
 
 Azure is the target production cloud (decided 2026-07-19); credentials are
 not yet available. Azure credentials block only Azure infrastructure
