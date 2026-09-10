@@ -20,10 +20,10 @@ import {
 } from '../lua/reservation-lua-scripts';
 import {
   RawScriptUnderflow,
-  flagMalformedReservation,
   parseScriptResult,
   toUnderflowDetails,
 } from './inventory-reservations-script-helpers';
+import { observeReservation, ReservationReadObservation, ReservedTotalObservation } from './reservation-read-observation';
 import { ReservationUnderflowDetails } from './reservation-accounting.types';
 
 interface ReservationEntry {
@@ -256,86 +256,32 @@ export class InventoryReservationsService {
     return { released: parsed.released, quantity: parsed.quantity, underflow };
   }
 
-  // A malformed entry (unparseable JSON, an unexpected `version`, or a
-  // non-positive `quantity`) is never treated as a plain "no reservation"
-  // case the way a missing or expired key is - its quantity cannot be
-  // trusted, so it must not silently decrement the product total, and
-  // must not be inferred as safe to delete. It is left in place (for
-  // diagnostics/reconciliation) and the product is suspended for new
-  // admission until reconciliation repairs the total from the product
-  // index directly.
-  async getActiveReservation(
-    cartId: string,
-    productId: string,
-  ): Promise<CartScopedReservationEntry | null> {
-    const key = reservationKey(cartId, productId);
-    const raw = await this.redis.get(key);
-    if (raw === null) {
-      return null;
-    }
-
-    let entry: CartScopedReservationEntry;
-    try {
-      entry = JSON.parse(raw) as CartScopedReservationEntry;
-    } catch {
-      await flagMalformedReservation(this.redis, this.logger, productId, cartId, 'JSON parse failure', raw);
-      return null;
-    }
-
-    if (entry.version !== RESERVATION_ENTRY_VERSION) {
-      await flagMalformedReservation(
-        this.redis,
-        this.logger,
-        productId,
-        cartId,
-        'version mismatch',
-        raw,
-        entry.version,
-      );
-      return null;
-    }
-
-    if (typeof entry.quantity !== 'number' || entry.quantity <= 0) {
-      await flagMalformedReservation(
-        this.redis,
-        this.logger,
-        productId,
-        cartId,
-        'non-positive or missing quantity',
-        raw,
-      );
-      return null;
-    }
-
-    if (entry.expiresAt <= Date.now()) {
-      // A valid, merely-expired entry self-heals through the same atomic
-      // release path used everywhere else - never a special case here.
-      await this.releaseReservation(cartId, productId);
-      return null;
-    }
-
-    return entry;
+  // Observational only. Expiry grants no add-back; corruption propagates as
+  // untrusted availability. No suspect marker, indexes or totals are repaired.
+  // Redis failures reject the read rather than becoming ABSENT observations.
+  async getActiveReservation(cartId: string, productId: string): Promise<ReservationReadObservation> {
+    const raw = await this.redis.get(reservationKey(cartId, productId));
+    return observeReservation(raw, cartId, Date.now());
   }
 
-  async getReservedTotalExcludingCart(productId: string, excludingCartId: string): Promise<number> {
+  async getReservedTotalExcludingCart(productId: string, excludingCartId: string): Promise<ReservedTotalObservation> {
     const rawTotal = await this.redis.get(productTotalKey(productId));
-    const total = rawTotal ? Number(rawTotal) : 0;
-
-    // An empty/falsy cartId means "no requesting cart" (e.g. a general
-    // product-availability view with no cart context) - exclude nothing,
-    // and never construct a reservation key with an empty cartId segment.
+    const total = rawTotal === null ? 0 : Number(rawTotal);
+    if (!Number.isSafeInteger(total) || total < 0 || (rawTotal !== null && !/^\d+$/.test(rawTotal)))
+      return { status: 'SUSPECT' };
     let ownQuantity = 0;
     if (excludingCartId) {
-      const ownEntry = await this.getActiveReservation(excludingCartId, productId);
-      ownQuantity = ownEntry?.quantity ?? 0;
+      const observation = await this.getActiveReservation(excludingCartId, productId);
+      if (observation.status === 'MALFORMED' || observation.status === 'UNTRUSTED') return { status: 'SUSPECT' };
+      if (observation.status === 'ACTIVE') ownQuantity = observation.entry.quantity;
+      // ABSENT/EXPIRED grant no add-back. Retained totals are not repaired.
     }
-
-    return Math.max(0, total - ownQuantity);
+    if (ownQuantity > total) return { status: 'SUSPECT' };
+    return { status: 'OK', reservedByOthers: total - ownQuantity };
   }
 
-  // Existing compatibility wrapper - behavior is byte-for-byte unchanged
-  // from before this method was split: SUSPECT collapses to a plain 0, OK
-  // returns the computed number. No existing caller needs to change.
+  // Numeric compatibility boundary: SUSPECT collapses to conservative zero.
+  // Richer callers retain the distinction through getAvailabilityWithSuspectStatus.
   async computeAvailableToPurchase(
     productId: string,
     quantityAvailable: number,
@@ -370,8 +316,9 @@ export class InventoryReservationsService {
       return { status: 'SUSPECT' };
     }
 
-    const reservedByOthers = await this.getReservedTotalExcludingCart(productId, excludingCartId);
-    return { status: 'OK', available: Math.max(0, quantityAvailable - reservedByOthers) };
+    const observation = await this.getReservedTotalExcludingCart(productId, excludingCartId);
+    if (observation.status === 'SUSPECT') return observation;
+    return { status: 'OK', available: Math.max(0, quantityAvailable - observation.reservedByOthers) };
   }
 
   async reconcileProductReservedTotal(

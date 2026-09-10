@@ -126,10 +126,10 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
     expect(orphanOutcome).toEqual({ cartId: orphanCartId, productId, released: true });
 
     const orphanEntry = await inventoryReservations.getActiveReservation(orphanCartId, productId);
-    expect(orphanEntry).toBeNull();
+    expect(orphanEntry).toEqual({ status: 'ABSENT' });
 
     const genuineEntry = await inventoryReservations.getActiveReservation(cart.id, productId);
-    expect(genuineEntry?.quantity).toBe(5);
+    expect(genuineEntry).toMatchObject({ status: 'ACTIVE', entry: { quantity: 5 } });
 
     await inventoryReservations.releaseReservation(cart.id, productId);
     await prisma.cartItem.deleteMany({ where: { cartId: cart.id, productId } });
@@ -150,6 +150,6 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
     const outcome = outcomes.find((o) => o.cartId === cart.id && o.productId === productId);
     expect(outcome).toEqual({ cartId: cart.id, productId, released: true });
     const entry = await inventoryReservations.getActiveReservation(cart.id, productId);
-    expect(entry).toBeNull();
+    expect(entry).toEqual({ status: 'ABSENT' });
   });
 });

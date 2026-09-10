@@ -215,14 +215,14 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     await service.reserveOrRenew(cartId, productId, customerId, 4);
     await service.reserveOrRenew(otherCart, productId, randomUUID(), 3);
 
-    await expect(service.getReservedTotalExcludingCart(productId, cartId)).resolves.toBe(3);
+    await expect(service.getReservedTotalExcludingCart(productId, cartId)).resolves.toEqual({ status: 'OK', reservedByOthers: 3 });
     await expect(service.computeAvailableToPurchase(productId, 10, cartId)).resolves.toBe(7);
 
-    await expect(service.getReservedTotalExcludingCart(productId, '')).resolves.toBe(7);
+    await expect(service.getReservedTotalExcludingCart(productId, '')).resolves.toEqual({ status: 'OK', reservedByOthers: 7 });
     await expect(service.computeAvailableToPurchase(productId, 10, '')).resolves.toBe(3);
   });
 
-  it('11. expired valid reservation: self-heals the entry, both indexes, and the total', async () => {
+  it('11. expired valid reservation: retains the entry, both indexes, and the total', async () => {
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
@@ -248,10 +248,10 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
 
     const active = await service.getActiveReservation(cartId, productId);
 
-    expect(active).toBeNull();
-    expect(await getRawReservation(client, cartId, productId)).toBeNull();
-    expect(await getCartIndexMembers(client, cartId)).toEqual([]);
-    expect(await getProductIndexMembers(client, productId)).toEqual([]);
-    expect(await getStoredTotal(client, productId)).toBe('0');
+    expect(active).toEqual({ status: 'EXPIRED' });
+    expect(await getRawReservation(client, cartId, productId)).toBe(JSON.stringify(expiredEntry));
+    expect(await getCartIndexMembers(client, cartId)).toEqual([productId]);
+    expect(await getProductIndexMembers(client, productId)).toEqual([cartId]);
+    expect(await getStoredTotal(client, productId)).toBe('4');
   });
 });

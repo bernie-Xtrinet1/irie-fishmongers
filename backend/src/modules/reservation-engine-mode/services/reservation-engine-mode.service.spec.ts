@@ -161,7 +161,7 @@ describe('ReservationEngineModeService', () => {
       });
       get.mockResolvedValue('3');
       smembers.mockResolvedValue(['product-1']);
-      inventoryReservations.getActiveReservation.mockResolvedValue(mockActiveReservation());
+      inventoryReservations.getActiveReservation.mockResolvedValue({ status: 'ACTIVE', entry: mockActiveReservation() });
 
       const result = await service.setMode({ targetMode: 'LEGACY', updatedById });
 
@@ -189,7 +189,7 @@ describe('ReservationEngineModeService', () => {
       expect(repository.create).not.toHaveBeenCalled();
     });
 
-    it('does not treat a stale index member (no longer live) as blocking', async () => {
+    it('blocks rollback on unresolved stale index membership without cleaning it', async () => {
       repository.findCurrent.mockResolvedValue(buildConfig('DRAINING'));
       scan.mockImplementation((_cursor: string, _match: string, pattern: string) => {
         if (pattern === 'inv:reserved:cart-index:{*}') {
@@ -198,12 +198,13 @@ describe('ReservationEngineModeService', () => {
         return Promise.resolve(['0', []] as ScanReply);
       });
       smembers.mockResolvedValue(['product-1']);
-      inventoryReservations.getActiveReservation.mockResolvedValue(null);
+      inventoryReservations.getActiveReservation.mockResolvedValue({ status: 'ABSENT' });
       repository.create.mockResolvedValue(buildConfig('LEGACY'));
 
       const result = await service.setMode({ targetMode: 'LEGACY', updatedById });
 
-      expect(result).toEqual({ ok: true, id: 'config-1', mode: 'LEGACY', createdAt: now });
+      expect(result).toEqual({ ok: false, code: 'ROLLBACK_STRUCTURE_DRIFT', structureDriftProductIds: ['product-1'] });
+      expect(repository.create).not.toHaveBeenCalled();
     });
   });
 
@@ -228,7 +229,7 @@ describe('ReservationEngineModeService', () => {
       });
       get.mockResolvedValue('1');
       smembers.mockResolvedValue(['product-1']);
-      inventoryReservations.getActiveReservation.mockResolvedValue(mockActiveReservation());
+      inventoryReservations.getActiveReservation.mockResolvedValue({ status: 'ACTIVE', entry: mockActiveReservation() });
 
       await expect(service.verifyRollbackSafe()).resolves.toEqual({
         clear: false,
@@ -261,7 +262,7 @@ describe('ReservationEngineModeService', () => {
         return Promise.resolve(['0', []] as ScanReply);
       });
       smembers.mockResolvedValue(['product-1']);
-      inventoryReservations.getActiveReservation.mockResolvedValue(mockActiveReservation());
+      inventoryReservations.getActiveReservation.mockResolvedValue({ status: 'ACTIVE', entry: mockActiveReservation() });
 
       await expect(service.verifyRollbackSafe()).resolves.toEqual({
         clear: false,
@@ -270,7 +271,7 @@ describe('ReservationEngineModeService', () => {
       });
     });
 
-    it('checks a product only once across multiple carts holding it, skipping the redundant getActiveReservation lookup', async () => {
+    it('checks every indexed cart so a valid hold cannot hide unresolved state', async () => {
       scan.mockImplementation((_cursor: string, _match: string, pattern: string) => {
         if (pattern === 'inv:reserved:cart-index:{*}') {
           return Promise.resolve([
@@ -281,7 +282,7 @@ describe('ReservationEngineModeService', () => {
         return Promise.resolve(['0', []] as ScanReply);
       });
       smembers.mockResolvedValue(['product-1']);
-      inventoryReservations.getActiveReservation.mockResolvedValue(mockActiveReservation());
+      inventoryReservations.getActiveReservation.mockResolvedValue({ status: 'ACTIVE', entry: mockActiveReservation() });
 
       const result = await service.verifyRollbackSafe();
 
@@ -290,7 +291,7 @@ describe('ReservationEngineModeService', () => {
         outstandingProductIds: [],
         structureDriftProductIds: ['product-1'],
       });
-      expect(inventoryReservations.getActiveReservation).toHaveBeenCalledTimes(1);
+      expect(inventoryReservations.getActiveReservation).toHaveBeenCalledTimes(2);
       expect(inventoryReservations.getActiveReservation).toHaveBeenCalledWith('cart-1', 'product-1');
     });
 

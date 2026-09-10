@@ -270,12 +270,13 @@ export class ReservationEngineModeService {
     ]);
 
     const totalsSet = new Set(nonZeroTotalProductIds);
-    const liveSet = new Set(liveIndexProductIds);
+    const liveSet = new Set(liveIndexProductIds.present);
+    const unresolvedSet = new Set(liveIndexProductIds.unresolved);
     const outstandingProductIds: string[] = [];
     const structureDriftProductIds: string[] = [];
 
-    for (const productId of new Set([...totalsSet, ...liveSet])) {
-      if (totalsSet.has(productId) && liveSet.has(productId)) {
+    for (const productId of new Set([...totalsSet, ...liveSet, ...unresolvedSet])) {
+      if (!unresolvedSet.has(productId) && totalsSet.has(productId) && liveSet.has(productId)) {
         outstandingProductIds.push(productId);
       } else {
         structureDriftProductIds.push(productId);
@@ -333,12 +334,13 @@ export class ReservationEngineModeService {
   // genuinely still live - reusing the exact same parse/expiry logic every
   // other read path already depends on, rather than re-deriving it here.
   // A stale index member (evicted key, expired entry) is correctly
-  // reported as not live. Aggregated by productId (not cartId) so it is
+  // retained as unresolved evidence. Aggregated by productId (not cartId) so it is
   // directly comparable against findProductsWithNonZeroTotal's per-product
   // signal for drift detection.
-  private async findProductsWithLiveCartIndexReservations(): Promise<string[]> {
+  private async findProductsWithLiveCartIndexReservations(): Promise<{ present: string[]; unresolved: string[] }> {
     const client = this.redis.getClient();
     const liveProductIds = new Set<string>();
+    const unresolvedProductIds = new Set<string>();
     let cursor = '0';
 
     do {
@@ -358,17 +360,18 @@ export class ReservationEngineModeService {
         const cartId = match[1]!;
         const productIds = await client.smembers(key);
         for (const productId of productIds) {
-          if (liveProductIds.has(productId)) {
-            continue;
-          }
-          const active = await this.inventoryReservations.getActiveReservation(cartId, productId);
-          if (active) {
+          const observation = await this.inventoryReservations.getActiveReservation(cartId, productId);
+          if (observation.status === 'ACTIVE') {
             liveProductIds.add(productId);
+          } else {
+            // An indexed absence, expired hold or untrusted representation is
+            // unresolved evidence. Verification never performs its cleanup.
+            unresolvedProductIds.add(productId);
           }
         }
       }
     } while (cursor !== '0');
 
-    return Array.from(liveProductIds);
+    return { present: Array.from(liveProductIds), unresolved: Array.from(unresolvedProductIds) };
   }
 }

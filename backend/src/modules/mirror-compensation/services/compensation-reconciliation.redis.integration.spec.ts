@@ -116,7 +116,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     const result = await reconciliationService.attemptRecovery(row.id, new Date());
 
     expect(result).toEqual({ outcome: 'RESOLVED_CONVERGED', compensationId: row.id });
-    expect(await inventoryReservations.getActiveReservation(cartId, productId)).toBeNull();
+    expect(await inventoryReservations.getActiveReservation(cartId, productId)).toEqual({ status: 'ABSENT' });
   });
 
   it('3. a genuine PRODUCT_SUSPECT block heals via real reconciliation and then converges', async () => {
@@ -224,7 +224,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     const result = await reconciliationService.attemptRecovery(row.id, new Date());
 
     expect(result).toEqual({ outcome: 'BLOCKED_MODE_NOT_ADMITTING', compensationId: row.id });
-    expect(await inventoryReservations.getActiveReservation(cartId, productId)).toBeNull();
+    expect(await inventoryReservations.getActiveReservation(cartId, productId)).toEqual({ status: 'ABSENT' });
     expect(await redisClient.get(productTotalKey(productId))).toBeNull();
   });
 

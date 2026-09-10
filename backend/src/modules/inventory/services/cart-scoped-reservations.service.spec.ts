@@ -201,18 +201,18 @@ describe('InventoryReservationsService (cart-scoped model)', () => {
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
       expect(redis.get).toHaveBeenCalledWith('inv:reserved:{cart-1}:product-1');
-      expect(entry?.quantity).toBe(4);
+      expect(entry).toMatchObject({ status: 'ACTIVE', entry: { quantity: 4 } });
     });
 
-    it('returns null when no reservation exists', async () => {
+    it('reports absence when no reservation exists', async () => {
       redis.get.mockResolvedValue(null);
 
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
-      expect(entry).toBeNull();
+      expect(entry).toEqual({ status: 'ABSENT' });
     });
 
-    it('self-heals an expired entry via releaseReservation and returns null', async () => {
+    it('observes expiry without releasing or repairing', async () => {
       redis.get.mockResolvedValue(cartScopedEntryJson({ expiresAt: Date.now() - 1000 }));
       redis.eval.mockResolvedValue(
         JSON.stringify({ ok: true, released: true, quantity: 4, underflow: null }),
@@ -220,39 +220,38 @@ describe('InventoryReservationsService (cart-scoped model)', () => {
 
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
-      expect(entry).toBeNull();
-      expect(redis.eval).toHaveBeenCalledTimes(1);
-      const [, , args] = redis.eval.mock.calls[0]!;
-      expect(args).toEqual(['cart-1', 'product-1']);
+      expect(entry).toEqual({ status: 'EXPIRED' });
+      expect(redis.eval).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
     });
 
-    it('flags malformed JSON as suspect, logs it, and never deletes the key', async () => {
+    it('reports malformed JSON without mutation', async () => {
       redis.get.mockResolvedValue('{not valid json');
 
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
-      expect(entry).toBeNull();
-      expect(redis.set).toHaveBeenCalledWith('inv:reserved:product-total-suspect:{product-1}', '1');
+      expect(entry).toEqual({ status: 'MALFORMED' });
+      expect(redis.set).not.toHaveBeenCalled();
       expect(redis.eval).not.toHaveBeenCalled();
     });
 
-    it('flags a version mismatch as suspect and never deletes the key', async () => {
+    it('reports an untrusted version without mutation', async () => {
       redis.get.mockResolvedValue(cartScopedEntryJson({ version: 2 }));
 
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
-      expect(entry).toBeNull();
-      expect(redis.set).toHaveBeenCalledWith('inv:reserved:product-total-suspect:{product-1}', '1');
+      expect(entry).toEqual({ status: 'UNTRUSTED' });
+      expect(redis.set).not.toHaveBeenCalled();
       expect(redis.eval).not.toHaveBeenCalled();
     });
 
-    it('flags a non-positive quantity as suspect and never deletes the key', async () => {
+    it('reports malformed quantity without mutation', async () => {
       redis.get.mockResolvedValue(cartScopedEntryJson({ quantity: 0 }));
 
       const entry = await service.getActiveReservation('cart-1', 'product-1');
 
-      expect(entry).toBeNull();
-      expect(redis.set).toHaveBeenCalledWith('inv:reserved:product-total-suspect:{product-1}', '1');
+      expect(entry).toEqual({ status: 'MALFORMED' });
+      expect(redis.set).not.toHaveBeenCalled();
       expect(redis.eval).not.toHaveBeenCalled();
     });
   });

@@ -50,7 +50,7 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
 
       const result = await service.getReservedTotalExcludingCart('product-1', 'cart-1');
 
-      expect(result).toBe(7);
+      expect(result).toEqual({ status: 'OK', reservedByOthers: 7 });
     });
 
     it('treats a missing stored total as zero', async () => {
@@ -58,7 +58,7 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
 
       const result = await service.getReservedTotalExcludingCart('product-1', 'cart-1');
 
-      expect(result).toBe(0);
+      expect(result).toEqual({ status: 'OK', reservedByOthers: 0 });
     });
 
     it('treats an empty excludingCartId as "exclude nothing" without querying a reservation key', async () => {
@@ -66,12 +66,12 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
 
       const result = await service.getReservedTotalExcludingCart('product-1', '');
 
-      expect(result).toBe(10);
+      expect(result).toEqual({ status: 'OK', reservedByOthers: 10 });
       expect(redis.get).toHaveBeenCalledTimes(1);
       expect(redis.get).toHaveBeenCalledWith('inv:reserved:product-total:{product-1}');
     });
 
-    it('never returns a negative number', async () => {
+    it('reports undercounted own-cart accounting as suspect', async () => {
       redis.get.mockImplementation((key: string) => {
         if (key === 'inv:reserved:product-total:{product-1}') return Promise.resolve('2');
         if (key === 'inv:reserved:{cart-1}:product-1') {
@@ -82,7 +82,7 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
 
       const result = await service.getReservedTotalExcludingCart('product-1', 'cart-1');
 
-      expect(result).toBe(0);
+      expect(result).toEqual({ status: 'SUSPECT' });
     });
   });
 

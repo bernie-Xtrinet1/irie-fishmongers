@@ -46,7 +46,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     await cleanupKeys(client, createdKeys);
   });
 
-  it('12. malformed JSON: sets suspect, never guesses a quantity, never deletes the evidence', async () => {
+  it('12. malformed JSON: observes corruption without writing suspect state or deleting evidence', async () => {
     const { cartId, productId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
@@ -54,13 +54,13 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
 
     const active = await service.getActiveReservation(cartId, productId);
 
-    expect(active).toBeNull();
-    expect(await getSuspectFlag(client, productId)).toBe('1');
+    expect(active).toEqual({ status: 'MALFORMED' });
+    expect(await getSuspectFlag(client, productId)).toBeNull();
     expect(await getRawReservation(client, cartId, productId)).toBe('{not valid json');
     expect(await getStoredTotal(client, productId)).toBeNull();
   });
 
-  it('13. version mismatch: sets suspect and retains the entry for diagnostics', async () => {
+  it('13. version mismatch: observes untrusted data and retains the entry without writing', async () => {
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
@@ -82,8 +82,8 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
 
     const active = await service.getActiveReservation(cartId, productId);
 
-    expect(active).toBeNull();
-    expect(await getSuspectFlag(client, productId)).toBe('1');
+    expect(active).toEqual({ status: 'UNTRUSTED' });
+    expect(await getSuspectFlag(client, productId)).toBeNull();
     expect(await getRawReservation(client, cartId, productId)).toBe(mismatched);
   });
 

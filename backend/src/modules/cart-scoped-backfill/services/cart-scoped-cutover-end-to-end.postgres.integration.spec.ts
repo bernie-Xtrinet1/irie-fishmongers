@@ -271,8 +271,8 @@ describe('CART_SCOPED cutover, full sequence, real Postgres + Redis (isolated mo
       productId,
       released: true,
     });
-    expect(await inventoryReservations.getActiveReservation(orphanCartId, productId)).toBeNull();
-    expect((await inventoryReservations.getActiveReservation(cart.id, productId))?.quantity).toBe(5);
+    expect(await inventoryReservations.getActiveReservation(orphanCartId, productId)).toEqual({ status: 'ABSENT' });
+    expect(await inventoryReservations.getActiveReservation(cart.id, productId)).toMatchObject({ status: 'ACTIVE', entry: { quantity: 5 } });
 
     // 5. Freshness sweep + attestation.
     const freshnessOutcomes = await backfillService.freshnessSweep(targets);
@@ -317,6 +317,6 @@ describe('CART_SCOPED cutover, full sequence, real Postgres + Redis (isolated mo
     await mutationBarrier.deactivate(adminUserId);
     await cartService.addItem(customerId, { productId, quantity: 2 }, randomUUID());
     const postCutover = await inventoryReservations.getActiveReservation(cart.id, productId);
-    expect(postCutover?.quantity).toBe(7);
+    expect(postCutover).toMatchObject({ status: 'ACTIVE', entry: { quantity: 7 } });
   });
 });

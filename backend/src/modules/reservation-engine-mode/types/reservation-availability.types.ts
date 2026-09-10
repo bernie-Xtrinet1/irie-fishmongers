@@ -5,11 +5,9 @@
 // authority matrix" this type encodes lives only here until a later unit
 // wires a caller to it.
 
-// STRUCTURE_DRIFT_CONFIRMED means InventoryReservationsService's existing
-// product suspect flag (productSuspectKey) is already set - i.e. either
-// flagMalformedReservation (write-time) or reconcileProductReservedTotal
-// finding UNDERCOUNT (a completed reconciliation pass) has already recorded
-// a concrete reservation-integrity problem for this product. It is never
+// STRUCTURE_DRIFT_CONFIRMED means an existing product suspect flag or a
+// malformed/untrusted read observation establishes an integrity problem.
+// Reads do not persist a suspect marker or repair the observed state. It is never
 // used for a transient read failure - a thrown error from the comparison
 // read maps to COMPARISON_UNAVAILABLE instead. The two causes are
 // deliberately not conflated: one means "we know something is wrong", the

@@ -71,14 +71,16 @@ describe('G.4a drain characterization (real PostgreSQL/Redis)', () => {
     expect(e.mode?.mode).toBe('LEGACY'); expect(e.holds[0]).toMatchObject({ status: 'ACTIVE', indexed: 0, total: null });
     expect(e.attempts).toHaveLength(0); expect(e.orders).toHaveLength(0); expect(e.payments).toHaveLength(0);
   });
-  it('M31 BLOCKER-5 malformed reservation with zero total is flagged but guard still reports clear', async () => {
+  it('M31 G.4b.2b.1 indexed malformed reservation with zero total blocks rollback without mutation', async () => {
     const { cartId, productId } = await unresolvedReserveMarker(f, 2);
     await f.inventoryReservations.reserveOrRenew(cartId, productId, f.customerId, 2);
     await f.redisClient.set(reservationKey(cartId, productId), '{bad-json');
     await f.redisClient.set(productTotalKey(productId), '0');
     await transition('DRAINING');
-    expect((await transition('LEGACY')).ok).toBe(true);
-    expect(await f.redisClient.get(productSuspectKey(productId))).not.toBeNull();
+    expect(await transition('LEGACY')).toMatchObject({ ok: false, code: 'ROLLBACK_STRUCTURE_DRIFT' });
+    expect(await f.redisClient.get(productSuspectKey(productId))).toBeNull();
+    expect(await f.redisClient.get(reservationKey(cartId, productId))).toBe('{bad-json');
+    expect(await f.redisClient.get(productTotalKey(productId))).toBe('0');
     expect((await snapshot(cartId, productId)).holds[0]!.status).toBe('MALFORMED');
   });
   it('M30 BLOCKER-1 old-mode writer completes AFTER the real guarded LEGACY commit', async () => {
