@@ -27,6 +27,7 @@ describe('CheckoutAttemptService (failure transition and stale pagination)', () 
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      reservationExecutionEpoch: null,
       selectedPath: 'CART_SCOPED',
       id: attemptId,
       idempotencyKey: 'idem-key-1',

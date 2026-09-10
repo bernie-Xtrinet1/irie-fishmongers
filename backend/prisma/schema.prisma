@@ -552,15 +552,17 @@ enum CheckoutPath {
 }
 
 model CheckoutOperation {
-  id                   String        @id @default(uuid())
-  customerId           String
-  cartId               String
-  retryKeyHash         String        @db.VarChar(64)
-  operationKey         String        @unique @db.VarChar(36)
-  selectedPath         CheckoutPath?
-  priceLockFingerprint String?       @db.VarChar(64)
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  reservationExecutionEpoch  Int?
+  reservationCapabilityState ReservationCapabilityState?
+  id                         String                      @id @default(uuid())
+  customerId                 String
+  cartId                     String
+  retryKeyHash               String                      @db.VarChar(64)
+  operationKey               String                      @unique @db.VarChar(36)
+  selectedPath               CheckoutPath?
+  priceLockFingerprint       String?                     @db.VarChar(64)
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
 
   customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
   cart     Cart @relation(fields: [cartId], references: [id], onDelete: Restrict)
@@ -571,19 +573,20 @@ model CheckoutOperation {
 }
 
 model CheckoutAttempt {
-  id              String                @id @default(uuid())
-  idempotencyKey  String                @unique
-  cartId          String
-  customerId      String
-  status          CheckoutAttemptStatus @default(PROCESSING)
-  orderId         String?               @unique
-  failureCode     String?
-  failureMessage  String?
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
-  lastHeartbeatAt DateTime              @default(now())
+  reservationExecutionEpoch Int?
+  id                        String                @id @default(uuid())
+  idempotencyKey            String                @unique
+  cartId                    String
+  customerId                String
+  status                    CheckoutAttemptStatus @default(PROCESSING)
+  orderId                   String?               @unique
+  failureCode               String?
+  failureMessage            String?
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+  lastHeartbeatAt           DateTime              @default(now())
   // NULL means historical ownership is unknown; never infer from current policy.
-  selectedPath    CheckoutPath?
+  selectedPath              CheckoutPath?
 
   cart     Cart   @relation(fields: [cartId], references: [id], onDelete: Restrict)
   customer User   @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -594,6 +597,47 @@ model CheckoutAttempt {
   @@index([status, lastHeartbeatAt])
   @@index([status, lastHeartbeatAt, id])
   @@map("checkout_attempts")
+}
+
+enum ReservationCapabilityState {
+  ACTIVE
+  REVOKED
+}
+
+enum ReservationFencePhase {
+  OPEN
+  DRAINING
+  FROZEN
+  RETIRED
+}
+
+enum ReservationFenceStatus {
+  PREPARED
+  ACKNOWLEDGED
+}
+
+// Inactive G.4b.1 control journal. Latest revision is durable authority, even
+// while PREPARED: no permit may be issued from the preceding acknowledged row.
+model ReservationFenceTransition {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  revision                Int                    @unique
+  incarnation             String                 @db.Uuid
+  epoch                   Int
+  phase                   ReservationFencePhase
+  protocol                Int
+  predecessor             Json?
+  mode                    ReservationEngineMode
+  modeRevision            Int?
+  status                  ReservationFenceStatus @default(PREPARED)
+  bootstrap               Boolean                @default(false)
+  endpointAcknowledgement String?                @db.Uuid
+  reason                  String                 @db.VarChar(32)
+  actorId                 String                 @db.Uuid
+  createdAt               DateTime               @default(now())
+  acknowledgedAt          DateTime?
+
+  @@index([incarnation, epoch])
+  @@map("reservation_fence_transitions")
 }
 
 enum ReviewModerationStatus {

@@ -27,6 +27,7 @@ describe('CheckoutAttemptService', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      reservationExecutionEpoch: null,
       selectedPath: 'CART_SCOPED',
       id: 'attempt-1',
       idempotencyKey,
@@ -46,7 +47,9 @@ describe('CheckoutAttemptService', () => {
   // CheckoutAttemptSummary deliberately excludes failureMessage - the
   // service never returns the raw Prisma row.
   function toSummary(attempt: CheckoutAttempt) {
-    const { failureMessage: _failureMessage, ...summary } = attempt;
+    // The existing public summary excludes both diagnostics and the new
+    // database-only capability; G.4b.1 does not change that response contract.
+    const { failureMessage: _failureMessage, reservationExecutionEpoch: _epoch, ...summary } = attempt;
     return summary;
   }
 

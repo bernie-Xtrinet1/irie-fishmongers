@@ -32,6 +32,7 @@ describe('CheckoutAttemptService (heartbeat and commit transitions)', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      reservationExecutionEpoch: null,
       selectedPath: 'CART_SCOPED',
       id: attemptId,
       idempotencyKey: 'idem-key-1',

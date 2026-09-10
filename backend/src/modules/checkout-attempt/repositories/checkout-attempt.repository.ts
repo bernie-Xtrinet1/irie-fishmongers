@@ -17,6 +17,19 @@ export type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 export class CheckoutAttemptRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  // G.4b.1 inactive path; the capability service holds the owning operation
+  // lock. Return only identity/epoch, never the raw idempotency key.
+  async createWithReservationCapability(input: {
+    operationKey: string; customerId: string; cartId: string; epoch: number;
+  }, tx: Prisma.TransactionClient) {
+    const existing = await tx.checkoutAttempt.findUnique({ where: { idempotencyKey: input.operationKey },
+      select: { id: true, reservationExecutionEpoch: true, customerId: true, cartId: true, selectedPath: true } });
+    if (existing) return existing;
+    return tx.checkoutAttempt.create({ data: { idempotencyKey: input.operationKey, customerId: input.customerId,
+      cartId: input.cartId, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: input.epoch },
+    select: { id: true, reservationExecutionEpoch: true, customerId: true, cartId: true, selectedPath: true } });
+  }
+
   // The unique idempotencyKey constraint is the concurrency authority
   // (Decision 1): a plain create() is attempted first: if two callers
   // race, exactly one create() succeeds and the other observes Postgres's

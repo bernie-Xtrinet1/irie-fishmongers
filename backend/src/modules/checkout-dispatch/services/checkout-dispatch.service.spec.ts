@@ -42,6 +42,8 @@ describe('G.2b inactive dispatcher', () => {
   }
   beforeEach(() => {
     operation = {
+      reservationExecutionEpoch: null,
+      reservationCapabilityState: null,
       id: randomUUID(),
       operationKey: randomUUID(),
       customerId: randomUUID(),

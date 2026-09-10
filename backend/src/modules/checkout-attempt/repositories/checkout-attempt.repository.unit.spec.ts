@@ -35,6 +35,7 @@ describe('CheckoutAttemptRepository (mocked P2002 handling)', () => {
 
   function buildAttempt(overrides: Partial<CheckoutAttempt> = {}): CheckoutAttempt {
     return {
+      reservationExecutionEpoch: null,
       selectedPath: 'CART_SCOPED',
       id: 'attempt-1',
       idempotencyKey,

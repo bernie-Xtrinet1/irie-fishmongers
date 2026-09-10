@@ -26,6 +26,8 @@ describe('G.3b atomic admission contract', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     operation = {
+      reservationExecutionEpoch: null,
+      reservationCapabilityState: null,
       id: context.operationId,
       customerId: context.customerId,
       cartId: context.cartId,

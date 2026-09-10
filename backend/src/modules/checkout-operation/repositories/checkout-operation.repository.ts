@@ -7,6 +7,21 @@ import { PrismaService } from '../../../database/prisma.service';
 export class CheckoutOperationRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  // G.4b.1 inactive support. Caller holds the fence lock and this operation row
+  // lock. Path and epoch are first-bound together; historical assigned NULL
+  // capabilities are deliberately not upgraded.
+  bindReservationCapability(id: string, epoch: number, tx: Prisma.TransactionClient) {
+    return tx.checkoutOperation.updateMany({
+      where: { id, selectedPath: null, reservationExecutionEpoch: null, reservationCapabilityState: null },
+      data: { selectedPath: 'CART_SCOPED', reservationExecutionEpoch: epoch, reservationCapabilityState: 'ACTIVE' },
+    });
+  }
+
+  revokeReservationCapability(id: string, tx: Prisma.TransactionClient) {
+    return tx.checkoutOperation.updateMany({ where: { id, reservationCapabilityState: 'ACTIVE' },
+      data: { reservationCapabilityState: 'REVOKED' } });
+  }
+
   // Serializable retries are bounded and repeat database-only work. No Redis,
   // provider calls or logging may be placed inside this callback.
   async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
