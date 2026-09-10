@@ -49,6 +49,11 @@ if ARGV[1] == 'BOOTSTRAP' then
     return {'DURABLE_REDIS_DISAGREEMENT'}
   end
   -- Atomic absence check; never replace an existing/restored image.
+  -- Initialization history is born ONLY with a new control record. Loss of
+  -- either record is never repaired by replaying bootstrap on existing control.
+  local historyKey = 'reservation:fence:initialization-history'
+  if redis.call('EXISTS', historyKey) ~= 0 then return {'DURABLE_REDIS_DISAGREEMENT'} end
+  redis.call('HSET', historyKey, 'incarnation', target.incarnation)
   redis.call('SET', KEYS[1], ARGV[2], 'NX')
   return {'ACCEPTED'}
 end

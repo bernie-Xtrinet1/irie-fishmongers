@@ -4,13 +4,15 @@ import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/c
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
 import { ReservationFenceService } from './reservation-fence.service';
 import { accepted, FenceResult } from '../types/reservation-fence.types';
+import { ReservationMutationAuthorityService } from './reservation-mutation-authority.service';
 
 @Injectable()
 export class ReservationCapabilityService {
   constructor(private readonly fenceRepository: ReservationFenceRepository,
     private readonly fence: ReservationFenceService,
     private readonly operations: CheckoutOperationRepository,
-    private readonly attempts: CheckoutAttemptRepository) {}
+    private readonly attempts: CheckoutAttemptRepository,
+    private readonly mutations: ReservationMutationAuthorityService) {}
 
   async bind(operationId: string, customerId: string, epoch: number): Promise<FenceResult<number>> {
     return this.fenceRepository.locked(async tx => {
@@ -33,6 +35,9 @@ export class ReservationCapabilityService {
     return this.fenceRepository.locked(async tx => {
       const op = await this.operations.lockOwned(operationId, customerId, tx);
       if (!op || op.reservationExecutionEpoch === null) return { code: 'UNKNOWN_CAPABILITY' };
+      const restriction = await this.mutations.restrictExecutionInTransaction(tx, op.id, customerId, 'REVOKED');
+      if (restriction.code === 'FENCE_REJECTED') return { code: restriction.reason };
+      if (restriction.code !== 'ACCEPTED') throw new Error('Physical capability revocation outcome uncertain');
       await this.operations.revokeReservationCapability(op.id, tx);
       return accepted(undefined);
     });

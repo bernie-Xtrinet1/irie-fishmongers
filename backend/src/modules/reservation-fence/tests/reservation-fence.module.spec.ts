@@ -4,6 +4,10 @@ import { RedisModule } from '../../../common/redis/redis.module';
 import { ReservationFenceModule } from '../reservation-fence.module';
 import { ReservationFenceService } from '../services/reservation-fence.service';
 import { ReservationCapabilityService } from '../services/reservation-capability.service';
+import { ReservationMutationAuthorityService } from '../services/reservation-mutation-authority.service';
+import { ReservationFencedExecutor } from '../services/reservation-fenced-executor.service';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 
 describe('G.4b.1 inactive dependency boundary', () => {
   it('imports only infrastructure and has no controller', () => {
@@ -25,10 +29,21 @@ describe('G.4b.1 inactive dependency boundary', () => {
         const providers = (Reflect.getMetadata('providers', entry) as unknown[] | undefined) ?? [];
         expect(providers).not.toContain(ReservationFenceService);
         expect(providers).not.toContain(ReservationCapabilityService);
+        expect(providers).not.toContain(ReservationMutationAuthorityService);
+        expect(providers).not.toContain(ReservationFencedExecutor);
         ((Reflect.getMetadata('imports', entry) as unknown[] | undefined) ?? []).forEach(visit);
       }
     }
     visit(AppModule);
     expect(seen.size).toBeGreaterThan(1);
+  });
+  it('G.4b.2a does not convert reservation Lua or the raw suspect writer', () => {
+    const inventory = join(__dirname, '../../inventory');
+    for (const file of readdirSync(join(inventory, 'lua'))) {
+      const source = readFileSync(join(inventory, 'lua', file), 'utf8');
+      expect(source).not.toMatch(/mutationGuard|compileFencedMutation|reservation:fence/);
+    }
+    expect(readFileSync(join(inventory, 'services/inventory-reservations-script-helpers.ts'), 'utf8'))
+      .toContain("await redis.set(productSuspectKey(productId), '1')");
   });
 });

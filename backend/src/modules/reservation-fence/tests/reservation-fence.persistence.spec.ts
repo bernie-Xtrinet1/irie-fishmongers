@@ -13,6 +13,8 @@ import { InfrastructureAcknowledgement, ReservationFenceService } from '../servi
 import { ReservationCapabilityService } from '../services/reservation-capability.service';
 import { FenceResult, FenceTuple } from '../types/reservation-fence.types';
 import { RESERVATION_FENCE_KEY } from '../lua/reservation-fence-control.lua';
+import { ReservationMutationAuthorityService } from '../services/reservation-mutation-authority.service';
+import { MUTATION_HISTORY_KEY, executionGateKey, resourceGuardKey, mutationPermitKey } from '../lua/reservation-mutation-common.lua';
 
 function success<T>(result: FenceResult<T>): T {
   if (result.code !== 'ACCEPTED') throw new Error(result.code);
@@ -23,6 +25,8 @@ interface Fixture {
   service: ReservationFenceService; second: ReservationFenceService; capabilities: ReservationCapabilityService;
   secondCapabilities: ReservationCapabilityService; ack: InfrastructureAcknowledgement;
   customerId: string; cartId: string; mode: ReservationEngineMode;
+  mutations: ReservationMutationAuthorityService;
+  productId: string; extraKeys: string[];
 }
 async function isolated(work: (f: Fixture) => Promise<void>, mode: ReservationEngineMode = 'CART_SCOPED') {
   assertDisposableEnvironment();
@@ -35,25 +39,30 @@ async function isolated(work: (f: Fixture) => Promise<void>, mode: ReservationEn
   const secondRepo = new ReservationFenceRepository(other);
   const service = new ReservationFenceService(repository, new RedisService(redis));
   const second = new ReservationFenceService(secondRepo, new RedisService(redis));
+  const mutations = new ReservationMutationAuthorityService(repository, new RedisService(redis));
+  const extraKeys: string[] = [];
   return withCleanup(() => withCleanup(async () => {
     await Promise.all([prisma.$connect(), other.$connect()]);
     expect(await redis.exists(RESERVATION_FENCE_KEY)).toBe(0);
     fixture = await setUpCompensationFixture(prisma);
-    const { customerId, cartId } = await seedCartAndProduct(fixture);
+    const { customerId, cartId, productId } = await seedCartAndProduct(fixture);
     await prisma.reservationEngineModeConfig.create({ data: { mode, updatedById: customerId } });
-    await work({ prisma, other, redis, repository, service, second, mode, customerId, cartId,
-      capabilities: new ReservationCapabilityService(repository, service, new CheckoutOperationRepository(prisma), new CheckoutAttemptRepository(prisma)),
-      secondCapabilities: new ReservationCapabilityService(secondRepo, second, new CheckoutOperationRepository(other), new CheckoutAttemptRepository(other)),
+    await work({ prisma, other, redis, repository, service, second, mode, customerId, cartId, mutations, productId, extraKeys,
+      capabilities: new ReservationCapabilityService(repository, service, new CheckoutOperationRepository(prisma), new CheckoutAttemptRepository(prisma), mutations),
+      secondCapabilities: new ReservationCapabilityService(secondRepo, second, new CheckoutOperationRepository(other), new CheckoutAttemptRepository(other), new ReservationMutationAuthorityService(secondRepo, new RedisService(redis))),
       ack: { actorId, evidenceId: randomUUID(), endpointQuarantined: true, oldPrimaryFenced: true, controlledPromotion: true } });
   }, [async () => {
     await prisma.reservationFenceTransition.deleteMany({ where: { actorId } });
     if (fixture) {
+      const ops = await prisma.checkoutOperation.findMany({ where: { customerId: { in: fixture.userIds } }, select: { id: true } });
+      for (const op of ops) await redis.del(executionGateKey(op.id));
+      await prisma.cartReservationSyncState.deleteMany({ where: { cart: { customerId: { in: fixture.userIds } } } });
       await prisma.checkoutAttempt.deleteMany({ where: { customerId: { in: fixture.userIds } } });
       await prisma.checkoutOperation.deleteMany({ where: { customerId: { in: fixture.userIds } } });
       await prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: { in: fixture.userIds } } });
       await tearDownCompensationFixture(fixture);
     }
-  }, () => redis.del(RESERVATION_FENCE_KEY)]), [() => redis.quit(), () => prisma.$disconnect(), () => other.$disconnect()]);
+  }, () => redis.del(RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ...extraKeys)]), [() => redis.quit(), () => prisma.$disconnect(), () => other.$disconnect()]);
 }
 async function bootstrap(f: Fixture) {
   const target = success(await f.service.allocateIncarnation(f.ack));
@@ -74,6 +83,69 @@ async function operation(f: Fixture, selectedPath?: 'LEGACY' | 'CART_SCOPED') {
 }
 
 describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
+  it('G.4b.2a registers only acknowledged owned scope, not caller tuple assertions', () => isolated(async f => {
+    const current = await open(f);
+    const marker = await f.prisma.cartReservationSyncState.create({ data: { cartId: f.cartId,
+      productId: f.productId, expectedMutationVersion: 1, expectedQuantity: 2, generation: 1 } });
+    f.extraKeys.push(resourceGuardKey(marker.id));
+    const initialized = await f.mutations.initializeResource(marker.id, f.customerId, 1, randomUUID());
+    if (initialized.code !== 'ACCEPTED') throw new Error('Resource fixture denied');
+    const resources = [initialized.value];
+    const cart = await f.mutations.registerCart('RESERVE', resources, randomUUID());
+    if (cart.code !== 'ACCEPTED') throw new Error('Cart permit denied');
+    f.extraKeys.push(mutationPermitKey(cart.value.permitId));
+    expect(cart.value.family).toBe('PRE_CHECKOUT_CART');
+    const repair = await f.mutations.registerRepair('MALFORMED_SUSPECT', resources, randomUUID());
+    if (repair.code !== 'ACCEPTED') throw new Error('Repair permit denied');
+    f.extraKeys.push(mutationPermitKey(repair.value.permitId));
+    expect(repair.value.family).toBe('ADMIN_OR_RECOVERY');
+    expect((await f.mutations.registerCart('CHECKOUT_MARK', resources, randomUUID())).code).toBe('FENCE_REJECTED');
+    expect((await f.mutations.registerCart('RESERVE', [{ ...resources[0]!, customerId: randomUUID() }], randomUUID())).code).toBe('FENCE_REJECTED');
+    const id = await operation(f);
+    success(await f.capabilities.bind(id, f.customerId, current.epoch));
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    const attempt = success(await f.capabilities.createAttempt(id, f.customerId, current.epoch));
+    const checkout = await f.mutations.registerCheckout('CHECKOUT_MARK', resources, randomUUID(), id, attempt.id);
+    if (checkout.code !== 'ACCEPTED') throw new Error('Execution permit denied');
+    f.extraKeys.push(mutationPermitKey(checkout.value.permitId));
+    expect(checkout.value.family).toBe('CHECKOUT_EXECUTION_OR_SETTLEMENT');
+    const raw = await f.redis.get(mutationPermitKey(checkout.value.permitId));
+    const op = await f.prisma.checkoutOperation.findUniqueOrThrow({ where: { id } });
+    expect(raw!.includes(op.operationKey)).toBe(false);
+    expect(raw!.includes(op.retryKeyHash)).toBe(false);
+    await f.service.prepare(current, 'FROZEN', f.ack.actorId);
+    expect((await f.mutations.registerCart('RESERVE', resources, randomUUID())).code).toBe('FENCE_REJECTED');
+  }));
+  it('G.4b.2a closes Redis before DB revocation, survives DB failure and retries without reopening', () => isolated(async f => {
+    const current = await open(f);
+    const id = await operation(f);
+    success(await f.capabilities.bind(id, f.customerId, current.epoch));
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    const failure = jest.spyOn(CheckoutOperationRepository.prototype, 'revokeReservationCapability').mockImplementationOnce(() => (async () => {
+      const gate = JSON.parse((await f.redis.get(executionGateKey(id)))!) as { state: string };
+      expect(gate.state).toBe('REVOKED');
+      const row = await f.other.checkoutOperation.findUniqueOrThrow({ where: { id } });
+      expect(row.reservationCapabilityState).toBe('ACTIVE');
+      throw new Error('SIMULATED_DATABASE_FAILURE');
+    })() as ReturnType<CheckoutOperationRepository['revokeReservationCapability']>);
+    try { await expect(f.capabilities.revoke(id, f.customerId)).rejects.toThrow('SIMULATED_DATABASE_FAILURE'); }
+    finally { failure.mockRestore(); }
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('FENCE_REJECTED');
+    expect((await f.capabilities.revoke(id, f.customerId)).code).toBe('ACCEPTED');
+    expect((await f.prisma.checkoutOperation.findUniqueOrThrow({ where: { id } })).reservationCapabilityState).toBe('REVOKED');
+  }));
+  it('G.4b.2a missing gate cannot acknowledge revocation or reconstruct enabled authority', () => isolated(async f => {
+    const current = await open(f);
+    const id = await operation(f);
+    success(await f.capabilities.bind(id, f.customerId, current.epoch));
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    expect((await f.mutations.closeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
+    await f.redis.del(executionGateKey(id));
+    expect(await f.mutations.initializeExecutionGate(id, f.customerId))
+      .toEqual({ code: 'FENCE_REJECTED', reason: 'MISSING_EXECUTION_GATE' });
+    expect((await f.capabilities.revoke(id, f.customerId)).code).toBe('MISSING_EXECUTION_GATE');
+    expect((await f.prisma.checkoutOperation.findUniqueOrThrow({ where: { id } })).reservationCapabilityState).toBe('ACTIVE');
+  }));
   it('holds the PostgreSQL lock throughout the actual Redis/ack cycle, then releases it', () => isolated(async f => {
     const current = await open(f);
     await f.service.prepare(current, 'FROZEN', f.ack.actorId);
@@ -153,7 +225,7 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     expect(fresh.epoch).toBe(old.epoch);
     expect((await f.second.reconcile()).code).toBe('DURABLE_REDIS_DISAGREEMENT');
     // Test-only physical reset, representing the acknowledged quarantined endpoint.
-    await f.redis.del(RESERVATION_FENCE_KEY);
+    await f.redis.del(RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY);
     expect(success(await f.second.reconcile()).phase).toBe('FROZEN');
   }));
   it.each(['older', 'newer'])('Redis %s than durable authority fails closed', direction => isolated(async f => {
@@ -201,6 +273,7 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     const current = await open(f);
     const id = await operation(f);
     await f.capabilities.bind(id, f.customerId, current.epoch);
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
     await expect(f.prisma.checkoutOperation.update({ where: { id }, data: { reservationExecutionEpoch: current.epoch + 1 } })).rejects.toBeDefined();
     await expect(f.prisma.checkoutOperation.update({ where: { id }, data: { reservationExecutionEpoch: null, reservationCapabilityState: null } })).rejects.toBeDefined();
     await expect(f.prisma.checkoutOperation.update({ where: { id }, data: { selectedPath: 'LEGACY' } })).rejects.toBeDefined();
@@ -213,6 +286,7 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     const current = await open(f);
     const id = await operation(f);
     await f.capabilities.bind(id, f.customerId, current.epoch);
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
     expect((await f.capabilities.createAttempt(id, f.customerId, current.epoch + 1)).code).toBe('EPOCH_MISMATCH');
     const results = await Promise.all([f.capabilities.createAttempt(id, f.customerId, current.epoch), f.secondCapabilities.createAttempt(id, f.customerId, current.epoch)]);
     expect(success(results[0]).id === success(results[1]).id).toBe(true);
@@ -228,6 +302,7 @@ describe('G.4b.1 PostgreSQL authority and capability persistence', () => {
     const current = await open(f);
     const id = await operation(f);
     await f.capabilities.bind(id, f.customerId, current.epoch);
+    expect((await f.mutations.initializeExecutionGate(id, f.customerId)).code).toBe('ACCEPTED');
     const op = await f.prisma.checkoutOperation.findUniqueOrThrow({ where: { id } });
     const data = { customerId: f.customerId, cartId: f.cartId, selectedPath: 'CART_SCOPED' as const, idempotencyKey: op.operationKey };
     await expect(f.prisma.checkoutAttempt.create({ data })).rejects.toBeDefined();

@@ -1,4 +1,4 @@
-# G.4b.1 inactive reservation fence protocol
+# G.4b.1 / G.4b.2a inactive reservation fence infrastructure
 
 This module is not imported by AppModule, checkout admission, recovery, or any
 reservation writer. It does not make the G.4a activation blockers safe and does
@@ -30,6 +30,12 @@ anything. A competing controller cannot drive an obsolete durable transition.
 
 Redis control has only the six tuple fields. Bootstrap uses an atomic absent-key
 check and starts FROZEN. A restored nonmatching image is rejected, including OPEN.
+G.4b.2a creates a separate non-expiring initialization-history hash in the same
+bootstrap execution. Bootstrap replay never recreates missing history alongside
+existing control. An explicitly empty quarantined endpoint must have neither
+record. History records initialized metadata identities so loss/eviction of a
+gate or resource guard cannot turn a delayed create-only initializer into a new
+grant. Missing history denies initialization and metadata changes.
 CAS checks incarnation, epoch, predecessor revision/phase/transition identity and
 protocol; new R is required. OPEN may restrict to DRAINING/FROZEN; DRAINING may
 freeze; FROZEN may explicitly open or abort freeze to DRAINING at a new R.
@@ -100,7 +106,100 @@ Infrastructure permissions must restrict direct control-key writes and use of
 control Lua to the controller. Future G.4b.2 writers require per-mutation tuple
 validation; an earlier service check is insufficient.
 
-## Scope, tests and rollback
+## G.4b.2a physical authorization infrastructure
+
+W1-W8 are unchanged. No reservation Lua embeds the new guard; the raw suspect
+SET remains unchanged. No production module imports this infrastructure. It is
+not yet physical enforcement for production reservation writers, and does not
+resolve the G.4a activation blockers.
+
+`ReservationMutationAuthorityService` registers short-lived opaque permits
+under the existing PostgreSQL fence/mode lock. It re-reads the latest
+ACKNOWLEDGED transition, exact mode revision, owned cart/resource generation,
+and operation/attempt capability where applicable. Registration's Lua compares
+the complete physical tuple before SET. A plausible caller tuple cannot register
+a permit through this API. IDs are UUID scope identities, never raw operation,
+retry/idempotency keys, provider references, credentials or payloads. Permit
+records are constructed from an allow-list of fields. No new logging is added.
+
+Authority families are PRE_CHECKOUT_CART, CHECKOUT_EXECUTION_OR_SETTLEMENT and
+ADMIN_OR_RECOVERY. Purpose is selected by named issuer methods, not accepted as
+an arbitrary request value. Resource authority binds customer/cart/product,
+permanent sync-marker generation and explicit hold instance. Checkout authority
+also binds operation and attempt identity, selectedPath=CART_SCOPED and matching
+immutable execution E. Registration does not bind an operation or create an
+attempt. The reservation lifetime/freshness epoch is unrelated to execution E.
+
+All approved effects are represented as a closed TypeScript enum union. Only
+the implemented issuer-purpose/effect combinations can register: cart effects,
+checkout execution/settlement effects, and conservative repair effects. Other
+administrative/claim-specific predicates remain G.4b.2c work and fail closed.
+DRAINING is deliberately denied by this infrastructure slice until its exact
+durable effect predicates are integrated. Neither this default nor a caller
+effect string grants conditional cleanup authority. Future writer conversion
+must still validate actual quantity/effect, ownership, accounting and lease
+bounds before its first write; a resource permit is not proof that arbitrary
+business arguments are safe.
+
+Permit expiry is computed and checked with Redis TIME (maximum 5 seconds).
+TTL limits exposure; it does not revoke a capability. Replay UUID is bound and
+validated but is not yet a reservation-write receipt or exactly-once guarantee.
+Future writers must implement their own effect-specific replay semantics.
+
+Resource guards and execution gates have no normal expiry. Resource advancement
+requires a newer durable generation; equal generation cannot change hold
+instance. Reservation deletion must not delete these guards/history. Missing or
+corrupt metadata is denied, not adopted from an ambiguous reservation. History
+prevents reinitialization after metadata loss. History itself is not recreated
+on an existing control record. Eviction/loss is an availability incident: retain
+non-expiring metadata operationally (and use suitable Redis eviction policy),
+but never reconstruct ENABLED to recover availability. Controlled new-incarnation
+recovery remains subject to the existing infrastructure quarantine requirements.
+
+Gate identity is fixed to operation ID; a caller cannot choose a new identity to
+escape revocation. ENABLED may close or revoke; CLOSED may revoke; neither state
+can return to ENABLED. Exact ENABLED initialization repeats are no-ops. Revoking
+an already revoked gate is idempotent. Separate settlement permits do not reopen
+execution and require a known FAILED attempt or COMMITTED attempt/order linkage.
+Unknown/missing/historical NULL-E authority remains denied.
+
+The existing inactive capability `revoke` API now orders: fence and operation
+lock -> physical Redis REVOKED -> durable ACTIVE-to-REVOKED -> success. Redis
+closure followed by database failure leaves a restrictive gate and ACTIVE durable
+state; retry finishes the durable restriction, never reopens the gate. Missing
+gate cannot acknowledge successful revocation. General production attempt
+terminal/heartbeat paths are unchanged; their integration is G.4b.2c, not an
+implicit guarantee made by this infrastructure slice.
+
+`mutationGuard(effect)` emits the common Lua prefix with a hardcoded validated
+effect. The prefix checks complete control tuple, registered permit, owner/scope,
+purpose/effect consistency, replay identity, expiry, resource guards and execution
+gate before the synthetic/future writer body. `compileFencedMutation` creates
+frozen registered script objects; the shared executor rejects uncompiled objects.
+KEYS[1] is control, KEYS[2] is permit, ARGV[1] is the complete expected permit;
+later keys/arguments belong to the writer. Dynamic resource/gate keys are for
+standalone Redis only, with no Redis Cluster claim.
+
+The decoder preserves FENCE_REJECTED reason codes, OWNERSHIP_CONFLICT and bounded
+DOMAIN_FAILURE separately. Malformed replies/transport errors produce an
+INFRASTRUCTURE_FAILURE with UNCERTAIN outcome. It does not expose exception text
+or automatically retry a possibly executed mutation. Privileged raw Redis/EVAL
+access remains an infrastructure trust boundary, not something TypeScript brands
+or Lua can authenticate against PostgreSQL. Old binaries must remain quarantined;
+there is no unfenced compatibility fallback.
+
+Tests use only disposable PostgreSQL and Redis 127.0.0.1:16479, with fixture-owned
+cleanup and synthetic mutation targets. They cover corruption, epoch/revision
+changes, scope/effect/replay spoofing, guard loss, restrictive initialization,
+database failure after physical revocation, typed results and the inactive module
+boundary. G.4b.2b writer conversion, G.4b.2c caller integration, terminal discovery,
+drain certification, payment discovery and activation remain outside this change.
+
+No database schema or migration change is included. Rollback before integration
+remains a code rollback while the module is inactive; do not delete gate/history
+state or deploy old unfenced writers into a writable epoch.
+
+## Existing protocol regression and rollback boundary
 
 Real tests validate the G.4a disposable-target guard before connecting. They use
 only Redis 127.0.0.1:16479 and local disposable PostgreSQL, and clean fixture-owned

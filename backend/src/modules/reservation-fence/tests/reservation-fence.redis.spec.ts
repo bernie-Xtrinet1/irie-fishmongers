@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { assertDisposableEnvironment, withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
 import { RESERVATION_FENCE_CONTROL_LUA, RESERVATION_FENCE_KEY } from '../lua/reservation-fence-control.lua';
 import { FenceTuple, FENCE_PHASES, phaseTransition } from '../types/reservation-fence.types';
+import { MUTATION_HISTORY_KEY } from '../lua/reservation-mutation-common.lua';
 
 export function tuple(overrides: Partial<FenceTuple> = {}): FenceTuple {
   return { incarnation: randomUUID(), epoch: 1, revision: 1, phase: 'FROZEN', protocol: 1,
@@ -17,7 +18,7 @@ async function isolated(work: (redis: Redis) => Promise<void>) {
   const redis = new Redis(process.env.REDIS_URL!);
   return withCleanup(async () => {
     expect(await redis.exists(RESERVATION_FENCE_KEY)).toBe(0);
-    return withCleanup(() => work(redis), [() => redis.del(RESERVATION_FENCE_KEY)]);
+    return withCleanup(() => work(redis), [() => redis.del(RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY)]);
   }, [() => redis.quit()]);
 }
 

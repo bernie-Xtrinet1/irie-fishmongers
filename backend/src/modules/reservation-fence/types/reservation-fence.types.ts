@@ -1,4 +1,5 @@
 import { ReservationEngineMode } from '@prisma/client';
+import type { MutationRejection } from './reservation-mutation.types';
 
 export const FENCE_PHASES = ['OPEN', 'DRAINING', 'FROZEN', 'RETIRED'] as const;
 export type FencePhase = (typeof FENCE_PHASES)[number];
@@ -15,6 +16,7 @@ export interface FenceTuple {
   transitionId: string;
 }
 export type FenceFailure =
+  | MutationRejection
   | 'STALE_REVISION' | 'WRONG_INCARNATION' | 'ILLEGAL_PHASE_TRANSITION'
   | 'PREDECESSOR_MISMATCH' | 'PROTOCOL_MISMATCH' | 'MISSING_CONTROL'
   | 'MALFORMED_CONTROL' | 'DURABLE_REDIS_DISAGREEMENT' | 'CAPABILITY_REVOKED'
