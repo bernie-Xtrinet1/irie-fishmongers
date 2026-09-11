@@ -91,21 +91,13 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
 
     expect(resyncAttempt.ok).toBe(true);
     expect(concurrentRevert.ok).toBe(true);
-    // The reconciliation call either won the race (RESYNC_LEASE) or lost
-    // it and fell back to LEASE_EXTENSION_FAILED - both are correct,
-    // deterministic outcomes of a genuine race; what must never happen is
-    // a mixed/partial final state.
-    if (resyncAttempt.ok && resyncAttempt.action === 'REVERTED') {
-      expect(resyncAttempt.reason).toBe('LEASE_EXTENSION_FAILED');
-    }
-    const after = await getRawCheckoutFields(client, cartId, productId);
-    if (after?.status === 'CHECKOUT_PENDING') {
-      expect(after.checkoutPendingExpiresAt).toBe(now + 180_000);
-    } else {
-      expect(after?.status).toBe('ACTIVE');
-    }
+    // The read observes either the old pending state (defer) or the reverted
+    // ACTIVE state (existing incomplete-state path). Neither extends a lease.
+    expect(resyncAttempt).toMatchObject(resyncAttempt.ok && resyncAttempt.action === 'NONE'
+      ? { action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' }
+      : { action: 'REVERTED', reason: 'REDIS_STATE_INCOMPLETE' });
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
   });
-
   it('remains idempotent under two concurrent duplicate reconciliation calls', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
@@ -129,7 +121,9 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     expect(b.ok).toBe(true);
     const after = await getRawCheckoutFields(client, cartId, productId);
     expect(after?.status).toBe('CHECKOUT_PENDING');
-    expect(after?.checkoutPendingExpiresAt).toBe(now + 180_000);
+    expect(after?.checkoutPendingExpiresAt).toBe(now - 1_000);
+    expect(a).toMatchObject({ action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' });
+    expect(b).toMatchObject({ action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' });
   });
 
   it('leaves a single consistent, fully-consumed state when reconciliation races a concurrent finalize', async () => {

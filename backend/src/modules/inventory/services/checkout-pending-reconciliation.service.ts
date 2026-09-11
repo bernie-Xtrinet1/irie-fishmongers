@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 
 import {
   CHECKOUT_HEARTBEAT_FRESHNESS_SECONDS,
-  CHECKOUT_PENDING_INITIAL_LEASE_SECONDS,
   MAX_CHECKOUT_PENDING_SECONDS,
   getReservationKeySegmentValidationError,
 } from '../constants/inventory.constants';
@@ -143,40 +142,10 @@ export class CheckoutPendingReconciliationService {
       };
     }
 
-    const extension = await this.leaseState.extendCheckoutLease(
-      cartId,
-      checkoutIdempotencyKey,
-      now,
-      CHECKOUT_PENDING_INITIAL_LEASE_SECONDS,
-    );
-    if (!extension.ok && extension.code === 'INVALID_INPUT') {
-      throw new Error(
-        `Internal contract error: extendCheckoutLease rejected input that ` +
-          `CheckoutPendingReconciliationService already validated (${extension.field}: ${extension.reason})`,
-      );
-    }
-    if (extension.ok) {
-      return {
-        ok: true,
-        action: 'RESYNC_LEASE',
-        reason: 'FRESH_DURABLE_HEARTBEAT',
-        leaseState,
-        leaseExtension: extension,
-      };
-    }
-
-    const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-    CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-    return {
-      ok: true,
-      action: 'REVERTED',
-      reason: 'LEASE_EXTENSION_FAILED',
-      leaseState,
-      revertResult,
-      extensionFailureCode: extension.code,
-    };
+    // Asserted state and heartbeat do not authenticate operation/attempt authority.
+    // G.4b.2c must supply that boundary. No extension or fallback revert here.
+    return { ok: true, action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED', leaseState };
   }
-
   private static validateInput(
     input: CheckoutPendingReconciliationInput,
   ): CheckoutInputValidationFailure | null {

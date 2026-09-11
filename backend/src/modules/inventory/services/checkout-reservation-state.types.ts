@@ -84,6 +84,8 @@ export type CheckoutExtendLeaseErrorCode =
   | 'CHECKOUT_PENDING_HARD_LIMIT_REACHED';
 
 export type CheckoutExtendLeaseResult =
+  | { ok: false; code: 'FENCE_REJECTED'; reason: import('../../reservation-fence/types/reservation-mutation.types').MutationRejection }
+  | { ok: false; code: 'OWNERSHIP_CONFLICT' | 'UNCERTAIN_INFRASTRUCTURE' }
   | {
       ok: true;
       alreadyExtended: boolean;
@@ -157,7 +159,7 @@ export type CheckoutPendingReconciliationSuccess =
   | {
       ok: true;
       action: 'NONE';
-      reason: 'ACTIVE_REDIS_LEASE';
+      reason: 'ACTIVE_REDIS_LEASE' | 'EXTENSION_AUTHORITY_REQUIRED';
       leaseState: CheckoutPendingLeaseStateResult;
     }
   | {

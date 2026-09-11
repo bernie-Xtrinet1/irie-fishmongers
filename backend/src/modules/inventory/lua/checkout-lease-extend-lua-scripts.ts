@@ -5,15 +5,12 @@
 // read-only inspection script - kept separate so neither file grows toward
 // the repository's 400-line cap.
 //
-// KEYS[1] = cartIndexKey(cartId)
+// KEYS[1..2] = fence control / registered permit; KEYS[3] = cart index.
 //
-// ARGV[1] cartId          - see checkout-lease-state-lua-scripts.ts for why
-//                            member keys are built by string concatenation
-//                            rather than passed via KEYS.
-// ARGV[2] checkoutIdempotencyKey
-// ARGV[3] now (ms)
-// ARGV[4] additionalMs    (additionalSeconds * 1000)
-// ARGV[5] maxPendingMs    (MAX_CHECKOUT_PENDING_SECONDS * 1000)
+// ARGV[1] expected permit; ARGV[2] fixed absolute lease target;
+// ARGV[3] cartId; ARGV[4] checkoutIdempotencyKey; ARGV[5] observation now.
+// The common guard validates authority before this body runs. Every indexed
+// product must be covered by its resource guards. No caller-selected hard cap.
 //
 // Deterministic failure priority (see the Unit 2.4.2 decisions for exact
 // definitions):
@@ -32,19 +29,33 @@
 // `checkoutPendingExpiresAt` ever changes - quantity, expiresAt,
 // absoluteExpiresAt, checkoutPendingAt, status, and checkoutIdempotencyKey
 // are all preserved verbatim.
-export const CHECKOUT_EXTEND_LEASE_SCRIPT = `
+import { compileFencedMutation } from '../../reservation-fence/lua/reservation-mutation-guard.lua';
+import { MAX_CHECKOUT_PENDING_SECONDS } from '../constants/inventory.constants';
+
+export const CHECKOUT_EXTEND_LEASE_SCRIPT = compileFencedMutation('CHECKOUT_LEASE_EXTEND', `
 local CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION = 1
 local SUPPORTED_VERSION = 1
 
-local cartIndexKey = KEYS[1]
-local cartId = ARGV[1]
-local idemKey = ARGV[2]
-local now = tonumber(ARGV[3])
-local additionalMs = tonumber(ARGV[4])
-local maxPendingMs = tonumber(ARGV[5])
+local cartIndexKey = KEYS[3]
+local cartId = ARGV[3]
+local idemKey = ARGV[4]
+local now = tonumber(ARGV[5])
+local maxPendingMs = ${MAX_CHECKOUT_PENDING_SECONDS * 1000}
+
+-- Bind one authorization to one fixed target, including on replay.
+if authorizedLeaseTargetMs ~= p.constraint.ceilingMs then return rejected('PERMIT_SCOPE_MISMATCH') end
+if cartIndexKey ~= 'inv:reserved:cart-index:{'..cartId..'}' then return rejected('PERMIT_SCOPE_MISMATCH') end
 
 local memberIds = redis.call('SMEMBERS', cartIndexKey)
 table.sort(memberIds)
+local authorizedProducts = {}
+for _,resource in ipairs(p.resources) do
+  if resource.cartId ~= cartId or authorizedProducts[resource.productId] then return rejected('PERMIT_SCOPE_MISMATCH') end
+  authorizedProducts[resource.productId] = resource
+end
+for _,productId in ipairs(memberIds) do
+  if not authorizedProducts[productId] then return rejected('PERMIT_SCOPE_MISMATCH') end
+end
 
 local missingProductIds = {}
 local malformedProductIds = {}
@@ -72,6 +83,9 @@ for _, productId in ipairs(memberIds) do
     elseif entry.status == 'ACTIVE' then
       table.insert(activeProductIds, productId)
     elseif entry.status == 'CHECKOUT_PENDING' then
+      if entry.cartId ~= cartId or entry.customerId ~= authorizedProducts[productId].customerId then
+        return cjson.encode({code='OWNERSHIP_CONFLICT'})
+      end
       table.insert(pendingProductIds, productId)
       if entry.checkoutIdempotencyKey ~= idemKey then
         table.insert(conflictingKeyProductIds, productId)
@@ -91,34 +105,34 @@ end
 
 -- Phase B: decide, in strict priority order.
 if #missingProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'RESERVATION_MISSING',
     productIds = missingProductIds,
   })
 end
 if #malformedProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'RESERVATION_MALFORMED',
     productIds = malformedProductIds,
   })
 end
 if #versionMismatchedProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'RESERVATION_VERSION_MISMATCH',
     productIds = versionMismatchedProductIds,
   })
 end
 if (#pendingOwnedIds + #conflictingKeyProductIds) == 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'RESERVATION_NOT_PENDING',
   })
 end
 if #activeProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'CHECKOUT_STATE_INCOMPLETE',
     pendingProductIds = pendingProductIds,
@@ -126,14 +140,14 @@ if #activeProductIds > 0 then
   })
 end
 if #conflictingKeyProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'RESERVATION_CHECKOUT_KEY_MISMATCH',
     productIds = conflictingKeyProductIds,
   })
 end
 if #atHardLimitProductIds > 0 then
-  return cjson.encode({
+  return accepted({
     scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
     err = 'CHECKOUT_PENDING_HARD_LIMIT_REACHED',
     productIds = atHardLimitProductIds,
@@ -147,7 +161,7 @@ local extendedProductIds = {}
 local finalExpiresAtValues = {}
 for _, productId in ipairs(pendingOwnedIds) do
   local entry = pendingOwnedEntries[productId]
-  local candidate = math.min(now + additionalMs, entry.checkoutPendingAt + maxPendingMs)
+  local candidate = math.min(authorizedLeaseTargetMs, entry.checkoutPendingAt + maxPendingMs)
   if candidate > entry.checkoutPendingExpiresAt then
     entry.checkoutPendingExpiresAt = candidate
     local reservationKey = 'inv:reserved:{' .. cartId .. '}:' .. productId
@@ -166,11 +180,11 @@ for _, value in ipairs(finalExpiresAtValues) do
   end
 end
 
-return cjson.encode({
+return accepted({
   scriptVersion = CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
   ok = true,
   alreadyExtended = (#extendedProductIds == 0),
   newCheckoutPendingExpiresAt = newCheckoutPendingExpiresAt,
   extendedProductIds = extendedProductIds,
 })
-`;
+`);

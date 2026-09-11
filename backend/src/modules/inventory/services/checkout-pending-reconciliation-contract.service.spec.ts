@@ -78,7 +78,7 @@ describe('CheckoutPendingReconciliationService (dependency contracts)', () => {
       );
     });
 
-    it('throws when extendCheckoutLease unexpectedly returns INVALID_INPUT', async () => {
+    it('does not call unauthenticated extension even with an INVALID_INPUT stub', async () => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(
         leaseResult({ expiredLeaseProductIds: ['product-1'] }),
       );
@@ -90,7 +90,9 @@ describe('CheckoutPendingReconciliationService (dependency contracts)', () => {
       });
       await expect(
         service.reconcileExpiredCheckoutPending(input({ durableLastHeartbeatAt: now })),
-      ).rejects.toThrow('Internal contract error: extendCheckoutLease rejected input');
+      ).resolves.toMatchObject({ action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' });
+      expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
+      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
     });
 
     it('throws when checkoutRevert unexpectedly returns INVALID_INPUT', async () => {

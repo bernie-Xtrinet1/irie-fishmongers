@@ -1,7 +1,8 @@
+import { randomUUID } from 'crypto';
+import { leasePermit } from './checkout-lease-permit.test-helper';
 import { Redis } from 'ioredis';
 
 import { RedisService } from '../../../common/redis/redis.service';
-import { cartIndexKey, reservationKey } from '../constants/inventory.constants';
 import { CHECKOUT_EXTEND_LEASE_SCRIPT } from '../lua/checkout-lease-extend-lua-scripts';
 import {
   buildReservationEntryJson,
@@ -79,8 +80,8 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('blocks every write when one member is exactly at the hard ceiling (now >= checkoutPendingAt + MAX_CHECKOUT_PENDING_SECONDS)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const extendableId = `product-${Math.random()}`;
-    const atCeilingId = `product-${Math.random()}`;
+    const extendableId = randomUUID();
+    const atCeilingId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [extendableId, atCeilingId]);
     const now = Date.now();
 
@@ -97,7 +98,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
       now,
     );
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({
       ok: false,
@@ -110,8 +111,8 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('blocks every write when one member has a stored checkoutPendingExpiresAt already beyond its hard ceiling', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const extendableId = `product-${Math.random()}`;
-    const corruptedId = `product-${Math.random()}`;
+    const extendableId = randomUUID();
+    const corruptedId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [extendableId, corruptedId]);
     const now = Date.now();
 
@@ -130,7 +131,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
     });
     await seedRawReservation(client, cartId, corruptedId, corruptedRawBefore);
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({
       ok: false,
@@ -150,7 +151,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('extends normally when the stored deadline is valid and below the hard ceiling', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const productId = `product-${Math.random()}`;
+    const productId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
     const now = Date.now();
     // checkoutPendingAt is old but not yet at the ceiling (ceiling = now +
@@ -159,7 +160,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
     await seedPending(cartId, productId, customerId, checkoutIdempotencyKey, checkoutPendingAt, now, now);
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 3);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 3));
 
     expect(result).toEqual({
       ok: true,
@@ -173,20 +174,20 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('returns alreadyExtended: true and performs zero writes on an identical retry', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const productId = `product-${Math.random()}`;
+    const productId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
     const now = Date.now();
 
     await seedPending(cartId, productId, customerId, checkoutIdempotencyKey, now, now + 10_000, now);
 
-    const first = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const first = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
     expect(first.ok).toBe(true);
     if (first.ok) {
       expect(first.alreadyExtended).toBe(false);
     }
     const afterFirst = await getRawCheckoutFields(client, cartId, productId);
 
-    const second = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const second = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
     expect(second).toEqual({
       ok: true,
       alreadyExtended: true,
@@ -200,7 +201,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('never extends checkoutPendingExpiresAt past checkoutPendingAt + MAX_CHECKOUT_PENDING_SECONDS', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const productId = `product-${Math.random()}`;
+    const productId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
     const now = Date.now();
     const checkoutPendingAt = now - (MAX_CHECKOUT_PENDING_MS - 1_000);
@@ -220,9 +221,9 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
       now,
     );
 
-    // additionalSeconds is deliberately far larger than the remaining
+    // The permit ceiling is deliberately far beyond the remaining
     // hard-ceiling budget - the cap must still bind.
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 10_000);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 10_000));
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -234,15 +235,15 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
 
   it('preserves a consistent, capped final state under concurrent extension calls', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const productId = `product-${Math.random()}`;
+    const productId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
     const now = Date.now();
 
     await seedPending(cartId, productId, customerId, checkoutIdempotencyKey, now, now + 10_000, now);
 
     const [a, b] = await Promise.all([
-      leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60),
-      leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60),
+      leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60)),
+      leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60)),
     ]);
 
     expect(a.ok).toBe(true);
@@ -254,38 +255,10 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration 
     expect(after?.checkoutPendingExpiresAt).toBe(now + 60_000);
   });
 
-  it('includes scriptVersion on the raw Lua result for both success and failure', async () => {
-    const { cartId, checkoutIdempotencyKey } = checkoutIds();
-    createdKeys.add(cartIndexKey(cartId));
-
-    const emptyResult = await client.eval(
-      CHECKOUT_EXTEND_LEASE_SCRIPT,
-      1,
-      cartIndexKey(cartId),
-      cartId,
-      checkoutIdempotencyKey,
-      String(Date.now()),
-      '60000',
-      String(MAX_CHECKOUT_PENDING_MS),
-    );
-    expect((JSON.parse(emptyResult as string) as Record<string, unknown>).scriptVersion).toBe(1);
-
-    const { customerId } = checkoutIds();
-    const productId = `product-${Math.random()}`;
-    createdKeys.add(reservationKey(cartId, productId));
-    const now = Date.now();
-    await seedPending(cartId, productId, customerId, checkoutIdempotencyKey, now, now + 10_000, now);
-
-    const successResult = await client.eval(
-      CHECKOUT_EXTEND_LEASE_SCRIPT,
-      1,
-      cartIndexKey(cartId),
-      cartId,
-      checkoutIdempotencyKey,
-      String(now),
-      '60000',
-      String(MAX_CHECKOUT_PENDING_MS),
-    );
-    expect((JSON.parse(successResult as string) as Record<string, unknown>).scriptVersion).toBe(1);
+  it('raw W7 script rejects missing authority without mutation', async () => {
+    const before = await client.dbsize();
+    const result = await client.eval(CHECKOUT_EXTEND_LEASE_SCRIPT.source, 0);
+    expect(JSON.parse(result as string)).toEqual({ code: 'FENCE_REJECTED', reason: 'MALFORMED_PERMIT' });
+    expect(await client.dbsize()).toBe(before);
   });
 });

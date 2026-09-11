@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
 import { RedisService } from '../../../common/redis/redis.service';
+import { MutationPermit } from '../../reservation-fence/types/reservation-mutation.types';
+import { ReservationFencedExecutor } from '../../reservation-fence/services/reservation-fenced-executor.service';
 import {
   MAX_CHECKOUT_PENDING_SECONDS,
   cartIndexKey,
@@ -146,43 +148,53 @@ export class CheckoutLeaseStateService {
     cartId: string,
     checkoutIdempotencyKey: string,
     now: number,
-    additionalSeconds: number,
+    permit: MutationPermit,
   ): Promise<CheckoutExtendLeaseResult> {
-    const validationFailure = CheckoutLeaseStateService.validateExtendLeaseInputs(
+    if (!permit) return { ok: false, code: 'FENCE_REJECTED', reason: 'MISSING_PERMIT' };
+    if (permit.constraint?.kind !== 'LEASE_CEILING')
+      return { ok: false, code: 'FENCE_REJECTED', reason: 'MALFORMED_PERMIT' };
+    const validationFailure = CheckoutLeaseStateService.validateCartCheckoutKeyAndNow(
       cartId,
       checkoutIdempotencyKey,
       now,
-      additionalSeconds,
     );
     if (validationFailure) {
       return validationFailure;
     }
 
-    const raw = await this.redis.eval(
+    const execution = await new ReservationFencedExecutor(this.redis).execute(
       CHECKOUT_EXTEND_LEASE_SCRIPT,
+      permit,
       [cartIndexKey(cartId)],
-      [cartId, checkoutIdempotencyKey, now, additionalSeconds * 1000, MAX_CHECKOUT_PENDING_SECONDS * 1000],
+      [String(permit.constraint.ceilingMs), cartId, checkoutIdempotencyKey, String(now)],
+      (v): v is RawCheckoutExtendLeaseScriptResult => !!v && typeof v === 'object',
     );
-    const parsed = CheckoutLeaseStateService.parseScriptResult<RawCheckoutExtendLeaseScriptResult>(
-      raw,
-      CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
-    );
+    if (execution.code === 'FENCE_REJECTED') return { ok: false, ...execution };
+    if (execution.code === 'OWNERSHIP_CONFLICT') return { ok: false, code: 'OWNERSHIP_CONFLICT' };
+    if (execution.code !== 'ACCEPTED') return { ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' };
+    try {
+      const parsed = CheckoutLeaseStateService.parseScriptResult<RawCheckoutExtendLeaseScriptResult>(
+        JSON.stringify(execution.value),
+        CHECKOUT_EXTEND_LEASE_SCRIPT_VERSION,
+      );
 
-    if (parsed.err) {
-      return CheckoutLeaseStateService.mapExtendLeaseError(parsed);
-    }
+      if (parsed.err) {
+        return CheckoutLeaseStateService.mapExtendLeaseError(parsed);
+      }
+      if (parsed.ok !== true) return { ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' };
 
-    return {
-      ok: true,
-      alreadyExtended: CheckoutLeaseStateService.toBoolean(parsed.alreadyExtended, 'alreadyExtended'),
-      newCheckoutPendingExpiresAt: CheckoutLeaseStateService.toNumber(
-        parsed.newCheckoutPendingExpiresAt,
-        'newCheckoutPendingExpiresAt',
-      ),
-      extendedProductIds: CheckoutLeaseStateService.sortIds(
-        CheckoutLeaseStateService.toStringArray(parsed.extendedProductIds, 'extendedProductIds'),
-      ),
-    };
+      return {
+        ok: true,
+        alreadyExtended: CheckoutLeaseStateService.toBoolean(parsed.alreadyExtended, 'alreadyExtended'),
+        newCheckoutPendingExpiresAt: CheckoutLeaseStateService.toNumber(
+          parsed.newCheckoutPendingExpiresAt,
+          'newCheckoutPendingExpiresAt',
+        ),
+        extendedProductIds: CheckoutLeaseStateService.sortIds(
+          CheckoutLeaseStateService.toStringArray(parsed.extendedProductIds, 'extendedProductIds'),
+        ),
+      };
+    } catch { return { ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' }; }
   }
 
   private static mapExtendLeaseError(
@@ -203,6 +215,9 @@ export class CheckoutLeaseStateService {
           ),
         };
       default:
+        if (!['RESERVATION_MISSING', 'RESERVATION_MALFORMED', 'RESERVATION_VERSION_MISMATCH',
+          'RESERVATION_CHECKOUT_KEY_MISMATCH', 'CHECKOUT_PENDING_HARD_LIMIT_REACHED'].includes(parsed.err ?? ''))
+          return { ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' };
         return {
           ok: false,
           code: parsed.err as CheckoutExtendLeaseErrorCode,
@@ -246,33 +261,6 @@ export class CheckoutLeaseStateService {
         code: 'INVALID_INPUT',
         field: 'now',
         reason: 'now must be a finite, non-negative number',
-      };
-    }
-
-    return null;
-  }
-
-  private static validateExtendLeaseInputs(
-    cartId: string,
-    checkoutIdempotencyKey: string,
-    now: number,
-    additionalSeconds: number,
-  ): CheckoutInputValidationFailure | null {
-    const baseFailure = CheckoutLeaseStateService.validateCartCheckoutKeyAndNow(
-      cartId,
-      checkoutIdempotencyKey,
-      now,
-    );
-    if (baseFailure) {
-      return baseFailure;
-    }
-
-    if (!Number.isInteger(additionalSeconds) || additionalSeconds <= 0) {
-      return {
-        ok: false,
-        code: 'INVALID_INPUT',
-        field: 'additionalSeconds',
-        reason: 'additionalSeconds must be a positive integer',
       };
     }
 

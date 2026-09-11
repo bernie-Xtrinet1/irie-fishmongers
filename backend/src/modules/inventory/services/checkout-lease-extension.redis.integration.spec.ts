@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+import { leasePermit } from './checkout-lease-permit.test-helper';
 import { Redis } from 'ioredis';
 
 import { RedisService } from '../../../common/redis/redis.service';
@@ -69,7 +71,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('extends every pending entry, writing only checkoutPendingExpiresAt', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const productIds = [`product-${Math.random()}`, `product-${Math.random()}`];
+    const productIds = [randomUUID(), randomUUID()];
     trackCheckoutKeysFor(createdKeys, cartId, productIds);
     const now = Date.now();
 
@@ -78,7 +80,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
     }
     const before = await getRawCheckoutFields(client, cartId, productIds[0]!);
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -98,8 +100,8 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('blocks every write in the cart when one member is ACTIVE (CHECKOUT_STATE_INCOMPLETE)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const pendingId = `product-${Math.random()}`;
-    const activeId = `product-${Math.random()}`;
+    const pendingId = randomUUID();
+    const activeId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [pendingId, activeId]);
     const now = Date.now();
 
@@ -111,7 +113,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
       buildReservationEntryJson(now, { cartId, customerId, status: 'ACTIVE' }),
     );
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({
       ok: false,
@@ -125,15 +127,15 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('blocks every write when one member is missing (RESERVATION_MISSING)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const pendingId = `product-${Math.random()}`;
-    const missingId = `product-${Math.random()}`;
+    const pendingId = randomUUID();
+    const missingId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [pendingId, missingId]);
     const now = Date.now();
 
     await seedPending(cartId, pendingId, customerId, checkoutIdempotencyKey, now, now + 10_000, now);
     await client.sadd(cartIndexKey(cartId), missingId);
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({ ok: false, code: 'RESERVATION_MISSING', productIds: [missingId] });
     const after = await getRawCheckoutFields(client, cartId, pendingId);
@@ -142,15 +144,15 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('blocks every write when one member is malformed (RESERVATION_MALFORMED)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const pendingId = `product-${Math.random()}`;
-    const malformedId = `product-${Math.random()}`;
+    const pendingId = randomUUID();
+    const malformedId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [pendingId, malformedId]);
     const now = Date.now();
 
     await seedPending(cartId, pendingId, customerId, checkoutIdempotencyKey, now, now + 10_000, now);
     await seedRawReservation(client, cartId, malformedId, '{not valid json');
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({ ok: false, code: 'RESERVATION_MALFORMED', productIds: [malformedId] });
     const after = await getRawCheckoutFields(client, cartId, pendingId);
@@ -159,8 +161,8 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('blocks every write when one member has a version mismatch (RESERVATION_VERSION_MISMATCH)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const pendingId = `product-${Math.random()}`;
-    const wrongVersionId = `product-${Math.random()}`;
+    const pendingId = randomUUID();
+    const wrongVersionId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [pendingId, wrongVersionId]);
     const now = Date.now();
 
@@ -172,7 +174,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
       buildReservationEntryJson(now, { cartId, customerId, version: 2, status: 'ACTIVE' }),
     );
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({
       ok: false,
@@ -185,8 +187,8 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
 
   it('blocks every write when one member belongs to another checkout key (RESERVATION_CHECKOUT_KEY_MISMATCH)', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
-    const ownedId = `product-${Math.random()}`;
-    const conflictingId = `product-${Math.random()}`;
+    const ownedId = randomUUID();
+    const conflictingId = randomUUID();
     trackCheckoutKeysFor(createdKeys, cartId, [ownedId, conflictingId]);
     const now = Date.now();
 
@@ -201,7 +203,7 @@ describe('CheckoutLeaseStateService.extendCheckoutLease (real Redis integration)
       now,
     );
 
-    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, 60);
+    const result = await leaseState.extendCheckoutLease(cartId, checkoutIdempotencyKey, now, await leasePermit(client, createdKeys, cartId, customerId, now, 60));
 
     expect(result).toEqual({
       ok: false,

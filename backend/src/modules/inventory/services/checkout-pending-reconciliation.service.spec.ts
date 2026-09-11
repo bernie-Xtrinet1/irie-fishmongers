@@ -71,7 +71,6 @@ describe('CheckoutPendingReconciliationService', () => {
 
   const revertResult = { ok: true as const, restoredProductIds: [], deletedProductIds: ['product-1'], skippedProductIds: [], malformedProductIds: [], versionMismatchedProductIds: [], underflow: [], admissionSuspended: false };
   const finalizeResult = { ok: true as const, finalizedProductIds: ['product-1'], skippedProductIds: [], malformedProductIds: [], versionMismatchedProductIds: [], underflow: [], admissionSuspended: false };
-  const extendSuccess = { ok: true as const, alreadyExtended: false, newCheckoutPendingExpiresAt: now + 180_000, extendedProductIds: ['product-1'] };
 
   describe('input validation', () => {
     it.each([
@@ -270,54 +269,14 @@ describe('CheckoutPendingReconciliationService', () => {
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
     });
 
-    it('calls extendCheckoutLease with exactly 180 seconds when the heartbeat is fresh', async () => {
-      leaseState.getCheckoutPendingLeaseState.mockResolvedValue(expiredLease);
-      leaseState.extendCheckoutLease.mockResolvedValue(extendSuccess);
-      const freshHeartbeat = now - 180_000;
-      const result = await service.reconcileExpiredCheckoutPending(
-        input({ durableLastHeartbeatAt: freshHeartbeat }),
-      );
-      expect(leaseState.extendCheckoutLease).toHaveBeenCalledTimes(1);
-      expect(leaseState.extendCheckoutLease).toHaveBeenCalledWith(
-        cartId,
-        checkoutIdempotencyKey,
-        now,
-        180,
-      );
-      expect(result).toEqual({
-        ok: true,
-        action: 'RESYNC_LEASE',
-        reason: 'FRESH_DURABLE_HEARTBEAT',
-        leaseState: expiredLease,
-        leaseExtension: extendSuccess,
+    it.each(['FENCE_REJECTED', 'UNCERTAIN_INFRASTRUCTURE', 'RESERVATION_NOT_PENDING'])
+      ('defers without mutation even if an extension stub would return %s', async code => {
+        leaseState.getCheckoutPendingLeaseState.mockResolvedValue(expiredLease);
+        leaseState.extendCheckoutLease.mockResolvedValue({ ok: false, code } as never);
+        expect(await service.reconcileExpiredCheckoutPending(input({ durableLastHeartbeatAt: now })))
+          .toEqual({ ok: true, action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED', leaseState: expiredLease });
+        expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
+        expect(recovery.checkoutRevert).not.toHaveBeenCalled();
       });
-      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      'RESERVATION_NOT_PENDING',
-      'CHECKOUT_STATE_INCOMPLETE',
-      'RESERVATION_MISSING',
-      'RESERVATION_MALFORMED',
-      'RESERVATION_VERSION_MISMATCH',
-      'RESERVATION_CHECKOUT_KEY_MISMATCH',
-      'CHECKOUT_PENDING_HARD_LIMIT_REACHED',
-    ] as const)('falls back to checkoutRevert with LEASE_EXTENSION_FAILED when extension fails with %s', async (code) => {
-      leaseState.getCheckoutPendingLeaseState.mockResolvedValue(expiredLease);
-      leaseState.extendCheckoutLease.mockResolvedValue({ ok: false, code, productIds: [] } as never);
-      recovery.checkoutRevert.mockResolvedValue(revertResult);
-      const result = await service.reconcileExpiredCheckoutPending(
-        input({ durableLastHeartbeatAt: now }),
-      );
-      expect(result).toEqual({
-        ok: true,
-        action: 'REVERTED',
-        reason: 'LEASE_EXTENSION_FAILED',
-        leaseState: expiredLease,
-        revertResult,
-        extensionFailureCode: code,
-      });
-      expect(recovery.checkoutRevert).toHaveBeenCalledTimes(1);
-    });
   });
 });

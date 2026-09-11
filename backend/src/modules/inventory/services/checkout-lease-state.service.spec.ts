@@ -1,3 +1,4 @@
+import { MutationPermit } from '../../reservation-fence/types/reservation-mutation.types';
 import { RedisService } from '../../../common/redis/redis.service';
 import { CheckoutLeaseStateService } from './checkout-lease-state.service';
 
@@ -14,6 +15,9 @@ describe('CheckoutLeaseStateService', () => {
   const cartId = 'cart-1';
   const checkoutKey = 'checkout-key-1';
   const now = 1_000_000;
+  const ceilingMs = 1_234_567;
+  const permit = { permitId: 'unit-permit', constraint: { kind: 'LEASE_CEILING', ceilingMs } } as MutationPermit;
+  const accepted = (value: object) => JSON.stringify({ code: 'ACCEPTED', value });
 
   beforeEach(() => {
     redis = { eval: jest.fn() };
@@ -43,7 +47,7 @@ describe('CheckoutLeaseStateService', () => {
   }
 
   function extendSuccessJson(overrides: Record<string, unknown> = {}): string {
-    return JSON.stringify({
+    return accepted({
       scriptVersion: 1,
       ok: true,
       alreadyExtended: false,
@@ -73,7 +77,7 @@ describe('CheckoutLeaseStateService', () => {
 
   describe('extendCheckoutLease input validation', () => {
     it('rejects an empty cartId without calling eval', async () => {
-      const result = await service.extendCheckoutLease('', checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease('', checkoutKey, now, permit);
       expect(result).toEqual({
         ok: false,
         code: 'INVALID_INPUT',
@@ -83,29 +87,14 @@ describe('CheckoutLeaseStateService', () => {
       expect(redis.eval).not.toHaveBeenCalled();
     });
 
-    it('rejects a non-positive additionalSeconds without calling eval', async () => {
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 0);
-      expect(result).toEqual({
-        ok: false,
-        code: 'INVALID_INPUT',
-        field: 'additionalSeconds',
-        reason: 'additionalSeconds must be a positive integer',
-      });
-      expect(redis.eval).not.toHaveBeenCalled();
-    });
-
-    it('rejects a non-integer additionalSeconds without calling eval', async () => {
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 1.5);
-      expect(result).toEqual({
-        ok: false,
-        code: 'INVALID_INPUT',
-        field: 'additionalSeconds',
-        reason: 'additionalSeconds must be a positive integer',
-      });
-      expect(redis.eval).not.toHaveBeenCalled();
+    it.each([undefined, { kind: 'NONE' }])('rejects missing or wrong constraint without eval', constraint => {
+      return service.extendCheckoutLease(cartId, checkoutKey, now, { ...permit, constraint } as MutationPermit)
+        .then(result => {
+          expect(result).toEqual({ ok: false, code: 'FENCE_REJECTED', reason: 'MALFORMED_PERMIT' });
+          expect(redis.eval).not.toHaveBeenCalled();
+        });
     });
   });
-
   describe('KEYS/ARGV construction', () => {
     it('builds the exact keys and args for getCheckoutPendingLeaseState', async () => {
       redis.eval.mockResolvedValue(leaseStateJson());
@@ -122,11 +111,11 @@ describe('CheckoutLeaseStateService', () => {
     it('builds the exact keys and args for extendCheckoutLease', async () => {
       redis.eval.mockResolvedValue(extendSuccessJson());
 
-      await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
 
       const [, keys, args] = redis.eval.mock.calls[0]!;
-      expect(keys).toEqual(['inv:reserved:cart-index:{cart-1}']);
-      expect(args).toEqual([cartId, checkoutKey, now, 60_000, 600_000]);
+      expect(keys).toEqual(['reservation:fence:control', 'reservation:fence:permit:unit-permit', 'inv:reserved:cart-index:{cart-1}']);
+      expect(args).toEqual([JSON.stringify(permit), String(ceilingMs), cartId, checkoutKey, String(now)]);
     });
   });
 
@@ -160,15 +149,13 @@ describe('CheckoutLeaseStateService', () => {
 
     it('accepts a matching scriptVersion on extendCheckoutLease', async () => {
       redis.eval.mockResolvedValue(extendSuccessJson());
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result.ok).toBe(true);
     });
 
-    it('throws when extendCheckoutLease scriptVersion is unsupported', async () => {
+    it('reports uncertainty when extendCheckoutLease scriptVersion is unsupported', async () => {
       redis.eval.mockResolvedValue(extendSuccessJson({ scriptVersion: 3 }));
-      await expect(service.extendCheckoutLease(cartId, checkoutKey, now, 60)).rejects.toThrow(
-        'Checkout script returned unsupported scriptVersion 3',
-      );
+      await expect(service.extendCheckoutLease(cartId, checkoutKey, now, permit)).resolves.toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
     });
   });
 
@@ -269,11 +256,16 @@ describe('CheckoutLeaseStateService', () => {
   });
 
   describe('extendCheckoutLease result mapping', () => {
+    it('does not infer success from a malformed accepted payload', async () => {
+      redis.eval.mockResolvedValue(extendSuccessJson({ ok: false }));
+      expect(await service.extendCheckoutLease(cartId, checkoutKey, now, permit))
+        .toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
+    });
     it('maps a success result with alreadyExtended true', async () => {
       redis.eval.mockResolvedValue(
         extendSuccessJson({ alreadyExtended: true, extendedProductIds: [] }),
       );
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result).toEqual({
         ok: true,
         alreadyExtended: true,
@@ -286,7 +278,7 @@ describe('CheckoutLeaseStateService', () => {
       redis.eval.mockResolvedValue(
         extendSuccessJson({ alreadyExtended: false, extendedProductIds: ['product-2', 'product-1'] }),
       );
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result).toEqual({
         ok: true,
         alreadyExtended: false,
@@ -295,29 +287,27 @@ describe('CheckoutLeaseStateService', () => {
       });
     });
 
-    it('throws when newCheckoutPendingExpiresAt has an unexpected shape', async () => {
+    it('reports uncertainty when newCheckoutPendingExpiresAt has an unexpected shape', async () => {
       redis.eval.mockResolvedValue(extendSuccessJson({ newCheckoutPendingExpiresAt: '2000000' }));
-      await expect(service.extendCheckoutLease(cartId, checkoutKey, now, 60)).rejects.toThrow(
-        'Checkout script result field "newCheckoutPendingExpiresAt" has an unexpected shape',
-      );
+      await expect(service.extendCheckoutLease(cartId, checkoutKey, now, permit)).resolves.toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
     });
 
     it('maps RESERVATION_NOT_PENDING with no extra fields', async () => {
-      redis.eval.mockResolvedValue(JSON.stringify({ scriptVersion: 1, err: 'RESERVATION_NOT_PENDING' }));
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      redis.eval.mockResolvedValue(accepted({ scriptVersion: 1, err: 'RESERVATION_NOT_PENDING' }));
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result).toEqual({ ok: false, code: 'RESERVATION_NOT_PENDING' });
     });
 
     it('maps CHECKOUT_STATE_INCOMPLETE with sorted pending/active product ids', async () => {
       redis.eval.mockResolvedValue(
-        JSON.stringify({
+        accepted({
           scriptVersion: 1,
           err: 'CHECKOUT_STATE_INCOMPLETE',
           pendingProductIds: ['product-2', 'product-1'],
           activeProductIds: ['product-4', 'product-3'],
         }),
       );
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result).toEqual({
         ok: false,
         code: 'CHECKOUT_STATE_INCOMPLETE',
@@ -334,14 +324,25 @@ describe('CheckoutLeaseStateService', () => {
       'CHECKOUT_PENDING_HARD_LIMIT_REACHED',
     ] as const)('maps %s with sorted productIds', async (code) => {
       redis.eval.mockResolvedValue(
-        JSON.stringify({ scriptVersion: 1, err: code, productIds: ['product-2', 'product-1'] }),
+        accepted({ scriptVersion: 1, err: code, productIds: ['product-2', 'product-1'] }),
       );
-      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, 60);
+      const result = await service.extendCheckoutLease(cartId, checkoutKey, now, permit);
       expect(result).toEqual({ ok: false, code, productIds: ['product-1', 'product-2'] });
     });
   });
 
   describe('no internal retry loop', () => {
+    it('returns uncertain execution without retrying a failed W7 eval', async () => {
+      redis.eval.mockRejectedValue(new Error('reply lost after possible execution'));
+      expect(await service.extendCheckoutLease(cartId, checkoutKey, now, permit))
+        .toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+    });
+    it('preserves a fence rejection instead of mapping it to a domain failure', async () => {
+      redis.eval.mockResolvedValue(JSON.stringify({ code: 'FENCE_REJECTED', reason: 'EXPIRED_PERMIT' }));
+      expect(await service.extendCheckoutLease(cartId, checkoutKey, now, permit))
+        .toEqual({ ok: false, code: 'FENCE_REJECTED', reason: 'EXPIRED_PERMIT' });
+    });
     it('calls eval exactly once even when it rejects', async () => {
       redis.eval.mockRejectedValue(new Error('boom'));
       await expect(service.getCheckoutPendingLeaseState(cartId, checkoutKey, now)).rejects.toThrow('boom');

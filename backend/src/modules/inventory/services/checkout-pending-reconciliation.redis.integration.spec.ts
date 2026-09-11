@@ -96,7 +96,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
 
-  it('resyncs an expired lease with a fresh heartbeat, updating every cart member to exactly 180 seconds', async () => {
+  it('defers an expired lease with a fresh heartbeat without changing any member', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productIds = [`product-${Math.random()}`, `product-${Math.random()}`];
     trackCheckoutKeysFor(createdKeys, cartId, productIds);
@@ -113,17 +113,10 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.action).toBe('RESYNC_LEASE');
-      if (result.action === 'RESYNC_LEASE') {
-        expect(result.leaseExtension.newCheckoutPendingExpiresAt).toBe(now + 180_000);
-        expect(result.leaseExtension.extendedProductIds).toEqual([...productIds].sort());
-      }
-    }
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' });
     for (const productId of productIds) {
       expect((await getRawCheckoutFields(client, cartId, productId))?.checkoutPendingExpiresAt).toBe(
-        now + 180_000,
+        now - 1_000,
       );
     }
   });
