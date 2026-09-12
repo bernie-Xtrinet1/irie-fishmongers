@@ -6,6 +6,7 @@ import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/c
 import { CheckoutRolloutParticipantsRepository } from '../../checkout-rollout/repositories/checkout-rollout-participants.repository';
 import { RolloutControlsRepository } from '../../checkout-rollout-admin/repositories/rollout-controls.repository';
 import { AtomicCheckoutAdmissionService } from './atomic-checkout-admission.service';
+import { openAcquisitionSchema } from '../../checkout/services/checkout-acquisition-test-helpers';
 
 function latch() {
   let release!: () => void;
@@ -16,9 +17,11 @@ function latch() {
 }
 
 describe('G.3b real PostgreSQL admission and admin races', () => {
-  const prisma = new PrismaService();
-  const replica = new PrismaService();
-  const observer = new PrismaService();
+  jest.setTimeout(120000);
+  let schema: Awaited<ReturnType<typeof openAcquisitionSchema>>;
+  let prisma: PrismaService;
+  let replica: PrismaService;
+  let observer: PrismaService;
   function build(client: PrismaService) {
     const operations = new CheckoutOperationRepository(client);
     const attempts = new CheckoutAttemptRepository(client);
@@ -38,8 +41,8 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
       ),
     };
   }
-  const first = build(prisma);
-  const second = build(replica);
+  let first: ReturnType<typeof build>;
+  let second: ReturnType<typeof build>;
   let customerId: string;
   let operation: CheckoutOperation;
   const context = () => ({ customerId, cartId: operation.cartId, operationId: operation.id });
@@ -62,6 +65,9 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
   });
 
   beforeAll(async () => {
+    schema = await openAcquisitionSchema();
+    prisma = schema.prisma; replica = schema.newClient(); observer = schema.newClient();
+    first = build(prisma); second = build(replica);
     if (process.env.NODE_ENV !== 'test') throw new Error('Requires test database');
     await Promise.all([prisma.$connect(), replica.$connect(), observer.$connect()]);
     if (await first.controls.findCurrent())
@@ -82,6 +88,12 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
     operation = await prisma.checkoutOperation.create({
       data: { customerId, cartId: cart.id, operationKey: randomUUID(), retryKeyHash: randomUUID() },
     });
+    if (!await prisma.reservationFenceTransition.count()) {
+      const mode = await prisma.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: customerId } });
+      await prisma.reservationFenceTransition.create({ data: { incarnation: randomUUID(), epoch: 7, revision: 1,
+        phase: 'OPEN', protocol: 1, status: 'ACKNOWLEDGED', acknowledgedAt: new Date(), mode: 'CART_SCOPED',
+        modeRevision: mode.revision, reason: 'OPEN', actorId: randomUUID() } });
+    }
   });
   afterEach(async () => {
     jest.restoreAllMocks();
@@ -91,10 +103,11 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
     await prisma.checkoutRolloutParticipant.deleteMany({ where: { customerId } });
     await prisma.checkoutRolloutControlRevision.deleteMany({ where: { actorId: customerId } });
     await prisma.cart.deleteMany({ where: { customerId } });
-    await prisma.user.deleteMany({ where: { id: customerId } });
+    // The first user's retained mode revision is removed with the schema.
   });
   afterAll(async () => {
-    await Promise.all([prisma.$disconnect(), replica.$disconnect(), observer.$disconnect()]);
+    try { await Promise.all([replica?.$disconnect(), observer?.$disconnect()]); }
+    finally { if (schema) await schema.close(); }
   });
 
   async function enable(behavior: CheckoutRolloutBehavior = 'CART_SCOPED') {
@@ -156,10 +169,11 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
       const readParticipant = jest
         .spyOn(second.participants, 'findCurrent')
         .mockRejectedValue(new Error('policy offline'));
-      expect(await second.service.admit(context())).toEqual(result);
+      expect(await second.service.admit(context())).toMatchObject({ ok: true,
+        decision: behavior === 'CART_SCOPED' ? 'EXISTING_ATTEMPT' : 'LEGACY' });
       expect(readGlobal).not.toHaveBeenCalled();
       expect(readParticipant).not.toHaveBeenCalled();
-      expect(await prisma.checkoutAttempt.count({ where: { customerId } })).toBe(0);
+      expect(await prisma.checkoutAttempt.count({ where: { customerId } })).toBe(behavior === 'CART_SCOPED' ? 1 : 0);
     },
   );
   it('missing global and participant failure leave no path or fingerprint', async () => {
@@ -189,13 +203,14 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
   });
   it('an exception after assignment but before commit rolls back path and releases locks', async () => {
     await enable();
-    const assign = first.operations.assignPath.bind(first.operations);
-    jest.spyOn(first.operations, 'assignPath').mockImplementationOnce(async (...args) => {
+    const assign = first.attempts.createWithReservationCapability.bind(first.attempts);
+    jest.spyOn(first.attempts, 'createWithReservationCapability').mockImplementationOnce(async (...args) => {
       await assign(...args);
       throw new Error('simulated crash after write before commit');
     });
     expect(await first.service.admit(context())).toEqual({ ok: false, code: 'UNAVAILABLE' });
     expect((await stored()).selectedPath).toBeNull();
+    expect(await prisma.checkoutAttempt.count({ where: { customerId } })).toBe(0);
     expect(await second.service.admit(context())).toMatchObject({
       ok: true,
       decision: 'CART_SCOPED',
@@ -221,7 +236,7 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
       expect((await mutation).ok).toBe(true);
       expect(await first.service.admit(context())).toMatchObject({
         ok: true,
-        decision: 'CART_SCOPED',
+        decision: 'EXISTING_ATTEMPT',
       });
       expect((await stored()).selectedPath).toBe('CART_SCOPED');
     },
@@ -270,7 +285,7 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
     expect((await disable).ok).toBe(true);
     expect(await second.service.admit(context())).toMatchObject({
       ok: true,
-      decision: 'CART_SCOPED',
+      decision: 'EXISTING_ATTEMPT',
     });
   });
   it('participant disable wins against later admission with no reverse lock order', async () => {
@@ -294,8 +309,8 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
   });
   it('concurrent admissions have one CAS and both observe the same committed ownership', async () => {
     await enable();
-    const writeFirst = jest.spyOn(first.operations, 'assignPath');
-    const writeSecond = jest.spyOn(second.operations, 'assignPath');
+    const writeFirst = jest.spyOn(first.operations, 'bindReservationCapability');
+    const writeSecond = jest.spyOn(second.operations, 'bindReservationCapability');
     const paused = pauseGlobalRead(first.controls);
     const winner = first.service.admit(context());
     await paused.entered;
@@ -306,21 +321,15 @@ describe('G.3b real PostgreSQL admission and admin races', () => {
       paused.release();
     }
     const results = await Promise.all([winner, contender]);
-    expect(results[0]).toEqual(results[1]);
+    expect(results[0].ok && results[1].ok && results[0].operation).toEqual(results[1].ok && results[1].operation);
+    expect(results[1]).toMatchObject({ ok: true, decision: 'EXISTING_ATTEMPT' });
     expect(results[0]).toMatchObject({ ok: true, decision: 'CART_SCOPED', durable: true });
     expect(writeFirst.mock.calls.length + writeSecond.mock.calls.length).toBe(1);
   });
   it('existing attempt is returned before any policy reads and inconsistent ownership fails closed', async () => {
     await enable();
     await first.service.admit(context());
-    await prisma.checkoutAttempt.create({
-      data: {
-        idempotencyKey: operation.operationKey,
-        customerId,
-        cartId: operation.cartId,
-        selectedPath: 'CART_SCOPED',
-      },
-    });
+    expect(await prisma.checkoutAttempt.count({ where: { customerId } })).toBe(1);
     const reads = jest
       .spyOn(first.controls, 'findCurrent')
       .mockRejectedValue(new Error('policy unavailable'));

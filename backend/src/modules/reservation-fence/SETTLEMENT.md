@@ -1,7 +1,8 @@
 # Inactive checkout settlement manifest protocol
 
-This module does not cut over W4/W5/W6, admission, recovery workers or routes.
-The new repository and issuer are not registered in the production module graph.
+G.4b.2c.2 integrates admission and W4 only in the inactive Phase G dispatcher.
+This module does not cut over W5/W6, recovery workers or production routes.
+The repository and issuer are not registered in the production module graph.
 No existing hold receives authority from Redis, and no historical row is backfilled.
 
 ## Durable boundary
@@ -9,8 +10,8 @@ No existing hold receives authority from Redis, and no historical row is backfil
 Migration 44 adds a parent manifest and immutable resources. Parent identities
 reference the existing operation/attempt and captured fence transition. E, path,
 customer/cart/key linkage must agree. The repository allocates new prospective
-hold UUIDs before acquisition; it never adopts an existing Redis hold. Later W4
-must establish those identities through its validated acquisition protocol. A
+hold UUIDs before acquisition; it never adopts an existing Redis hold. Fenced W4
+establishes those identities through its validated acquisition protocol. A
 mismatched pre-existing guard remains denied.
 
 Construction inserts PREPARED, its bounded resources, then seals in one transaction.
@@ -46,10 +47,48 @@ Execution gate revocation does not erase terminal obligations.
 `settlementProtocol` is an inactive Lua composition primitive. Its static validation
 body must perform every domain/type/ownership check before any write. Its static
 mutation body must not return early. Redis does not roll back a script after runtime
-errors; future writer integration must preserve this preflight discipline. Synthetic
+errors; writer integration must preserve this preflight discipline. Synthetic
 Redis tests exercise the composition without converting inventory writers. They
 prove only the inactive pin/receipt composition primitive, NOT W4 acquisition
 integration or production reservation effects.
+
+## Inactive admission and W4 integration (G.4b.2c.2)
+
+`AtomicCheckoutAdmissionService` holds rollout, participant, fence, mode and
+operation locks in that order. Its database-only transaction binds CART_SCOPED,
+the acknowledged OPEN epoch and ACTIVE capability, then creates the attempt
+through `createWithReservationCapability` with exactly that epoch. LEGACY remains
+capability-free. Existing attempts are inspected first. Assigned historical NULL-E
+operations cannot be upgraded; a new operation is required.
+
+`CheckoutAcquisitionService`, provided only by `CheckoutDispatchModule`, prepares
+the sealed PostgreSQL manifest and initializes its prospective resource guards
+without advancement. It registers ACQUIRE using the original acquisitionReplayId.
+`CHECKOUT_ACQUIRE_SCRIPT` composes the committed settlement protocol with whole-cart
+membership, ownership, quantity, status and expiry validation. It marks entries
+CHECKOUT_PENDING and binds physical identities in the same script as pins/evidence.
+It does not accept a caller resource list, quantity, clock or lease target.
+
+The orchestrator checks live entries, every guard/pin, the gate and acquisition
+receipt against PostgreSQL provenance before acknowledging ACQUIRED. PREPARED
+replay observes evidence before metadata initialization; a lost response does not
+require repeating W4. ACQUIRED replay never executes W4 blindly. Missing evidence
+fails closed. Definite rejection preserves unresolved state. Transport or commit
+uncertainty preserves the same manifest/replay ID and never invents failure/revert.
+
+Only opaque verified acquisition evidence reaches `checkoutAcquired`. It validates
+the order plan against captured resources and rechecks durable state under an
+attempt row lock before the existing order transaction. The old standalone D-core
+entry remains for its existing callers/tests; the dispatcher never falls back to it.
+Order commit still advances cart generation. W5/W6 and terminal replay selection
+are deliberately deferred: the manifest remains ACQUIRED, including after order
+commit or a failed order transaction. Neither the existing pending reconciler nor
+the recovery worker acquires new settlement ownership in this slice. Their old
+raw terminal paths are not safe substitutes for the future W5/W6 integrations.
+These unresolved terminal obligations and unconverted writers prohibit activation.
+
+The real dispatcher integration suite supplies separate W4 acquisition evidence;
+the original synthetic protocol tests still prove only the composition primitive.
 
 Acquisition pins the exact manifest identity and records acquisition evidence in the
 same execution as the supplied effect. All resources are checked before mutation.

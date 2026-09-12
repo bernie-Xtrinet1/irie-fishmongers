@@ -171,7 +171,9 @@ describe('durable settlement manifests and 43 -> 44 migration', () => {
       const evidence = await readSettlementCompletion(client, pending);
       expect(await db.$transaction(tx => f.repo.acknowledgeSettled(tx, m.id, evidence))).toEqual({ count: 1 });
       expect(await db.$transaction(tx => f.repo.acknowledgeSettled(tx, m.id, evidence))).toEqual({ count: 0 });
-      expect(await f.repo.find(m.id)).toMatchObject({ state: 'SETTLED', completionReceiptHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      const settled = await f.repo.find(m.id);
+      expect(settled?.state).toBe('SETTLED');
+      expect(settled?.completionReceiptHash).toMatch(/^[a-f0-9]{64}$/);
     }, [() => redis.del(...keys)]), [() => redis.quit()]);
   }));
 });

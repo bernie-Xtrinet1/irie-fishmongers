@@ -14,6 +14,7 @@ import { CheckoutDto } from '../../orders/dto/checkout.dto';
 import { OrderResponseEntity } from '../../orders/entities/order-response.entity';
 import { CheckoutShadowComparisonService } from '../../checkout-shadow/services/checkout-shadow-comparison.service';
 import { CheckoutAdmissionService } from './checkout-admission.service';
+import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
 
 export interface CheckoutDispatchInput {
   customerId: string;
@@ -45,6 +46,7 @@ export class CheckoutDispatchService {
     private readonly orders: OrdersService,
     private readonly admission: CheckoutAdmissionService,
     private readonly shadow: CheckoutShadowComparisonService,
+    private readonly acquisition: CheckoutAcquisitionService,
   ) {}
 
   async checkout(input: CheckoutDispatchInput): Promise<CheckoutDispatchResult> {
@@ -65,7 +67,12 @@ export class CheckoutDispatchService {
         input.customerId,
         operation.operationKey,
       );
-      if (existing.action !== 'NOT_FOUND') return await this.replay(operation, existing);
+      if (existing.action !== 'NOT_FOUND') {
+        if (existing.action === 'RESUMED_PROCESSING' && this.consistent(operation, existing.attempt) &&
+          operation.selectedPath === 'CART_SCOPED' && operation.reservationExecutionEpoch !== null &&
+          operation.reservationCapabilityState === 'ACTIVE') return await this.executeAcquisition(operation, input);
+        return await this.replay(operation, existing);
+      }
 
       const admitted = await this.admission.admit({
         customerId: input.customerId,
@@ -111,31 +118,40 @@ export class CheckoutDispatchService {
       if (decision === 'LEGACY')
         return { ok: true, order: await this.orders.checkout(input.customerId, input.dto) };
 
-      const prepared = await this.operations.prepare(input.customerId, operation.id, input.now);
-      if (!prepared.ok) return { ok: false, code: 'RECONFIRM_REQUIRED' };
-      const result = await this.coordinator.checkout(
-        input.customerId,
-        operation.operationKey,
-        input.dto,
-        input.now,
-      );
-      const after = await this.attempts.inspectByIdempotencyKey(
-        input.customerId,
-        operation.operationKey,
-      );
-      if (after.action === 'NOT_FOUND')
-        return result.ok ? { ok: false, code: 'PATH_MISMATCH' } : result;
-      if (!('attempt' in after) || !this.consistent(operation, after.attempt))
-        return { ok: false, code: 'PATH_MISMATCH' };
-      if (
-        result.ok &&
-        (after.attempt.status !== 'COMMITTED' || after.attempt.orderId !== result.order.id)
-      )
-        return { ok: false, code: 'PATH_MISMATCH' };
-      return result;
+      return await this.executeAcquisition(operation, input);
     } catch {
       return { ok: false, code: 'UNAVAILABLE' };
     }
+  }
+
+  private async executeAcquisition(operation: CheckoutOperation, input: CheckoutDispatchInput): Promise<CheckoutDispatchResult> {
+    if (operation.reservationExecutionEpoch === null || operation.reservationCapabilityState !== 'ACTIVE')
+      return { ok: false, code: 'PATH_MISMATCH' };
+    const prepared = await this.operations.prepare(input.customerId, operation.id, input.now);
+    if (!prepared.ok) return { ok: false, code: 'RECONFIRM_REQUIRED' };
+    const acquired = await this.acquisition.acquire(input.customerId, operation.id);
+    if (!acquired.ok) return acquired;
+    const result = await this.coordinator.checkoutAcquired(
+      input.customerId,
+      operation.operationKey,
+      input.dto,
+      input.now,
+      acquired.evidence,
+    );
+    const after = await this.attempts.inspectByIdempotencyKey(
+      input.customerId,
+      operation.operationKey,
+    );
+    if (after.action === 'NOT_FOUND')
+      return result.ok ? { ok: false, code: 'PATH_MISMATCH' } : result;
+    if (!('attempt' in after) || !this.consistent(operation, after.attempt))
+      return { ok: false, code: 'PATH_MISMATCH' };
+    if (
+      result.ok &&
+      (after.attempt.status !== 'COMMITTED' || after.attempt.orderId !== result.order.id)
+    )
+      return { ok: false, code: 'PATH_MISMATCH' };
+    return result;
   }
 
   private consistent(operation: CheckoutOperation, attempt: CheckoutAttemptSummary): boolean {

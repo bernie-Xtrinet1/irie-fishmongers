@@ -39,7 +39,7 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: ()
     if (!/^settlement_test_[a-f0-9]{32}$/.test(schema)) throw new Error('Unsafe fixture schema');
     try { await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); }
     finally { await admin.$disconnect(); }
-  }, async () => { rmSync(dir, { recursive: true }); }]);
+  }, () => { rmSync(dir, { recursive: true }); return Promise.resolve(); }]);
 }
 
 export function settlementMigrationSource() {

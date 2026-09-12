@@ -8,12 +8,16 @@ import { CheckoutOperationRepository } from '../checkout-operation/repositories/
 import { CheckoutAttemptRepository } from '../checkout-attempt/repositories/checkout-attempt.repository';
 import { ReservationMutationAuthorityService } from './services/reservation-mutation-authority.service';
 import { ReservationFencedExecutor } from './services/reservation-fenced-executor.service';
+import { CheckoutSettlementRepository } from './repositories/checkout-settlement.repository';
+import { CheckoutSettlementAuthorityService } from './services/checkout-settlement-authority.service';
 
-// Intentionally not imported by AppModule or any admission/worker module.
+// Inactive dispatcher infrastructure; not imported by production AppModule.
 @Module({
   imports: [PrismaModule, RedisModule],
   providers: [ReservationFenceRepository, ReservationFenceService, ReservationCapabilityService,
-    CheckoutOperationRepository, CheckoutAttemptRepository, ReservationMutationAuthorityService, ReservationFencedExecutor],
-  exports: [ReservationFenceService, ReservationCapabilityService, ReservationMutationAuthorityService, ReservationFencedExecutor],
+    CheckoutOperationRepository, CheckoutAttemptRepository, ReservationMutationAuthorityService, ReservationFencedExecutor,
+    CheckoutSettlementRepository, CheckoutSettlementAuthorityService],
+  exports: [ReservationFenceService, ReservationCapabilityService, ReservationMutationAuthorityService, ReservationFencedExecutor,
+    ReservationFenceRepository, CheckoutSettlementRepository, CheckoutSettlementAuthorityService],
 })
 export class ReservationFenceModule {}

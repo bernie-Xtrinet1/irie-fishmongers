@@ -8,6 +8,7 @@ import { CheckoutRolloutParticipantsRepository } from '../../checkout-rollout/re
 import { RolloutControlsRepository } from '../../checkout-rollout-admin/repositories/rollout-controls.repository';
 import { AtomicCheckoutAdmissionService } from '../../checkout-dispatch/services/atomic-checkout-admission.service';
 import { assertDisposableEnvironment, assertDisposableRedisTarget, withCleanup, latch } from './rollback-evidence-test-helpers';
+import { openAcquisitionSchema } from '../../checkout/services/checkout-acquisition-test-helpers';
 
 describe('G.4a harness safety without external connections', () => {
   it.each(['redis://127.0.0.1:16479', 'redis://127.0.0.1:16479/8'])('accepts dedicated Redis target %s', target => {
@@ -48,12 +49,19 @@ describe('G.4a harness safety without external connections', () => {
 });
 
 describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
-  const p = new PrismaService();
-  const operations = new CheckoutOperationRepository(p), attempts = new CheckoutAttemptRepository(p);
-  const controls = new RolloutControlsRepository(p), participants = new CheckoutRolloutParticipantsRepository(p);
-  const admission = new AtomicCheckoutAdmissionService(p, operations, attempts, controls, participants);
+  jest.setTimeout(120000);
+  let schema: Awaited<ReturnType<typeof openAcquisitionSchema>>;
+  let p: PrismaService;
+  let operations: CheckoutOperationRepository, attempts: CheckoutAttemptRepository;
+  let controls: RolloutControlsRepository, participants: CheckoutRolloutParticipantsRepository;
+  let admission: AtomicCheckoutAdmissionService;
   let customerId: string, op: CheckoutOperation;
-  beforeAll(async () => { assertDisposableEnvironment(); await p.$connect(); });
+  beforeAll(async () => {
+    assertDisposableEnvironment(); schema = await openAcquisitionSchema(); p = schema.prisma;
+    operations = new CheckoutOperationRepository(p); attempts = new CheckoutAttemptRepository(p);
+    controls = new RolloutControlsRepository(p); participants = new CheckoutRolloutParticipantsRepository(p);
+    admission = new AtomicCheckoutAdmissionService(p, operations, attempts, controls, participants);
+  });
   beforeEach(async () => {
     customerId = randomUUID();
     await p.user.create({ data: { id: customerId, email: `${customerId}@example.invalid`, passwordHash: 'fixture', firstName: 'Test', lastName: 'Fixture' } });
@@ -61,6 +69,12 @@ describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
     op = await p.checkoutOperation.create({ data: { customerId, cartId: cart.id, operationKey: randomUUID(), retryKeyHash: randomUUID() } });
     expect((await participants.appendIfCurrent(customerId, customerId, { enabled: true, cohort: 'pilot', reason: 'G4A fixture', expectedRevision: null })).ok).toBe(true);
     await control(false);
+    if (!await p.reservationFenceTransition.count()) {
+      const mode = await p.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: customerId } });
+      await p.reservationFenceTransition.create({ data: { incarnation: randomUUID(), epoch: 1, revision: 1,
+        phase: 'OPEN', protocol: 1, status: 'ACKNOWLEDGED', acknowledgedAt: new Date(), mode: 'CART_SCOPED',
+        modeRevision: mode.revision, reason: 'OPEN', actorId: randomUUID() } });
+    }
   });
   afterEach(async () => {
     jest.restoreAllMocks();
@@ -71,9 +85,9 @@ describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
     await p.checkoutRolloutControlRevision.deleteMany({ where: { actorId: customerId } });
     await p.order.deleteMany({ where: { customerId } });
     await p.cart.deleteMany({ where: { customerId } });
-    await p.user.delete({ where: { id: customerId } });
+    // Retained mode actor is removed with the disposable schema.
   });
-  afterAll(async () => { await p.$disconnect(); });
+  afterAll(async () => { if (schema) await schema.close(); });
   async function control(stopped: boolean, behavior: CheckoutRolloutBehavior = 'CART_SCOPED') {
     expect((await controls.appendIfCurrent(customerId, { expectedRevision: (await controls.findCurrent())?.revision ?? null,
       newAdmissionStopped: stopped, behavior, eligibleCohort: 'pilot', reason: 'G4A control' })).ok).toBe(true);
@@ -85,8 +99,8 @@ describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
   };
   const stored = () => p.checkoutOperation.findUniqueOrThrow({ where: { id: op.id } });
   it('M03 failed assignment transaction leaves NULL and no attempt/order/payment', async () => {
-    const assign = operations.assignPath.bind(operations);
-    jest.spyOn(operations, 'assignPath').mockImplementationOnce(async (...args) => { await assign(...args); throw new Error('before commit'); });
+    const assign = attempts.createWithReservationCapability.bind(attempts);
+    jest.spyOn(attempts, 'createWithReservationCapability').mockImplementationOnce(async (...args) => { await assign(...args); throw new Error('before commit'); });
     expect(await admissionEvidence()).toEqual({ ok: false, code: 'UNAVAILABLE' });
     expect((await stored()).selectedPath).toBeNull();
     expect(await p.checkoutAttempt.count({ where: { customerId } })).toBe(0);
@@ -97,9 +111,12 @@ describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
     const committed = await admit(); // Response deliberately discarded by caller.
     await control(true);
     const read = jest.spyOn(controls, 'findCurrent');
-    expect(isDeepStrictEqual(await admit(), committed)).toBe(true);
+    const replay = await admit();
+    expect(committed).toMatchObject({ ok: true, decision: 'CART_SCOPED' });
+    expect(replay).toMatchObject({ ok: true, decision: 'EXISTING_ATTEMPT' });
+    expect(committed.ok && replay.ok && isDeepStrictEqual(committed.operation, replay.operation)).toBe(true);
     expect(read.mock.calls.length).toBe(0); expect((await stored()).selectedPath).toBe('CART_SCOPED');
-    expect(await p.checkoutAttempt.count({ where: { customerId } })).toBe(0);
+    expect(await p.checkoutAttempt.count({ where: { customerId } })).toBe(1);
   });
   it('M26 NULL operation is denied after stop and cannot obtain executable ownership', async () => {
     await control(true); expect(await admissionEvidence()).toEqual({ ok: false, code: 'ADMISSION_DENIED' });
@@ -115,8 +132,8 @@ describe('G.4a durable rollback admission matrix (PostgreSQL)', () => {
     await control(true); expect(await admissionEvidence()).toMatchObject({ decision: 'LEGACY', durable: true });
     expect((await stored()).selectedPath).toBe('LEGACY');
   });
-  it.each(['PROCESSING', 'COMMITTED', 'FAILED'] as const)('stop preserves %s attempt ownership and fenced discovery', async status => {
-    await admit();
+  it.each(['PROCESSING', 'COMMITTED', 'FAILED'] as const)('stop preserves historical NULL-E %s attempt ownership and fenced discovery', async status => {
+    await p.$transaction(tx => operations.assignPath(op.id, customerId, 'CART_SCOPED', tx));
     const order = status === 'COMMITTED' ? await p.order.create({ data: {
       customerId, deliveryAddressLine1: 'Fixture', deliveryParish: 'KINGSTON', deliveryPhone: '000', currency: 'JMD',
     } }) : null;

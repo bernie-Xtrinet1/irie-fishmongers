@@ -37,11 +37,12 @@ describe('G.4b.1 inactive dependency boundary', () => {
     visit(AppModule);
     expect(seen.size).toBeGreaterThan(1);
   });
-  it('only W7 uses fenced inventory Lua; read-side suspect writer remains removed', () => {
+  it('only W4 acquisition and W7 use fenced inventory Lua; read-side suspect writer remains removed', () => {
     const inventory = join(__dirname, '../../inventory');
     for (const file of readdirSync(join(inventory, 'lua'))) {
       const source = readFileSync(join(inventory, 'lua', file), 'utf8');
       if (file === 'checkout-lease-extend-lua-scripts.ts') expect(source).toContain("compileFencedMutation('CHECKOUT_LEASE_EXTEND'" );
+      else if (file === 'checkout-acquire-lua-scripts.ts') expect(source).toContain("settlementProtocol('ACQUIRE'");
       else expect(source).not.toMatch(/mutationGuard|compileFencedMutation|reservation:fence/);
     }
     expect(readFileSync(join(inventory, 'services/inventory-reservations-script-helpers.ts'), 'utf8'))

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { CheckoutOperation, CheckoutPath } from '@prisma/client';
+import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
 import { CheckoutDispatchService } from './checkout-dispatch.service';
 import { InactiveCheckoutAdmissionService } from './checkout-admission.service';
 import { CheckoutOperationService } from '../../checkout-operation/services/checkout-operation.service';
@@ -13,7 +14,9 @@ describe('G.2b inactive dispatcher', () => {
   let operation: CheckoutOperation;
   let operations: { issue: jest.Mock; assignPath: jest.Mock; prepare: jest.Mock };
   let attempts: { inspectByIdempotencyKey: jest.Mock };
-  let coordinator: { checkout: jest.Mock };
+  let coordinator: { checkoutAcquired: jest.Mock };
+  const acquisition = { acquire: jest.fn() };
+  const evidence = Object.freeze({});
   let orders: { checkout: jest.Mock; getCustomerOrderById: jest.Mock };
   let admission: { admit: jest.Mock };
   let shadow: { compare: jest.Mock };
@@ -71,7 +74,7 @@ describe('G.2b inactive dispatcher', () => {
           Promise.resolve({ action: 'ALREADY_COMMITTED', attempt: attempt() }),
         ),
     };
-    coordinator = { checkout: jest.fn().mockResolvedValue({ ok: true, order }) };
+    coordinator = { checkoutAcquired: jest.fn().mockResolvedValue({ ok: true, order }) };
     orders = {
       checkout: jest.fn().mockResolvedValue(order),
       getCustomerOrderById: jest.fn().mockResolvedValue(order),
@@ -81,11 +84,12 @@ describe('G.2b inactive dispatcher', () => {
         Promise.resolve({
           ok: true,
           decision: 'CART_SCOPED',
-          operation: { ...operation, selectedPath: 'CART_SCOPED' },
+          operation: { ...operation, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: 7, reservationCapabilityState: 'ACTIVE' },
           durable: true,
         }),
       ),
     };
+    acquisition.acquire.mockReset().mockResolvedValue({ ok: true, evidence });
     shadow = { compare: jest.fn().mockResolvedValue({ status: 'MATCH' }) };
     dispatcher = new CheckoutDispatchService(
       operations as unknown as CheckoutOperationService,
@@ -94,6 +98,7 @@ describe('G.2b inactive dispatcher', () => {
       orders as unknown as OrdersService,
       admission,
       shadow as unknown as CheckoutShadowComparisonService,
+      acquisition as unknown as CheckoutAcquisitionService,
     );
   });
   it('a detached default cannot grant executable ownership', async () => {
@@ -111,9 +116,10 @@ describe('G.2b inactive dispatcher', () => {
       orders as unknown as OrdersService,
       new InactiveCheckoutAdmissionService(),
       shadow as unknown as CheckoutShadowComparisonService,
+      acquisition as unknown as CheckoutAcquisitionService,
     );
     expect(await safeDispatcher.checkout(input())).toEqual({ ok: false, code: 'UNAVAILABLE' });
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
     expect(operations.prepare).not.toHaveBeenCalled();
     expect(orders.checkout).not.toHaveBeenCalled();
   });
@@ -131,18 +137,20 @@ describe('G.2b inactive dispatcher', () => {
       operationId: operation.id,
     });
     expect(operations.prepare).toHaveBeenCalledWith(operation.customerId, operation.id, now);
-    expect(coordinator.checkout).toHaveBeenCalledWith(
+    expect(coordinator.checkoutAcquired).toHaveBeenCalledWith(
       operation.customerId,
       operation.operationKey,
       checkoutDto,
       now,
+      evidence,
     );
     const calls = [
       operations.issue,
       attempts.inspectByIdempotencyKey,
       admission.admit,
       operations.prepare,
-      coordinator.checkout,
+      acquisition.acquire,
+      coordinator.checkoutAcquired,
     ].map((mock) => mock.mock.invocationCallOrder[0]!);
     expect(calls).toEqual([...calls].sort((a, b) => a - b));
     expect(orders.checkout).not.toHaveBeenCalled();
@@ -176,7 +184,7 @@ describe('G.2b inactive dispatcher', () => {
         operations.assignPath,
         operations.prepare,
         admission.admit,
-        coordinator.checkout,
+        coordinator.checkoutAcquired,
         orders.checkout,
         shadow.compare,
       ])
@@ -200,7 +208,7 @@ describe('G.2b inactive dispatcher', () => {
       operations.assignPath,
       operations.prepare,
       admission.admit,
-      coordinator.checkout,
+      coordinator.checkoutAcquired,
       orders.checkout,
       orders.getCustomerOrderById,
     ])
@@ -229,7 +237,7 @@ describe('G.2b inactive dispatcher', () => {
       operationId: operation.id,
     });
     expect(operations.prepare).not.toHaveBeenCalled();
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
   });
   it.each([false, true])(
     'SHADOW comparison failure=%s cannot authorize writes or fail legacy',
@@ -246,7 +254,7 @@ describe('G.2b inactive dispatcher', () => {
         authenticatedCustomerId: operation.customerId,
         cartId: operation.cartId,
       });
-      for (const mock of [operations.assignPath, operations.prepare, coordinator.checkout])
+      for (const mock of [operations.assignPath, operations.prepare, coordinator.checkoutAcquired])
         expect(mock).not.toHaveBeenCalled();
       expect(operation.selectedPath).toBeNull();
     },
@@ -257,7 +265,7 @@ describe('G.2b inactive dispatcher', () => {
     for (const mock of [
       operations.assignPath,
       operations.prepare,
-      coordinator.checkout,
+      coordinator.checkoutAcquired,
       orders.checkout,
       shadow.compare,
     ])
@@ -277,7 +285,7 @@ describe('G.2b inactive dispatcher', () => {
   it('preparation rejection never calls coordinator or legacy', async () => {
     operations.prepare.mockResolvedValue({ ok: false, code: 'RECONFIRM_REQUIRED' });
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'RECONFIRM_REQUIRED' });
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
     expect(orders.checkout).not.toHaveBeenCalled();
   });
   it('post-coordinator ownership mismatch fails closed without fallback', async () => {
@@ -292,7 +300,7 @@ describe('G.2b inactive dispatcher', () => {
     expect(orders.checkout).not.toHaveBeenCalled();
   });
   it('pre-attempt coordinator validation failure is returned without inventing an attempt', async () => {
-    coordinator.checkout.mockResolvedValue({ ok: false, code: 'CHECKOUT_PLAN_MISMATCH' });
+    coordinator.checkoutAcquired.mockResolvedValue({ ok: false, code: 'CHECKOUT_PLAN_MISMATCH' });
     attempts.inspectByIdempotencyKey.mockReset().mockResolvedValue({ action: 'NOT_FOUND' });
     expect(await dispatcher.checkout(input())).toEqual({
       ok: false,
@@ -322,13 +330,13 @@ describe('G.2b inactive dispatcher', () => {
     admission.admit.mockResolvedValue({
       ok: true,
       decision: 'EXISTING_ATTEMPT',
-      operation: { ...operation, selectedPath: 'CART_SCOPED' },
+      operation: { ...operation, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: 7, reservationCapabilityState: 'ACTIVE' },
       durable: true,
     });
     operations.prepare.mockRejectedValue(new Error('cleared cart'));
     expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
     expect(operations.prepare).not.toHaveBeenCalled();
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
     expect(orders.checkout).not.toHaveBeenCalled();
   });
   it('refuses executable admission without durable assignment', async () => {
@@ -340,7 +348,7 @@ describe('G.2b inactive dispatcher', () => {
     });
     expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'PATH_MISMATCH' });
     expect(operations.prepare).not.toHaveBeenCalled();
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
   });
   it('does not begin external work until the admission promise commits', async () => {
     let commit!: (result: unknown) => void;
@@ -357,12 +365,12 @@ describe('G.2b inactive dispatcher', () => {
     const pending = dispatcher.checkout(input());
     await admissionEntered;
     expect(operations.prepare).not.toHaveBeenCalled();
-    expect(coordinator.checkout).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
     expect(orders.checkout).not.toHaveBeenCalled();
     commit({
       ok: true,
       decision: 'CART_SCOPED',
-      operation: { ...operation, selectedPath: 'CART_SCOPED' },
+      operation: { ...operation, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: 7, reservationCapabilityState: 'ACTIVE' },
       durable: true,
     });
     expect(await pending).toEqual({ ok: true, order });

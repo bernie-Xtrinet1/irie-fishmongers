@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { CheckoutOperation, Prisma } from '@prisma/client';
 import { isUUID } from 'class-validator';
 import { PrismaService } from '../../../database/prisma.service';
 import { CheckoutOperationRepository } from '../../checkout-operation/repositories/checkout-operation.repository';
@@ -43,6 +44,10 @@ export class AtomicCheckoutAdmissionService extends CheckoutAdmissionService {
         async (tx): Promise<CheckoutAdmissionResult> => {
           await lockRolloutGlobal(tx);
           await lockRolloutParticipant(tx, context.customerId);
+          // Same fence/mode lock order as capability issuance; no Redis work
+          // occurs in this durable admission transaction.
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1380339280, 1)`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext('reservation_engine_mode_transition'))`;
           const operation = await this.operations.lockOwned(
             context.operationId,
             context.customerId,
@@ -70,6 +75,13 @@ export class AtomicCheckoutAdmissionService extends CheckoutAdmissionService {
           if (operation.selectedPath !== null) {
             if (operation.selectedPath !== 'LEGACY' && operation.selectedPath !== 'CART_SCOPED')
               return { ok: false, code: 'PATH_MISMATCH' };
+            if (operation.selectedPath === 'CART_SCOPED') {
+              if (!operation.reservationExecutionEpoch || operation.reservationCapabilityState !== 'ACTIVE')
+                return { ok: false, code: 'PATH_MISMATCH' };
+              const epoch = await this.currentEpoch(tx);
+              if (epoch !== operation.reservationExecutionEpoch) return { ok: false, code: 'UNAVAILABLE' };
+              await this.inheritCapability(operation, epoch, tx);
+            }
             return { ok: true, decision: operation.selectedPath, operation, durable: true };
           }
           const control = await this.controls.findCurrent(tx);
@@ -86,7 +98,9 @@ export class AtomicCheckoutAdmissionService extends CheckoutAdmissionService {
             return { ok: true, decision: 'SHADOW', operation, durable: false };
           if (control.behavior !== 'LEGACY' && control.behavior !== 'CART_SCOPED')
             return { ok: false, code: 'UNAVAILABLE' };
-          const assigned = await this.operations.assignPath(
+          const epoch = control.behavior === 'CART_SCOPED' ? await this.currentEpoch(tx) : null;
+          if (control.behavior === 'CART_SCOPED' && epoch === null) return { ok: false, code: 'UNAVAILABLE' };
+          const assigned = epoch !== null ? await this.operations.bindReservationCapability(operation.id, epoch, tx) : await this.operations.assignPath(
             operation.id,
             context.customerId,
             control.behavior,
@@ -100,6 +114,9 @@ export class AtomicCheckoutAdmissionService extends CheckoutAdmissionService {
           );
           if (!committedOperation || committedOperation.selectedPath !== control.behavior)
             throw new Error('Admission assignment inconsistent');
+          if (epoch !== null) {
+            await this.inheritCapability(committedOperation, epoch, tx);
+          }
           return {
             ok: true,
             decision: control.behavior,
@@ -112,5 +129,25 @@ export class AtomicCheckoutAdmissionService extends CheckoutAdmissionService {
     } catch {
       return { ok: false, code: 'UNAVAILABLE' };
     }
+  }
+
+  private async inheritCapability(operation: CheckoutOperation, epoch: number, tx: Prisma.TransactionClient) {
+    const attempt = await this.attempts.createWithReservationCapability({
+      operationKey: operation.operationKey,
+      customerId: operation.customerId,
+      cartId: operation.cartId,
+      epoch,
+    }, tx);
+    if (operation.reservationExecutionEpoch !== epoch || operation.reservationCapabilityState !== 'ACTIVE' ||
+      attempt.reservationExecutionEpoch !== epoch || attempt.selectedPath !== 'CART_SCOPED' ||
+      attempt.customerId !== operation.customerId || attempt.cartId !== operation.cartId)
+      throw new Error('Admission epoch inheritance inconsistent');
+  }
+
+  private async currentEpoch(tx: Prisma.TransactionClient): Promise<number | null> {
+    const fence = await tx.reservationFenceTransition.findFirst({ orderBy: { revision: 'desc' } });
+    const mode = await tx.reservationEngineModeConfig.findFirst({ orderBy: { revision: 'desc' } });
+    return fence?.status === 'ACKNOWLEDGED' && fence.phase === 'OPEN' && fence.mode === 'CART_SCOPED' &&
+      mode?.mode === 'CART_SCOPED' && fence.modeRevision === mode.revision ? fence.epoch : null;
   }
 }

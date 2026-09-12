@@ -22,7 +22,8 @@ export class CheckoutSettlementAuthorityService {
       const replayId = action === 'ACQUIRE' ? m.acquisitionReplayId : m.settlementReplayId;
       const key = settlementGrantKey(randomUUID());
       const result: unknown = JSON.parse(await this.redis.eval(REGISTER_SETTLEMENT_GRANT_LUA,
-        [RESERVATION_FENCE_KEY, key], [JSON.stringify({ tuple, identity, action, replayId })]) as string);
+        [RESERVATION_FENCE_KEY, key], [JSON.stringify({ tuple, identity, action, replayId,
+          checkoutIdempotencyKey: m.operation.operationKey })]) as string);
       return { key, result };
     });
   }
