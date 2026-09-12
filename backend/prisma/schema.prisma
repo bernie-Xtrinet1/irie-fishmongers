@@ -552,17 +552,18 @@ enum CheckoutPath {
 }
 
 model CheckoutOperation {
+  reservationSettlements     CheckoutReservationSettlement[]
   reservationExecutionEpoch  Int?
   reservationCapabilityState ReservationCapabilityState?
-  id                         String                      @id @default(uuid())
+  id                         String                          @id @default(uuid())
   customerId                 String
   cartId                     String
-  retryKeyHash               String                      @db.VarChar(64)
-  operationKey               String                      @unique @db.VarChar(36)
+  retryKeyHash               String                          @db.VarChar(64)
+  operationKey               String                          @unique @db.VarChar(36)
   selectedPath               CheckoutPath?
-  priceLockFingerprint       String?                     @db.VarChar(64)
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
+  priceLockFingerprint       String?                         @db.VarChar(64)
+  createdAt                  DateTime                        @default(now())
+  updatedAt                  DateTime                        @updatedAt
 
   customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
   cart     Cart @relation(fields: [cartId], references: [id], onDelete: Restrict)
@@ -573,18 +574,19 @@ model CheckoutOperation {
 }
 
 model CheckoutAttempt {
+  reservationSettlement     CheckoutReservationSettlement?
   reservationExecutionEpoch Int?
-  id                        String                @id @default(uuid())
-  idempotencyKey            String                @unique
+  id                        String                         @id @default(uuid())
+  idempotencyKey            String                         @unique
   cartId                    String
   customerId                String
-  status                    CheckoutAttemptStatus @default(PROCESSING)
-  orderId                   String?               @unique
+  status                    CheckoutAttemptStatus          @default(PROCESSING)
+  orderId                   String?                        @unique
   failureCode               String?
   failureMessage            String?
-  createdAt                 DateTime              @default(now())
-  updatedAt                 DateTime              @updatedAt
-  lastHeartbeatAt           DateTime              @default(now())
+  createdAt                 DateTime                       @default(now())
+  updatedAt                 DateTime                       @updatedAt
+  lastHeartbeatAt           DateTime                       @default(now())
   // NULL means historical ownership is unknown; never infer from current policy.
   selectedPath              CheckoutPath?
 
@@ -619,21 +621,22 @@ enum ReservationFenceStatus {
 // Inactive G.4b.1 control journal. Latest revision is durable authority, even
 // while PREPARED: no permit may be issued from the preceding acknowledged row.
 model ReservationFenceTransition {
-  id                      String                 @id @default(uuid()) @db.Uuid
-  revision                Int                    @unique
-  incarnation             String                 @db.Uuid
+  reservationSettlements  CheckoutReservationSettlement[]
+  id                      String                          @id @default(uuid()) @db.Uuid
+  revision                Int                             @unique
+  incarnation             String                          @db.Uuid
   epoch                   Int
   phase                   ReservationFencePhase
   protocol                Int
   predecessor             Json?
   mode                    ReservationEngineMode
   modeRevision            Int?
-  status                  ReservationFenceStatus @default(PREPARED)
-  bootstrap               Boolean                @default(false)
-  endpointAcknowledgement String?                @db.Uuid
-  reason                  String                 @db.VarChar(32)
-  actorId                 String                 @db.Uuid
-  createdAt               DateTime               @default(now())
+  status                  ReservationFenceStatus          @default(PREPARED)
+  bootstrap               Boolean                         @default(false)
+  endpointAcknowledgement String?                         @db.Uuid
+  reason                  String                          @db.VarChar(32)
+  actorId                 String                          @db.Uuid
+  createdAt               DateTime                        @default(now())
   acknowledgedAt          DateTime?
 
   @@index([incarnation, epoch])
@@ -2918,4 +2921,58 @@ model DispatchDecisionLog {
 
   @@index([deliveryRunId])
   @@map("dispatch_decision_logs")
+}
+
+enum CheckoutSettlementState {
+  PREPARED
+  ACQUIRED
+  FINALIZE_PENDING
+  REVERT_PENDING
+  SETTLED
+}
+
+enum CheckoutSettlementEffect {
+  CHECKOUT_FINALIZE
+  CHECKOUT_REVERT_DELETE_ONLY
+  CHECKOUT_REVERT_RESTORE_ACTIVE
+}
+
+// Inactive protocol. PREPARED records intent, never proof of Redis acquisition.
+model CheckoutReservationSettlement {
+  id                        String                        @id @default(uuid()) @db.Uuid
+  attemptId                 String                        @unique
+  operationId               String
+  incarnation               String                        @db.Uuid
+  reservationExecutionEpoch Int
+  captureTransitionId       String                        @db.Uuid
+  state                     CheckoutSettlementState       @default(PREPARED)
+  effect                    CheckoutSettlementEffect?
+  acquisitionReplayId       String                        @unique @db.Uuid
+  settlementReplayId        String?                       @unique @db.Uuid
+  completionReceiptHash     String?                       @db.VarChar(64)
+  sealed                    Boolean                       @default(false)
+  createdAt                 DateTime                      @default(now())
+  updatedAt                 DateTime                      @updatedAt
+  attempt                   CheckoutAttempt               @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  operation                 CheckoutOperation             @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  captureTransition         ReservationFenceTransition    @relation(fields: [captureTransitionId], references: [id], onDelete: Restrict)
+  resources                 CheckoutReservationResource[]
+
+  @@index([state, id])
+  @@map("checkout_reservation_settlements")
+}
+
+model CheckoutReservationResource {
+  id             String                        @id @default(uuid()) @db.Uuid
+  settlementId   String                        @db.Uuid
+  productId      String
+  markerId       String
+  generation     Int
+  holdInstanceId String                        @unique @db.Uuid
+  quantity       Int
+  settlement     CheckoutReservationSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+
+  @@unique([settlementId, productId])
+  @@unique([settlementId, markerId])
+  @@map("checkout_reservation_resources")
 }

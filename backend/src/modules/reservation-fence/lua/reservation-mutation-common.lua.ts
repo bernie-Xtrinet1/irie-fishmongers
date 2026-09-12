@@ -80,12 +80,26 @@ local function gateValid(g)
     uuid(g.operationId) and uuid(g.gateId) and
     (g.state=='ENABLED' or g.state=='CLOSED' or g.state=='REVOKED')
 end
+local pinBlockedOrdinaryEffects={RESERVE=true,RENEW=true,REDUCTION_RECREATE=true,RELEASE=true,
+  MALFORMED_SUSPECT=true,RECONCILE_NONINCREASING=true,RECONCILE_POSITIVE=true,
+  CART_SYNC_RECOVERY=true,COMPENSATION=true,BACKFILL=true,ORPHAN_CLEANUP=true,
+  FRESHNESS_SWEEP=true,TERMINAL_CLEANUP=true,EXPIRED_ACTIVE_RELEASE=true}
+-- These checkout effects must use the separate manifest protocol while pinned.
+local pinBlockedCheckoutEffects={CHECKOUT_MARK=true,CHECKOUT_FINALIZE=true,
+  CHECKOUT_REVERT_RESTORE_ACTIVE=true,CHECKOUT_REVERT_DELETE_ONLY=true}
 local function checkResources(p)
   if type(p.resources)~='table' or #p.resources<1 or #p.resources>100 then return 'PERMIT_SCOPE_MISMATCH' end
   local seen={}
   for _,r in ipairs(p.resources) do
     if not resourceValid(r) or seen[r.markerId] then return 'PERMIT_SCOPE_MISMATCH' end
     seen[r.markerId]=true
+    -- Cart intent cannot replace checkout ownership. W7's existing fixed-ceiling
+    -- lease authorization remains unchanged; it cannot relabel the resource.
+    -- Settlement uses its separate exact manifest/receipt protocol.
+    if (pinBlockedOrdinaryEffects[p.effect] or pinBlockedCheckoutEffects[p.effect]) and
+      redis.call('EXISTS','reservation:fence:checkout-pin:'..r.markerId)~=0 then
+      return 'RESOURCE_GENERATION_MISMATCH'
+    end
     local guard,err=read('reservation:fence:resource:'..r.markerId)
     if err then return err..'_RESOURCE_GUARD' end
     if not fields(guard,3) or not resourceValid(guard.resource) or not uuid(guard.incarnation) or not integer(guard.epoch) then

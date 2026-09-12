@@ -21,6 +21,9 @@ elseif action=='RESOURCE_INIT' or action=='RESOURCE_ADVANCE' then
   if not resourceValid(target.resource) or KEYS[3]~='reservation:fence:resource:'..target.resource.markerId then
     return rejected('PERMIT_SCOPE_MISMATCH')
   end
+  if redis.call('EXISTS','reservation:fence:checkout-pin:'..target.resource.markerId)~=0 then
+    return rejected('RESOURCE_GENERATION_MISMATCH')
+  end
 else return rejected('EFFECT_MISMATCH') end
 if target.incarnation~=current.incarnation then return rejected('WRONG_INCARNATION') end
 if target.epoch~=current.epoch then return rejected('EPOCH_MISMATCH') end
