@@ -151,14 +151,14 @@ describe('G.4b.2c.3 durable failure and exact physical W5', () => {
     expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, attempt: { status: 'PROCESSING' } });
     expect(execute.mock.calls.filter(c => c[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
   });
-  it('durable COMMITTED wins over transaction exception and never executes W5/W6', async () => {
+  it('historical COMMITTED plus ACQUIRED is unresolved and never executes W5/W6', async () => {
     const f = await acquired();
     const order = await schema.prisma.order.create({ data: { customerId: f.customerId,
       deliveryAddressLine1: 'Fixture', deliveryParish: 'KINGSTON', deliveryPhone: '000', currency: 'JMD' } });
     await schema.prisma.$transaction(tx => new CheckoutAttemptRepository(schema.prisma)
       .markCommitted(tx, f.attempt.id, f.customerId, order.id, new Date()));
     const execute = jest.spyOn(adapter, 'eval'); const work = jest.fn(abort);
-    expect(await service.runOrder(f.evidence, work)).toEqual({ kind: 'COMMITTED', attemptId: f.attempt.id, orderId: order.id });
+    expect(await service.runOrder(f.evidence, work)).toEqual({ kind: 'UNRESOLVED' });
     expect(work).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
     expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, effect: null });
   });
@@ -186,8 +186,9 @@ describe('G.4b.2c.3 durable failure and exact physical W5', () => {
     });
     expect(result).toMatchObject({ kind: 'COMMITTED', attemptId: f.attempt.id });
     expect(execute).not.toHaveBeenCalled();
-    expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', effect: null, settlementReplayId: null,
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'FINALIZE_PENDING', effect: 'CHECKOUT_FINALIZE',
       attempt: { status: 'COMMITTED' } });
+    expect((await repo.find(f.m.id))!.settlementReplayId).not.toBeNull();
   });
   it('actual partial order writes are rolled back before failure intent is durably selected', async () => {
     const f = await acquired();

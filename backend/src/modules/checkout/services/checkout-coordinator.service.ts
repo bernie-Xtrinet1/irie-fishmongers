@@ -25,6 +25,7 @@ import { CanonicalCheckoutPlan } from '../types/canonical-checkout-plan.types';
 import { CheckoutCoordinatorResult } from '../types/checkout-coordinator.types';
 import { acquiredManifest, CheckoutAcquisitionEvidence } from './checkout-acquisition.service';
 import { CheckoutFailureSettlementService } from './checkout-failure-settlement.service';
+import { CheckoutFinalizeSettlementService } from './checkout-finalize-settlement.service';
 
 const MAX_LOG_MESSAGE_LENGTH = 500;
 
@@ -57,16 +58,20 @@ export class CheckoutCoordinatorService {
   ) {}
 
   // Inactive Phase G entry only. W4 is already proven and durable. The required
-  // failure boundary can settle W5 only after proven rollback. Success never
-  // invokes W6, and neither outcome invokes the old raw terminal paths below.
+  // failure boundary settles W5 only after proven rollback. Committed W6 runs
+  // outside the order transaction; neither outcome invokes raw terminal paths.
   async checkoutAcquired(customerId: string, idempotencyKey: string, dto: CheckoutDto,
-    now: Date, evidence: CheckoutAcquisitionEvidence, failureSettlement: CheckoutFailureSettlementService): Promise<CheckoutCoordinatorResult> {
+    now: Date, evidence: CheckoutAcquisitionEvidence, failureSettlement: CheckoutFailureSettlementService,
+    finalizeSettlement: CheckoutFinalizeSettlementService): Promise<CheckoutCoordinatorResult> {
     const manifest = acquiredManifest(evidence);
     if (manifest.operation.customerId !== customerId || manifest.operation.operationKey !== idempotencyKey ||
       manifest.state !== 'ACQUIRED') return { ok: false, code: 'CHECKOUT_PATH_MISMATCH' };
     const inspected = await this.checkoutAttempt.inspectByIdempotencyKey(customerId, idempotencyKey);
-    if (inspected.action === 'ALREADY_COMMITTED')
+    if (inspected.action === 'ALREADY_COMMITTED') {
+      const settlement = await finalizeSettlement.continue(customerId, manifest.operationId);
+      if (settlement.code === 'ORDER_OUTCOME_UNRESOLVED') return { ok: false, code: settlement.code };
       return this.replayCommitted(customerId, inspected.attempt.id, inspected.attempt.orderId);
+    }
     if (inspected.action !== 'RESUMED_PROCESSING' || inspected.attempt.id !== manifest.attemptId)
       return { ok: false, code: 'CHECKOUT_PATH_MISMATCH' };
     const preparation = await this.ordersService.prepareCheckout(customerId, dto);
@@ -83,11 +88,16 @@ export class CheckoutCoordinatorService {
       return { ok: false, code: 'ACQUISITION_REJECTED' };
     const outcome = await failureSettlement.runOrder(evidence, tx =>
       this.runOrderTransaction(tx, preparation.prepared, reconciliation.plan, manifest.attemptId, customerId, now));
-    if (outcome.kind === 'COMMITTED') return this.replayCommitted(customerId, outcome.attemptId, outcome.orderId);
+    if (outcome.kind === 'COMMITTED') {
+      const settlement = await finalizeSettlement.continue(customerId, manifest.operationId);
+      if (settlement.code === 'ORDER_OUTCOME_UNRESOLVED') return { ok: false, code: settlement.code };
+      return this.replayCommitted(customerId, outcome.attemptId, outcome.orderId);
+    }
     if (outcome.kind === 'UNRESOLVED') return { ok: false, code: 'ORDER_OUTCOME_UNRESOLVED' };
     if (outcome.kind === 'FAILED') return { ok: false, code: outcome.settlement.code === 'SETTLED'
       ? 'ORDER_TRANSACTION_FAILED' : outcome.settlement.code };
     const order = outcome.order;
+    await finalizeSettlement.continue(customerId, manifest.operationId);
     return this.completeWithPayment(customerId, dto, reconciliation.plan, order);
   }
 

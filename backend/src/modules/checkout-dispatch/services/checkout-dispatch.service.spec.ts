@@ -1,3 +1,4 @@
+import { CheckoutFinalizeSettlementService } from '../../checkout/services/checkout-finalize-settlement.service';
 import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
 import { randomUUID } from 'crypto';
 import { CheckoutOperation, CheckoutPath } from '@prisma/client';
@@ -19,6 +20,7 @@ describe('G.2b inactive dispatcher', () => {
   const acquisition = { acquire: jest.fn() };
   const evidence = Object.freeze({});
   const failureSettlement = { continue: jest.fn() };
+  const finalizeSettlement = { continue: jest.fn().mockResolvedValue({ code: 'SETTLED' }) };
   let orders: { checkout: jest.Mock; getCustomerOrderById: jest.Mock };
   let admission: { admit: jest.Mock };
   let shadow: { compare: jest.Mock };
@@ -91,6 +93,7 @@ describe('G.2b inactive dispatcher', () => {
         }),
       ),
     };
+    finalizeSettlement.continue.mockReset().mockResolvedValue({ code: 'SETTLED' });
     acquisition.acquire.mockReset().mockResolvedValue({ ok: true, evidence });
     shadow = { compare: jest.fn().mockResolvedValue({ status: 'MATCH' }) };
     dispatcher = new CheckoutDispatchService(
@@ -102,6 +105,7 @@ describe('G.2b inactive dispatcher', () => {
       shadow as unknown as CheckoutShadowComparisonService,
       acquisition as unknown as CheckoutAcquisitionService,
       failureSettlement as unknown as CheckoutFailureSettlementService,
+      finalizeSettlement as unknown as CheckoutFinalizeSettlementService,
     );
   });
   it('a detached default cannot grant executable ownership', async () => {
@@ -121,6 +125,7 @@ describe('G.2b inactive dispatcher', () => {
       shadow as unknown as CheckoutShadowComparisonService,
       acquisition as unknown as CheckoutAcquisitionService,
       failureSettlement as unknown as CheckoutFailureSettlementService,
+      finalizeSettlement as unknown as CheckoutFinalizeSettlementService,
     );
     expect(await safeDispatcher.checkout(input())).toEqual({ ok: false, code: 'UNAVAILABLE' });
     expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
@@ -148,6 +153,7 @@ describe('G.2b inactive dispatcher', () => {
       now,
       evidence,
       failureSettlement,
+      finalizeSettlement,
     );
     const calls = [
       operations.issue,
@@ -379,5 +385,30 @@ describe('G.2b inactive dispatcher', () => {
       durable: true,
     });
     expect(await pending).toEqual({ ok: true, order });
+  });
+
+  it.each(['SETTLED', 'FINALIZE_UNCERTAIN', 'FINALIZE_REJECTED'] as const)('committed replay bounded-continues %s without order creation or admission', async code => {
+    operation.selectedPath = 'CART_SCOPED'; operation.reservationExecutionEpoch = 7;
+    attempts.inspectByIdempotencyKey.mockReset().mockResolvedValue({ action: 'ALREADY_COMMITTED', attempt: attempt() });
+    finalizeSettlement.continue.mockResolvedValue({ code });
+    expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
+    expect(finalizeSettlement.continue).toHaveBeenCalledTimes(1);
+    expect(finalizeSettlement.continue).toHaveBeenCalledWith(operation.customerId, operation.id);
+    expect(admission.admit).not.toHaveBeenCalled(); expect(operations.prepare).not.toHaveBeenCalled();
+    expect(coordinator.checkoutAcquired).not.toHaveBeenCalled(); expect(orders.checkout).not.toHaveBeenCalled();
+  });
+  it('committed invariant breach is unresolved rather than manufacturing settlement authority', async () => {
+    operation.selectedPath = 'CART_SCOPED'; operation.reservationExecutionEpoch = 7;
+    attempts.inspectByIdempotencyKey.mockReset().mockResolvedValue({ action: 'ALREADY_COMMITTED', attempt: attempt() });
+    finalizeSettlement.continue.mockResolvedValue({ code: 'ORDER_OUTCOME_UNRESOLVED' });
+    expect(await dispatcher.checkout(input())).toEqual({ ok: false, code: 'ORDER_OUTCOME_UNRESOLVED' });
+    expect(orders.getCustomerOrderById).not.toHaveBeenCalled(); expect(acquisition.acquire).not.toHaveBeenCalled();
+  });
+  it('historical NULL-E committed replay never upgrades or invokes terminal authority', async () => {
+    operation.selectedPath = 'CART_SCOPED';
+    attempts.inspectByIdempotencyKey.mockReset().mockResolvedValue({ action: 'ALREADY_COMMITTED', attempt: attempt() });
+    expect(await dispatcher.checkout(input())).toEqual({ ok: true, order });
+    expect(finalizeSettlement.continue).not.toHaveBeenCalled(); expect(admission.admit).not.toHaveBeenCalled();
+    expect(operations.prepare).not.toHaveBeenCalled();
   });
 });

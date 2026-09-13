@@ -30,7 +30,7 @@ for _,resource in ipairs(s.resources) do
   local pinType=redis.call('TYPE',pinKey).ok
   if pinType~='none' and pinType~='string' then return rejected('REPLAY_MISMATCH') end
   if redis.call('GET',pinKey)==ARGV[1] then return rejected('REPLAY_MISMATCH') end
-  if ARGV[2]=='CHECKOUT_REVERT_DELETE_ONLY' then
+  if ARGV[2]=='CHECKOUT_REVERT_DELETE_ONLY' or ARGV[2]=='CHECKOUT_FINALIZE' then
     local entry,entryError=read('inv:reserved:{'..resource.cartId..'}:'..resource.productId)
     if entryError and entryError~='MISSING' then return rejected('REPLAY_MISMATCH') end
     if entry and entry.holdInstanceId==resource.holdInstanceId then return rejected('REPLAY_MISMATCH') end

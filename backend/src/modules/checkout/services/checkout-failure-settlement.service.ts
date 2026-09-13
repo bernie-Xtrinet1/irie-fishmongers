@@ -51,7 +51,14 @@ export class CheckoutFailureSettlementService {
           mode.mode !== 'CART_SCOPED' || fence.modeRevision !== mode.modeRevision ||
           fence.epoch !== m.reservationExecutionEpoch || fence.incarnation !== m.incarnation)
           throw new Error('ACQUISITION_ORDER_BOUNDARY_UNRESOLVED');
-        try { return await work(tx); }
+        try {
+          const created = await work(tx);
+          // The order, attempt and terminal obligation commit together. Failure
+          // here is a callback rejection, so the existing W5 proof still applies.
+          if ((await this.manifests.markFinalizePending(tx, m.id)).count !== 1)
+            throw new Error('FINALIZE_INTENT_UNRESOLVED');
+          return created;
+        }
         catch (error) { callbackAborted = true; throw error; }
       });
       return { kind: 'CREATED', order };
@@ -65,7 +72,9 @@ export class CheckoutFailureSettlementService {
           const m = await this.lockedManifest(tx, original);
           if (!m) return unresolved;
           if (m.attempt.status === 'COMMITTED' || m.attempt.orderId !== null) {
-            if (!m.attempt.orderId || !await tx.order.findFirst({ where: {
+            if (m.attempt.status !== 'COMMITTED' || !['FINALIZE_PENDING', 'SETTLED'].includes(m.state) ||
+              m.effect !== 'CHECKOUT_FINALIZE' || !m.settlementReplayId || m.settlementReplayId === m.acquisitionReplayId ||
+              !m.attempt.orderId || !await tx.order.findFirst({ where: {
               id: m.attempt.orderId, customerId: m.operation.customerId } })) return unresolved;
             return { kind: 'COMMITTED', attemptId: m.attemptId, orderId: m.attempt.orderId } as const;
           }

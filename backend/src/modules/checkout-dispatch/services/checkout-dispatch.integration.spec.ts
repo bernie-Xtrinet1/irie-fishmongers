@@ -1,3 +1,4 @@
+import { CheckoutFinalizeSettlementService } from '../../checkout/services/checkout-finalize-settlement.service';
 import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
 import { CHECKOUT_SETTLEMENT_REVERT_SCRIPT } from '../../inventory/lua/checkout-settlement-revert-lua-scripts';
 import { randomUUID } from 'crypto';
@@ -112,6 +113,8 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
       acquisition,
       new CheckoutFailureSettlementService(prisma, adapter, new CheckoutAttemptRepository(prisma), manifests, fences,
         new CheckoutSettlementAuthorityService(manifests, fences, adapter)),
+      new CheckoutFinalizeSettlementService(prisma, adapter, manifests, fences,
+        new CheckoutSettlementAuthorityService(manifests, fences, adapter)),
     );
   });
   afterEach(async () => {
@@ -171,9 +174,11 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     expect(operation.priceLockFingerprint).not.toBeNull();
     expect(operation).toMatchObject({ reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' });
     const manifest = await prisma.checkoutReservationSettlement.findFirstOrThrow({ where: { operationId: operation.id }, include: { resources: true } });
-    expect(manifest).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, effect: null });
+    expect(manifest).toMatchObject({ state: 'SETTLED', effect: 'CHECKOUT_FINALIZE' });
+    expect(manifest.settlementReplayId).not.toBeNull();
+    expect(manifest.settlementReplayId).not.toBe(manifest.acquisitionReplayId);
     expect(physicalEval.mock.calls.filter(call => call[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
-    expect(await redis.get(checkoutPinKey(manifest.resources[0]!.markerId))).not.toBeNull();
+    expect(await redis.get(checkoutPinKey(manifest.resources[0]!.markerId))).toBeNull();
     expect(markAcquired.mock.invocationCallOrder[0]!).toBeLessThan(createOrder.mock.invocationCallOrder[0]!);
     const w4Call = physicalEval.mock.calls.findIndex(call => call[0] === CHECKOUT_ACQUIRE_SCRIPT);
     expect(w4Call).toBeGreaterThanOrEqual(0);

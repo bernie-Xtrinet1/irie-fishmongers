@@ -7,6 +7,7 @@ import { ReservationCapabilityService } from '../services/reservation-capability
 import { ReservationMutationAuthorityService } from '../services/reservation-mutation-authority.service';
 import { ReservationFencedExecutor } from '../services/reservation-fenced-executor.service';
 import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
+import { CheckoutFinalizeSettlementService } from '../../checkout/services/checkout-finalize-settlement.service';
 import { CheckoutDispatchService } from '../../checkout-dispatch/services/checkout-dispatch.service';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
@@ -34,6 +35,7 @@ describe('G.4b.1 inactive dependency boundary', () => {
         expect(providers).not.toContain(ReservationMutationAuthorityService);
         expect(providers).not.toContain(ReservationFencedExecutor);
         expect(providers).not.toContain(CheckoutFailureSettlementService);
+        expect(providers).not.toContain(CheckoutFinalizeSettlementService);
         expect(providers).not.toContain(CheckoutDispatchService);
         ((Reflect.getMetadata('imports', entry) as unknown[] | undefined) ?? []).forEach(visit);
       }
@@ -41,13 +43,14 @@ describe('G.4b.1 inactive dependency boundary', () => {
     visit(AppModule);
     expect(seen.size).toBeGreaterThan(1);
   });
-  it('only W4, W5 settlement and W7 use fenced inventory Lua; read-side suspect writer remains removed', () => {
+  it('only W4, W5/W6 settlement and W7 use fenced inventory Lua; read-side suspect writer remains removed', () => {
     const inventory = join(__dirname, '../../inventory');
     for (const file of readdirSync(join(inventory, 'lua'))) {
       const source = readFileSync(join(inventory, 'lua', file), 'utf8');
       if (file === 'checkout-lease-extend-lua-scripts.ts') expect(source).toContain("compileFencedMutation('CHECKOUT_LEASE_EXTEND'" );
       else if (file === 'checkout-acquire-lua-scripts.ts') expect(source).toContain("settlementProtocol('ACQUIRE'");
       else if (file === 'checkout-settlement-revert-lua-scripts.ts') expect(source).toContain("settlementProtocol('CHECKOUT_REVERT_DELETE_ONLY'");
+      else if (file === 'checkout-settlement-finalize-lua-scripts.ts') expect(source).toContain("settlementProtocol('CHECKOUT_FINALIZE'");
       else expect(source).not.toMatch(/mutationGuard|compileFencedMutation|reservation:fence/);
     }
     expect(readFileSync(join(inventory, 'services/inventory-reservations-script-helpers.ts'), 'utf8'))

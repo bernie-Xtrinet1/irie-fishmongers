@@ -16,6 +16,7 @@ import { CheckoutShadowComparisonService } from '../../checkout-shadow/services/
 import { CheckoutAdmissionService } from './checkout-admission.service';
 import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
 import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
+import { CheckoutFinalizeSettlementService } from '../../checkout/services/checkout-finalize-settlement.service';
 
 export interface CheckoutDispatchInput {
   customerId: string;
@@ -49,6 +50,7 @@ export class CheckoutDispatchService {
     private readonly shadow: CheckoutShadowComparisonService,
     private readonly acquisition: CheckoutAcquisitionService,
     private readonly failureSettlement: CheckoutFailureSettlementService,
+    private readonly finalizeSettlement: CheckoutFinalizeSettlementService,
   ) {}
 
   async checkout(input: CheckoutDispatchInput): Promise<CheckoutDispatchResult> {
@@ -140,6 +142,7 @@ export class CheckoutDispatchService {
       input.now,
       acquired.evidence,
       this.failureSettlement,
+      this.finalizeSettlement,
     );
     const after = await this.attempts.inspectByIdempotencyKey(
       input.customerId,
@@ -188,7 +191,11 @@ export class CheckoutDispatchService {
     }
     if (existing.action !== 'ALREADY_COMMITTED' || !existing.attempt.orderId)
       return { ok: false, code: 'PATH_MISMATCH' };
-    // Same read-only order boundary used by the coordinator's committed replay.
+    if (operation.selectedPath === 'CART_SCOPED' && operation.reservationExecutionEpoch !== null) {
+      const settlement = await this.finalizeSettlement.continue(operation.customerId, operation.id);
+      if (settlement.code === 'ORDER_OUTCOME_UNRESOLVED') return { ok: false, code: settlement.code };
+    }
+    // Redis uncertainty cannot undo a committed order. Replay remains bounded.
     return {
       ok: true,
       order: await this.orders.getCustomerOrderById(operation.customerId, existing.attempt.orderId),
