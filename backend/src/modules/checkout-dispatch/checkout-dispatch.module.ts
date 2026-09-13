@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { RedisModule } from '../../common/redis/redis.module';
 import { ReservationFenceModule } from '../reservation-fence/reservation-fence.module';
 import { CheckoutAcquisitionService } from '../checkout/services/checkout-acquisition.service';
+import { CheckoutFailureSettlementService } from '../checkout/services/checkout-failure-settlement.service';
 import { CheckoutModule } from '../checkout/checkout.module';
 import { CheckoutAttemptModule } from '../checkout-attempt/checkout-attempt.module';
 import { CheckoutOperationModule } from '../checkout-operation/checkout-operation.module';
@@ -31,6 +32,7 @@ import { RolloutControlsRepository } from '../checkout-rollout-admin/repositorie
   providers: [
     CheckoutDispatchService,
     CheckoutAcquisitionService,
+    CheckoutFailureSettlementService,
     CheckoutOperationRepository,
     CheckoutAttemptRepository,
     CheckoutRolloutParticipantsRepository,

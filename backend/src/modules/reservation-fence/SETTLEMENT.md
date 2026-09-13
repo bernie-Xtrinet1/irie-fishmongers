@@ -1,7 +1,7 @@
 # Inactive checkout settlement manifest protocol
 
 G.4b.2c.2 integrates admission and W4 only in the inactive Phase G dispatcher.
-This module does not cut over W5/W6, recovery workers or production routes.
+G.4b.2c.3 adds W5 failure settlement only; W6, recovery workers and production routes remain unchanged.
 The repository and issuer are not registered in the production module graph.
 No existing hold receives authority from Redis, and no historical row is backfilled.
 
@@ -25,8 +25,8 @@ Terminal replay identity is initially NULL. Selecting FINALIZE_PENDING or
 REVERT_PENDING atomically allocates a different replay ID and binds it permanently
 to that terminal effect. Acquisition identity cannot substitute for this ID.
 
-The order/FAILED caller must later use its transaction to persist the matching
-FINALIZE_PENDING/REVERT_PENDING obligation. This slice does not wire that caller.
+The W5 failure boundary persists FAILED and REVERT_PENDING in one transaction.
+The success-side FINALIZE_PENDING caller remains deferred.
 The narrow APIs are markAcquired, markFinalizePending, markRevertPending and
 acknowledgeSettled. There is no generic lifecycle transition API. acknowledgeSettled
 requires opaque runtime-verified completion evidence from the protocol receipt reader;
@@ -80,11 +80,10 @@ Only opaque verified acquisition evidence reaches `checkoutAcquired`. It validat
 the order plan against captured resources and rechecks durable state under an
 attempt row lock before the existing order transaction. The old standalone D-core
 entry remains for its existing callers/tests; the dispatcher never falls back to it.
-Order commit still advances cart generation. W5/W6 and terminal replay selection
-are deliberately deferred: the manifest remains ACQUIRED, including after order
-commit or a failed order transaction. Neither the existing pending reconciler nor
+Order commit still advances cart generation. W6 remains deliberately deferred: the manifest stays ACQUIRED after order
+commit. G.4b.2c.3 handles only proven transaction rollback as described below. Neither the existing pending reconciler nor
 the recovery worker acquires new settlement ownership in this slice. Their old
-raw terminal paths are not safe substitutes for the future W5/W6 integrations.
+raw terminal paths are not substitutes for exact-manifest W5 or future W6 settlement.
 These unresolved terminal obligations and unconverted writers prohibit activation.
 
 The real dispatcher integration suite supplies separate W4 acquisition evidence;
@@ -114,3 +113,51 @@ historical rows, upgrade to 44, and drop only that generated schema at teardown.
 is the test fixture reset mechanism; no shared application tables are manually cleared.
 Redis tests validate 127.0.0.1:16479 before connecting and remove only recorded fixture
 keys. Port 6379 is never used. No activation approval is implied by passing tests.
+
+## Inactive W5 failure settlement (G.4b.2c.3)
+
+The dispatcher supplies a required CheckoutFailureSettlementService to the acquired
+order entry. It retains the shared fence/mode locks and operation/attempt locks and
+adds the manifest lock around the existing order transaction. The legacy coordinator
+entry, production OrdersService route, and existing stale recovery worker are unchanged.
+
+A thrown transaction is not failure proof. The service distinguishes a rejected order
+callback (no COMMIT may be submitted by Prisma) from a fulfilled callback whose COMMIT
+response was lost. In either case it obtains the corresponding PostgreSQL locks and
+re-reads exact durable ownership and attempt/order linkage. These locks wait for the
+old transaction to finish. COMMITTED/order linkage wins, including a competing commit.
+Only a rejected callback plus the locked, still-PROCESSING, order-free ACQUIRED record
+permits the atomic FAILED + REVERT_PENDING transaction. Lock/read/commit uncertainty
+returns ORDER_OUTCOME_UNRESOLVED. A lost commit response with no proven durable outcome
+never authorizes W5. A later order transaction cannot pass the FAILED revalidation.
+
+markFailedInTransaction uses the externally owned transaction; markRevertPending is
+reused in that transaction, guarded by ACQUIRED at this orchestration boundary. The
+low-level PREPARED predicate is retained for the prior protocol and is not used here.
+The fixed failure code ORDER_TRANSACTION_ROLLED_BACK identifies this failure boundary;
+continuation accepts only its already-durable delete-only REVERT_PENDING/SETTLED work.
+No caller supplies resources, epoch, terminal replay identity or a failure-proof flag.
+
+The exact-manifest CHECKOUT_REVERT_DELETE_ONLY script checks every entry, guard, pin,
+index and accounting type before writing. It deletes only captured CHECKOUT_PENDING
+holds, removes their cart/product memberships, decrements valid totals, and marks
+underflow suspect without clamping, preserving existing accounting invariants. The
+existing settlement protocol writes the terminal receipt and removes exact pins in
+the same Lua execution. Ordinary current-generation checks and W7 are untouched.
+OPEN and existing DRAINING delete-only authority are supported; FROZEN/RETIRED deny.
+Missing physical hold keys or malformed accounting fail closed, requiring later
+explicit repair rather than inferred cleanup or a broad legacy fallback.
+
+Continuation reads the same manifest and action-bound settlementReplayId and first
+observes the existing receipt. The existing opaque evidence reader additionally
+checks original pins are absent and the original hold is gone for delete-only effects.
+Only verified evidence can acknowledge SETTLED. A new service can resume after loss
+before/after execution; receipt replay does not execute W5 again. Transport uncertainty
+preserves REVERT_PENDING and the replay ID. No automatic scheduler was added: same-key
+inactive-dispatcher replay continues authorized obligations, and the service exposes
+that same bounded single-obligation continuation for future worker integration.
+It never creates a manifest, capability, attempt, order, or terminal intent on recovery.
+
+Success performs neither W5 nor W6. Unconverted writers, deferred W6, and absence of
+scheduled terminal continuation remain activation blockers. This slice does not approve
+production activation, Redis Cluster operation, or changes to failover prerequisites.

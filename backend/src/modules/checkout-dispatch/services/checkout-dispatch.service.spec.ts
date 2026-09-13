@@ -1,3 +1,4 @@
+import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
 import { randomUUID } from 'crypto';
 import { CheckoutOperation, CheckoutPath } from '@prisma/client';
 import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
@@ -17,6 +18,7 @@ describe('G.2b inactive dispatcher', () => {
   let coordinator: { checkoutAcquired: jest.Mock };
   const acquisition = { acquire: jest.fn() };
   const evidence = Object.freeze({});
+  const failureSettlement = { continue: jest.fn() };
   let orders: { checkout: jest.Mock; getCustomerOrderById: jest.Mock };
   let admission: { admit: jest.Mock };
   let shadow: { compare: jest.Mock };
@@ -99,6 +101,7 @@ describe('G.2b inactive dispatcher', () => {
       admission,
       shadow as unknown as CheckoutShadowComparisonService,
       acquisition as unknown as CheckoutAcquisitionService,
+      failureSettlement as unknown as CheckoutFailureSettlementService,
     );
   });
   it('a detached default cannot grant executable ownership', async () => {
@@ -117,6 +120,7 @@ describe('G.2b inactive dispatcher', () => {
       new InactiveCheckoutAdmissionService(),
       shadow as unknown as CheckoutShadowComparisonService,
       acquisition as unknown as CheckoutAcquisitionService,
+      failureSettlement as unknown as CheckoutFailureSettlementService,
     );
     expect(await safeDispatcher.checkout(input())).toEqual({ ok: false, code: 'UNAVAILABLE' });
     expect(coordinator.checkoutAcquired).not.toHaveBeenCalled();
@@ -143,6 +147,7 @@ describe('G.2b inactive dispatcher', () => {
       checkoutDto,
       now,
       evidence,
+      failureSettlement,
     );
     const calls = [
       operations.issue,

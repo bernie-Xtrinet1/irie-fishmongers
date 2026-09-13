@@ -21,6 +21,7 @@ export type CheckoutCoordinatorResult =
   | { ok: false; code: 'IDEMPOTENCY_KEY_CONFLICT' }
   | { ok: false; code: 'CHECKOUT_PATH_MISMATCH' }
   | { ok: false; code: 'ACQUISITION_REJECTED' | 'ACQUISITION_UNCERTAIN' | 'ORDER_OUTCOME_UNRESOLVED' }
+  | { ok: false; code: 'REVERT_REJECTED' | 'REVERT_UNCERTAIN' }
   | { ok: false; code: 'CHECKOUT_ALREADY_IN_PROGRESS' }
   | { ok: false; code: 'CHECKOUT_ALREADY_FAILED'; failureCode: string | null }
   | { ok: false; code: 'CHECKOUT_MARK_FAILED'; markFailureCode: string }

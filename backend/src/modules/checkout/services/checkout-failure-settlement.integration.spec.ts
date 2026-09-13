@@ -1,0 +1,295 @@
+import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
+import { OrderWithDetails } from '../../orders/repositories/orders.repository';
+import { RedisService } from '../../../common/redis/redis.service';
+import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
+import { CheckoutSettlementRepository } from '../../reservation-fence/repositories/checkout-settlement.repository';
+import { ReservationFenceRepository, transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
+import { CheckoutSettlementAuthorityService } from '../../reservation-fence/services/checkout-settlement-authority.service';
+import { ReservationMutationAuthorityService } from '../../reservation-fence/services/reservation-mutation-authority.service';
+import { readSettlementCompletion, SettlementCompletionEvidence, settlementOwnershipIdentity } from '../../reservation-fence/services/checkout-settlement-evidence';
+import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
+import { MUTATION_HISTORY_KEY, executionGateKey, resourceGuardKey } from '../../reservation-fence/lua/reservation-mutation-common.lua';
+import { checkoutPinKey, settlementReceiptKey } from '../../reservation-fence/lua/checkout-settlement.lua';
+import { CHECKOUT_SETTLEMENT_REVERT_SCRIPT } from '../../inventory/lua/checkout-settlement-revert-lua-scripts';
+import { cartIndexKey, reservationKey, productTotalKey, productSuspectKey } from '../../inventory/constants/inventory.constants';
+import { connectRealRedis, cleanupKeys, trackKeysFor } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
+import { openAcquisitionSchema } from './checkout-acquisition-test-helpers';
+import { buildRealCoordinator, seedReadyCheckout, setUpCheckoutIntegrationFixture } from './checkout-coordinator-integration-test-helpers';
+import { CheckoutAcquisitionService } from './checkout-acquisition.service';
+import { CheckoutFailureSettlementService } from './checkout-failure-settlement.service';
+
+describe('G.4b.2c.3 durable failure and exact physical W5', () => {
+  jest.setTimeout(120000);
+  let schema: Awaited<ReturnType<typeof openAcquisitionSchema>>;
+  let redis: Awaited<ReturnType<typeof connectRealRedis>>;
+  let fixture: Awaited<ReturnType<typeof setUpCheckoutIntegrationFixture>>;
+  let handles: ReturnType<typeof buildRealCoordinator>;
+  let fences: ReservationFenceRepository, repo: CheckoutSettlementRepository;
+  let adapter: RedisService, authority: CheckoutSettlementAuthorityService;
+  let acquisition: CheckoutAcquisitionService, service: CheckoutFailureSettlementService;
+  const keys = new Set<string>();
+  beforeAll(async () => {
+    schema = await openAcquisitionSchema(); redis = await connectRealRedis();
+    fixture = await setUpCheckoutIntegrationFixture(schema.prisma);
+    handles = buildRealCoordinator(schema.prisma, redis);
+    fences = new ReservationFenceRepository(schema.prisma); repo = new CheckoutSettlementRepository(schema.prisma, fences);
+    adapter = new RedisService(redis); authority = new CheckoutSettlementAuthorityService(repo, fences, adapter);
+    acquisition = new CheckoutAcquisitionService(schema.prisma, adapter, repo, fences, authority,
+      new ReservationMutationAuthorityService(fences, adapter));
+    service = fresh();
+    const mode = await schema.prisma.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: fixture.userIds[0]! } });
+    const fence = await schema.prisma.reservationFenceTransition.create({ data: { incarnation: randomUUID(), epoch: 1,
+      revision: 1, phase: 'OPEN', protocol: 1, status: 'ACKNOWLEDGED', acknowledgedAt: new Date(),
+      mode: 'CART_SCOPED', modeRevision: mode.revision, reason: 'OPEN', actorId: randomUUID() } });
+    keys.add(RESERVATION_FENCE_KEY); keys.add(MUTATION_HISTORY_KEY);
+    await redis.set(RESERVATION_FENCE_KEY, JSON.stringify(transitionTuple(fence)));
+    await redis.hset(MUTATION_HISTORY_KEY, 'incarnation', fence.incarnation);
+  });
+  afterEach(() => jest.restoreAllMocks());
+  afterAll(() => withCleanup(async () => {
+    if (schema) for (const m of await schema.prisma.checkoutReservationSettlement.findMany({ include: { resources: true } })) {
+      keys.add(executionGateKey(m.operationId)); keys.add(settlementReceiptKey(m.id));
+      keys.add(`reservation:fence:settlement-acquisition:${m.id}`);
+      for (const r of m.resources) { keys.add(resourceGuardKey(r.markerId)); keys.add(checkoutPinKey(r.markerId)); }
+    }
+  }, [async () => { if (redis) await cleanupKeys(redis, keys); }, async () => { if (redis) await redis.quit(); },
+    async () => { if (schema) await schema.close(); }]));
+  function fresh() { return new CheckoutFailureSettlementService(schema.prisma, adapter,
+    new CheckoutAttemptRepository(schema.prisma), repo, fences, authority); }
+  async function prepared(twoResources = false) {
+    const f = await seedReadyCheckout(fixture, handles);
+    trackKeysFor(keys, f.cartId, f.productId);
+    const item = await handles.cartRepository.findItemByCartAndProduct(f.cartId, f.productId);
+    await handles.syncStateRepository.upsertDesiredState(f.cartId, f.productId, item!.mutationVersion, f.quantity);
+    if (twoResources) {
+      const other = await seedReadyCheckout(fixture, handles);
+      trackKeysFor(keys, other.cartId, other.productId); trackKeysFor(keys, f.cartId, other.productId);
+      await handles.cartRepository.addOrIncrementItem(f.cartId, other.productId, other.quantity);
+      const extraItem = await handles.cartRepository.findItemByCartAndProduct(f.cartId, other.productId);
+      await handles.syncStateRepository.upsertDesiredState(f.cartId, other.productId, extraItem!.mutationVersion, other.quantity);
+      expect(await handles.inventoryReservations.reserveOrRenew(f.cartId, other.productId, f.customerId, other.quantity))
+        .toMatchObject({ ok: true });
+    }
+    const op = await schema.prisma.checkoutOperation.create({ data: { customerId: f.customerId, cartId: f.cartId,
+      operationKey: randomUUID(), retryKeyHash: randomUUID(), selectedPath: 'CART_SCOPED',
+      reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' } });
+    const attempt = await new CheckoutAttemptRepository(schema.prisma).createWithReservationCapability({
+      operationKey: op.operationKey, customerId: f.customerId, cartId: f.cartId, epoch: 1 }, schema.prisma);
+    const m = await repo.prepare(op.id, attempt.id, f.customerId);
+    return { ...f, op, attempt, m };
+  }
+  async function acquired(twoResources = false) {
+    const f = await prepared(twoResources); const result = await acquisition.acquire(f.customerId, f.op.id);
+    if (!result.ok) throw new Error('Fixture acquisition failed');
+    return { ...f, evidence: result.evidence };
+  }
+  const abort = () => Promise.reject(new Error('Order callback aborted'));
+  async function pending(twoResources = false) {
+    const f = await acquired(twoResources);
+    const original = adapter.eval.bind(adapter);
+    const loss = jest.spyOn(adapter, 'eval').mockImplementation((...args) => args[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT
+      ? Promise.reject(new Error('Before W5 transport loss')) : original(...args));
+    expect(await service.runOrder(f.evidence, abort)).toEqual({ kind: 'FAILED', settlement: { code: 'REVERT_UNCERTAIN' } });
+    loss.mockRestore();
+    const m = (await repo.find(f.m.id))!;
+    expect(m).toMatchObject({ state: 'REVERT_PENDING', effect: 'CHECKOUT_REVERT_DELETE_ONLY', attempt: { status: 'FAILED', orderId: null } });
+    expect(m.settlementReplayId).not.toBeNull(); expect(m.settlementReplayId).not.toBe(m.acquisitionReplayId);
+    return { ...f, m };
+  }
+  it('rollback locks prove failure and atomically bind FAILED plus REVERT_PENDING before physical W5', async () => {
+    const f = await pending();
+    const before = await redis.get(productTotalKey(f.productId));
+    expect(await fresh().continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'SETTLED', settlementReplayId: f.m.settlementReplayId });
+    expect(await redis.get(reservationKey(f.cartId, f.productId))).toBeNull();
+    expect(await redis.get(checkoutPinKey(f.m.resources[0]!.markerId))).toBeNull();
+    expect(Number(await redis.get(productTotalKey(f.productId)))).toBe(Number(before) - f.quantity);
+    expect(JSON.parse((await redis.get(settlementReceiptKey(f.m.id)))!)).toEqual({ identity: settlementOwnershipIdentity(f.m),
+      action: 'CHECKOUT_REVERT_DELETE_ONLY', replayId: f.m.settlementReplayId, complete: true });
+    const execute = jest.spyOn(adapter, 'eval');
+    expect(await fresh().continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect(execute.mock.calls.filter(c => c[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
+  });
+  it('failure-intent write error rolls back FAILED and never executes W5', async () => {
+    const f = await acquired();
+    jest.spyOn(repo, 'markRevertPending').mockRejectedValueOnce(new Error('Intent failure'));
+    const execute = jest.spyOn(adapter, 'eval');
+    expect(await service.runOrder(f.evidence, abort)).toEqual({ kind: 'UNRESOLVED' });
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, attempt: { status: 'PROCESSING' } });
+    expect(execute.mock.calls.filter(c => c[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
+  });
+  it('a conflict in the second resource leaves every reservation and pin unchanged', async () => {
+    const f = await pending(true); expect(f.m.resources).toHaveLength(2);
+    const second = f.m.resources[1]!; const key = reservationKey(f.cartId, second.productId);
+    const entry = JSON.parse((await redis.get(key))!) as { quantity: number }; entry.quantity++;
+    await redis.set(key, JSON.stringify(entry), 'KEEPTTL');
+    const before = await Promise.all(f.m.resources.map(r => redis.get(reservationKey(f.cartId, r.productId))));
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    expect(await Promise.all(f.m.resources.map(r => redis.get(reservationKey(f.cartId, r.productId))))).toEqual(before);
+    for (const r of f.m.resources) expect(await redis.get(checkoutPinKey(r.markerId))).toBe(settlementOwnershipIdentity(f.m));
+    expect(await redis.get(settlementReceiptKey(f.m.id))).toBeNull();
+  });
+  it('concurrent rollback resolution selects terminal identity once and cleanup decrements once', async () => {
+    const f = await acquired(); const select = jest.spyOn(repo, 'markRevertPending');
+    const before = Number(await redis.get(productTotalKey(f.productId)));
+    const results = await Promise.all([service.runOrder(f.evidence, abort), fresh().runOrder(f.evidence, abort)]);
+    expect(results).toEqual([{ kind: 'FAILED', settlement: { code: 'SETTLED' } },
+      { kind: 'FAILED', settlement: { code: 'SETTLED' } }]);
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(Number(await redis.get(productTotalKey(f.productId)))).toBe(before - f.quantity);
+    const m = (await repo.find(f.m.id))!;
+    expect(m.settlementReplayId).not.toBe(m.acquisitionReplayId);
+    expect(m.state).toBe('SETTLED');
+  });
+  it('ambiguous transaction rejection without callback rollback proof preserves PROCESSING and ACQUIRED', async () => {
+    const f = await acquired();
+    jest.spyOn(schema.prisma, '$transaction').mockRejectedValueOnce(new Error('Lost transaction response'));
+    const execute = jest.spyOn(adapter, 'eval');
+    expect(await service.runOrder(f.evidence, abort)).toEqual({ kind: 'UNRESOLVED' });
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, attempt: { status: 'PROCESSING' } });
+    expect(execute.mock.calls.filter(c => c[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
+  });
+  it('durable COMMITTED wins over transaction exception and never executes W5/W6', async () => {
+    const f = await acquired();
+    const order = await schema.prisma.order.create({ data: { customerId: f.customerId,
+      deliveryAddressLine1: 'Fixture', deliveryParish: 'KINGSTON', deliveryPhone: '000', currency: 'JMD' } });
+    await schema.prisma.$transaction(tx => new CheckoutAttemptRepository(schema.prisma)
+      .markCommitted(tx, f.attempt.id, f.customerId, order.id, new Date()));
+    const execute = jest.spyOn(adapter, 'eval'); const work = jest.fn(abort);
+    expect(await service.runOrder(f.evidence, work)).toEqual({ kind: 'COMMITTED', attemptId: f.attempt.id, orderId: order.id });
+    expect(work).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, effect: null });
+  });
+  it('PREPARED and missing manifest cannot be converted to failure by restart continuation', async () => {
+    const f = await prepared(); const execute = jest.spyOn(adapter, 'eval');
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    expect(await service.continue(f.customerId, randomUUID())).toEqual({ code: 'REVERT_REJECTED' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'PREPARED', settlementReplayId: null, attempt: { status: 'PROCESSING' } });
+  });
+  it('lost COMMIT response is resolved from the actual committed order without failure settlement', async () => {
+    const f = await acquired();
+    const transact = schema.prisma.$transaction.bind(schema.prisma);
+    jest.spyOn(schema.prisma, '$transaction').mockImplementationOnce(async work => {
+      await transact(work as (tx: Prisma.TransactionClient) => Promise<OrderWithDetails>);
+      throw new Error('COMMIT response lost');
+    });
+    const execute = jest.spyOn(adapter, 'eval');
+    const result = await service.runOrder(f.evidence, async tx => {
+      const order = await tx.order.create({ data: { customerId: f.customerId,
+        deliveryAddressLine1: 'Fixture', deliveryParish: 'KINGSTON', deliveryPhone: '000', currency: 'JMD' } });
+      expect(await new CheckoutAttemptRepository(schema.prisma).markCommitted(tx, f.attempt.id, f.customerId, order.id, new Date()))
+        .toEqual({ count: 1 });
+      return order as unknown as OrderWithDetails;
+    });
+    expect(result).toMatchObject({ kind: 'COMMITTED', attemptId: f.attempt.id });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'ACQUIRED', effect: null, settlementReplayId: null,
+      attempt: { status: 'COMMITTED' } });
+  });
+  it('actual partial order writes are rolled back before failure intent is durably selected', async () => {
+    const f = await acquired();
+    expect(await service.runOrder(f.evidence, async tx => {
+      await tx.order.create({ data: { customerId: f.customerId, deliveryAddressLine1: 'Fixture',
+        deliveryParish: 'KINGSTON', deliveryPhone: '000', currency: 'JMD' } });
+      throw new Error('Abort after partial order writes');
+    })).toEqual({ kind: 'FAILED', settlement: { code: 'SETTLED' } });
+    expect(await schema.prisma.order.count({ where: { customerId: f.customerId } })).toBe(0);
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'SETTLED', attempt: { status: 'FAILED', orderId: null } });
+  });
+  it.each(['incarnation', 'epoch', 'generation'] as const)('wrong guard %s rejects without physical writes', async field => {
+    const f = await pending(); const key = resourceGuardKey(f.m.resources[0]!.markerId);
+    const guard = JSON.parse((await redis.get(key))!) as { incarnation: string; epoch: number; resource: { generation: number } };
+    if (field === 'generation') guard.resource.generation++;
+    else if (field === 'epoch') guard.epoch++;
+    else guard.incarnation = randomUUID();
+    await redis.set(key, JSON.stringify(guard));
+    const before = await redis.get(reservationKey(f.cartId, f.productId));
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    expect(await redis.get(reservationKey(f.cartId, f.productId))).toBe(before);
+    expect(await redis.get(settlementReceiptKey(f.m.id))).toBeNull();
+  });
+  it.each(['replayId', 'action', 'identity'] as const)('incorrect receipt %s never acknowledges or repeats mutation', async field => {
+    const f = await pending(); const key = settlementReceiptKey(f.m.id);
+    const receipt = { identity: settlementOwnershipIdentity(f.m), action: 'CHECKOUT_REVERT_DELETE_ONLY',
+      replayId: f.m.settlementReplayId, complete: true };
+    receipt[field] = randomUUID(); await redis.set(key, JSON.stringify(receipt));
+    const before = await redis.get(reservationKey(f.cartId, f.productId));
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    expect(await redis.get(reservationKey(f.cartId, f.productId))).toBe(before);
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'REVERT_PENDING', completionReceiptHash: null });
+  });
+  it.each(['holdInstanceId', 'generation', 'checkoutOperationId', 'checkoutAttemptId', 'reservationExecutionEpoch',
+    'quantity', 'customerId', 'cartId', 'markerId'] as const)('wrong %s rejects all writes and preserves terminal identity', async field => {
+    const f = await pending(); const key = reservationKey(f.cartId, f.productId);
+    const entry = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    entry[field] = typeof entry[field] === 'number' ? Number(entry[field]) + 1 : randomUUID();
+    await redis.set(key, JSON.stringify(entry), 'KEEPTTL');
+    const before = await redis.get(key), pin = await redis.get(checkoutPinKey(f.m.resources[0]!.markerId));
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    expect(await redis.get(key)).toBe(before); expect(await redis.get(checkoutPinKey(f.m.resources[0]!.markerId))).toBe(pin);
+    expect(await redis.get(settlementReceiptKey(f.m.id))).toBeNull();
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'REVERT_PENDING', settlementReplayId: f.m.settlementReplayId });
+  });
+  it('missing pin denies W5; a forged completion object cannot acknowledge SETTLED', async () => {
+    const f = await pending(); await redis.del(checkoutPinKey(f.m.resources[0]!.markerId));
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_REJECTED' });
+    await expect(schema.prisma.$transaction(tx => repo.acknowledgeSettled(tx, f.m.id, {} as SettlementCompletionEvidence)))
+      .rejects.toThrow('SETTLEMENT_COMPLETION_EVIDENCE_REQUIRED');
+    await expect(readSettlementCompletion(adapter, f.m)).rejects.toThrow();
+  });
+  it('lost response after execution resolves on a fresh service without repeating W5', async () => {
+    const f = await pending(); const original = adapter.eval.bind(adapter);
+    const loss = jest.spyOn(adapter, 'eval').mockImplementation(async (...args) => {
+      const result = await original(...args);
+      if (args[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT) throw new Error('Lost W5 response');
+      return result;
+    });
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'REVERT_UNCERTAIN' });
+    expect(await repo.find(f.m.id)).toMatchObject({ state: 'REVERT_PENDING', settlementReplayId: f.m.settlementReplayId });
+    loss.mockRestore(); const execute = jest.spyOn(adapter, 'eval');
+    expect(await fresh().continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect(execute.mock.calls.filter(c => c[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
+  });
+  it('unrelated cart resource and cart-index membership remain untouched', async () => {
+    const f = await pending(); const other = randomUUID(); const key = reservationKey(f.cartId, other);
+    keys.add(key); await redis.set(key, 'unrelated'); await redis.sadd(cartIndexKey(f.cartId), other);
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect(await redis.get(key)).toBe('unrelated'); expect(await redis.sismember(cartIndexKey(f.cartId), other)).toBe(1);
+  });
+  it('accounting underflow deletes the exact hold and marks suspect without clamping the total', async () => {
+    const f = await pending(); await redis.set(productTotalKey(f.productId), '1');
+    expect(await service.continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect(await redis.get(productTotalKey(f.productId))).toBe('1');
+    expect(await redis.get(productSuspectKey(f.productId))).toBe('1');
+    expect(await redis.get(reservationKey(f.cartId, f.productId))).toBeNull();
+  });
+  it.each(['OPEN', 'DRAINING', 'FROZEN', 'RETIRED'] as const)('W5 phase policy in %s', async phase => {
+    const f = await pending();
+    const setPhase = async (next: typeof phase) => {
+      const previous = await schema.prisma.reservationFenceTransition.findFirstOrThrow({ orderBy: { revision: 'desc' } });
+      const row = await schema.prisma.$transaction(async tx => {
+      const mode = await tx.reservationEngineModeConfig.create({ data: {
+        mode: next === 'OPEN' ? 'CART_SCOPED' : next === 'RETIRED' ? 'LEGACY' : 'DRAINING', updatedById: f.customerId } });
+      return tx.reservationFenceTransition.create({ data: { incarnation: previous.incarnation,
+        epoch: previous.epoch, revision: previous.revision + 1, phase: next, protocol: 1, status: 'ACKNOWLEDGED',
+        acknowledgedAt: new Date(), mode: mode.mode, modeRevision: mode.revision,
+        reason: next === 'OPEN' ? 'OPEN' : next === 'RETIRED' ? 'RETIRE' : 'RESTRICT', actorId: randomUUID() } });
+      });
+      await redis.set(RESERVATION_FENCE_KEY, JSON.stringify(transitionTuple(row)));
+    };
+    try {
+      await setPhase(phase);
+      const result = await service.continue(f.customerId, f.op.id);
+      if (phase === 'OPEN' || phase === 'DRAINING') expect(result).toEqual({ code: 'SETTLED' });
+      else {
+        expect(result).toEqual({ code: 'REVERT_REJECTED' });
+        expect(await redis.get(reservationKey(f.cartId, f.productId))).not.toBeNull();
+        expect(await redis.get(checkoutPinKey(f.m.resources[0]!.markerId))).toBe(settlementOwnershipIdentity(f.m));
+        expect(await redis.get(settlementReceiptKey(f.m.id))).toBeNull();
+      }
+    } finally { await setPhase('OPEN'); }
+  });
+});

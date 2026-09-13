@@ -24,6 +24,7 @@ import {
 import { CanonicalCheckoutPlan } from '../types/canonical-checkout-plan.types';
 import { CheckoutCoordinatorResult } from '../types/checkout-coordinator.types';
 import { acquiredManifest, CheckoutAcquisitionEvidence } from './checkout-acquisition.service';
+import { CheckoutFailureSettlementService } from './checkout-failure-settlement.service';
 
 const MAX_LOG_MESSAGE_LENGTH = 500;
 
@@ -55,11 +56,11 @@ export class CheckoutCoordinatorService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  // Inactive Phase G entry only. W4 is already proven and durable. Terminal
-  // settlement belongs to later slices, so neither transaction failure nor
-  // commit invokes the old raw W5/W6 paths below.
+  // Inactive Phase G entry only. W4 is already proven and durable. The required
+  // failure boundary can settle W5 only after proven rollback. Success never
+  // invokes W6, and neither outcome invokes the old raw terminal paths below.
   async checkoutAcquired(customerId: string, idempotencyKey: string, dto: CheckoutDto,
-    now: Date, evidence: CheckoutAcquisitionEvidence): Promise<CheckoutCoordinatorResult> {
+    now: Date, evidence: CheckoutAcquisitionEvidence, failureSettlement: CheckoutFailureSettlementService): Promise<CheckoutCoordinatorResult> {
     const manifest = acquiredManifest(evidence);
     if (manifest.operation.customerId !== customerId || manifest.operation.operationKey !== idempotencyKey ||
       manifest.state !== 'ACQUIRED') return { ok: false, code: 'CHECKOUT_PATH_MISMATCH' };
@@ -80,33 +81,13 @@ export class CheckoutCoordinatorService {
     if (preparation.prepared.cart.id !== manifest.operation.cartId || items.length !== manifest.resources.length ||
       manifest.resources.some(r => !items.some(item => item.productId === r.productId && item.expectedQuantity === r.quantity)))
       return { ok: false, code: 'ACQUISITION_REJECTED' };
-    let order: OrderWithDetails;
-    try {
-      order = await this.prisma.$transaction(async tx => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(1380339280, 1)`;
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext('reservation_engine_mode_transition'))`;
-        await tx.$queryRaw`SELECT id FROM checkout_operations WHERE id = ${manifest.operationId} FOR UPDATE`;
-        // Serialize duplicate order transactions and recheck durable acquisition
-        // before any order/stock effect. The existing transaction still owns
-        // createOrder + attempt COMMITTED + cart generation advancement.
-        await tx.$queryRaw`SELECT id FROM checkout_attempts WHERE id = ${manifest.attemptId} FOR UPDATE`;
-        const current = await tx.checkoutReservationSettlement.findUnique({ where: { id: manifest.id },
-          include: { attempt: true, operation: true } });
-        const fence = await tx.reservationFenceTransition.findFirst({ orderBy: { revision: 'desc' } });
-        const mode = await tx.reservationEngineModeConfig.findFirst({ orderBy: { revision: 'desc' } });
-        if (!current || current.state !== 'ACQUIRED' || current.acquisitionReplayId !== manifest.acquisitionReplayId ||
-          current.attempt.status !== 'PROCESSING' || current.operation.reservationCapabilityState !== 'ACTIVE' ||
-          current.operation.reservationExecutionEpoch !== manifest.reservationExecutionEpoch ||
-          current.attempt.reservationExecutionEpoch !== manifest.reservationExecutionEpoch ||
-          !fence || fence.status !== 'ACKNOWLEDGED' || fence.phase !== 'OPEN' || fence.mode !== 'CART_SCOPED' ||
-          mode?.mode !== 'CART_SCOPED' || fence.modeRevision !== mode.revision ||
-          fence.epoch !== manifest.reservationExecutionEpoch || fence.incarnation !== manifest.incarnation)
-          throw new Error('ACQUISITION_ORDER_BOUNDARY_UNRESOLVED');
-        return this.runOrderTransaction(tx, preparation.prepared, reconciliation.plan, manifest.attemptId, customerId, now);
-      });
-    } catch {
-      return { ok: false, code: 'ORDER_OUTCOME_UNRESOLVED' };
-    }
+    const outcome = await failureSettlement.runOrder(evidence, tx =>
+      this.runOrderTransaction(tx, preparation.prepared, reconciliation.plan, manifest.attemptId, customerId, now));
+    if (outcome.kind === 'COMMITTED') return this.replayCommitted(customerId, outcome.attemptId, outcome.orderId);
+    if (outcome.kind === 'UNRESOLVED') return { ok: false, code: 'ORDER_OUTCOME_UNRESOLVED' };
+    if (outcome.kind === 'FAILED') return { ok: false, code: outcome.settlement.code === 'SETTLED'
+      ? 'ORDER_TRANSACTION_FAILED' : outcome.settlement.code };
+    const order = outcome.order;
     return this.completeWithPayment(customerId, dto, reconciliation.plan, order);
   }
 

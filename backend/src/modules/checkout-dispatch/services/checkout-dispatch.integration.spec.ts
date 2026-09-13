@@ -1,3 +1,5 @@
+import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
+import { CHECKOUT_SETTLEMENT_REVERT_SCRIPT } from '../../inventory/lua/checkout-settlement-revert-lua-scripts';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../../common/redis/redis.service';
 import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
@@ -108,6 +110,8 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
       admission,
       shadow as unknown as CheckoutShadowComparisonService,
       acquisition,
+      new CheckoutFailureSettlementService(prisma, adapter, new CheckoutAttemptRepository(prisma), manifests, fences,
+        new CheckoutSettlementAuthorityService(manifests, fences, adapter)),
     );
   });
   afterEach(async () => {
@@ -119,7 +123,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
   afterAll(async () => {
     await withCleanup(async () => {
       if (prisma) for (const m of await prisma.checkoutReservationSettlement.findMany({ include: { resources: true } })) {
-        keys.add(executionGateKey(m.operationId));
+        keys.add(executionGateKey(m.operationId)); keys.add("reservation:fence:settlement-receipt:" + m.id);
         keys.add(`reservation:fence:settlement-acquisition:${m.id}`);
         for (const r of m.resources) { keys.add(resourceGuardKey(r.markerId)); keys.add(checkoutPinKey(r.markerId)); }
       }
@@ -168,6 +172,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     expect(operation).toMatchObject({ reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' });
     const manifest = await prisma.checkoutReservationSettlement.findFirstOrThrow({ where: { operationId: operation.id }, include: { resources: true } });
     expect(manifest).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, effect: null });
+    expect(physicalEval.mock.calls.filter(call => call[0] === CHECKOUT_SETTLEMENT_REVERT_SCRIPT)).toHaveLength(0);
     expect(await redis.get(checkoutPinKey(manifest.resources[0]!.markerId))).not.toBeNull();
     expect(markAcquired.mock.invocationCallOrder[0]!).toBeLessThan(createOrder.mock.invocationCallOrder[0]!);
     const w4Call = physicalEval.mock.calls.findIndex(call => call[0] === CHECKOUT_ACQUIRE_SCRIPT);
@@ -389,17 +394,17 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     expect(await manifests.find(f.manifest.id)).toMatchObject({ state: 'ACQUIRED', acquisitionReplayId: f.manifest.acquisitionReplayId });
   });
 
-  it('order transaction failure after proven acquisition never invokes old revert/finalize or manufactures terminal state', async () => {
+  it('proven order rollback settles W5 without invoking old revert or W6', async () => {
     const f = await scenario();
     jest.spyOn(handles.ordersService, 'createOrderInTransaction').mockRejectedValueOnce(new Error('Injected transaction failure'));
     const revert = jest.spyOn(handles.checkoutReservationRecovery, 'checkoutRevert');
     const finalize = jest.spyOn(handles.checkoutReservationRecovery, 'finalizeCheckoutConsumption');
     expect(await dispatcher.checkout({ customerId: f.customerId, cartId: f.cartId, retryKey: f.retryKey,
-      dto: f.dto, now: f.now })).toEqual({ ok: false, code: 'ORDER_OUTCOME_UNRESOLVED' });
+      dto: f.dto, now: f.now })).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
     const a = await prisma.checkoutAttempt.findFirstOrThrow({ where: { customerId: f.customerId } });
-    expect(a).toMatchObject({ status: 'PROCESSING', orderId: null, failureCode: null });
+    expect(a).toMatchObject({ status: 'FAILED', orderId: null, failureCode: 'ORDER_TRANSACTION_ROLLED_BACK' });
     expect(await prisma.checkoutReservationSettlement.findUnique({ where: { attemptId: a.id } }))
-      .toMatchObject({ state: 'ACQUIRED', effect: null, settlementReplayId: null });
+      .toMatchObject({ state: 'SETTLED', effect: 'CHECKOUT_REVERT_DELETE_ONLY' });
     expect(revert).not.toHaveBeenCalled(); expect(finalize).not.toHaveBeenCalled();
     expect(await prisma.order.count({ where: { customerId: f.customerId } })).toBe(0);
     expect(await prisma.payment.count({ where: { order: { customerId: f.customerId } } })).toBe(0);

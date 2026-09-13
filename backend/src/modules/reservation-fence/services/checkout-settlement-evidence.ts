@@ -23,6 +23,19 @@ const READ_COMPLETION = MUTATION_COMMON_LUA + `
 local r,err=read(KEYS[1])
 if err or not fields(r,4) or r.identity~=ARGV[1] or r.action~=ARGV[2] or
   r.replayId~=ARGV[3] or r.complete~=true then return rejected('REPLAY_MISMATCH') end
+local s=decode(ARGV[1])
+if not s or type(s.resources)~='table' then return rejected('REPLAY_MISMATCH') end
+for _,resource in ipairs(s.resources) do
+  local pinKey='reservation:fence:checkout-pin:'..resource.markerId
+  local pinType=redis.call('TYPE',pinKey).ok
+  if pinType~='none' and pinType~='string' then return rejected('REPLAY_MISMATCH') end
+  if redis.call('GET',pinKey)==ARGV[1] then return rejected('REPLAY_MISMATCH') end
+  if ARGV[2]=='CHECKOUT_REVERT_DELETE_ONLY' then
+    local entry,entryError=read('inv:reserved:{'..resource.cartId..'}:'..resource.productId)
+    if entryError and entryError~='MISSING' then return rejected('REPLAY_MISMATCH') end
+    if entry and entry.holdInstanceId==resource.holdInstanceId then return rejected('REPLAY_MISMATCH') end
+  end
+end
 return accepted()
 `;
 

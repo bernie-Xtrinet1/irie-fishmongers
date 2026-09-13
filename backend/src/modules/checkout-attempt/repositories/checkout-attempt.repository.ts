@@ -154,6 +154,17 @@ export class CheckoutAttemptRepository {
     });
   }
 
+  // The caller owns the operation/attempt/manifest locks and must persist the
+  // terminal manifest intent in this same transaction. Never defaults to prisma.
+  markFailedInTransaction(tx: Prisma.TransactionClient, id: string, customerId: string,
+    epoch: number, now: Date): Promise<{ count: number }> {
+    if (!id || !customerId || !Number.isInteger(epoch) || epoch < 1 ||
+      !(now instanceof Date) || !Number.isFinite(now.getTime())) return Promise.resolve({ count: 0 });
+    return tx.checkoutAttempt.updateMany({ where: { id, customerId, status: 'PROCESSING',
+      orderId: null, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: epoch },
+    data: { status: 'FAILED', failureCode: 'ORDER_TRANSACTION_ROLLED_BACK', failureMessage: null, updatedAt: now } });
+  }
+
   // Keyset-paginated, per Decision 3's exact cursor formula - never
   // offset-based. Uses the additive [status, lastHeartbeatAt, id] index.
   findStaleProcessing(input: {

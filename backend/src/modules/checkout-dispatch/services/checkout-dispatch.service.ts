@@ -15,6 +15,7 @@ import { OrderResponseEntity } from '../../orders/entities/order-response.entity
 import { CheckoutShadowComparisonService } from '../../checkout-shadow/services/checkout-shadow-comparison.service';
 import { CheckoutAdmissionService } from './checkout-admission.service';
 import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
+import { CheckoutFailureSettlementService } from '../../checkout/services/checkout-failure-settlement.service';
 
 export interface CheckoutDispatchInput {
   customerId: string;
@@ -47,6 +48,7 @@ export class CheckoutDispatchService {
     private readonly admission: CheckoutAdmissionService,
     private readonly shadow: CheckoutShadowComparisonService,
     private readonly acquisition: CheckoutAcquisitionService,
+    private readonly failureSettlement: CheckoutFailureSettlementService,
   ) {}
 
   async checkout(input: CheckoutDispatchInput): Promise<CheckoutDispatchResult> {
@@ -137,6 +139,7 @@ export class CheckoutDispatchService {
       input.dto,
       input.now,
       acquired.evidence,
+      this.failureSettlement,
     );
     const after = await this.attempts.inspectByIdempotencyKey(
       input.customerId,
@@ -172,12 +175,17 @@ export class CheckoutDispatchService {
       return { ok: false, code: 'PATH_MISMATCH' };
     if (existing.action === 'RESUMED_PROCESSING')
       return { ok: false, code: 'CHECKOUT_ALREADY_IN_PROGRESS' };
-    if (existing.action === 'ALREADY_FAILED')
+    if (existing.action === 'ALREADY_FAILED') {
+      if (operation.selectedPath === 'CART_SCOPED' && operation.reservationExecutionEpoch !== null) {
+        const settlement = await this.failureSettlement.continue(operation.customerId, operation.id);
+        if (settlement.code !== 'SETTLED') return { ok: false, code: settlement.code };
+      }
       return {
         ok: false,
         code: 'CHECKOUT_ALREADY_FAILED',
         failureCode: existing.attempt.failureCode,
       };
+    }
     if (existing.action !== 'ALREADY_COMMITTED' || !existing.attempt.orderId)
       return { ok: false, code: 'PATH_MISMATCH' };
     // Same read-only order boundary used by the coordinator's committed replay.
