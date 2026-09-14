@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { ordinaryHoldInstanceId } from '../ordinary-hold-instance-id';
 import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
@@ -36,6 +37,35 @@ async function fixture(db: PrismaService) {
 // other suites; cleanup drops only the generated fixture schema.
 describe('durable settlement manifests and forward migrations', () => {
   jest.setTimeout(120000);
+  it('waits for a concurrent durable marker update and captures one coherent new identity/quantity', () => withSettlementSchema(async (db, upgrade) => {
+    const f = await fixture(db); upgrade();
+    let release!: () => void, ready!: (pid: number) => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<number>(resolve => { ready = resolve; });
+    const writer = db.$transaction(async tx => {
+      await tx.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 2, expectedQuantity: 3 } });
+      const [row] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+      ready(row!.pid); await released;
+    });
+    let preparing: ReturnType<typeof f.repo.prepare> | undefined;
+    try {
+      const pid = await locked;
+      preparing = f.repo.prepare(f.op.id, f.attempt.id, f.customerId);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const rows = await db.$queryRaw<{ blocked: boolean }[]>`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ${pid} = ANY(pg_blocking_pids(pid))) AS blocked`;
+        blocked = rows[0]!.blocked;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      release(); await writer;
+      const manifest = await preparing;
+      expect(manifest.resources[0]).toMatchObject({ markerId: f.marker.id, generation: 2, quantity: 3,
+        holdInstanceId: ordinaryHoldInstanceId(f.marker.id, 2) });
+    } finally {
+      release(); await writer; if (preparing) await preparing;
+    }
+  }));
   it('44 -> 45 removes only the global hold index and retains duplicate historical references across reconnect', () => withSettlementSchema(async (db, upgrade) => {
     const f = await fixture(db);
     const first = await f.repo.prepare(f.op.id, f.attempt.id, f.customerId);

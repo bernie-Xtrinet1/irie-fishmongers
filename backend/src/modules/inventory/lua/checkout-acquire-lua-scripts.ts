@@ -32,6 +32,8 @@ for i,r in ipairs(s.resources) do
   local key='inv:reserved:{'..cartId..'}:'..r.productId
   local entry,err=read(key)
   if err or entry.version~=1 or entry.cartId~=cartId or entry.customerId~=customerId or
+    entry.holdInstanceId~=r.holdInstanceId or entry.markerId~=r.markerId or entry.generation~=r.generation or
+    entry.reservationExecutionEpoch~=s.epoch or
     entry.quantity~=quantities[r.markerId] or type(entry.expiresAt)~='number' or
     type(entry.absoluteExpiresAt)~='number' or entry.expiresAt<=now or entry.absoluteExpiresAt<=now then
     return rejected('RESOURCE_GENERATION_MISMATCH') end
@@ -41,7 +43,10 @@ for i,r in ipairs(s.resources) do
       entry.reservationExecutionEpoch~=s.epoch or entry.checkoutOperationId~=s.execution.operationId or
       entry.checkoutAttemptId~=s.execution.attemptId or type(entry.checkoutPendingExpiresAt)~='number' or
       entry.checkoutPendingExpiresAt<=now then return rejected('RESOURCE_GENERATION_MISMATCH') end
-  elseif entry.status~='ACTIVE' or (entry.holdInstanceId and entry.holdInstanceId~=r.holdInstanceId) then
+  elseif entry.status~='ACTIVE' or
+    (entry.checkoutOperationId~=nil and entry.checkoutOperationId~=cjson.null) or
+    (entry.checkoutAttemptId~=nil and entry.checkoutAttemptId~=cjson.null) or
+    (entry.checkoutIdempotencyKey~=nil and entry.checkoutIdempotencyKey~=cjson.null) then
     return rejected('RESOURCE_GENERATION_MISMATCH')
   end
   entries[i]=entry keys[i]=key
@@ -59,10 +64,6 @@ for i,r in ipairs(s.resources) do
   entry.checkoutIdempotencyKey=checkoutKey
   entry.checkoutPendingAt=now
   entry.checkoutPendingExpiresAt=now+${Math.min(CHECKOUT_PENDING_INITIAL_LEASE_SECONDS, MAX_CHECKOUT_PENDING_SECONDS) * 1000}
-  entry.holdInstanceId=r.holdInstanceId
-  entry.markerId=r.markerId
-  entry.generation=r.generation
-  entry.reservationExecutionEpoch=s.epoch
   entry.checkoutOperationId=s.execution.operationId
   entry.checkoutAttemptId=s.execution.attemptId
   redis.call('SET',keys[i],cjson.encode(entry),'KEEPTTL')

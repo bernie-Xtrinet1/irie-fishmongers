@@ -4,7 +4,7 @@ import { CHECKOUT_SETTLEMENT_REVERT_SCRIPT } from '../../inventory/lua/checkout-
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../../common/redis/redis.service';
 import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acquisition.service';
-import { openAcquisitionSchema } from '../../checkout/services/checkout-acquisition-test-helpers';
+import { openAcquisitionSchema, seedCanonicalOrdinaryOwnership } from '../../checkout/services/checkout-acquisition-test-helpers';
 import { ReservationFenceRepository, transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
 import { CheckoutSettlementRepository } from '../../reservation-fence/repositories/checkout-settlement.repository';
 import { CheckoutSettlementAuthorityService } from '../../reservation-fence/services/checkout-settlement-authority.service';
@@ -145,6 +145,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
       reason: 'Integration participant',
       expectedRevision: null,
     });
+    for (const key of await seedCanonicalOrdinaryOwnership(prisma, redis, ready.cartId, ready.customerId)) keys.add(key);
     trackKeysFor(keys, ready.cartId, ready.productId);
     return { ...ready, retryKey: randomUUID(), dto: checkoutDto, now: new Date() };
   }
@@ -291,7 +292,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     expect(stored).toMatchObject({ state: 'ACQUIRED', settlementReplayId: null, acquisitionReplayId: f.manifest.acquisitionReplayId });
     expect(await redis.get(checkoutPinKey(marker.id))).toBe(settlementOwnershipIdentity(f.manifest));
     expect(JSON.parse((await redis.get(`reservation:fence:settlement-acquisition:${f.manifest.id}`))!))
-      .toEqual({ identity: settlementOwnershipIdentity(f.manifest), replayId: f.manifest.acquisitionReplayId });
+      .toEqual({ version: 2, identity: settlementOwnershipIdentity(f.manifest), replayId: f.manifest.acquisitionReplayId, checkoutIdempotencyKey: f.manifest.operation.operationKey });
     const physical = await redis.get(reservationKey(f.cartId, f.productId));
     expect(JSON.parse(physical!)).toMatchObject({ status: 'CHECKOUT_PENDING', holdInstanceId: f.manifest.resources[0]!.holdInstanceId,
       checkoutAttemptId: f.attempt.id, checkoutOperationId: f.operationId });

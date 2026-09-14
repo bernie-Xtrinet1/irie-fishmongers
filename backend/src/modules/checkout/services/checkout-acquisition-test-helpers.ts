@@ -1,5 +1,30 @@
 import { PrismaService } from '../../../database/prisma.service';
 import { withSettlementSchema } from '../../reservation-fence/tests/checkout-settlement-test-helpers';
+import { Redis } from 'ioredis';
+import { ordinaryHoldInstanceId } from '../../reservation-fence/ordinary-hold-instance-id';
+import { resourceGuardKey } from '../../reservation-fence/lua/reservation-mutation-common.lua';
+import { reservationKey } from '../../inventory/constants/inventory.constants';
+
+// Test-only ordinary ownership fixture. W1 canonical production creation is
+// deferred; never make checkout acquisition repair an unconverted W1 entry.
+export async function seedCanonicalOrdinaryOwnership(db: PrismaService, redis: Redis, cartId: string, customerId: string) {
+  const fence = await db.reservationFenceTransition.findFirstOrThrow({ orderBy: { revision: 'desc' } });
+  const markers = await db.cartReservationSyncState.findMany({ where: { cartId, expectedQuantity: { gt: 0 } } });
+  const keys: string[] = [];
+  for (const marker of markers) {
+    const resource = { markerId: marker.id, generation: marker.generation,
+      holdInstanceId: ordinaryHoldInstanceId(marker.id, marker.generation), cartId, customerId, productId: marker.productId };
+    const key = reservationKey(cartId, marker.productId);
+    const entry = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    if (entry.status !== 'ACTIVE' || entry.quantity !== marker.expectedQuantity || entry.customerId !== customerId)
+      throw new Error('Invalid ordinary fixture');
+    await redis.set(key, JSON.stringify({ ...entry, markerId: resource.markerId, generation: resource.generation,
+      holdInstanceId: resource.holdInstanceId, reservationExecutionEpoch: fence.epoch }), 'KEEPTTL');
+    const guard = resourceGuardKey(marker.id); keys.push(guard);
+    await redis.set(guard, JSON.stringify({ incarnation: fence.incarnation, epoch: fence.epoch, resource }));
+  }
+  return keys;
+}
 
 // Reuse the repository's disposable-schema fixture, including endpoint
 // validation and failure-safe cleanup. Retained manifests forbid row deletion.

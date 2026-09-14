@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { ordinaryHoldInstanceId } from '../../reservation-fence/ordinary-hold-instance-id';
 import { Prisma } from '@prisma/client';
 import { OrderWithDetails } from '../../orders/repositories/orders.repository';
 import { checkoutDto } from './checkout-coordinator-integration-test-helpers';
@@ -18,7 +19,7 @@ import { CHECKOUT_SETTLEMENT_FINALIZE_SCRIPT } from '../../inventory/lua/checkou
 import { cartIndexKey, productIndexKey, reservationKey, productTotalKey, productSuspectKey } from '../../inventory/constants/inventory.constants';
 import { connectRealRedis, cleanupKeys, trackKeysFor } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
-import { openAcquisitionSchema } from './checkout-acquisition-test-helpers';
+import { openAcquisitionSchema, seedCanonicalOrdinaryOwnership } from './checkout-acquisition-test-helpers';
 import { buildRealCoordinator, seedReadyCheckout, setUpCheckoutIntegrationFixture } from './checkout-coordinator-integration-test-helpers';
 import { CheckoutAcquisitionService } from './checkout-acquisition.service';
 import { CheckoutFailureSettlementService } from './checkout-failure-settlement.service';
@@ -81,6 +82,7 @@ describe('G.4b.2c.4 atomic commitment and exact physical W6', () => {
       reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' } });
     const attempt = await new CheckoutAttemptRepository(schema.prisma).createWithReservationCapability({
       operationKey: op.operationKey, customerId: f.customerId, cartId: f.cartId, epoch: 1 }, schema.prisma);
+    for (const key of await seedCanonicalOrdinaryOwnership(schema.prisma, redis, f.cartId, f.customerId)) keys.add(key);
     const m = await repo.prepare(op.id, attempt.id, f.customerId);
     return { ...f, op, attempt, m };
   }
@@ -89,6 +91,62 @@ describe('G.4b.2c.4 atomic commitment and exact physical W6', () => {
     if (!result.ok) throw new Error('Fixture acquisition failed');
     return { ...f, evidence: result.evidence };
   }
+  it('captures canonical durable identity and transfers it unchanged across acquisition and replay', async () => {
+    const f = await prepared(true);
+    for (const r of f.m.resources) {
+      const marker = await schema.prisma.cartReservationSyncState.findUniqueOrThrow({ where: { id: r.markerId } });
+      expect(r).toMatchObject({ productId: marker.productId, generation: marker.generation,
+        quantity: marker.expectedQuantity, holdInstanceId: ordinaryHoldInstanceId(marker.id, marker.generation) });
+      expect(JSON.parse((await redis.get(reservationKey(f.cartId, r.productId)))!)).toMatchObject({
+        status: 'ACTIVE', holdInstanceId: r.holdInstanceId, markerId: r.markerId, generation: r.generation });
+    }
+    expect(await acquisition.acquire(f.customerId, f.op.id)).toMatchObject({ ok: true });
+    expect(await acquisition.acquire(f.customerId, f.op.id)).toMatchObject({ ok: true });
+    expect((await repo.find(f.m.id))!.resources).toEqual(f.m.resources);
+    for (const r of f.m.resources)
+      expect(JSON.parse((await redis.get(reservationKey(f.cartId, r.productId)))!)).toMatchObject({
+        status: 'CHECKOUT_PENDING', holdInstanceId: r.holdInstanceId, markerId: r.markerId, generation: r.generation });
+  });
+
+  it.each(['hold', 'marker', 'generation', 'customer', 'cart', 'epoch', 'quantity', 'missing-identity',
+    'old-owner', 'guard-missing', 'guard-incarnation', 'guard-epoch', 'guard-product',
+    'durable-missing', 'durable-stale', 'durable-released'] as const)(
+    'canonical two-resource handoff rejects %s without any resource/pin/evidence/accounting writes', async fault => {
+      const f = await prepared(true), r = f.m.resources[1]!;
+      const key = reservationKey(f.cartId, r.productId);
+      const entry = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+      if (fault === 'hold') entry.holdInstanceId = randomUUID();
+      if (fault === 'marker') entry.markerId = randomUUID();
+      if (fault === 'generation') entry.generation = r.generation + 1;
+      if (fault === 'customer') entry.customerId = randomUUID();
+      if (fault === 'cart') entry.cartId = randomUUID();
+      if (fault === 'epoch') entry.reservationExecutionEpoch = 2;
+      if (fault === 'quantity') entry.quantity = r.quantity + 1;
+      if (fault === 'missing-identity') delete entry.holdInstanceId;
+      if (fault === 'old-owner') entry.checkoutOperationId = randomUUID();
+      await redis.set(key, JSON.stringify(entry), 'KEEPTTL');
+      if (fault === 'guard-missing') await redis.del(resourceGuardKey(r.markerId));
+      if (['guard-incarnation', 'guard-epoch', 'guard-product'].includes(fault)) {
+        const guard = JSON.parse((await redis.get(resourceGuardKey(r.markerId)))!) as {
+          incarnation: string; epoch: number; resource: { productId: string } };
+        if (fault === 'guard-incarnation') guard.incarnation = randomUUID();
+        if (fault === 'guard-epoch') guard.epoch++;
+        if (fault === 'guard-product') guard.resource.productId = randomUUID();
+        await redis.set(resourceGuardKey(r.markerId), JSON.stringify(guard));
+      }
+      if (fault === 'durable-missing') await schema.prisma.cartReservationSyncState.delete({ where: { id: r.markerId } });
+      if (fault === 'durable-stale') await schema.prisma.cartReservationSyncState.update({ where: { id: r.markerId }, data: { generation: { increment: 1 } } });
+      if (fault === 'durable-released') await schema.prisma.cartReservationSyncState.update({ where: { id: r.markerId }, data: { expectedQuantity: null } });
+      const observed = [cartIndexKey(f.cartId), `reservation:fence:settlement-acquisition:${f.m.id}`,
+        ...f.m.resources.flatMap(resource => [reservationKey(f.cartId, resource.productId), resourceGuardKey(resource.markerId),
+          checkoutPinKey(resource.markerId), productTotalKey(resource.productId), productIndexKey(resource.productId), productSuspectKey(resource.productId)])];
+      const snapshot = () => Promise.all(observed.map(async k => await redis.type(k) === 'set' ? (await redis.smembers(k)).sort() : redis.get(k)));
+      const before = await snapshot();
+      expect(await acquisition.acquire(f.customerId, f.op.id)).toMatchObject({ ok: false });
+      expect(await snapshot()).toEqual(before);
+      expect((await repo.find(f.m.id))!.resources).toEqual(f.m.resources);
+      expect((await repo.find(f.m.id))!.state).toBe('PREPARED');
+    });
   async function commit(f: Awaited<ReturnType<typeof acquired>>, tx: Prisma.TransactionClient) {
     const preparation = await handles.ordersService.prepareCheckout(f.customerId, checkoutDto);
     if (!preparation.ok) throw new Error('Fixture preparation failed');

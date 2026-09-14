@@ -15,7 +15,7 @@ import { CHECKOUT_SETTLEMENT_REVERT_SCRIPT } from '../../inventory/lua/checkout-
 import { cartIndexKey, reservationKey, productTotalKey, productSuspectKey } from '../../inventory/constants/inventory.constants';
 import { connectRealRedis, cleanupKeys, trackKeysFor } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
-import { openAcquisitionSchema } from './checkout-acquisition-test-helpers';
+import { openAcquisitionSchema, seedCanonicalOrdinaryOwnership } from './checkout-acquisition-test-helpers';
 import { buildRealCoordinator, seedReadyCheckout, setUpCheckoutIntegrationFixture } from './checkout-coordinator-integration-test-helpers';
 import { CheckoutAcquisitionService } from './checkout-acquisition.service';
 import { CheckoutFailureSettlementService } from './checkout-failure-settlement.service';
@@ -77,6 +77,7 @@ describe('G.4b.2c.3 durable failure and exact physical W5', () => {
       reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' } });
     const attempt = await new CheckoutAttemptRepository(schema.prisma).createWithReservationCapability({
       operationKey: op.operationKey, customerId: f.customerId, cartId: f.cartId, epoch: 1 }, schema.prisma);
+    for (const key of await seedCanonicalOrdinaryOwnership(schema.prisma, redis, f.cartId, f.customerId)) keys.add(key);
     const m = await repo.prepare(op.id, attempt.id, f.customerId);
     return { ...f, op, attempt, m };
   }

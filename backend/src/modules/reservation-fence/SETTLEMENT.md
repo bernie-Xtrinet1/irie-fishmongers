@@ -9,10 +9,11 @@ No existing hold receives authority from Redis, and no historical row is backfil
 
 Migration 44 adds a parent manifest and immutable resources. Parent identities
 reference the existing operation/attempt and captured fence transition. E, path,
-customer/cart/key linkage must agree. The repository allocates new prospective
-hold UUIDs before acquisition; it never adopts an existing Redis hold. Fenced W4
-establishes those identities through its validated acquisition protocol. A
-mismatched pre-existing guard remains denied.
+customer/cart/key linkage must agree. The repository locks and reads positive
+PostgreSQL marker intent in one statement, deriving identity with
+ordinaryHoldInstanceId(markerId, generation). Quantity is authorized state,
+not lifetime identity. Physical entry and guard must already match: W4 never
+initializes, advances, repairs or relabels them to manufacture agreement.
 
 Construction inserts PREPARED, its bounded resources, then seals in one transaction.
 A deferred database constraint prevents committing an unsealed manifest. PREPARED
@@ -25,7 +26,8 @@ identity. Manifest-local product and marker uniqueness remain enforced. Physical
 exclusivity comes from the guard/pin/fence/acquisition protocol, not a SQL lock.
 Restoring global uniqueness would first require proving no duplicate historical
 references exist; immutable resources must never be rewritten to recreate it.
-Canonical W4 capture remains a separate checkpoint.
+Canonical W4 capture now preserves that identity; production W1 canonical creation
+remains deferred. Existing unconverted ordinary entries fail closed.
 
 Terminal replay identity is initially NULL. Selecting FINALIZE_PENDING or
 REVERT_PENDING atomically allocates a different replay ID and binds it permanently
@@ -68,11 +70,15 @@ capability-free. Existing attempts are inspected first. Assigned historical NULL
 operations cannot be upgraded; a new operation is required.
 
 `CheckoutAcquisitionService`, provided only by `CheckoutDispatchModule`, prepares
-the sealed PostgreSQL manifest and initializes its prospective resource guards
-without advancement. It registers ACQUIRE using the original acquisitionReplayId.
+the sealed PostgreSQL manifest without writing resource guards. It registers
+ACQUIRE using the original acquisitionReplayId.
 `CHECKOUT_ACQUIRE_SCRIPT` composes the committed settlement protocol with whole-cart
 membership, ownership, quantity, status and expiry validation. It marks entries
-CHECKOUT_PENDING and binds physical identities in the same script as pins/evidence.
+CHECKOUT_PENDING and preserves the prevalidated physical identities in the same
+script as pins/evidence. Entry marker/generation/hold ID, cart/customer and epoch
+must match; the guard additionally binds incarnation and product scope. Missing
+or contradictory identity is rejected before any reservation, pin or evidence
+write. Execution-gate initialization and grant registration remain metadata steps.
 It does not accept a caller resource list, quantity, clock or lease target.
 
 The orchestrator checks live entries, every guard/pin, the gate and acquisition

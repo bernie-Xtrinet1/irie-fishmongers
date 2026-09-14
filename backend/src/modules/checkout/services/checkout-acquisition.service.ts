@@ -69,12 +69,8 @@ export class CheckoutAcquisitionService {
       if (observation.code !== 'ACCEPTED') return rejected;
       if (!observation.acquired) {
         if (manifest.state === 'ACQUIRED') return rejected;
-        for (const resource of manifest.resources) {
-          const initialized = await this.metadata.initializeResource(resource.markerId, customerId,
-            resource.generation, resource.holdInstanceId);
-          if (initialized.code !== 'ACCEPTED') return initialized.code === 'INFRASTRUCTURE_FAILURE'
-            ? { ok: false, code: 'ACQUISITION_UNCERTAIN' } : rejected;
-        }
+        // Ordinary ownership must already exist. W4 never initializes, repairs
+        // or advances a guard to make a physical hold match its manifest.
         const grant = await this.authority.register(manifest.id, 'ACQUIRE');
         if (physicalResult(grant.result).code !== 'ACCEPTED') return rejected;
         const result = physicalResult(await this.redis.eval(CHECKOUT_ACQUIRE_SCRIPT,

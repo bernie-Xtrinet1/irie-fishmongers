@@ -5,6 +5,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { ReservationFenceRepository, transitionTuple } from './reservation-fence.repository';
 import { legalPair } from '../types/reservation-fence.types';
 import { completionReceiptHash, SettlementCompletionEvidence } from '../services/checkout-settlement-evidence';
+import { ordinaryHoldInstanceId } from '../ordinary-hold-instance-id';
 
 const include = { resources: { orderBy: { markerId: 'asc' as const } }, operation: true, attempt: true };
 export type SettlementManifest = Prisma.CheckoutReservationSettlementGetPayload<{ include: typeof include }>;
@@ -14,9 +15,8 @@ export type SettlementManifest = Prisma.CheckoutReservationSettlementGetPayload<
 export class CheckoutSettlementRepository {
   constructor(private readonly prisma: PrismaService, private readonly fences: ReservationFenceRepository) {}
 
-  // Allocates NEW prospective physical identities, never adopts Redis identity.
-  // Later W4 must bind these through validated acquisition; this does not prove
-  // any existing hold belongs to this manifest.
+  // Captures canonical identity from locked PostgreSQL intent, never Redis.
+  // Physical W4 must prove the existing entry and guard match this manifest.
   prepare(operationId: string, attemptId: string, customerId: string) {
     return this.fences.locked(async tx => {
       await tx.$queryRaw`SELECT id FROM checkout_operations WHERE id = ${operationId} FOR UPDATE`;
@@ -34,13 +34,15 @@ export class CheckoutSettlementRepository {
         throw new Error('SETTLEMENT_AUTHORITY_DENIED');
       const existing = await tx.checkoutReservationSettlement.findUnique({ where: { attemptId }, include });
       if (existing) return existing; // Never recapture a newer generation on retry.
-      await tx.$queryRaw`SELECT id FROM cart_reservation_sync_states WHERE "cartId" = ${op.cartId} ORDER BY id FOR UPDATE`;
-      const markers = await tx.cartReservationSyncState.findMany({ where: { cartId: op.cartId, expectedQuantity: { gt: 0 } }, orderBy: { id: 'asc' } });
+      const markers = await tx.$queryRaw<{ id: string; productId: string; generation: number; expectedQuantity: number }[]>`
+        SELECT id, "productId", generation, "expectedQuantity" FROM cart_reservation_sync_states
+        WHERE "cartId" = ${op.cartId} AND "expectedQuantity" > 0 ORDER BY id FOR UPDATE`;
       if (!markers.length || markers.length > 100) throw new Error('SETTLEMENT_RESOURCE_LIMIT');
       const row = await tx.checkoutReservationSettlement.create({ data: { operationId, attemptId,
         incarnation: f.incarnation, reservationExecutionEpoch: f.epoch, captureTransitionId: f.id,
         acquisitionReplayId: randomUUID(), resources: { create: markers.map(m => ({ markerId: m.id,
-          productId: m.productId, generation: m.generation, quantity: m.expectedQuantity!, holdInstanceId: randomUUID() })) } } });
+          productId: m.productId, generation: m.generation, quantity: m.expectedQuantity,
+          holdInstanceId: ordinaryHoldInstanceId(m.id, m.generation) })) } } });
       return tx.checkoutReservationSettlement.update({ where: { id: row.id }, data: { sealed: true }, include });
     });
   }
