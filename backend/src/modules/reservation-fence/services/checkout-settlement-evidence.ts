@@ -20,6 +20,24 @@ export interface SettlementCompletionEvidence { readonly [completionBrand]: true
 interface VerifiedReceipt { identity: string; action: CheckoutSettlementEffect; replayId: string; hash: string }
 const verified = new WeakMap<SettlementCompletionEvidence, VerifiedReceipt>();
 const READ_COMPLETION = MUTATION_COMMON_LUA + `
+local function oldOwnerRemains(entry,s,checkoutKey)
+  -- Any old ownership component is contradictory, including partially relabelled
+  -- entries. A different hold ID alone cannot erase the old checkout owner.
+  return entry.checkoutOperationId==s.execution.operationId or
+    entry.checkoutAttemptId==s.execution.attemptId or entry.checkoutIdempotencyKey==checkoutKey
+end
+local function replacementProven(entry,resource)
+  if entry.version~=1 or entry.cartId~=resource.cartId or entry.customerId~=resource.customerId or
+    not integer(entry.quantity) or entry.quantity<1 or
+    (entry.status~='ACTIVE' and entry.status~='CHECKOUT_PENDING') then return false end
+  if entry.holdInstanceId~=resource.holdInstanceId then return true end
+  -- ACTIVE canonical recreation is not established by W1 yet. A later pin and
+  -- acquisition record also omit checkoutIdempotencyKey: neither proves that
+  -- the live key belongs to the claimed new operation. Keep both classifications
+  -- unresolved until that ownership can be positively established. Never infer
+  -- authority from merely different operation/attempt IDs or rewrite evidence.
+  return false
+end
 local r,err=read(KEYS[1])
 if err or not fields(r,4) or r.identity~=ARGV[1] or r.action~=ARGV[2] or
   r.replayId~=ARGV[3] or r.complete~=true then return rejected('REPLAY_MISMATCH') end
@@ -33,7 +51,8 @@ for _,resource in ipairs(s.resources) do
   if ARGV[2]=='CHECKOUT_REVERT_DELETE_ONLY' or ARGV[2]=='CHECKOUT_FINALIZE' then
     local entry,entryError=read('inv:reserved:{'..resource.cartId..'}:'..resource.productId)
     if entryError and entryError~='MISSING' then return rejected('REPLAY_MISMATCH') end
-    if entry and entry.holdInstanceId==resource.holdInstanceId then return rejected('REPLAY_MISMATCH') end
+    if entry and (oldOwnerRemains(entry,s,ARGV[4]) or not replacementProven(entry,resource)) then
+      return rejected('REPLAY_MISMATCH') end
   end
 end
 return accepted()
@@ -46,7 +65,7 @@ export async function readSettlementCompletion(redis: RedisService, m: Settlemen
   if (!m.effect || !m.settlementReplayId) throw new Error('SETTLEMENT_ACTION_REQUIRED');
   const identity = settlementOwnershipIdentity(m);
   const response: unknown = JSON.parse(await redis.eval(READ_COMPLETION, [settlementReceiptKey(m.id)],
-    [identity, m.effect, m.settlementReplayId]) as string);
+    [identity, m.effect, m.settlementReplayId, m.operation.operationKey]) as string);
   if (!response || typeof response !== 'object' || !('code' in response) || response.code !== 'ACCEPTED' ||
     !('value' in response) || response.value !== true) throw new Error('SETTLEMENT_COMPLETION_UNRESOLVED');
   const evidence = Object.freeze({}) as SettlementCompletionEvidence;

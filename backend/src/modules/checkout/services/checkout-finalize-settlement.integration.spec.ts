@@ -330,6 +330,74 @@ describe('G.4b.2c.4 atomic commitment and exact physical W6', () => {
     expect(await redis.get(productSuspectKey(f.productId))).toBe('1');
     expect(await redis.get(reservationKey(f.cartId, f.productId))).toBeNull();
   });
+  it('one residual old owner prevents completion of a multi-resource receipt', async () => {
+    const f = await pending(true);
+    await redis.set(settlementReceiptKey(f.m.id), JSON.stringify({ identity: settlementOwnershipIdentity(f.m),
+      action: 'CHECKOUT_FINALIZE', replayId: f.m.settlementReplayId, complete: true }));
+    for (const resource of f.m.resources) await redis.del(checkoutPinKey(resource.markerId));
+    await redis.del(reservationKey(f.cartId, f.m.resources[0]!.productId));
+    const remainingKey = reservationKey(f.cartId, f.m.resources[1]!.productId);
+    const before = await redis.get(remainingKey);
+    await expect(readSettlementCompletion(adapter, f.m)).rejects.toThrow('SETTLEMENT_COMPLETION_UNRESOLVED');
+    expect(await redis.get(remainingKey)).toBe(before);
+    expect((await repo.find(f.m.id))?.completionReceiptHash).toBeNull();
+  });
+
+  it.each(['checkoutOperationId', 'checkoutAttemptId', 'checkoutIdempotencyKey'] as const)(
+    'old owner component %s rejects despite a different hold ID and missing pin', async field => {
+      const f = await pending(); const resource = f.m.resources[0]!;
+      const key = reservationKey(f.cartId, resource.productId);
+      const original = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+      const entry: Record<string, unknown> = { ...original, holdInstanceId: randomUUID(), checkoutOperationId: randomUUID(),
+        checkoutAttemptId: randomUUID(), checkoutIdempotencyKey: randomUUID() };
+      entry[field] = original[field];
+      await redis.set(key, JSON.stringify(entry));
+      await redis.del(checkoutPinKey(resource.markerId));
+      await redis.set(settlementReceiptKey(f.m.id), JSON.stringify({ identity: settlementOwnershipIdentity(f.m),
+        action: 'CHECKOUT_FINALIZE', replayId: f.m.settlementReplayId, complete: true }));
+      await expect(readSettlementCompletion(adapter, f.m)).rejects.toThrow('SETTLEMENT_COMPLETION_UNRESOLVED');
+      expect((await repo.find(f.m.id))?.completionReceiptHash).toBeNull();
+    });
+
+  it.each(['active', 'later-owner', 'missing-receipt', 'missing-acquisition', 'mismatched-pin', 'malformed-entry'] as const)(
+    'same-ID %s observation fails closed without rewriting later state', async kind => {
+      const f = await pending(); const resource = f.m.resources[0]!;
+      const key = reservationKey(f.cartId, resource.productId);
+      const entry = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+      const grant = await authority.register(f.m.id, 'CHECKOUT_FINALIZE');
+      expect(JSON.parse(await adapter.eval(CHECKOUT_SETTLEMENT_FINALIZE_SCRIPT,
+        [RESERVATION_FENCE_KEY, grant.key], []) as string)).toMatchObject({ code: 'ACCEPTED' });
+      // Synthetic later ownership observation only: global hold uniqueness and
+      // canonical W4 capture are intentionally not changed by this slice.
+      const operationId = randomUUID(), attemptId = randomUUID(), manifestId = randomUUID();
+      const later = { ...f.m, id: manifestId, operationId, attemptId, acquisitionReplayId: randomUUID(),
+        operation: { ...f.m.operation, id: operationId, operationKey: randomUUID() } };
+      const identity = settlementOwnershipIdentity(later);
+      const pinKey = checkoutPinKey(resource.markerId);
+      const acquisitionKey = `reservation:fence:settlement-acquisition:${manifestId}`;
+      keys.add(acquisitionKey);
+      await redis.set(key, JSON.stringify({ ...entry, checkoutOperationId: operationId,
+        checkoutAttemptId: attemptId, checkoutIdempotencyKey: later.operation.operationKey }));
+      await redis.set(pinKey, identity);
+      await redis.set(acquisitionKey, JSON.stringify({ identity, replayId: later.acquisitionReplayId }));
+      if (kind === 'active') {
+        await redis.del(pinKey);
+        await redis.set(key, JSON.stringify({ ...entry, status: 'ACTIVE', checkoutOperationId: null,
+          checkoutAttemptId: null, checkoutIdempotencyKey: null, checkoutPendingAt: null, checkoutPendingExpiresAt: null }));
+      }
+      if (kind === 'missing-receipt') await redis.del(settlementReceiptKey(f.m.id));
+      if (kind === 'missing-acquisition') await redis.del(acquisitionKey);
+      if (kind === 'mismatched-pin') await redis.set(pinKey, '{}');
+      if (kind === 'malformed-entry') await redis.set(key, '{}');
+      const observedKeys = [key, pinKey, acquisitionKey, resourceGuardKey(resource.markerId),
+        productTotalKey(resource.productId), settlementReceiptKey(f.m.id)];
+      const before = await redis.mget(...observedKeys);
+      await expect(readSettlementCompletion(adapter, f.m)).rejects.toThrow('SETTLEMENT_COMPLETION_UNRESOLVED');
+      await fresh().continue(f.customerId, f.op.id);
+      expect((await repo.find(f.m.id))?.completionReceiptHash).toBeNull();
+      expect(await redis.mget(...observedKeys)).toEqual(before);
+    });
+
   it.each(['OPEN', 'DRAINING', 'FROZEN', 'RETIRED'] as const)('W6 phase policy in %s', async phase => {
     const f = await pending();
     const setPhase = async (next: typeof phase) => {
