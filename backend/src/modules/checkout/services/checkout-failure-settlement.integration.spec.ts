@@ -335,6 +335,107 @@ describe('G.4b.2c.3 durable failure and exact physical W5', () => {
       expect(await redis.mget(...observedKeys)).toEqual(before);
     });
 
+  async function laterOwner(f: Awaited<ReturnType<typeof pending>>, quantityDelta = 0) {
+    const entries = await Promise.all(f.m.resources.map(async r =>
+      JSON.parse((await redis.get(reservationKey(f.cartId, r.productId)))!) as Record<string, unknown>));
+    const grant = await authority.register(f.m.id, 'CHECKOUT_REVERT_DELETE_ONLY');
+    const execute = () => adapter.eval(CHECKOUT_SETTLEMENT_REVERT_SCRIPT, [RESERVATION_FENCE_KEY, grant.key], []);
+    expect(JSON.parse(await execute() as string)).toMatchObject({ code: 'ACCEPTED' });
+    const receiptBytes = await redis.get(settlementReceiptKey(f.m.id));
+    // The original physical settlement is real. Later ownership is a synthetic
+    // Redis evidence fixture: global SQL uniqueness/canonical W4 remain deferred.
+    const operationId = randomUUID(), attemptId = randomUUID(), manifestId = randomUUID();
+    const later = { ...f.m, id: manifestId, operationId, attemptId, acquisitionReplayId: randomUUID(),
+      resources: f.m.resources.map(r => ({ ...r, quantity: r.quantity + quantityDelta })),
+      operation: { ...f.m.operation, id: operationId, operationKey: randomUUID() } };
+    const identity = settlementOwnershipIdentity(later);
+    const acquisitionKey = `reservation:fence:settlement-acquisition:${manifestId}`;
+    keys.add(acquisitionKey);
+    const record: Record<string, unknown> = { version: 2, identity, replayId: later.acquisitionReplayId,
+      checkoutIdempotencyKey: later.operation.operationKey };
+    const observedKeys = [acquisitionKey, settlementReceiptKey(f.m.id), cartIndexKey(f.cartId)];
+    for (const [i, r] of f.m.resources.entries()) {
+      entries[i] = { ...entries[i], quantity: later.resources[i]!.quantity, checkoutOperationId: operationId, checkoutAttemptId: attemptId,
+        checkoutIdempotencyKey: later.operation.operationKey };
+      const entryKey = reservationKey(f.cartId, r.productId);
+      const productIndex = `inv:reserved:product-index:{${r.productId}}`;
+      await redis.set(entryKey, JSON.stringify(entries[i]));
+      await redis.set(checkoutPinKey(r.markerId), identity);
+      await redis.sadd(cartIndexKey(f.cartId), r.productId); await redis.sadd(productIndex, f.cartId);
+      await redis.incrby(productTotalKey(r.productId), later.resources[i]!.quantity);
+      observedKeys.push(entryKey, checkoutPinKey(r.markerId), resourceGuardKey(r.markerId),
+        productIndex, productTotalKey(r.productId), productSuspectKey(r.productId));
+    }
+    await redis.set(acquisitionKey, JSON.stringify(record));
+    const snapshot = () => Promise.all(observedKeys.map(async key => (await redis.type(key)) === 'set'
+      ? (await redis.smembers(key)).sort() : redis.get(key)));
+    return { later, identity, record, acquisitionKey, entries, snapshot, execute, receiptBytes };
+  }
+
+  it.each([0, 1])('V2 later owner with quantity delta %i survives old replay, lost-response acknowledgement and SETTLED re-read', async quantityDelta => {
+    const f = await pending(true); const next = await laterOwner(f, quantityDelta);
+    for (const [i, resource] of f.m.resources.entries()) {
+      expect(next.later.resources[i]).toEqual({ ...resource, quantity: resource.quantity + quantityDelta });
+      expect(next.entries[i]!.quantity).toBe(resource.quantity + quantityDelta);
+    }
+    const before = await next.snapshot();
+    expect(JSON.parse(await next.execute() as string)).toMatchObject({ code: 'ACCEPTED', value: { replayed: true } });
+    expect(await fresh().continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    const settled = (await repo.find(f.m.id))!;
+    expect(settled.completionReceiptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(await fresh().continue(f.customerId, f.op.id)).toEqual({ code: 'SETTLED' });
+    expect((await repo.find(f.m.id))?.completionReceiptHash).toBe(settled.completionReceiptHash);
+    expect(await redis.get(settlementReceiptKey(f.m.id))).toBe(next.receiptBytes);
+    expect(await next.snapshot()).toEqual(before);
+  });
+
+  it.each(['live-key', 'acquisition-key', 'identity', 'replay', 'version', 'partial', 'unversioned-extra',
+    'legacy', 'missing-acquisition', 'missing-pin', 'mismatched-pin', 'missing-guard', 'guard-epoch',
+    'old-operation', 'old-attempt', 'old-key', 'active', 'quantity', 'marker', 'generation',
+    'manifest', 'acquisition-replay', 'pin-operation', 'missing-receipt'] as const)(
+    'V2 later-owner contradiction %s fails closed with zero writes', async fault => {
+      const f = await pending(true); const next = await laterOwner(f);
+      const r = f.m.resources[1]!; const entry = next.entries[1]!;
+      if (fault === 'live-key') entry.checkoutIdempotencyKey = randomUUID();
+      if (fault === 'old-operation') entry.checkoutOperationId = f.m.operationId;
+      if (fault === 'old-attempt') entry.checkoutAttemptId = f.m.attemptId;
+      if (fault === 'old-key') entry.checkoutIdempotencyKey = f.m.operation.operationKey;
+      if (fault === 'active') entry.status = 'ACTIVE';
+      if (fault === 'quantity') entry.quantity = r.quantity + 1;
+      if (fault === 'marker') entry.markerId = randomUUID();
+      if (fault === 'generation') entry.generation = r.generation + 1;
+      await redis.set(reservationKey(f.cartId, r.productId), JSON.stringify(entry));
+      if (fault === 'acquisition-key') next.record.checkoutIdempotencyKey = randomUUID();
+      if (fault === 'identity') next.record.identity = '{}';
+      if (fault === 'replay') next.record.replayId = randomUUID();
+      if (fault === 'version') next.record.version = 3;
+      if (fault === 'partial') delete next.record.checkoutIdempotencyKey;
+      if (fault === 'unversioned-extra' || fault === 'legacy') delete next.record.version;
+      if (fault === 'legacy') delete next.record.checkoutIdempotencyKey;
+      await redis.set(next.acquisitionKey, JSON.stringify(next.record));
+      if (fault === 'missing-acquisition') await redis.del(next.acquisitionKey);
+      if (fault === 'missing-pin') await redis.del(checkoutPinKey(r.markerId));
+      if (fault === 'mismatched-pin') await redis.set(checkoutPinKey(r.markerId), '{}');
+      if (fault === 'manifest' || fault === 'acquisition-replay' || fault === 'pin-operation') {
+        const pin = JSON.parse(next.identity) as { manifestId: string; acquisitionReplayId: string; execution: { operationId: string } };
+        if (fault === 'manifest') pin.manifestId = f.m.id;
+        if (fault === 'acquisition-replay') pin.acquisitionReplayId = f.m.acquisitionReplayId;
+        if (fault === 'pin-operation') pin.execution.operationId = randomUUID();
+        await redis.set(checkoutPinKey(r.markerId), JSON.stringify(pin));
+      }
+      if (fault === 'missing-guard') await redis.del(resourceGuardKey(r.markerId));
+      if (fault === 'guard-epoch') {
+        const guard = JSON.parse((await redis.get(resourceGuardKey(r.markerId)))!) as Record<string, unknown>;
+        await redis.set(resourceGuardKey(r.markerId), JSON.stringify({ ...guard, epoch: 99 }));
+      }
+      if (fault === 'missing-receipt') await redis.del(settlementReceiptKey(f.m.id));
+      const before = await next.snapshot();
+      await expect(readSettlementCompletion(adapter, f.m)).rejects.toThrow('SETTLEMENT_COMPLETION_UNRESOLVED');
+      await fresh().continue(f.customerId, f.op.id);
+      expect((await repo.find(f.m.id))?.completionReceiptHash).toBeNull();
+      expect(await next.snapshot()).toEqual(before);
+    });
+
   it.each(['OPEN', 'DRAINING', 'FROZEN', 'RETIRED'] as const)('W5 phase policy in %s', async phase => {
     const f = await pending();
     const setPhase = async (next: typeof phase) => {

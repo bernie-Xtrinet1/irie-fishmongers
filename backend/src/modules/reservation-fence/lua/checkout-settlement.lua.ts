@@ -4,13 +4,26 @@ export const settlementGrantKey = (id: string) => `reservation:fence:settlement-
 export const settlementReceiptKey = (id: string) => `reservation:fence:settlement-receipt:${id}`;
 export const checkoutPinKey = (id: string) => `reservation:fence:checkout-pin:${id}`;
 
+// Strict envelope compatibility; a partial/unknown V2 must never become legacy.
+// Requires MUTATION_COMMON_LUA. The expected key comes from durable authority
+// during execution, or is compared observationally with the live later owner.
+export const ACQUISITION_EVIDENCE_LUA = `
+local function acquisitionValid(a,identity,replayId,checkoutKey)
+  if type(a)~='table' or a.identity~=identity or a.replayId~=replayId or
+    type(a.identity)~='string' or not uuid(a.replayId) then return false end
+  if a.version==nil then return fields(a,2) end
+  return a.version==2 and fields(a,4) and uuid(a.checkoutIdempotencyKey) and
+    a.checkoutIdempotencyKey==checkoutKey
+end
+`;
+
 // Inactive compiler primitive, not an inventory writer. Only trusted static
 // effect bodies may be compiled. They must validate domain inputs/types before
 // writing: Redis Lua errors do not roll back earlier commands. No runtime body.
 // validateBody must not write; mutateBody must not return (receipt follows it).
 export function settlementProtocol(action: 'ACQUIRE' | 'CHECKOUT_FINALIZE' | 'CHECKOUT_REVERT_DELETE_ONLY' |
   'CHECKOUT_REVERT_RESTORE_ACTIVE', validateBody: string, mutateBody: string): string {
-  return MUTATION_COMMON_LUA + `
+  return MUTATION_COMMON_LUA + ACQUISITION_EVIDENCE_LUA + `
 local grant,err=read(KEYS[2])
 if err then return rejected('MISSING_PERMIT') end
 local current,controlError=control(grant.tuple)
@@ -36,7 +49,8 @@ end
 local acquisitionKey='reservation:fence:settlement-acquisition:'..s.manifestId
 local acquisition,acquisitionError=read(acquisitionKey)
 if acquisitionError and acquisitionError~='MISSING' then return rejected('MALFORMED_PERMIT') end
-if acquisition and (acquisition.identity~=identity or acquisition.replayId~=s.acquisitionReplayId) then return rejected('REPLAY_MISMATCH') end
+if acquisition and not acquisitionValid(acquisition,identity,s.acquisitionReplayId,grant.checkoutIdempotencyKey) then
+  return rejected('REPLAY_MISMATCH') end
 local p={tuple=grant.tuple,execution=s.execution,family='CHECKOUT_EXECUTION_OR_SETTLEMENT',
   purpose=grant.action=='ACQUIRE' and 'CHECKOUT_EXECUTION' or 'CHECKOUT_SETTLEMENT'}
 local gateError=checkGate(p)
@@ -58,11 +72,13 @@ for _,r in ipairs(s.resources) do
   elseif pin~=identity then return rejected('RESOURCE_GENERATION_MISMATCH') end
 end
 if grant.action=='ACQUIRE' and acquisition then return accepted({acquired=true,replayed=true}) end
+if grant.action=='ACQUIRE' and not uuid(grant.checkoutIdempotencyKey) then return rejected('PERMIT_SCOPE_MISMATCH') end
 ${validateBody}
 ${mutateBody}
 if grant.action=='ACQUIRE' then
   for _,r in ipairs(s.resources) do redis.call('SET','reservation:fence:checkout-pin:'..r.markerId,identity) end
-  redis.call('SET',acquisitionKey,cjson.encode({identity=identity,replayId=s.acquisitionReplayId}))
+  redis.call('SET',acquisitionKey,cjson.encode({version=2,identity=identity,replayId=s.acquisitionReplayId,
+    checkoutIdempotencyKey=grant.checkoutIdempotencyKey}))
   return accepted({acquired=true})
 end
 redis.call('SET',receiptKey,cjson.encode({identity=identity,action=grant.action,replayId=grant.replayId,complete=true}))

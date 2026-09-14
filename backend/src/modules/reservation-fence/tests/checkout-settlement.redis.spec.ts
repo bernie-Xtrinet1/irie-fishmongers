@@ -37,11 +37,12 @@ async function setup(redis: Redis, keys: string[]) {
     await redis.hset(MUTATION_HISTORY_KEY, resourceGuardKey(r.markerId), '1');
   }
   await redis.set(countKey, '0');
-  const terminalReplayId = randomUUID();
-  const call = async (action: Parameters<typeof settlementProtocol>[0], override = identity, replayId = action === 'ACQUIRE' ? identity.acquisitionReplayId : terminalReplayId) => {
+  const terminalReplayId = randomUUID(), checkoutKey = randomUUID();
+  const call = async (action: Parameters<typeof settlementProtocol>[0], override = identity,
+    replayId = action === 'ACQUIRE' ? identity.acquisitionReplayId : terminalReplayId, key: string = checkoutKey) => {
     const grant = settlementGrantKey(randomUUID()); keys.push(grant);
     const registered = JSON.parse(await redis.eval(REGISTER_SETTLEMENT_GRANT_LUA, 2, RESERVATION_FENCE_KEY, grant,
-      JSON.stringify({ tuple, identity: JSON.stringify(override), action, replayId })) as string) as { code: string };
+      JSON.stringify({ tuple, identity: JSON.stringify(override), action, replayId, checkoutIdempotencyKey: key })) as string) as { code: string };
     if (registered.code !== 'ACCEPTED') return registered;
     return JSON.parse(await redis.eval(settlementProtocol(action,
       "if redis.call('TYPE',KEYS[3]).ok~='string' or not tonumber(redis.call('GET',KEYS[3])) then return rejected('PERMIT_SCOPE_MISMATCH') end",
@@ -50,10 +51,51 @@ async function setup(redis: Redis, keys: string[]) {
   const advance = async () => JSON.parse(await redis.eval(RESERVATION_METADATA_LUA, 3, RESERVATION_FENCE_KEY,
     MUTATION_HISTORY_KEY, resourceGuardKey(resources[0]!.markerId), JSON.stringify(tuple), 'RESOURCE_ADVANCE',
     JSON.stringify({ incarnation: tuple.incarnation, epoch: 1, resource: { ...resources[0]!, generation: 2, holdInstanceId: randomUUID() } })) as string) as { code: string };
-  return { redis, keys, tuple, identity, resources, countKey, call, advance };
+  return { redis, keys, tuple, identity, resources, countKey, call, advance, checkoutKey };
 }
 
 describe('inactive settlement pin and outcome receipt protocol (synthetic physical effect)', () => {
+  it('writes exact V2 from the grant and retains no TTL', () => isolated(async f => {
+    expect((await f.call('ACQUIRE')).code).toBe('ACCEPTED');
+    const key = `reservation:fence:settlement-acquisition:${f.identity.manifestId}`;
+    expect(JSON.parse((await f.redis.get(key))!) as object).toEqual({ version: 2,
+      identity: JSON.stringify(f.identity), replayId: f.identity.acquisitionReplayId, checkoutIdempotencyKey: f.checkoutKey });
+    expect(await f.redis.pttl(key)).toBe(-1);
+  }));
+  it('legacy acquisition replays without rewriting or upgrading evidence', () => isolated(async f => {
+    await f.call('ACQUIRE');
+    const key = `reservation:fence:settlement-acquisition:${f.identity.manifestId}`;
+    const legacy = JSON.stringify({ identity: JSON.stringify(f.identity), replayId: f.identity.acquisitionReplayId });
+    await f.redis.set(key, legacy);
+    expect(await f.call('ACQUIRE')).toMatchObject({ code: 'ACCEPTED', value: { replayed: true } });
+    expect(await f.redis.get(key)).toBe(legacy);
+    expect(await f.redis.get(f.countKey)).toBe('1');
+    expect((await f.call('CHECKOUT_FINALIZE')).code).toBe('ACCEPTED');
+  }));
+  it('rejects an invalid grant key before the synthetic effect or pins', () => isolated(async f => {
+    expect((await f.call('ACQUIRE', f.identity, f.identity.acquisitionReplayId, 'invalid')).code).toBe('FENCE_REJECTED');
+    expect(await f.redis.get(f.countKey)).toBe('0');
+    expect(await f.redis.exists(...f.resources.map(r => checkoutPinKey(r.markerId)))).toBe(0);
+    expect(await f.redis.exists(`reservation:fence:settlement-acquisition:${f.identity.manifestId}`)).toBe(0);
+  }));
+  it.each(['wrong-key', 'wrong-identity', 'wrong-replay', 'unknown-version', 'missing-key', 'missing-version', 'extra-field'])(
+    'rejects %s acquisition evidence without rewriting it or executing again', kind => isolated(async f => {
+      await f.call('ACQUIRE');
+      const key = `reservation:fence:settlement-acquisition:${f.identity.manifestId}`;
+      const record = JSON.parse((await f.redis.get(key))!) as Record<string, unknown>;
+      if (kind === 'wrong-key') record.checkoutIdempotencyKey = randomUUID();
+      if (kind === 'wrong-identity') record.identity = '{}';
+      if (kind === 'wrong-replay') record.replayId = randomUUID();
+      if (kind === 'unknown-version') record.version = 3;
+      if (kind === 'missing-key') delete record.checkoutIdempotencyKey;
+      if (kind === 'missing-version') delete record.version;
+      if (kind === 'extra-field') record.extra = true;
+      const malformed = JSON.stringify(record); await f.redis.set(key, malformed);
+      expect((await f.call('ACQUIRE')).code).toBe('FENCE_REJECTED');
+      expect((await f.call('CHECKOUT_FINALIZE')).code).toBe('FENCE_REJECTED');
+      expect(await f.redis.get(key)).toBe(malformed);
+      expect(await f.redis.get(f.countKey)).toBe('1');
+    }));
   it.each(['OPEN', 'DRAINING'] as const)('pin blocks RESOURCE_ADVANCE in %s', phase => isolated(async f => {
     expect((await f.call('ACQUIRE')).code).toBe('ACCEPTED');
     f.tuple.phase = phase; await f.redis.set(RESERVATION_FENCE_KEY, JSON.stringify(f.tuple));

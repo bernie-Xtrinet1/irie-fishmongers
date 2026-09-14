@@ -1,4 +1,4 @@
-import { settlementProtocol } from '../../reservation-fence/lua/checkout-settlement.lua';
+import { ACQUISITION_EVIDENCE_LUA, settlementProtocol } from '../../reservation-fence/lua/checkout-settlement.lua';
 import { MUTATION_COMMON_LUA } from '../../reservation-fence/lua/reservation-mutation-common.lua';
 import { CHECKOUT_PENDING_INITIAL_LEASE_SECONDS, MAX_CHECKOUT_PENDING_SECONDS } from '../constants/inventory.constants';
 
@@ -71,7 +71,7 @@ end
 
 // Read-only evidence, checked against PostgreSQL context supplied by the
 // internal orchestrator. Missing evidence is not proof of non-execution.
-export const READ_CHECKOUT_ACQUISITION_SCRIPT = MUTATION_COMMON_LUA + `
+export const READ_CHECKOUT_ACQUISITION_SCRIPT = MUTATION_COMMON_LUA + ACQUISITION_EVIDENCE_LUA + `
 local expected=decode(ARGV[1])
 if not expected then return rejected('PERMIT_SCOPE_MISMATCH') end
 local current,err=control(expected.tuple)
@@ -86,7 +86,8 @@ local gateError=checkGate({tuple=expected.tuple,execution=s.execution,
 if gateError then return rejected(gateError) end
 local receipt,receiptError=read('reservation:fence:settlement-acquisition:'..s.manifestId)
 if receiptError=='MISSING' then return accepted({acquired=false}) end
-if receiptError or receipt.identity~=identity or receipt.replayId~=s.acquisitionReplayId then return rejected('REPLAY_MISMATCH') end
+if receiptError or not acquisitionValid(receipt,identity,s.acquisitionReplayId,expected.checkoutIdempotencyKey) then
+  return rejected('REPLAY_MISMATCH') end
 for _,r in ipairs(s.resources) do
   if not resourceValid(r) then return rejected('PERMIT_SCOPE_MISMATCH') end
   local guard,guardError=read('reservation:fence:resource:'..r.markerId)
