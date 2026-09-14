@@ -18,8 +18,14 @@ Construction inserts PREPARED, its bounded resources, then seals in one transact
 A deferred database constraint prevents committing an unsealed manifest. PREPARED
 means acquisition intent, including an uncertain/lost response; it is not proof
 of physical acquisition. Membership, physical identity and acquisition replay ID
-never change. `holdInstanceId` is intentionally globally unique: it identifies
-one physical hold instance, not a reusable cart/product slot.
+never change. `holdInstanceId` identifies one physical hold instance, not a
+reusable cart/product slot. Migration 45 removes global SQL uniqueness of its
+historical references: distinct manifests may retain the same canonical physical
+identity. Manifest-local product and marker uniqueness remain enforced. Physical
+exclusivity comes from the guard/pin/fence/acquisition protocol, not a SQL lock.
+Restoring global uniqueness would first require proving no duplicate historical
+references exist; immutable resources must never be rewritten to recreate it.
+Canonical W4 capture remains a separate checkpoint.
 
 Terminal replay identity is initially NULL. Selecting FINALIZE_PENDING or
 REVERT_PENDING atomically allocates a different replay ID and binds it permanently

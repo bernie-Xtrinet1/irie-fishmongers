@@ -2968,7 +2968,7 @@ model CheckoutReservationResource {
   productId      String
   markerId       String
   generation     Int
-  holdInstanceId String                        @unique @db.Uuid
+  holdInstanceId String                        @db.Uuid
   quantity       Int
   settlement     CheckoutReservationSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
 

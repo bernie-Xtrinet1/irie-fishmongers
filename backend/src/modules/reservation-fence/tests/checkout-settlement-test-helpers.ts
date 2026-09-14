@@ -8,7 +8,7 @@ import { assertDisposableEnvironment, withCleanup } from '../../checkout-rollbac
 
 // Test reset mechanism: a uniquely named disposable schema, never shared tables.
 // Entire schema is removed after disconnect, including retained evidence rows.
-export async function withSettlementSchema(work: (db: PrismaService, upgrade: () => void) => Promise<void>) {
+export async function withSettlementSchema(work: (db: PrismaService, upgrade: () => void) => Promise<void>, baseline: 43 | 44 = 43) {
   assertDisposableEnvironment();
   const schema = `settlement_test_${randomUUID().replace(/-/g, '')}`;
   const url = new URL(process.env.DATABASE_URL!);
@@ -18,9 +18,9 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: ()
   const dir = mkdtempSync(join(tmpdir(), 'settlement-migrations-'));
   const source = resolve(__dirname, '../../../../prisma');
   const migrations = readdirSync(join(source, 'migrations')).filter(x => /^\d/.test(x)).sort();
-  if (migrations.length !== 44) throw new Error('Expected 43 baseline migrations plus settlement migration');
+  if (migrations.length !== 45) throw new Error('Expected 45 migrations including settlement hold identity correction');
   cpSync(join(source, 'schema.prisma'), join(dir, 'schema.prisma'));
-  for (const name of migrations.slice(0, 43)) cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
+  for (const name of migrations.slice(0, baseline)) cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
   cpSync(join(source, 'migrations/migration_lock.toml'), join(dir, 'migrations/migration_lock.toml'));
   const deploy = () => {
     try {
@@ -31,7 +31,8 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: ()
   return withCleanup(async () => {
     deploy();
     await work(db, () => {
-      cpSync(join(source, 'migrations', migrations[43]!), join(dir, 'migrations', migrations[43]!), { recursive: true });
+      for (const name of migrations.slice(baseline))
+        cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
       deploy();
     });
   }, [async () => {

@@ -34,8 +34,80 @@ async function fixture(db: PrismaService) {
 
 // Each case upgrades an isolated schema. Evidence retention cannot contaminate
 // other suites; cleanup drops only the generated fixture schema.
-describe('durable settlement manifests and 43 -> 44 migration', () => {
+describe('durable settlement manifests and forward migrations', () => {
   jest.setTimeout(120000);
+  it('44 -> 45 removes only the global hold index and retains duplicate historical references across reconnect', () => withSettlementSchema(async (db, upgrade) => {
+    const f = await fixture(db);
+    const first = await f.repo.prepare(f.op.id, f.attempt.id, f.customerId);
+    const resource = first.resources[0]!;
+    const capture = () => db.$transaction(async tx => {
+      const operationKey = randomUUID();
+      const op = await tx.checkoutOperation.create({ data: { cartId: f.cartId, customerId: f.customerId,
+        operationKey, retryKeyHash: randomUUID(), selectedPath: 'CART_SCOPED',
+        reservationExecutionEpoch: 1, reservationCapabilityState: 'ACTIVE' } });
+      const attempt = await tx.checkoutAttempt.create({ data: { cartId: f.cartId, customerId: f.customerId,
+        idempotencyKey: operationKey, selectedPath: 'CART_SCOPED', reservationExecutionEpoch: 1 } });
+      const m = await tx.checkoutReservationSettlement.create({ data: { operationId: op.id, attemptId: attempt.id,
+        incarnation: f.fence.incarnation, captureTransitionId: f.fence.id, reservationExecutionEpoch: 1,
+        acquisitionReplayId: randomUUID(), resources: { create: { productId: resource.productId,
+          markerId: resource.markerId, generation: resource.generation, quantity: resource.quantity,
+          holdInstanceId: resource.holdInstanceId } } } });
+      return tx.checkoutReservationSettlement.update({ where: { id: m.id }, data: { sealed: true }, include: { resources: true } });
+    });
+    await expect(capture()).rejects.toMatchObject({ code: 'P2002' });
+    const constraints = () => db.$queryRaw`SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE connamespace = current_schema()::regnamespace ORDER BY conname`;
+    const triggers = () => db.$queryRaw`SELECT tgname, pg_get_triggerdef(oid) AS definition FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace = current_schema()::regnamespace) ORDER BY tgname, definition`;
+    const functions = () => db.$queryRaw`SELECT proname, prosrc FROM pg_proc WHERE pronamespace = current_schema()::regnamespace ORDER BY proname`;
+    const indexes = () => db.$queryRaw<{ indexname: string; indexdef: string }[]>`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname`;
+    const before = { constraints: await constraints(), triggers: await triggers(), functions: await functions(), indexes: await indexes() };
+    expect(before.indexes.some(i => i.indexname === 'checkout_reservation_resources_holdInstanceId_key')).toBe(true);
+    upgrade();
+    expect(await constraints()).toEqual(before.constraints);
+    expect(await triggers()).toEqual(before.triggers);
+    expect(await functions()).toEqual(before.functions);
+    expect(await indexes()).toEqual(before.indexes.filter(i => i.indexname !== 'checkout_reservation_resources_holdInstanceId_key'));
+    for (const column of ['productId', 'markerId'])
+      expect((await indexes()).find(i => i.indexname === `checkout_reservation_resources_settlementId_${column}_key`)?.indexdef)
+        .toContain(`UNIQUE INDEX "checkout_reservation_resources_settlementId_${column}_key"`);
+    const second = await capture();
+    expect(second.id).not.toBe(first.id);
+    expect(second.resources[0]!.holdInstanceId).toBe(resource.holdInstanceId);
+    await db.$disconnect(); await db.$connect();
+    expect(await f.repo.find(first.id)).toEqual(first);
+    expect(await db.checkoutReservationResource.count({ where: { holdInstanceId: resource.holdInstanceId } })).toBe(2);
+    await expect(db.checkoutReservationResource.delete({ where: { id: second.resources[0]!.id } })).rejects.toThrow();
+    await expect(db.checkoutReservationResource.update({ where: { id: resource.id }, data: { quantity: 3 } })).rejects.toThrow();
+    // Restoring global uniqueness cannot succeed once historical references repeat.
+    // PostgreSQL's failed CREATE is atomic; retained resources are never rewritten.
+    await expect(db.$executeRaw`CREATE UNIQUE INDEX "checkout_reservation_resources_holdInstanceId_key" ON checkout_reservation_resources ("holdInstanceId")`).rejects.toThrow();
+    expect(await indexes()).toEqual(before.indexes.filter(i => i.indexname !== 'checkout_reservation_resources_holdInstanceId_key'));
+  }, 44));
+
+  it.each([{ generation: -1, quantity: 2 }, { generation: 1, quantity: 0 },
+    { generation: 1, quantity: -1 }])('retains resource bounds for %j', values => withSettlementSchema(async (db, upgrade) => {
+    const f = await fixture(db); upgrade();
+    await expect(db.$transaction(async tx => {
+      const m = await tx.checkoutReservationSettlement.create({ data: { operationId: f.op.id, attemptId: f.attempt.id,
+        incarnation: f.fence.incarnation, captureTransitionId: f.fence.id, reservationExecutionEpoch: 1, acquisitionReplayId: randomUUID() } });
+      await tx.checkoutReservationResource.create({ data: { settlementId: m.id, markerId: f.marker.id,
+        productId: f.productId, holdInstanceId: randomUUID(), ...values } });
+      await tx.checkoutReservationSettlement.update({ where: { id: m.id }, data: { sealed: true } });
+    })).rejects.toThrow();
+    expect(await db.checkoutReservationSettlement.count()).toBe(0);
+    const bounds = await db.$queryRaw<{ definition: string }[]>`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND conname = 'settlement_resource_bounds'`;
+    expect(bounds[0]?.definition).toBe('CHECK (((generation >= 0) AND (quantity > 0)))');
+  }));
+  it('still rejects duplicate manifest-local membership with distinct physical IDs', () => withSettlementSchema(async (db, upgrade) => {
+    const f = await fixture(db); upgrade();
+    await expect(db.$transaction(async tx => {
+      const m = await tx.checkoutReservationSettlement.create({ data: { operationId: f.op.id, attemptId: f.attempt.id,
+        incarnation: f.fence.incarnation, captureTransitionId: f.fence.id, reservationExecutionEpoch: 1, acquisitionReplayId: randomUUID() } });
+      const data = { settlementId: m.id, markerId: f.marker.id, productId: f.productId, generation: 1, quantity: 2 };
+      await tx.checkoutReservationResource.create({ data: { ...data, holdInstanceId: randomUUID() } });
+      await tx.checkoutReservationResource.create({ data: { ...data, holdInstanceId: randomUUID() } });
+    })).rejects.toMatchObject({ code: 'P2002' });
+    expect(await db.checkoutReservationSettlement.count()).toBe(0);
+  }));
   it('preserves historical rows and all prior constraints/indexes without backfill', () => withSettlementSchema(async (db, upgrade) => {
     const f = await fixture(db);
     const historical = await db.checkoutAttempt.create({ data: { cartId: f.cartId, customerId: f.customerId, idempotencyKey: randomUUID() } });
