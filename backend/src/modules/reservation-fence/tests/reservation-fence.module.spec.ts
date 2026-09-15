@@ -43,7 +43,7 @@ describe('G.4b.1 inactive dependency boundary', () => {
     visit(AppModule);
     expect(seen.size).toBeGreaterThan(1);
   });
-  it('only W4, W5/W6 settlement and W7 use fenced inventory Lua; read-side suspect writer remains removed', () => {
+  it('only W1, W4, W5/W6 settlement and W7 use fenced inventory Lua; read-side suspect writer remains removed', () => {
     const inventory = join(__dirname, '../../inventory');
     for (const file of readdirSync(join(inventory, 'lua'))) {
       const source = readFileSync(join(inventory, 'lua', file), 'utf8');
@@ -51,6 +51,11 @@ describe('G.4b.1 inactive dependency boundary', () => {
       else if (file === 'checkout-acquire-lua-scripts.ts') expect(source).toContain("settlementProtocol('ACQUIRE'");
       else if (file === 'checkout-settlement-revert-lua-scripts.ts') expect(source).toContain("settlementProtocol('CHECKOUT_REVERT_DELETE_ONLY'");
       else if (file === 'checkout-settlement-finalize-lua-scripts.ts') expect(source).toContain("settlementProtocol('CHECKOUT_FINALIZE'");
+      else if (file === 'ordinary-reservation-lua.ts') {
+        expect(source).toContain('MUTATION_COMMON_LUA');
+        expect(source).toContain("current.phase~='OPEN'");
+        expect(source).toContain('stored.quantity~=a.quantity');
+      }
       else expect(source).not.toMatch(/mutationGuard|compileFencedMutation|reservation:fence/);
     }
     expect(readFileSync(join(inventory, 'services/inventory-reservations-script-helpers.ts'), 'utf8'))

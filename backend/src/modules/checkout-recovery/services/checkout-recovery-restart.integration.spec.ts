@@ -5,13 +5,13 @@ import { RedisService } from '../../../common/redis/redis.service';
 import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
 import { CheckoutAttemptStaleFencingService } from '../../checkout-attempt/services/checkout-attempt-stale-fencing.service';
-import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { CheckoutReservationStateService } from '../../inventory/services/checkout-reservation-state.service';
 import { CheckoutReservationRecoveryService } from '../../inventory/services/checkout-reservation-recovery.service';
 import {
   connectRealRedis,
   cleanupKeys,
   trackKeysFor,
+  seedHistoricalActiveReservation,
 } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { reservationKey, productTotalKey } from '../../inventory/constants/inventory.constants';
 import { CheckoutRecoveryWorkerService } from './checkout-recovery-worker.service';
@@ -84,7 +84,8 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
     const productId = randomUUID();
     trackKeysFor(keys, cartId, productId);
     const service = new RedisService(redis);
-    await new InventoryReservationsService(service).reserveOrRenew(
+    await seedHistoricalActiveReservation(
+      redis,
       cartId,
       productId,
       customerId,
@@ -239,7 +240,8 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
     const productId = randomUUID();
     trackKeysFor(keys, cartId, productId);
     const service = new RedisService(redis);
-    await new InventoryReservationsService(service).reserveOrRenew(
+    await seedHistoricalActiveReservation(
+      redis,
       cartId,
       productId,
       customerId,

@@ -55,6 +55,7 @@ describe('G.4b.2c.4 atomic commitment and exact physical W6', () => {
   });
   afterEach(() => jest.restoreAllMocks());
   afterAll(() => withCleanup(async () => {
+    if (schema) for (const marker of await schema.prisma.cartReservationSyncState.findMany()) keys.add(resourceGuardKey(marker.id));
     if (schema) for (const m of await schema.prisma.checkoutReservationSettlement.findMany({ include: { resources: true } })) {
       keys.add(executionGateKey(m.operationId)); keys.add(settlementReceiptKey(m.id));
       keys.add(`reservation:fence:settlement-acquisition:${m.id}`);

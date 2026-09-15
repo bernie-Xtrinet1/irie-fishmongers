@@ -65,6 +65,21 @@ export async function cleanupKeys(client: Redis, createdKeys: Set<string>): Prom
   }
 }
 
+// Historical, pre-fence inventory for legacy checkout/recovery tests only.
+// This is fixture construction, not proof of current W1 authorization.
+export async function seedHistoricalActiveReservation(
+  client: Redis, cartId: string, productId: string, customerId: string, quantity: number,
+): Promise<void> {
+  const now = Date.now();
+  if (await client.exists(reservationKey(cartId, productId))) throw new Error('Historical fixture already exists');
+  await client.set(reservationKey(cartId, productId), JSON.stringify({ version: 1, cartId, customerId, quantity,
+    status: 'ACTIVE', createdAt: now, lastRenewedAt: now, expiresAt: now + 900000, absoluteExpiresAt: now + 3600000,
+    checkoutIdempotencyKey: null, checkoutPendingAt: null, checkoutPendingExpiresAt: null }));
+  await client.sadd(cartIndexKey(cartId), productId);
+  await client.sadd(productIndexKey(productId), cartId);
+  await client.incrby(productTotalKey(productId), quantity);
+}
+
 export async function getRawReservation(
   client: Redis,
   cartId: string,

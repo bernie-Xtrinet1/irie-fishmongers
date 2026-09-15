@@ -139,7 +139,9 @@ export class ReservationRecoveryConvergenceService implements ReservationRecover
         // RESERVATION_CHECKOUT_IN_PROGRESS - an active checkout is
         // currently consuming this reservation; back off and retry rather
         // than force-overwrite it.
-        return { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null };
+        return outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS'
+          ? { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null }
+          : { outcome: 'RETRY', reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: outcome.code };
       }
       if (outcome.result.underflow !== null) {
         return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };

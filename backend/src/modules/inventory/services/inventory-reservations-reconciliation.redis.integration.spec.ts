@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 
-import { RedisService } from '../../../common/redis/redis.service';
+import { openOrdinaryAccountingFixture } from './ordinary-reservation-test-fixture';
 import { reservationKey } from '../constants/inventory.constants';
 import { InventoryReservationsService } from './inventory-reservations.service';
 import {
@@ -27,15 +27,18 @@ import {
 describe('InventoryReservationsService (real Redis integration - reconciliation)', () => {
   let client: Redis;
   let service: InventoryReservationsService;
+  let authority: Awaited<ReturnType<typeof openOrdinaryAccountingFixture>>;
+  jest.setTimeout(120000);
   let createdKeys: Set<string>;
 
   beforeAll(async () => {
     client = await connectRealRedis();
-    service = new InventoryReservationsService(new RedisService(client));
+    authority = await openOrdinaryAccountingFixture(client);
+    service = authority.service;
   });
 
   afterAll(async () => {
-    await client.quit();
+    try { await authority?.close(); } finally { await client?.quit(); }
   });
 
   beforeEach(() => {
@@ -91,7 +94,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 5);
+    await authority.reserveWithIntent(cartId, productId, customerId, 5);
     await client.set(`inv:reserved:product-total:{${productId}}`, '20');
 
     const result = await service.reconcileProductReservedTotal(productId);
@@ -108,7 +111,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 9);
+    await authority.reserveWithIntent(cartId, productId, customerId, 9);
     await client.set(`inv:reserved:product-total:{${productId}}`, '2');
 
     const result = await service.reconcileProductReservedTotal(productId);
@@ -125,7 +128,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 4);
+    await authority.reserveWithIntent(cartId, productId, customerId, 4);
     await client.del(reservationKey(cartId, productId));
 
     const result = await service.reconcileProductReservedTotal(productId);
@@ -141,7 +144,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     carts.forEach((cartId) => trackKeysFor(createdKeys, cartId, productId));
 
     await Promise.all(
-      carts.map((cartId) => service.reserveOrRenew(cartId, productId, randomUUID(), 2)),
+      carts.map((cartId) => authority.reserveWithIntent(cartId, productId, randomUUID(), 2)),
     );
 
     expect(await getStoredTotal(client, productId)).toBe(String(carts.length * 2));
@@ -153,11 +156,11 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     const otherCart = randomUUID();
     createdKeys.add(reservationKey(otherCart, productId));
 
-    await service.reserveOrRenew(cartId, productId, customerId, 3);
+    await authority.reserveWithIntent(cartId, productId, customerId, 3);
 
     await Promise.all([
       service.reconcileProductReservedTotal(productId),
-      service.reserveOrRenew(otherCart, productId, randomUUID(), 4),
+      authority.reserveWithIntent(otherCart, productId, randomUUID(), 4),
     ]);
 
     const verify = await service.reconcileProductReservedTotal(productId);

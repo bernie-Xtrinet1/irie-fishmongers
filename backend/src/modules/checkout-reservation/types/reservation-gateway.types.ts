@@ -53,6 +53,7 @@ export type ReserveForCartResult =
   | { ok: false; mode: 'DRAINING'; code: 'MODE_NOT_ADMITTING' }
   | { ok: false; code: 'RESERVATION_CHECKOUT_IN_PROGRESS' }
   | { ok: false; code: 'RESERVATION_PRODUCT_SUSPENDED' }
+  | { ok: false; code: 'FENCE_REJECTED' | 'UNCERTAIN_INFRASTRUCTURE' }
   | { ok: false; code: 'INVALID_INPUT'; field: string; reason: string };
 
 // No `released: boolean` - LEGACY (hdel-based) and CART_SCOPED (Lua,

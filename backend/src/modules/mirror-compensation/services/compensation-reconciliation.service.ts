@@ -139,8 +139,8 @@ export class CompensationReconciliationService {
           compensationId,
           generation,
           attemptCount,
-          'CHECKOUT_IN_PROGRESS',
-          null,
+          outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? 'CHECKOUT_IN_PROGRESS' : 'UNKNOWN_INFRA_FAILURE',
+          outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? null : outcome.code,
           now,
         );
       }

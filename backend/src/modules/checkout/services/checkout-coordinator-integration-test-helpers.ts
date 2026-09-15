@@ -1,3 +1,4 @@
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
 import { randomUUID } from 'crypto';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -144,6 +145,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
   const vendorsRepository = new VendorsRepository(prisma);
   const inventoryEventsRepository = new InventoryEventsRepository(prisma);
   const inventoryReservations = new InventoryReservationsService(redisService);
+  Object.assign(inventoryReservations, { ordinary: new OrdinaryReservationService(prisma, redisService) });
   const eventEmitter = new EventEmitter2();
   const syncStateRepository = new CartReservationSyncStateRepository(prisma);
 
@@ -284,6 +286,9 @@ export async function seedReadyCheckout(
     throw new Error(`Internal test-setup error: createPriceLock failed with ${lockResult.code}`);
   }
 
+  await prisma.cartReservationSyncState.upsert({ where: { cartId_productId: { cartId: cart.id, productId: product.id } },
+    create: { cartId: cart.id, productId: product.id, expectedQuantity: quantity, expectedMutationVersion: item.mutationVersion },
+    update: { expectedQuantity: quantity } });
   const reserveResult = await handles.inventoryReservations.reserveOrRenew(
     cart.id,
     product.id,

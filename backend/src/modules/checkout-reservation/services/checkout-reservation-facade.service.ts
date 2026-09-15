@@ -115,7 +115,8 @@ export class CheckoutReservationFacade implements ReservationGateway {
       );
       if (!outcome.ok) {
         const reasonCode: MirrorFailureReasonCode =
-          outcome.code === 'RESERVATION_PRODUCT_SUSPENDED' ? 'PRODUCT_SUSPENDED' : 'CHECKOUT_IN_PROGRESS';
+          outcome.code === 'RESERVATION_PRODUCT_SUSPENDED' ? 'PRODUCT_SUSPENDED' :
+            outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? 'CHECKOUT_IN_PROGRESS' : 'UNKNOWN_INFRA_FAILURE';
         this.logMirrorFailure(cartId, productId, 'RESERVE', reasonCode);
         await this.recordDivergence('RESERVE_MIRROR', cartId, productId, customerId, desiredQuantity, reasonCode, null);
         return { status: 'FAILED', operation: 'RESERVE', reasonCode };

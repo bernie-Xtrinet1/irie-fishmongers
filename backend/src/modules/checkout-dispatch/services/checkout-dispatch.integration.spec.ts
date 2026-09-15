@@ -125,6 +125,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
   });
   afterAll(async () => {
     await withCleanup(async () => {
+      if (prisma) for (const marker of await prisma.cartReservationSyncState.findMany()) keys.add(resourceGuardKey(marker.id));
       if (prisma) for (const m of await prisma.checkoutReservationSettlement.findMany({ include: { resources: true } })) {
         keys.add(executionGateKey(m.operationId)); keys.add("reservation:fence:settlement-receipt:" + m.id);
         keys.add(`reservation:fence:settlement-acquisition:${m.id}`);

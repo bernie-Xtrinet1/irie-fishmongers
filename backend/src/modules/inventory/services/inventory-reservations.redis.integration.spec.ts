@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 
-import { RedisService } from '../../../common/redis/redis.service';
+import { openOrdinaryAccountingFixture } from './ordinary-reservation-test-fixture';
 import {
   cartIndexKey,
   productIndexKey,
@@ -41,15 +41,18 @@ import {
 describe('InventoryReservationsService (real Redis integration - lifecycle/accounting)', () => {
   let client: Redis;
   let service: InventoryReservationsService;
+  let authority: Awaited<ReturnType<typeof openOrdinaryAccountingFixture>>;
+  jest.setTimeout(120000);
   let createdKeys: Set<string>;
 
   beforeAll(async () => {
     client = await connectRealRedis();
-    service = new InventoryReservationsService(new RedisService(client));
+    authority = await openOrdinaryAccountingFixture(client);
+    service = authority.service;
   });
 
   afterAll(async () => {
-    await client.quit();
+    try { await authority?.close(); } finally { await client?.quit(); }
   });
 
   beforeEach(() => {
@@ -64,7 +67,7 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    const outcome = await service.reserveOrRenew(cartId, productId, customerId, 5);
+    const outcome = await authority.reserveWithIntent(cartId, productId, customerId, 5);
     expect(outcome.ok).toBe(true);
 
     const rawEntry = await getRawReservation(client, cartId, productId);
@@ -85,8 +88,8 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 3);
-    await service.reserveOrRenew(cartId, productId, customerId, 8);
+    await authority.reserveWithIntent(cartId, productId, customerId, 3);
+    await authority.reserveWithIntent(cartId, productId, customerId, 8);
 
     expect(await getStoredTotal(client, productId)).toBe('8');
   });
@@ -95,8 +98,8 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 8);
-    await service.reserveOrRenew(cartId, productId, customerId, 3);
+    await authority.reserveWithIntent(cartId, productId, customerId, 8);
+    await authority.reserveWithIntent(cartId, productId, customerId, 3);
 
     expect(await getStoredTotal(client, productId)).toBe('3');
   });
@@ -105,11 +108,11 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    const first = await service.reserveOrRenew(cartId, productId, customerId, 4);
+    const first = await authority.reserveWithIntent(cartId, productId, customerId, 4);
     expect(first.ok).toBe(true);
     const firstEntry = first.ok ? first.result.entry : null;
 
-    const second = await service.reserveOrRenew(cartId, productId, customerId, 4);
+    const second = await authority.reserveWithIntent(cartId, productId, customerId, 4);
     expect(second.ok).toBe(true);
 
     if (firstEntry && second.ok) {
@@ -125,7 +128,7 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
 
     let lastEntry: { expiresAt: number; absoluteExpiresAt: number } | undefined;
     for (let i = 0; i < 3; i += 1) {
-      const outcome = await service.reserveOrRenew(cartId, productId, customerId, 2);
+      const outcome = await authority.reserveWithIntent(cartId, productId, customerId, 2);
       if (outcome.ok) {
         lastEntry = outcome.result.entry;
       }
@@ -139,7 +142,7 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 6);
+    await authority.reserveWithIntent(cartId, productId, customerId, 6);
     const result = await service.releaseReservation(cartId, productId);
 
     expect(result).toEqual({ released: true, quantity: 6, underflow: null });
@@ -153,7 +156,7 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 6);
+    await authority.reserveWithIntent(cartId, productId, customerId, 6);
     await service.releaseReservation(cartId, productId);
     const second = await service.releaseReservation(cartId, productId);
 
@@ -165,7 +168,7 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
 
-    await service.reserveOrRenew(cartId, productId, customerId, 10);
+    await authority.reserveWithIntent(cartId, productId, customerId, 10);
     // Simulate a pre-existing inconsistency unrelated to this call.
     await client.set(productTotalKey(productId), '3');
 
@@ -190,16 +193,16 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const otherCart = randomUUID();
     createdKeys.add(reservationKey(otherCart, productId));
 
-    await service.reserveOrRenew(cartId, productId, customerId, 5);
+    await authority.reserveWithIntent(cartId, productId, customerId, 5);
     await client.set(productSuspectKey(productId), '1');
 
-    const rejectedNew = await service.reserveOrRenew(otherCart, productId, randomUUID(), 1);
+    const rejectedNew = await authority.reserveWithIntent(otherCart, productId, randomUUID(), 1);
     expect(rejectedNew).toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
 
-    const rejectedIncrease = await service.reserveOrRenew(cartId, productId, customerId, 8);
+    const rejectedIncrease = await authority.reserveWithIntent(cartId, productId, customerId, 8);
     expect(rejectedIncrease).toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
 
-    const allowedDecrease = await service.reserveOrRenew(cartId, productId, customerId, 2);
+    const allowedDecrease = await authority.reserveWithIntent(cartId, productId, customerId, 2);
     expect(allowedDecrease.ok).toBe(true);
 
     const allowedRelease = await service.releaseReservation(cartId, productId);
@@ -212,8 +215,8 @@ describe('InventoryReservationsService (real Redis integration - lifecycle/accou
     const otherCart = randomUUID();
     createdKeys.add(reservationKey(otherCart, productId));
 
-    await service.reserveOrRenew(cartId, productId, customerId, 4);
-    await service.reserveOrRenew(otherCart, productId, randomUUID(), 3);
+    await authority.reserveWithIntent(cartId, productId, customerId, 4);
+    await authority.reserveWithIntent(otherCart, productId, randomUUID(), 3);
 
     await expect(service.getReservedTotalExcludingCart(productId, cartId)).resolves.toEqual({ status: 'OK', reservedByOthers: 3 });
     await expect(service.computeAvailableToPurchase(productId, 10, cartId)).resolves.toBe(7);

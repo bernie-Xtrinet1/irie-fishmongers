@@ -1,3 +1,5 @@
+import { OrdinaryReservationService } from './ordinary-reservation.service';
+import { Test } from '@nestjs/testing';
 import { RedisService } from '../../../common/redis/redis.service';
 import { InventoryReservationsService } from './inventory-reservations.service';
 
@@ -20,105 +22,45 @@ import { InventoryReservationsService } from './inventory-reservations.service';
 describe('InventoryReservationsService (cart-scoped model)', () => {
   let redis: jest.Mocked<Pick<RedisService, 'eval' | 'get' | 'set'>>;
   let service: InventoryReservationsService;
+  const ordinary = { reserve: jest.fn() };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     redis = {
       eval: jest.fn(),
       get: jest.fn(),
       set: jest.fn(),
     };
-    service = new InventoryReservationsService(redis as unknown as RedisService);
+    ordinary.reserve.mockReset();
+    const testingModule = await Test.createTestingModule({ providers: [InventoryReservationsService,
+      { provide: RedisService, useValue: redis }, { provide: OrdinaryReservationService, useValue: ordinary }] }).compile();
+    service = testingModule.get(InventoryReservationsService);
   });
 
   describe('reserveOrRenew', () => {
-    it('calls eval with the five reservation keys and the exact argument order', async () => {
-      const fakeEntry = {
-        version: 1,
-        quantity: 4,
-        cartId: 'cart-1',
-        customerId: 'user-1',
-        status: 'ACTIVE',
-        createdAt: 1000,
-        lastRenewedAt: 1000,
-        expiresAt: 1000 + 900_000,
-        absoluteExpiresAt: 1000 + 3_600_000,
-        checkoutIdempotencyKey: null,
-        checkoutPendingAt: null,
-        checkoutPendingExpiresAt: null,
-      };
-      redis.eval.mockResolvedValue(JSON.stringify({ ok: true, entry: fakeEntry, underflow: null }));
-
-      const outcome = await service.reserveOrRenew('cart-1', 'product-1', 'user-1', 4);
-
-      expect(redis.eval).toHaveBeenCalledTimes(1);
-      const [script, keys, args] = redis.eval.mock.calls[0]!;
-      expect(typeof script).toBe('string');
-      expect(keys).toEqual([
-        'inv:reserved:{cart-1}:product-1',
-        'inv:reserved:cart-index:{cart-1}',
-        'inv:reserved:product-index:{product-1}',
-        'inv:reserved:product-total:{product-1}',
-        'inv:reserved:product-total-suspect:{product-1}',
-      ]);
-      expect(args[0]).toBe('cart-1');
-      expect(args[1]).toBe('product-1');
-      expect(args[2]).toBe('user-1');
-      expect(args[3]).toBe(4);
-      expect(typeof args[4]).toBe('number');
-      expect(args[5]).toBe(900_000);
-      expect(args[6]).toBe(3_600_000);
-      expect(args[7]).toBe(1);
-
-      expect(outcome).toEqual({ ok: true, result: { entry: fakeEntry, underflow: null } });
+    it('delegates exact caller scope to the required durable W1 boundary, never raw Lua', async () => {
+      const entry = { version: 1, status: 'ACTIVE', quantity: 4 };
+      ordinary.reserve.mockResolvedValue({ code: 'ACCEPTED', value: entry });
+      expect(await service.reserveOrRenew('cart-1', 'product-1', 'user-1', 4))
+        .toEqual({ ok: true, result: { entry, underflow: null } });
+      expect(ordinary.reserve).toHaveBeenCalledWith('cart-1', 'product-1', 'user-1', 4);
+      expect(redis.eval).not.toHaveBeenCalled();
     });
-
-    it('surfaces RESERVATION_CHECKOUT_IN_PROGRESS from the script unchanged', async () => {
-      redis.eval.mockResolvedValue(JSON.stringify({ err: 'RESERVATION_CHECKOUT_IN_PROGRESS' }));
-
-      const outcome = await service.reserveOrRenew('cart-1', 'product-1', 'user-1', 4);
-
-      expect(outcome).toEqual({ ok: false, code: 'RESERVATION_CHECKOUT_IN_PROGRESS' });
+    it('preserves product suspension as a domain failure', async () => {
+      ordinary.reserve.mockResolvedValue({ code: 'DOMAIN_FAILURE', reason: 'RESERVATION_PRODUCT_SUSPENDED' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
     });
-
-    it('surfaces RESERVATION_PRODUCT_SUSPENDED from the script unchanged', async () => {
-      redis.eval.mockResolvedValue(JSON.stringify({ err: 'RESERVATION_PRODUCT_SUSPENDED' }));
-
-      const outcome = await service.reserveOrRenew('cart-1', 'product-1', 'user-1', 6);
-
-      expect(outcome).toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
+    it('preserves fencing rejection without retry or a raw fallback', async () => {
+      ordinary.reserve.mockResolvedValue({ code: 'FENCE_REJECTED', reason: 'PHASE_DENIED' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'FENCE_REJECTED' });
+      expect(ordinary.reserve).toHaveBeenCalledTimes(1); expect(redis.eval).not.toHaveBeenCalled();
     });
-
-    it('maps an underflow signal from the script into structured details and logs it', async () => {
-      const fakeEntry = { version: 1, quantity: 2 } as never;
-      redis.eval.mockResolvedValue(
-        JSON.stringify({
-          ok: true,
-          entry: fakeEntry,
-          underflow: { reservationQuantity: 5, storedTotal: 3 },
-        }),
-      );
-
-      const outcome = await service.reserveOrRenew('cart-1', 'product-1', 'user-1', 2);
-
-      expect(outcome.ok).toBe(true);
-      if (outcome.ok) {
-        expect(outcome.result.underflow).toEqual({
-          productId: 'product-1',
-          cartId: 'cart-1',
-          reservationQuantity: 5,
-          storedTotal: 3,
-          operationName: 'reserveOrRenew',
-          timestamp: expect.any(Number) as number,
-        });
-      }
+    it('preserves uncertain infrastructure instead of assuming a failed physical write', async () => {
+      ordinary.reserve.mockResolvedValue({ code: 'INFRASTRUCTURE_FAILURE', outcome: 'UNCERTAIN' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
     });
-
-    it('throws if the script does not return a string result', async () => {
-      redis.eval.mockResolvedValue(null);
-
-      await expect(service.reserveOrRenew('cart-1', 'product-1', 'user-1', 1)).rejects.toThrow(
-        'Reservation script did not return a JSON string result',
-      );
+    it('does not expose an unfenced administrative lifetime-reset path', async () => {
+      expect(await service.reserveWithFreshEpoch('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'FENCE_REJECTED' });
+      expect(ordinary.reserve).not.toHaveBeenCalled(); expect(redis.eval).not.toHaveBeenCalled();
     });
   });
 

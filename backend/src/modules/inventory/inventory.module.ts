@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { OrdinaryReservationService } from './services/ordinary-reservation.service';
 
 import { AuthModule } from '../auth/auth.module';
 import { InventoryController } from './controllers/inventory.controller';
@@ -29,6 +30,7 @@ import { InventoryReservationsService } from './services/inventory-reservations.
   imports: [AuthModule],
   controllers: [InventoryController],
   providers: [
+    OrdinaryReservationService,
     InventoryReservationsService,
     InventoryReconciliationService,
     InventoryEventsRepository,

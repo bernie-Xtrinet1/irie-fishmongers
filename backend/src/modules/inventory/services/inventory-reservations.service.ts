@@ -1,8 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { OrdinaryReservationService } from './ordinary-reservation.service';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { RedisService } from '../../../common/redis/redis.service';
 import {
-  MAX_RESERVATION_LIFETIME_SECONDS,
   RESERVATION_ENTRY_VERSION,
   RESERVATION_HASH_TTL_SECONDS,
   RESERVATION_TTL_SECONDS,
@@ -16,7 +16,6 @@ import {
 import {
   RECONCILE_PRODUCT_RESERVED_TOTAL_SCRIPT,
   RELEASE_RESERVATION_SCRIPT,
-  RESERVE_OR_RENEW_SCRIPT,
 } from '../lua/reservation-lua-scripts';
 import {
   RawScriptUnderflow,
@@ -61,19 +60,13 @@ export interface ReserveOrRenewSuccess {
 export type ReserveOrRenewOutcome =
   | { ok: true; result: ReserveOrRenewSuccess }
   | { ok: false; code: 'RESERVATION_CHECKOUT_IN_PROGRESS' }
-  | { ok: false; code: 'RESERVATION_PRODUCT_SUSPENDED' };
+  | { ok: false; code: 'RESERVATION_PRODUCT_SUSPENDED' }
+  | { ok: false; code: 'FENCE_REJECTED' | 'UNCERTAIN_INFRASTRUCTURE' };
 
 export interface ReleaseReservationResult {
   released: boolean;
   quantity: number;
   underflow: ReservationUnderflowDetails | null;
-}
-
-interface RawReserveOrRenewResult {
-  err?: 'RESERVATION_CHECKOUT_IN_PROGRESS' | 'RESERVATION_PRODUCT_SUSPENDED';
-  ok?: true;
-  entry?: CartScopedReservationEntry;
-  underflow?: RawScriptUnderflow | null;
 }
 
 interface RawReleaseReservationResult {
@@ -120,6 +113,9 @@ export interface ProductReservedTotalReconciliation {
 @Injectable()
 export class InventoryReservationsService {
   private readonly logger = new Logger(InventoryReservationsService.name);
+
+  @Inject(OrdinaryReservationService)
+  private readonly ordinary!: OrdinaryReservationService;
 
   constructor(private readonly redis: RedisService) {}
 
@@ -176,60 +172,17 @@ export class InventoryReservationsService {
   // caller - see the block comment above the type declarations). ---
 
   async reserveOrRenew(cartId: string, productId: string, customerId: string, quantity: number): Promise<ReserveOrRenewOutcome> {
-    return this.executeReserveOrRenew(cartId, productId, customerId, quantity, false);
+    const outcome = await this.ordinary.reserve(cartId, productId, customerId, quantity);
+    if (outcome.code === 'ACCEPTED') return { ok: true, result: { entry: outcome.value, underflow: null } };
+    if (outcome.code === 'DOMAIN_FAILURE' && outcome.reason === 'RESERVATION_PRODUCT_SUSPENDED')
+      return { ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' };
+    return { ok: false, code: outcome.code === 'INFRASTRUCTURE_FAILURE' ? 'UNCERTAIN_INFRASTRUCTURE' : 'FENCE_REJECTED' };
   }
 
-  // CART_SCOPED activation-boundary gate. Administrative-only, the
-  // cutover freshness sweep's sole caller - a distinct method rather than
-  // a boolean flag on reserveOrRenew, so an accidental `true` can never
-  // opt a customer write into resetting createdAt/absoluteExpiresAt. See
-  // RESERVE_OR_RENEW_SCRIPT's own comment for the exact Lua-level diff.
-  async reserveWithFreshEpoch(cartId: string, productId: string, customerId: string, quantity: number): Promise<ReserveOrRenewOutcome> {
-    return this.executeReserveOrRenew(cartId, productId, customerId, quantity, true);
-  }
-
-  private async executeReserveOrRenew(
-    cartId: string,
-    productId: string,
-    customerId: string,
-    quantity: number,
-    forceFreshEpoch: boolean,
-  ): Promise<ReserveOrRenewOutcome> {
-    const now = Date.now();
-    const keys = [
-      reservationKey(cartId, productId),
-      cartIndexKey(cartId),
-      productIndexKey(productId),
-      productTotalKey(productId),
-      productSuspectKey(productId),
-    ];
-    const args = [
-      cartId,
-      productId,
-      customerId,
-      quantity,
-      now,
-      RESERVATION_TTL_SECONDS * 1000,
-      MAX_RESERVATION_LIFETIME_SECONDS * 1000,
-      RESERVATION_ENTRY_VERSION,
-      forceFreshEpoch ? '1' : '0',
-    ];
-
-    const raw = await this.redis.eval(RESERVE_OR_RENEW_SCRIPT, keys, args);
-    const parsed = parseScriptResult<RawReserveOrRenewResult>(raw);
-
-    if (parsed.err) {
-      return { ok: false, code: parsed.err };
-    }
-
-    const underflow = toUnderflowDetails(this.logger, parsed.underflow, {
-      productId,
-      cartId,
-      operationName: 'reserveOrRenew',
-      timestamp: now,
-    });
-
-    return { ok: true, result: { entry: parsed.entry!, underflow } };
+  // Freshness resets require a separate authorization. Never bypass W1 fencing
+  // or silently substitute a rolling renewal for the administrative hard reset.
+  reserveWithFreshEpoch(_cartId: string, _productId: string, _customerId: string, _quantity: number): Promise<ReserveOrRenewOutcome> {
+    return Promise.resolve({ ok: false, code: 'FENCE_REJECTED' });
   }
 
   async releaseReservation(cartId: string, productId: string): Promise<ReleaseReservationResult> {

@@ -12,8 +12,7 @@ import {
 } from './checkout-reservation-state.redis-test-helpers';
 import { CheckoutReservationStateService } from './checkout-reservation-state.service';
 import { CheckoutPlanMismatchDetails } from './checkout-reservation-state.types';
-import { InventoryReservationsService } from './inventory-reservations.service';
-import { cleanupKeys, connectRealRedis } from './inventory-reservations.redis-test-helpers';
+import { cleanupKeys, connectRealRedis, seedHistoricalActiveReservation } from './inventory-reservations.redis-test-helpers';
 
 // Concurrency, the suspect-product policy, and scriptVersion/direct-Lua-
 // invocation coverage for checkoutMark (Unit 2.4.1). Plan/completeness/
@@ -25,14 +24,12 @@ import { cleanupKeys, connectRealRedis } from './inventory-reservations.redis-te
 // if one is not available - it does not skip.
 describe('CheckoutReservationStateService.checkoutMark (real Redis concurrency + protocol)', () => {
   let client: Redis;
-  let inventoryReservations: InventoryReservationsService;
   let checkoutState: CheckoutReservationStateService;
   let createdKeys: Set<string>;
 
   beforeAll(async () => {
     client = await connectRealRedis();
     const redisService = new RedisService(client);
-    inventoryReservations = new InventoryReservationsService(redisService);
     checkoutState = new CheckoutReservationStateService(redisService);
   });
 
@@ -54,10 +51,7 @@ describe('CheckoutReservationStateService.checkoutMark (real Redis concurrency +
     customerId: string,
     quantity: number,
   ): Promise<void> {
-    const outcome = await inventoryReservations.reserveOrRenew(cartId, productId, customerId, quantity);
-    if (!outcome.ok) {
-      throw new Error(`Failed to seed reservation: ${outcome.code}`);
-    }
+    await seedHistoricalActiveReservation(client, cartId, productId, customerId, quantity);
   }
 
   it('fails the whole cart atomically with RESERVATION_CHECKOUT_KEY_CONFLICT when a different key is already pending', async () => {

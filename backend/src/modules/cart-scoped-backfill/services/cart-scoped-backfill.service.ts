@@ -131,7 +131,9 @@ export class CartScopedBackfillService {
       if (result.code === 'RESERVATION_PRODUCT_SUSPENDED') {
         return { outcome: 'BLOCKED', target, blockReason: 'PRODUCT_SUSPECT' };
       }
-      return { outcome: 'RETRY', target, reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null };
+      return result.code === 'RESERVATION_CHECKOUT_IN_PROGRESS'
+        ? { outcome: 'RETRY', target, reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null }
+        : { outcome: 'RETRY', target, reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: result.code };
     }
     if (result.result.underflow !== null) {
       return { outcome: 'BLOCKED', target, blockReason: 'PRODUCT_SUSPECT' };
