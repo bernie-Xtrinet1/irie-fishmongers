@@ -43,27 +43,32 @@ export class OrdinaryReservationCommandRepository {
   }
 
   promote(markerId: string) {
-    return this.owners.locked(markerId, async context => {
-      const { tx } = context;
-      const active = await tx.ordinaryReservationCommand.findFirst({ where: { markerId, state: { in: ['PENDING', 'UNCERTAIN'] } } });
-      const waiting = await tx.ordinaryReservationCommand.findMany({ where: { markerId, state: 'WAITING' }, orderBy: { queueOrdinal: 'asc' } });
-      // Only a cancellation tied to the occupying W1 can bypass the queue.
-      const candidate = active
-        ? waiting.find(c => c.effect === 'CANCEL_W1' && c.cancelledCommandId === active.id && active.effect === 'W1')
-        : await this.lowestEligible(context, waiting);
-      if (!candidate) return null;
-      if (candidate.dependsOnCommandId) {
-        const dependency = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: candidate.dependsOnCommandId } });
-        if (!['ACKNOWLEDGED', 'CANCELLED'].includes(dependency.state)) return null;
-      }
-      await this.owners.loadAuthority(candidate.ownerId, tx);
-      if (candidate.sourceOwnerId) await this.owners.loadAuthority(candidate.sourceOwnerId, tx);
-      if (active) await tx.ordinaryReservationCommand.update({ where: { id: active.id }, data: { state: 'REVOCATION_PENDING' } });
-      const marker = await tx.cartReservationSyncState.update({ where: { id: markerId }, data: { ordinaryCommandSequence: { increment: 1 } } });
-      return tx.ordinaryReservationCommand.update({ where: { id: candidate.id }, data: {
-        state: 'PENDING', sequence: marker.ordinaryCommandSequence, expectedSequence: marker.ordinaryAcknowledgedSequence,
-      } });
-    });
+    return this.owners.locked(markerId, context => this.promoteLocked(context));
+  }
+
+  // Caller already owns marker -> ordered owners -> ordered commands locks.
+  // A target filter may defer work, never bypass the existing queue selection.
+  async promoteLocked(context: OrdinaryMarkerTransaction, expectedCommandId?: string) {
+    const markerId = context.marker.id;
+    const { tx } = context;
+    const active = await tx.ordinaryReservationCommand.findFirst({ where: { markerId, state: { in: ['PENDING', 'UNCERTAIN'] } } });
+    const waiting = await tx.ordinaryReservationCommand.findMany({ where: { markerId, state: 'WAITING' }, orderBy: { queueOrdinal: 'asc' } });
+    // Only a cancellation tied to the occupying W1 can bypass the queue.
+    const candidate = active
+      ? waiting.find(c => c.effect === 'CANCEL_W1' && c.cancelledCommandId === active.id && active.effect === 'W1')
+      : await this.lowestEligible(context, waiting);
+    if (!candidate || (expectedCommandId !== undefined && candidate.id !== expectedCommandId)) return null;
+    if (candidate.dependsOnCommandId) {
+      const dependency = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: candidate.dependsOnCommandId } });
+      if (!['ACKNOWLEDGED', 'CANCELLED'].includes(dependency.state)) return null;
+    }
+    await this.owners.loadAuthority(candidate.ownerId, tx);
+    if (candidate.sourceOwnerId) await this.owners.loadAuthority(candidate.sourceOwnerId, tx);
+    if (active) await tx.ordinaryReservationCommand.update({ where: { id: active.id }, data: { state: 'REVOCATION_PENDING' } });
+    const marker = await tx.cartReservationSyncState.update({ where: { id: markerId }, data: { ordinaryCommandSequence: { increment: 1 } } });
+    return tx.ordinaryReservationCommand.update({ where: { id: candidate.id }, data: {
+      state: 'PENDING', sequence: marker.ordinaryCommandSequence, expectedSequence: marker.ordinaryAcknowledgedSequence,
+    } });
   }
 
   private async lowestEligible(context: OrdinaryMarkerTransaction,

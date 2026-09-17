@@ -8,6 +8,38 @@ describe('ordinary command durable journal (no physical execution)', () => {
   beforeAll(async () => { fixture = await openOrdinarySchema(); });
   afterAll(async () => { if (fixture) await fixture.close(); });
 
+  it('composable promotion preserves allocation and rolls back with its owning transaction', async () => {
+    const f = await ordinaryFixture(fixture.db);
+    const issued = await f.commands.issue(f.issuance, f.payload);
+    await expect(f.owners.locked(f.marker.id, async context => {
+      expect(await f.commands.promoteLocked(context, issued.command.id)).toMatchObject({ sequence: 1, expectedSequence: 0 });
+      throw new Error('rollback probe');
+    })).rejects.toThrow('rollback probe');
+    expect(await f.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: issued.command.id } }))
+      .toMatchObject({ state: 'WAITING', sequence: null });
+    expect(await f.db.cartReservationSyncState.findUniqueOrThrow({ where: { id: f.marker.id } }))
+      .toMatchObject({ ordinaryCommandSequence: 0 });
+    expect(await f.owners.locked(f.marker.id, context => f.commands.promoteLocked(context, issued.command.id)))
+      .toMatchObject({ state: 'PENDING', sequence: 1, expectedSequence: 0 });
+  });
+
+  it('targeted composable promotion cannot bypass the queue and retains cancellation gaps', async () => {
+    const f = await ordinaryFixture(fixture.db);
+    const issued = await f.commands.issue(f.issuance, f.payload);
+    const second = await f.commands.enqueue(f.marker.id, { ...f.payload, ownerId: issued.owner.id, effect: 'W1' });
+    expect(await f.owners.locked(f.marker.id, context => f.commands.promoteLocked(context, second.id))).toBeNull();
+    const first = await f.commands.promote(f.marker.id);
+    if (!first) throw new Error('Expected first command');
+    const cancel = await f.commands.enqueue(f.marker.id, { ownerId: issued.owner.id, effect: 'CANCEL_W1', reason: 'STALE_W1',
+      cancelledCommandId: first.id, intentGeneration: 0, expectedMutationVersion: 0 });
+    expect(await f.owners.locked(f.marker.id, context => f.commands.promoteLocked(context, cancel.id)))
+      .toMatchObject({ sequence: 2, expectedSequence: 0 });
+    await f.commands.acknowledge(f.marker.id, acknowledgement(first));
+    expect(await f.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: cancel.id } }))
+      .toMatchObject({ state: 'REVOKED', sequence: 2 });
+    expect(await f.commands.promote(f.marker.id)).toMatchObject({ id: second.id, sequence: 3, expectedSequence: 1 });
+  });
+
   async function competingCommands() {
     const f = await ordinaryFixture(fixture.db);
     const { owner, command } = await f.commands.issue(f.issuance, f.payload);
