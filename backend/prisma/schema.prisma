@@ -250,11 +250,12 @@ model Product {
 }
 
 model Cart {
-  id         String   @id @default(uuid())
-  customerId String   @unique
-  currency   String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  ordinaryOwners OrdinaryReservationOwner[]
+  id             String                     @id @default(uuid())
+  customerId     String                     @unique
+  currency       String?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
 
   customer              User                          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items                 CartItem[]
@@ -264,6 +265,7 @@ model Cart {
   reservationSyncStates CartReservationSyncState[]
   itemAddAttempts       CartItemAddAttempt[]
 
+  @@unique([id, customerId])
   @@map("carts")
 }
 
@@ -343,25 +345,32 @@ enum CartReservationSyncBlockReason {
 // DA.1B's recovery worker exists - included in this migration now so
 // DA.1B never needs a second schema change for the same table.
 model CartReservationSyncState {
-  id                      String                          @id @default(uuid())
-  cartId                  String
-  productId               String
+  // Inert until explicit provenance-aware issuance is integrated. Never infer history.
+  ordinaryProvenanceState      OrdinaryProvenanceState         @default(HISTORICAL_UNVERIFIED)
+  ordinaryEnqueueSequence      Int                             @default(0)
+  ordinaryCommandSequence      Int                             @default(0)
+  ordinaryAcknowledgedSequence Int                             @default(0)
+  ordinaryOwners               OrdinaryReservationOwner[]
+  ordinaryCommands             OrdinaryReservationCommand[]
+  id                           String                          @id @default(uuid())
+  cartId                       String
+  productId                    String
   // The CartItem.mutationVersion this row's expectedQuantity reflects as
   // of `generation`. Purely a historical/debugging value once the
   // CartItem has since been deleted - DA.1B relies on expectedQuantity
   // being null to mean "desired absence" in that case, never on this
   // field once no CartItem exists for the pair.
-  expectedMutationVersion Int
+  expectedMutationVersion      Int
   // null = desired Redis state is "released/absent". Non-null = desired
   // absolute reservation quantity. Never a delta - matches
   // InventoryReservationsService.reserve/reserveOrRenew's own
   // absolute-quantity contract, which is what makes idempotent
   // reassertion safe in the first place.
-  expectedQuantity        Int?
-  status                  CartReservationSyncStatus       @default(PENDING)
+  expectedQuantity             Int?
+  status                       CartReservationSyncStatus       @default(PENDING)
   // Phase 16A.0-DA, Unit DA.4B. Why this row is currently BLOCKED - null
   // whenever status is not BLOCKED. See CartReservationSyncBlockReason.
-  blockReason             CartReservationSyncBlockReason?
+  blockReason                  CartReservationSyncBlockReason?
   // Phase 16A.0-DA, Unit DA.4B. Meaningful only while status is BLOCKED -
   // when the next periodic recheck may run. This is a deliberate, narrow
   // exception to this table's "no nextAttemptAt/backoff column by design"
@@ -373,25 +382,26 @@ model CartReservationSyncState {
   // single runBatch tick while genuinely waiting on an external condition,
   // never a "retry with growing backoff" concept the original precedent
   // was actually about.
-  nextAttemptAt           DateTime?
+  nextAttemptAt                DateTime?
   // The permanent logical generation for this (cartId, productId) pair -
   // see the model-level comment. Advances on every write to this row,
   // including compensation attempts, for as long as the row exists.
-  generation              Int                             @default(0)
-  attemptCount            Int                             @default(0)
-  lastError               String?
-  processingStartedAt     DateTime?
+  generation                   Int                             @default(0)
+  attemptCount                 Int                             @default(0)
+  lastError                    String?
+  processingStartedAt          DateTime?
   // Non-null once the current generation's desired Redis state has been
   // confirmed - never deleted, only set. A later mutation's upsert clears
   // it back to null (there is new, unconfirmed desired state again).
-  resolvedAt              DateTime?
-  createdAt               DateTime                        @default(now())
-  updatedAt               DateTime                        @updatedAt
+  resolvedAt                   DateTime?
+  createdAt                    DateTime                        @default(now())
+  updatedAt                    DateTime                        @updatedAt
 
   cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@unique([cartId, productId])
+  @@unique([id, cartId, productId])
   @@map("cart_reservation_sync_states")
 }
 
@@ -621,6 +631,9 @@ enum ReservationFenceStatus {
 // Inactive G.4b.1 control journal. Latest revision is durable authority, even
 // while PREPARED: no permit may be issued from the preceding acknowledged row.
 model ReservationFenceTransition {
+  ordinaryOwners          OrdinaryReservationOwner[]
+  ordinaryCauses          OrdinaryReservationCommand[]    @relation("OrdinaryCause")
+  ordinaryDispatches      OrdinaryReservationCommand[]    @relation("OrdinaryDispatch")
   reservationSettlements  CheckoutReservationSettlement[]
   id                      String                          @id @default(uuid()) @db.Uuid
   revision                Int                             @unique
@@ -639,6 +652,7 @@ model ReservationFenceTransition {
   createdAt               DateTime                        @default(now())
   acknowledgedAt          DateTime?
 
+  @@unique([id, incarnation, epoch])
   @@index([incarnation, epoch])
   @@map("reservation_fence_transitions")
 }
@@ -2939,6 +2953,8 @@ enum CheckoutSettlementEffect {
 
 // Inactive protocol. PREPARED records intent, never proof of Redis acquisition.
 model CheckoutReservationSettlement {
+  ordinaryOwners            OrdinaryReservationOwner[]
+  ordinaryCommands          OrdinaryReservationCommand[]
   id                        String                        @id @default(uuid()) @db.Uuid
   attemptId                 String                        @unique
   operationId               String
@@ -2975,4 +2991,140 @@ model CheckoutReservationResource {
   @@unique([settlementId, productId])
   @@unique([settlementId, markerId])
   @@map("checkout_reservation_resources")
+}
+
+enum OrdinaryProvenanceState {
+  HISTORICAL_UNVERIFIED
+  NEW
+  TRACKED
+}
+
+enum OrdinaryOwnerState {
+  ISSUED
+  ACTIVE
+  RELEASE_PENDING
+  TRANSFER_PENDING
+  TRANSFERRED
+  CONSUMED
+  SUPERSEDED
+  REVOKED
+}
+
+enum OrdinaryCommandEffect {
+  W1
+  RELEASE
+  CANCEL_W1
+  CHECKOUT_COMPLETE
+}
+
+enum OrdinaryCommandState {
+  WAITING
+  PENDING
+  UNCERTAIN
+  REVOCATION_PENDING
+  ACKNOWLEDGED
+  CANCELLED
+  REVOKED
+}
+
+enum OrdinaryCommandReason {
+  CART_INTENT
+  CART_REMOVAL
+  COMPENSATION_ABSENCE
+  RECOVERY_ABSENCE
+  RETIREMENT
+  STALE_W1
+  CHECKOUT_SETTLED
+}
+
+enum OrdinaryW1Transition {
+  INITIAL
+  SAME_GENERATION
+  IMMEDIATE_PREDECESSOR
+  AFTER_CONSUMPTION
+}
+
+// A hold is a globally unique physical lifetime; quantity is command payload,
+// never part of canonical identity. Canonical UUIDv5 equality is checked in TS.
+model OrdinaryReservationOwner {
+  id                        String                         @id @default(uuid()) @db.Uuid
+  markerId                  String
+  generation                Int
+  holdInstanceId            String                         @unique @db.Uuid
+  customerId                String
+  cartId                    String
+  productId                 String
+  incarnation               String                         @db.Uuid
+  reservationExecutionEpoch Int
+  issuanceTransitionId      String                         @db.Uuid
+  state                     OrdinaryOwnerState             @default(ISSUED)
+  checkoutManifestId        String?                        @db.Uuid
+  createdAt                 DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime                       @updatedAt @db.Timestamptz(3)
+  closedAt                  DateTime?                      @db.Timestamptz(3)
+  marker                    CartReservationSyncState       @relation(fields: [markerId, cartId, productId], references: [id, cartId, productId], onDelete: Restrict, onUpdate: Restrict)
+  cart                      Cart                           @relation(fields: [cartId, customerId], references: [id, customerId], onDelete: Restrict, onUpdate: Restrict)
+  issuanceTransition        ReservationFenceTransition     @relation(fields: [issuanceTransitionId, incarnation, reservationExecutionEpoch], references: [id, incarnation, epoch], onDelete: Restrict, onUpdate: Restrict)
+  checkoutManifest          CheckoutReservationSettlement? @relation(fields: [checkoutManifestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  commands                  OrdinaryReservationCommand[]   @relation("OrdinaryTarget")
+  sourceCommands            OrdinaryReservationCommand[]   @relation("OrdinarySource")
+
+  @@unique([markerId, generation])
+  @@unique([id, markerId])
+  @@index([markerId, state, generation])
+  @@index([state, id])
+  @@index([cartId, productId, state])
+  @@index([incarnation, reservationExecutionEpoch, state])
+  @@index([checkoutManifestId])
+  @@map("ordinary_reservation_owners")
+}
+
+// Partial indexes and transition/counter guards are in the migration.
+// Receipts here are structurally validated persistence evidence, not Redis proof.
+model OrdinaryReservationCommand {
+  id                       String                         @id @default(uuid()) @db.Uuid
+  markerId                 String
+  ownerId                  String                         @db.Uuid
+  sourceOwnerId            String?                        @db.Uuid
+  effect                   OrdinaryCommandEffect
+  reason                   OrdinaryCommandReason
+  w1Transition             OrdinaryW1Transition?
+  intentGeneration         Int
+  expectedMutationVersion  Int
+  authorizedQuantity       Int?
+  queueOrdinal             Int
+  sequence                 Int?
+  expectedSequence         Int?
+  replayId                 String                         @unique @default(uuid()) @db.Uuid
+  state                    OrdinaryCommandState           @default(WAITING)
+  dependsOnCommandId       String?                        @db.Uuid
+  cancelledCommandId       String?                        @db.Uuid
+  checkoutManifestId       String?                        @db.Uuid
+  settlementReceiptHash    String?                        @db.Char(64)
+  causeTransitionId        String?                        @db.Uuid
+  lastDispatchTransitionId String?                        @db.Uuid
+  attemptCount             Int                            @default(0)
+  nextAttemptAt            DateTime?                      @db.Timestamptz(3)
+  completionReceiptHash    String?                        @db.Char(64)
+  createdAt                DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                       @updatedAt @db.Timestamptz(3)
+  acknowledgedAt           DateTime?                      @db.Timestamptz(3)
+  marker                   CartReservationSyncState       @relation(fields: [markerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  owner                    OrdinaryReservationOwner       @relation("OrdinaryTarget", fields: [ownerId, markerId], references: [id, markerId], onDelete: Restrict, onUpdate: Restrict)
+  sourceOwner              OrdinaryReservationOwner?      @relation("OrdinarySource", fields: [sourceOwnerId, markerId], references: [id, markerId], onDelete: Restrict, onUpdate: Restrict)
+  dependency               OrdinaryReservationCommand?    @relation("OrdinaryDependency", fields: [dependsOnCommandId, markerId], references: [id, markerId], onDelete: Restrict, onUpdate: Restrict)
+  dependants               OrdinaryReservationCommand[]   @relation("OrdinaryDependency")
+  cancelledCommand         OrdinaryReservationCommand?    @relation("OrdinaryCancellation", fields: [cancelledCommandId, markerId], references: [id, markerId], onDelete: Restrict, onUpdate: Restrict)
+  cancellations            OrdinaryReservationCommand[]   @relation("OrdinaryCancellation")
+  checkoutManifest         CheckoutReservationSettlement? @relation(fields: [checkoutManifestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  causeTransition          ReservationFenceTransition?    @relation("OrdinaryCause", fields: [causeTransitionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  lastDispatchTransition   ReservationFenceTransition?    @relation("OrdinaryDispatch", fields: [lastDispatchTransitionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([markerId, queueOrdinal])
+  @@unique([markerId, sequence])
+  @@unique([id, markerId])
+  @@index([state, nextAttemptAt, queueOrdinal, id])
+  @@index([ownerId, effect, state])
+  @@index([markerId, state, queueOrdinal])
+  @@map("ordinary_reservation_commands")
 }
