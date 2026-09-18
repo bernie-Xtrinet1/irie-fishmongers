@@ -99,7 +99,13 @@ export class OrdinaryReservationCommandRepository {
   }
 
   acknowledge(markerId: string, evidence: OrdinaryAcknowledgement) {
-    return this.owners.locked(markerId, async ({ tx, marker }) => {
+    return this.owners.locked(markerId, context => this.acknowledgeLocked(context, evidence));
+  }
+
+  // Caller owns marker -> ordered owners -> ordered commands in this transaction.
+  // Physical evidence verification remains the responsibility of the caller.
+  async acknowledgeLocked({ tx, marker }: OrdinaryMarkerTransaction, evidence: OrdinaryAcknowledgement) {
+      const markerId = marker.id;
       const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: evidence.commandId } });
       const owner = await this.owners.loadAuthority(command.ownerId, tx);
       if (command.markerId !== markerId || command.replayId !== evidence.replayId || command.sequence !== evidence.sequence
@@ -137,7 +143,33 @@ export class OrdinaryReservationCommandRepository {
         await tx.ordinaryReservationOwner.update({ where: { id: owner.id }, data: { state: 'CONSUMED', closedAt: now } });
       }
       return result;
-    });
+  }
+
+  // Observation is not dispatch. Do not increment attempts, invent a dispatch
+  // transition, or rearm work, even when the current fence is restrictive.
+  async recordUncertaintyLocked({ tx, marker }: OrdinaryMarkerTransaction, commandId: string) {
+    const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: commandId } });
+    if (command.markerId !== marker.id || !['W1', 'CANCEL_W1'].includes(command.effect))
+      throw new Error('ORDINARY_CLOSURE_COMMAND_REJECTED');
+    if (command.state !== 'PENDING') return command;
+    return tx.ordinaryReservationCommand.update({ where: { id: command.id }, data: { state: 'UNCERTAIN' } });
+  }
+
+  discoverClosure(input: { limit: number; cursor?: { markerId: string; sequence: number; id: string } }) {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
+      throw new Error('ORDINARY_CLOSURE_PAGE_REJECTED');
+    const cursor = input.cursor;
+    if (cursor && (!cursor.markerId || !cursor.id || !Number.isInteger(cursor.sequence) || cursor.sequence < 1))
+      throw new Error('ORDINARY_CLOSURE_CURSOR_REJECTED');
+    return this.prisma.ordinaryReservationCommand.findMany({ where: { AND: [
+      { effect: { in: ['W1', 'CANCEL_W1'] }, sequence: { not: null } },
+      { OR: [{ state: { in: ['PENDING', 'UNCERTAIN'] } }, { effect: 'W1', state: 'REVOCATION_PENDING' }] },
+      ...(cursor ? [{ OR: [
+        { markerId: { gt: cursor.markerId } },
+        { markerId: cursor.markerId, sequence: { gt: cursor.sequence } },
+        { markerId: cursor.markerId, sequence: cursor.sequence, id: { gt: cursor.id } },
+      ] }] : []),
+    ] }, orderBy: [{ markerId: 'asc' }, { sequence: 'asc' }, { id: 'asc' }], take: input.limit });
   }
 
   pending(markerId: string) {
