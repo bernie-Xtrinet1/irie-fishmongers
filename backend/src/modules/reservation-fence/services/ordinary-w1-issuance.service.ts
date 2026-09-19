@@ -4,6 +4,7 @@ import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-r
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
 import { legalPair, MAX_FENCE_COUNTER, UUID_PATTERN } from '../types/reservation-fence.types';
+import { ControlledOrdinaryIssuanceResult, OrdinaryAdmissionBinding, OrdinaryCommandAdmission } from '../types/ordinary-command-admission.types';
 
 export interface OrdinaryW1Intent {
   markerId: string;
@@ -26,6 +27,7 @@ export class OrdinaryW1IssuanceService {
   private readonly fences: ReservationFenceRepository;
   private readonly owners: OrdinaryReservationOwnerRepository;
   private readonly commands: OrdinaryReservationCommandRepository;
+  private readonly admissions = new WeakMap<object, OrdinaryAdmissionBinding>();
 
   constructor(prisma: PrismaService) {
     this.fences = new ReservationFenceRepository(prisma);
@@ -34,10 +36,33 @@ export class OrdinaryW1IssuanceService {
   }
 
   async issue(input: OrdinaryW1Intent): Promise<OrdinaryW1IssuanceResult> {
-    if (!this.valid(input)) return { status: 'DENIED', reason: 'INVALID_INTENT' };
+    return (await this.issueWithInsertion(input)).result;
+  }
+
+  async issueForControlledDispatch(input: OrdinaryW1Intent): Promise<ControlledOrdinaryIssuanceResult> {
+    const { result, inserted } = await this.issueWithInsertion(input);
+    // No capability exists during the transaction. A failed/ambiguous COMMIT
+    // returns inserted=false, even if the server actually persisted the command.
+    if (!inserted || result.status === 'DENIED') return { issuance: result, admission: null };
+    const admission = Object.freeze({}) as OrdinaryCommandAdmission;
+    this.admissions.set(admission, structuredClone(result.command));
+    return { issuance: result, admission };
+  }
+
+  consumeAdmission(admission: unknown): OrdinaryAdmissionBinding | null {
+    if (typeof admission !== 'object' || admission === null) return null;
+    const binding = this.admissions.get(admission);
+    if (!binding) return null;
+    this.admissions.delete(admission);
+    return structuredClone(binding);
+  }
+
+  private async issueWithInsertion(input: OrdinaryW1Intent): Promise<{ result: OrdinaryW1IssuanceResult; inserted: boolean }> {
+    if (!this.valid(input)) return { result: { status: 'DENIED', reason: 'INVALID_INTENT' }, inserted: false };
     const intent = { ...input };
+    let inserted = false;
     try {
-      return await this.fences.locked(async tx => {
+      const result = await this.fences.locked(async (tx): Promise<OrdinaryW1IssuanceResult> => {
         const fence = await this.fences.latest(tx);
         const mode = await this.fences.mode(tx);
         if (!fence || fence.status !== 'ACKNOWLEDGED' || fence.phase !== 'OPEN' || fence.protocol !== 1
@@ -119,6 +144,9 @@ export class OrdinaryW1IssuanceService {
             effect: 'W1', reason: 'CART_INTENT', w1Transition: transition,
             intentGeneration: intent.generation, expectedMutationVersion: intent.mutationVersion,
             authorizedQuantity: intent.quantity });
+          // Only this transaction's actual INSERT establishes provenance. A
+          // matching/reused row never takes this branch, including racing calls.
+          inserted = true;
           await tx.cartReservationSyncState.update({ where: { id: marker.id }, data: { ordinaryProvenanceState: 'TRACKED' } });
         }
         if (command.state === 'WAITING') command = await this.commands.promoteLocked(context, command.id) ?? command;
@@ -126,10 +154,11 @@ export class OrdinaryW1IssuanceService {
           throw new Error('Unexpected command state');
         return { status: command.state, command };
       });
+      return { result, inserted };
     } catch {
       // No result escapes a failed transaction/COMMIT. In particular, never
       // retry allocation after a uniqueness, lock, or ambiguous commit error.
-      return { status: 'DENIED', reason: 'AUTHORITY_REJECTED' };
+      return { result: { status: 'DENIED', reason: 'AUTHORITY_REJECTED' }, inserted: false };
     }
   }
 
