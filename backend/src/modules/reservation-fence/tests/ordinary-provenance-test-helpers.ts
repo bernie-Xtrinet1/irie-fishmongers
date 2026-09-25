@@ -10,7 +10,7 @@ import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-res
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
 
 // PostgreSQL only. This fixture never constructs a Redis client.
-export async function openOrdinarySchema(baseline: 45 | 46 = 46) {
+export async function openOrdinarySchema(baseline: 45 | 46 | 47 = 47) {
   const url = new URL(process.env.DATABASE_URL!);
   if (!['localhost', '127.0.0.1'].includes(url.hostname) || !/^\/g1_isolated_[0-9]+$/.test(url.pathname)
     || process.env.NODE_ENV !== 'test') throw new Error('Disposable local test database required');
@@ -41,13 +41,14 @@ export async function openOrdinarySchema(baseline: 45 | 46 = 46) {
     } catch { throw new Error('Ordinary disposable migration failed (connection details omitted)'); }
   };
   try {
-    if (names.length !== 46 || names[45] !== '20260915000000_ordinary_owner_provenance') throw new Error('Expected exact 46-migration lineage');
+    if (names.length !== 47 || names[45] !== '20260915000000_ordinary_owner_provenance'
+      || names[46] !== '20260919000000_ordinary_invalidation_publication') throw new Error('Expected exact 47-migration lineage');
     cpSync(join(source, 'schema.prisma'), join(dir, 'schema.prisma'));
     cpSync(join(source, 'migrations/migration_lock.toml'), join(dir, 'migrations/migration_lock.toml'));
     deploy(baseline);
     await db.$connect();
   } catch (error) { await close(); throw error; }
-  return { db, fresh, close, upgrade: () => deploy(46) };
+  return { db, fresh, close, upgrade: () => deploy(baseline === 45 ? 46 : 47) };
 }
 
 export async function ordinaryFixture(db: PrismaService, markerId = randomUUID()) {

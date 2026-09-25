@@ -116,13 +116,44 @@ export class ReservationEngineModeService {
   // acceptable cost here.
   async setMode(input: SetReservationEngineModeInput): Promise<SetReservationEngineModeResult> {
     return this.prisma.$transaction(
-      async (tx) => {
+      tx => this.transitionInTransaction(tx, input, 'EXISTING_PUBLIC_PATH'),
+      { timeout: CUTOVER_TRANSITION_TX_TIMEOUT_MS },
+    );
+  }
+
+  // Inactive publication composition only. The caller must acquire exclusive
+  // mode authority before domain/scope locks, never upgrade a shared mode lock.
+  // This entry point cannot activate, reopen or run Redis-dependent rollback.
+  async restrictInTransaction(
+    tx: Prisma.TransactionClient,
+    input: SetReservationEngineModeInput,
+  ): Promise<SetReservationEngineModeResult> {
+    const [lock] = await tx.$queryRaw<{ held: boolean }[]>`SELECT EXISTS (
+      SELECT 1 FROM pg_locks WHERE locktype='advisory' AND granted
+      AND pid=pg_backend_pid() AND mode='ExclusiveLock' AND objsubid=1
+      AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+      AND classid=((hashtext(${TRANSITION_LOCK_KEY})::bigint >> 32) & 4294967295)::oid
+      AND objid=(hashtext(${TRANSITION_LOCK_KEY})::bigint & 4294967295)::oid
+    ) AS held`;
+    if (!lock?.held) throw new Error('EXCLUSIVE_MODE_PUBLICATION_LOCK_REQUIRED');
+    return this.transitionInTransaction(tx, input, 'INACTIVE_RESTRICTION');
+  }
+
+  private async transitionInTransaction(
+    tx: Prisma.TransactionClient,
+    input: SetReservationEngineModeInput,
+    path: 'EXISTING_PUBLIC_PATH' | 'INACTIVE_RESTRICTION',
+  ): Promise<SetReservationEngineModeResult> {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
         const postLockNow = Date.now();
 
         const currentConfig = await this.repository.findCurrent(tx);
         const currentMode: ReservationEngineMode = currentConfig?.mode ?? 'LEGACY';
         const { targetMode, updatedById } = input;
+
+        if (path === 'INACTIVE_RESTRICTION' && targetMode !== 'DRAINING') {
+          return { ok: false, code: 'INVALID_TRANSITION', from: currentMode, to: targetMode };
+        }
 
         if (!VALID_TRANSITIONS.has(`${currentMode}->${targetMode}`)) {
           return { ok: false, code: 'INVALID_TRANSITION', from: currentMode, to: targetMode };
@@ -151,9 +182,6 @@ export class ReservationEngineModeService {
 
         const created = await this.repository.create({ mode: targetMode, updatedById }, tx);
         return { ok: true, id: created.id, mode: created.mode, createdAt: created.createdAt };
-      },
-      { timeout: CUTOVER_TRANSITION_TX_TIMEOUT_MS },
-    );
   }
 
   // CART_SCOPED activation-boundary gate (see the gate design review's

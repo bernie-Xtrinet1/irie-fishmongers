@@ -5,6 +5,7 @@ import { OrdinaryMarkerTransaction } from '../types/ordinary-reservation-provena
 import { legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ReservationFenceRepository } from './reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from './ordinary-reservation-owner.repository';
+import { requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
 
 // INACTIVE: only for a future controlled composition in which every physical
 // submission is claim-gated. Zero attempts does NOT prove arbitrary older work
@@ -42,6 +43,7 @@ export class OrdinaryCommandDispatchClaimRepository {
           || command.sequence === null || command.sequence > context.marker.ordinaryCommandSequence)
           throw new Error('CLAIM_ALREADY_CONSUMED_OR_INELIGIBLE');
         const actual = await this.identity(context, command);
+        await requireOrdinaryBarrierReadiness(tx, command.markerId, command.id);
         if (actual.incarnation !== fence.incarnation || actual.epoch !== fence.epoch || JSON.stringify(actual) !== bytes)
           throw new Error('CLAIM_IDENTITY_REJECTED');
         if (command.dependsOnCommandId) {

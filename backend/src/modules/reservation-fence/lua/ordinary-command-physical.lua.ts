@@ -1,9 +1,10 @@
 import { MUTATION_COMMON_LUA } from './reservation-mutation-common.lua';
+import { ORDINARY_INVALIDATION_PHYSICAL_GUARD } from './ordinary-invalidation.lua';
 import { MAX_RESERVATION_LIFETIME_SECONDS, RESERVATION_TTL_SECONDS } from '../../inventory/constants/inventory.constants';
 
 // Standalone Redis only: existing cart/product hash tags and global control
 // keys span slots. Scripts are inactive; no existing writer imports this file.
-const COMMON = MUTATION_COMMON_LUA + `
+const COMMON = MUTATION_COMMON_LUA + ORDINARY_INVALIDATION_PHYSICAL_GUARD + `
 local function deny() return cjson.encode({code='REJECTED'}) end
 local function identityValid(i)
   if not fields(i,16) or i.version~=1 or not uuid(i.commandId) or not uuid(i.replayId) or
@@ -104,10 +105,10 @@ end
 
 export const ORDINARY_PHYSICAL_REGISTER = COMMON + `
 local g=decode(ARGV[1])
-if not fields(g,6) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
+if not fields(g,(g and g.barrierBinding) and 7 or 6) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
   (g.purpose~='GENESIS' and g.purpose~='EXECUTE') or KEYS[4]~='reservation:fence:ordinary-command-grant:'..g.grantId then return deny() end
 local i=decode(g.identity)
-if not identityValid(i) or not scope(i) then return deny() end
+if not identityValid(i) or not scope(i) or not ordinaryBarrierAllowed(i,g.barrierBinding) then return deny() end
 local current,err=control(g.tuple)
 if err or current.phase~='OPEN' or current.incarnation~=i.incarnation or current.epoch~=i.epoch or
   redis.call('EXISTS',KEYS[4])~=0 then return deny() end
@@ -118,13 +119,18 @@ return cjson.encode({code='REGISTERED'})
 
 const GRANT = COMMON + `
 local request=decode(ARGV[1])
-if not fields(request,6) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId then return deny() end
+if not fields(request,(request and request.barrierBinding) and 7 or 6) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId then return deny() end
 local g,ge=read(KEYS[4])
-if ge or not fields(g,6) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
+if ge or not fields(g,(g and g.barrierBinding) and 7 or 6) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
   g.purpose~=request.purpose or compareTuple(g.tuple,request.tuple) or type(g.expiresAt)~='number' or
   g.expiresAt<=nowMs() or g.expiresAt>nowMs()+5000 then return deny() end
 local i=decode(g.identity)
-if not identityValid(i) or not scope(i) then return deny() end
+if not identityValid(i) or not scope(i) or not ordinaryBarrierAllowed(i,g.barrierBinding) or
+ (g.barrierBinding~=nil)~=(request.barrierBinding~=nil) then return deny() end
+if g.barrierBinding then
+ if not fields(request.barrierBinding,8) then return deny() end
+ for key,value in pairs(g.barrierBinding) do if request.barrierBinding[key]~=value then return deny() end end
+end
 local current,err=control(g.tuple)
 if err or current.phase~='OPEN' or current.incarnation~=i.incarnation or current.epoch~=i.epoch then return deny() end
 local r=i.target

@@ -108,6 +108,8 @@ export class ReservationFenceService {
   // An inactive permit check, not a Redis mutation authorization. G.4b.2 must
   // check the physical tuple atomically inside EVERY mutation script.
   async checkIssuance(tx: Prisma.TransactionClient): Promise<FenceResult<ReservationFenceTransition>> {
+    const invalidation = await tx.ordinaryInvalidationHead.findUnique({ where: { scope: 'GLOBAL' } });
+    if (invalidation && (!invalidation.ready || invalidation.pendingIntentId)) return { code: 'DURABLE_REDIS_DISAGREEMENT' };
     const row = await this.repository.latest(tx);
     const mode = await this.repository.mode(tx);
     if (!row || row.status !== 'ACKNOWLEDGED' || row.phase !== 'OPEN' || row.mode !== 'CART_SCOPED' ||

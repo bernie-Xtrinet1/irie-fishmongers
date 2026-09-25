@@ -3,6 +3,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
+import { requireOrdinaryBarrierReadiness } from '../repositories/ordinary-invalidation.repository';
 import { legalPair, MAX_FENCE_COUNTER, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ControlledOrdinaryIssuanceResult, OrdinaryAdmissionBinding, OrdinaryCommandAdmission } from '../types/ordinary-command-admission.types';
 
@@ -70,6 +71,7 @@ export class OrdinaryW1IssuanceService {
           || !legalPair(mode.mode, fence.phase, true)) throw new Error('Fence rejected');
         const context = await this.owners.lockMarker(tx, intent.markerId);
         const { marker } = context;
+        await requireOrdinaryBarrierReadiness(tx, marker.id);
         const cart = await tx.cart.findUniqueOrThrow({ where: { id: marker.cartId } });
         if (marker.generation !== intent.generation || marker.expectedMutationVersion !== intent.mutationVersion
           || marker.cartId !== intent.cartId || marker.productId !== intent.productId
@@ -95,6 +97,7 @@ export class OrdinaryW1IssuanceService {
         if (matches.length > 1) throw new Error('Ambiguous intent');
         let command = matches[0];
         if (command) {
+          await requireOrdinaryBarrierReadiness(tx, marker.id, command.id);
           if (!owner || command.ownerId !== owner.id || command.authorizedQuantity !== intent.quantity
             || command.reason !== 'CART_INTENT' || command.dependsOnCommandId !== null
             || command.cancelledCommandId !== null || command.checkoutManifestId !== null

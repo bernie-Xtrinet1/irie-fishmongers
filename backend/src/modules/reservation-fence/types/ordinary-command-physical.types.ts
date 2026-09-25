@@ -1,5 +1,6 @@
 import { FenceTuple } from './reservation-fence.types';
 import { ResourceAuthority } from './reservation-mutation.types';
+import { OrdinaryBarrierBinding } from './ordinary-invalidation.types';
 
 // Inactive, standalone Redis protocol. Never a generic mutation permit.
 export interface OrdinaryPhysicalIdentity {
@@ -28,6 +29,7 @@ export interface OrdinaryPhysicalGrant {
   identity: string;
   purpose: 'GENESIS' | 'EXECUTE';
   expiresAt: number;
+  barrierBinding?: OrdinaryBarrierBinding;
 }
 
 export type OrdinaryPhysicalResult =

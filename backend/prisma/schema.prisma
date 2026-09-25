@@ -3082,6 +3082,7 @@ model OrdinaryReservationOwner {
 // Partial indexes and transition/counter guards are in the migration.
 // Receipts here are structurally validated persistence evidence, not Redis proof.
 model OrdinaryReservationCommand {
+  invalidationBinding      OrdinaryCommandBarrierBinding?
   id                       String                         @id @default(uuid()) @db.Uuid
   markerId                 String
   ownerId                  String                         @db.Uuid
@@ -3127,4 +3128,78 @@ model OrdinaryReservationCommand {
   @@index([ownerId, effect, state])
   @@index([markerId, state, queueOrdinal])
   @@map("ordinary_reservation_commands")
+}
+
+// Inactive invalidation protocol. Installation inserts no scope heads and
+// backfills no command bindings. Scope rows constitute explicit enrollment.
+enum OrdinaryInvalidationStatus {
+  PREPARED
+  BARRIER_CONFIRMED
+  PUBLISHED
+  SUPERSEDED
+}
+
+model OrdinaryInvalidationIntent {
+  id                String                     @id @db.Uuid
+  operationId       String                     @unique @db.Uuid
+  kind              String                     @db.VarChar(8)
+  request           Json
+  digest            String                     @db.Char(64)
+  status            OrdinaryInvalidationStatus @default(PREPARED)
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  acknowledgement   String?
+  acknowledgementHash String?                  @db.Char(64)
+  publicationTx     BigInt?
+  publishedAt       DateTime?                  @db.Timestamptz(3)
+  resultReference   Json?
+  supersededById    String?                    @db.Uuid
+  supersededBy      OrdinaryInvalidationIntent? @relation("InvalidationReplacement", fields: [supersededById], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supersedes        OrdinaryInvalidationIntent[] @relation("InvalidationReplacement")
+  scopes            OrdinaryInvalidationScope[]
+  pendingHeads      OrdinaryInvalidationHead[]
+
+  @@index([status, id])
+  @@map("ordinary_invalidation_intents")
+}
+
+model OrdinaryInvalidationHead {
+  scope             String                     @id
+  incarnation       String                     @db.Uuid
+  epoch             Int
+  publishedRevision Int                        @default(0)
+  allocatedRevision Int                        @default(0)
+  ready             Boolean                    @default(false)
+  pendingIntentId   String?                    @db.Uuid
+  pendingIntent     OrdinaryInvalidationIntent? @relation(fields: [pendingIntentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  allocations       OrdinaryInvalidationScope[]
+
+  @@map("ordinary_invalidation_heads")
+}
+
+model OrdinaryInvalidationScope {
+  intentId          String                     @db.Uuid
+  scope             String
+  previousRevision  Int
+  revision          Int
+  snapshot          Json
+  intent            OrdinaryInvalidationIntent @relation(fields: [intentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  head              OrdinaryInvalidationHead   @relation(fields: [scope], references: [scope], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([intentId, scope])
+  @@unique([scope, revision])
+  @@map("ordinary_invalidation_scopes")
+}
+
+model OrdinaryCommandBarrierBinding {
+  commandId         String                     @id @db.Uuid
+  replayId          String                     @unique @db.Uuid
+  markerId          String
+  version           Int
+  globalRevision    Int
+  markerRevision    Int
+  incarnation       String                     @db.Uuid
+  epoch             Int
+  command           OrdinaryReservationCommand @relation(fields: [commandId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@map("ordinary_command_barrier_bindings")
 }

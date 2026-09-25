@@ -1,6 +1,7 @@
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdinaryAcknowledgement, OrdinaryCommandPayload, OrdinaryMarkerTransaction, OrdinaryOwnerIssuance } from '../types/ordinary-reservation-provenance.types';
 import { OrdinaryReservationOwnerRepository } from './ordinary-reservation-owner.repository';
+import { requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
 
 // Persistence foundation only. No Redis, dispatcher, permit, or runtime wiring.
 export class OrdinaryReservationCommandRepository {
@@ -22,6 +23,7 @@ export class OrdinaryReservationCommandRepository {
 
   async insert(context: OrdinaryMarkerTransaction, payload: OrdinaryCommandPayload) {
     const { tx, marker } = context;
+    await requireOrdinaryBarrierReadiness(tx, marker.id);
     // FK parents outside the marker subtree must not create a backward wait.
     if (payload.checkoutManifestId) await tx.$queryRaw`SELECT id FROM checkout_reservation_settlements WHERE id=${payload.checkoutManifestId}::uuid FOR KEY SHARE NOWAIT`;
     if (payload.causeTransitionId) await tx.$queryRaw`SELECT id FROM reservation_fence_transitions WHERE id=${payload.causeTransitionId}::uuid FOR KEY SHARE NOWAIT`;
@@ -51,6 +53,7 @@ export class OrdinaryReservationCommandRepository {
   async promoteLocked(context: OrdinaryMarkerTransaction, expectedCommandId?: string) {
     const markerId = context.marker.id;
     const { tx } = context;
+    await requireOrdinaryBarrierReadiness(tx, markerId);
     const active = await tx.ordinaryReservationCommand.findFirst({ where: { markerId, state: { in: ['PENDING', 'UNCERTAIN'] } } });
     const waiting = await tx.ordinaryReservationCommand.findMany({ where: { markerId, state: 'WAITING' }, orderBy: { queueOrdinal: 'asc' } });
     // Only a cancellation tied to the occupying W1 can bypass the queue.

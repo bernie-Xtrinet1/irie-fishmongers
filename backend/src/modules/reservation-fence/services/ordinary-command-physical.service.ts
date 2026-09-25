@@ -4,6 +4,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { ReservationFenceRepository, transitionTuple } from '../repositories/reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
+import { requireOrdinaryBarrierReadiness } from '../repositories/ordinary-invalidation.repository';
 import { legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ResourceAuthority } from '../types/reservation-mutation.types';
 import { OrdinaryPhysicalGrant, OrdinaryPhysicalIdentity, OrdinaryPhysicalResult,
@@ -84,7 +85,8 @@ export class OrdinaryCommandPhysicalService {
       if (purpose === 'GENESIS' && (root.w1Transition !== 'INITIAL' || root.queueOrdinal !== 1 || root.expectedSequence !== 0
         || marker.ordinaryAcknowledgedSequence !== 0 || rows.some(row => row.state === 'ACKNOWLEDGED')))
         throw new Error('Genesis denied');
-      return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id };
+      const binding = purpose === 'OBSERVE' ? null : await requireOrdinaryBarrierReadiness(tx, marker.id, command.id);
+      return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id, binding };
     });
   }
 
@@ -98,6 +100,7 @@ export class OrdinaryCommandPhysicalService {
         [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger], [authority.identity]), authority.identity);
       const grant: OrdinaryPhysicalGrant = { version: 1, grantId: randomUUID(), tuple: authority.tuple,
         identity: authority.identity, purpose, expiresAt: 0 };
+      if (authority.binding) grant.barrierBinding = { ...authority.binding, version: 1 };
       const keys = [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger, ordinaryPhysicalGrantKey(grant.grantId)];
       const raw = await this.redis.eval(ORDINARY_PHYSICAL_REGISTER, keys, [JSON.stringify(grant)]);
       if (typeof raw !== 'string') return { code: 'UNCERTAIN' };
