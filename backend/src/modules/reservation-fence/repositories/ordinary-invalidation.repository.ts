@@ -184,3 +184,22 @@ export class OrdinaryInvalidationRepository {
     }, [intentId]);
   }
 }
+
+// Separate cleanup predicate. Ordinary readiness above is deliberately unchanged.
+export async function requireReleasePublication(tx: Prisma.TransactionClient, commandId: string, current = true) {
+  if (current) await tx.$queryRaw`SELECT ordinary_release_dispatchable(${commandId}::uuid)`;
+  else await tx.$queryRaw`SELECT ordinary_release_binding(${commandId}::uuid,false)`;
+  const binding = await tx.ordinaryCommandBarrierBinding.findUniqueOrThrow({ where: { commandId } });
+  const confirmations: string[] = [];
+  for (const [scope, revision] of [['GLOBAL', binding.globalRevision], [`MARKER:${binding.markerId}`, binding.markerRevision]] as const) {
+    const row = await tx.ordinaryInvalidationScope.findUniqueOrThrow({ where: { scope_revision: { scope, revision } }, include: { intent: true } });
+    const request = row.intent.request;
+    validateInvalidationRequest(request);
+    const expected = canonicalInvalidationJson(barrierAcknowledgement(request));
+    if (row.intent.status !== 'PUBLISHED' || row.intent.acknowledgement !== expected
+      || row.intent.acknowledgementHash !== invalidationDigest(barrierAcknowledgement(request)))
+      throw new Error('RELEASE_CONFIRMATION_REJECTED');
+    confirmations.push(expected);
+  }
+  return { binding, publication: { global: confirmations[0]!, marker: confirmations[1]! } };
+}

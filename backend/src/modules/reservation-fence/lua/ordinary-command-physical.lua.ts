@@ -16,6 +16,7 @@ local function identityValid(i)
       i.source.cartId~=i.target.cartId or i.source.customerId~=i.target.customerId or
       i.source.productId~=i.target.productId then return false end
   elseif i.sourceOwnerId~=cjson.null then return false end
+  if i.action=='RELEASE' then return i.source==cjson.null and i.sourceOwnerId==cjson.null and i.transition==cjson.null and i.quantity==cjson.null and type(i.parent)=='string' end
   if i.action=='CANCEL_W1' then return i.transition==cjson.null and i.quantity==cjson.null and type(i.parent)=='string' end
   if i.action~='W1' or i.parent~=cjson.null or not integer(i.quantity) or i.quantity<1 then return false end
   if i.transition=='INITIAL' then return i.source==cjson.null end
@@ -39,6 +40,7 @@ local function receiptValid(v,expected)
   local i=decode(v.identity)
   if not identityValid(i) or v.action~=i.action then return false end
   if i.action=='CANCEL_W1' then return v.result=='CANCELLED' end
+  if i.action=='RELEASE' then return v.result=='RELEASED' end
   local e=v.result
   return entryMatches(e,i.target,i) and e.quantity==i.quantity and e.reservationMutationId==i.replayId and
     type(e.createdAt)=='number' and type(e.lastRenewedAt)=='number' and type(e.expiresAt)=='number' and
@@ -105,12 +107,13 @@ end
 
 export const ORDINARY_PHYSICAL_REGISTER = COMMON + `
 local g=decode(ARGV[1])
-if not fields(g,(g and g.barrierBinding) and 7 or 6) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
+if not fields(g,(g and g.releasePublication) and 8 or ((g and g.barrierBinding) and 7 or 6)) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
   (g.purpose~='GENESIS' and g.purpose~='EXECUTE') or KEYS[4]~='reservation:fence:ordinary-command-grant:'..g.grantId then return deny() end
 local i=decode(g.identity)
-if not identityValid(i) or not scope(i) or not ordinaryBarrierAllowed(i,g.barrierBinding) then return deny() end
+if not identityValid(i) or not scope(i) or not (i.action=='RELEASE' and releaseBarrierAllowed(i,g.barrierBinding,g.releasePublication) or i.action~='RELEASE' and ordinaryBarrierAllowed(i,g.barrierBinding)) then return deny() end
+if i.action=='RELEASE' and (g.purpose~='EXECUTE' or not g.releasePublication) then return deny() end
 local current,err=control(g.tuple)
-if err or current.phase~='OPEN' or current.incarnation~=i.incarnation or current.epoch~=i.epoch or
+if err or (current.phase~='OPEN' and not (i.action=='RELEASE' and current.phase=='DRAINING')) or current.incarnation~=i.incarnation or current.epoch~=i.epoch or
   redis.call('EXISTS',KEYS[4])~=0 then return deny() end
 g.expiresAt=nowMs()+5000
 redis.call('SET',KEYS[4],cjson.encode(g),'PX',5000,'NX')
@@ -119,20 +122,23 @@ return cjson.encode({code='REGISTERED'})
 
 const GRANT = COMMON + `
 local request=decode(ARGV[1])
-if not fields(request,(request and request.barrierBinding) and 7 or 6) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId then return deny() end
+if not fields(request,(request and request.releasePublication) and 8 or ((request and request.barrierBinding) and 7 or 6)) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId then return deny() end
 local g,ge=read(KEYS[4])
-if ge or not fields(g,(g and g.barrierBinding) and 7 or 6) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
+if ge or not fields(g,(g and g.releasePublication) and 8 or ((g and g.barrierBinding) and 7 or 6)) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
   g.purpose~=request.purpose or compareTuple(g.tuple,request.tuple) or type(g.expiresAt)~='number' or
   g.expiresAt<=nowMs() or g.expiresAt>nowMs()+5000 then return deny() end
 local i=decode(g.identity)
-if not identityValid(i) or not scope(i) or not ordinaryBarrierAllowed(i,g.barrierBinding) or
+if not identityValid(i) or not scope(i) or not (i.action=='RELEASE' and releaseBarrierAllowed(i,g.barrierBinding,g.releasePublication) or i.action~='RELEASE' and ordinaryBarrierAllowed(i,g.barrierBinding)) or
  (g.barrierBinding~=nil)~=(request.barrierBinding~=nil) then return deny() end
+if (g.releasePublication~=nil)~=(request.releasePublication~=nil) then return deny() end
+if g.releasePublication and (not fields(request.releasePublication,3) or g.releasePublication.global~=request.releasePublication.global
+ or g.releasePublication.marker~=request.releasePublication.marker or g.releasePublication.ownershipReceipt~=request.releasePublication.ownershipReceipt) then return deny() end
 if g.barrierBinding then
  if not fields(request.barrierBinding,8) then return deny() end
  for key,value in pairs(g.barrierBinding) do if request.barrierBinding[key]~=value then return deny() end end
 end
 local current,err=control(g.tuple)
-if err or current.phase~='OPEN' or current.incarnation~=i.incarnation or current.epoch~=i.epoch then return deny() end
+if err or (current.phase~='OPEN' and not (i.action=='RELEASE' and current.phase=='DRAINING')) or current.incarnation~=i.incarnation or current.epoch~=i.epoch then return deny() end
 local r=i.target
 local entryKey='inv:reserved:{'..r.cartId..'}:'..r.productId
 local guardKey='reservation:fence:resource:'..r.markerId
@@ -210,6 +216,28 @@ if c.sequence~=i.expectedSequence or redis.call('EXISTS',pinKey)~=0 then return 
 local e,ee=read(entryKey)
 local guard,ge=read(guardKey)
 if ee=='MALFORMED' or ge=='MALFORMED' then return deny() end
+if i.action=='RELEASE' then
+ local p=decode(i.parent)
+ if not identityValid(p) or p.action~='W1' or p.ownerId~=i.ownerId or not sameResource(p.target,r)
+  or p.incarnation~=i.incarnation or p.epoch~=i.epoch or p.sequence>i.expectedSequence then return deny() end
+ local prior,pe=receipt(p.commandId,i.parent)
+ if pe or not prior or prior.raw~=g.releasePublication.ownershipReceipt or ee or ge or not fields(guard,3) or guard.incarnation~=i.incarnation or guard.epoch~=i.epoch
+  or not sameResource(guard.resource,r) or not entryMatches(e,r,i) or e.quantity~=p.quantity
+  or e.reservationMutationId~=p.replayId or redis.call('HEXISTS',KEYS[2],guardKey)~=1 then return deny() end
+ for _,key in ipairs({cartIndex,productIndex}) do if redis.call('TYPE',key).ok~='set' then return deny() end end
+ if redis.call('SISMEMBER',cartIndex,r.productId)~=1 or redis.call('SISMEMBER',productIndex,r.cartId)~=1
+  or redis.call('TYPE',totalKey).ok~='string' then return deny() end
+ local total=tonumber(redis.call('GET',totalKey))
+ if not total or total~=math.floor(total) or total>9007199254740991 or total<e.quantity then return deny() end
+ local raw=cjson.encode({version=1,identity=g.identity,action=i.action,complete=true,result='RELEASED'})
+ c.sequence=i.sequence c.commandId=i.commandId c.replayId=i.replayId
+ local cursorRaw=cjson.encode(c)
+ redis.call('DEL',entryKey)
+ redis.call('SREM',cartIndex,r.productId) redis.call('SREM',productIndex,r.cartId)
+ redis.call('SET',totalKey,string.format('%.0f',total-e.quantity))
+ redis.call('HSET',KEYS[3],'cursor',cursorRaw,'receipt:'..i.commandId,raw)
+ return cjson.encode({code='COMPLETED',identity=g.identity,receipt=raw})
+end
 if i.transition=='INITIAL' then
   if e or guard or redis.call('HEXISTS',KEYS[2],guardKey)==1 then return deny() end
 else

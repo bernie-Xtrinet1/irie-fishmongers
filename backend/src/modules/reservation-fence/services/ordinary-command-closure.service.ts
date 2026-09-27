@@ -1,3 +1,5 @@
+import { releaseIdentity } from '../types/ordinary-release.types';
+import { requireReleasePublication } from '../repositories/ordinary-invalidation.repository';
 import { createHash } from 'crypto';
 import { OrdinaryReservationCommand } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
@@ -5,7 +7,7 @@ import { OrdinaryCommandPhysicalService } from './ordinary-command-physical.serv
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
-import { OrdinaryMarkerTransaction } from '../types/ordinary-reservation-provenance.types';
+import { OrdinaryAcknowledgement, OrdinaryMarkerTransaction } from '../types/ordinary-reservation-provenance.types';
 import { OrdinaryPhysicalIdentity } from '../types/ordinary-command-physical.types';
 import { UUID_PATTERN } from '../types/reservation-fence.types';
 
@@ -14,6 +16,17 @@ type ClosureResult = { status: 'UNRESOLVED' } | {
 };
 type Evidence = { code: string; identity: string; receipt: string; hash: string;
   envelope: Record<string, unknown>; parsed: Record<string, unknown> };
+
+// Only successful validation below can mint this transaction-local handoff.
+// It supplements durable identity/evidence validation; it is not Redis authority.
+const releaseCompletions = new WeakMap<object, { context: OrdinaryMarkerTransaction; ack: OrdinaryAcknowledgement }>();
+export function consumeVerifiedReleaseCompletion(context: OrdinaryMarkerTransaction, token: unknown): OrdinaryAcknowledgement {
+  if (typeof token !== 'object' || token === null) throw new Error('RELEASE_VERIFIED_COMPLETION_REQUIRED');
+  const proof = releaseCompletions.get(token);
+  if (!proof || proof.context !== context) throw new Error('RELEASE_VERIFIED_COMPLETION_REQUIRED');
+  releaseCompletions.delete(token);
+  return proof.ack;
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -62,10 +75,16 @@ export class OrdinaryCommandClosureService {
     try {
       return await this.locked(commandId, async (context, requested) => {
         const winner = await this.validate(context, requested, proof);
-        const result = await this.commands.acknowledgeLocked(context, {
+        const ack: OrdinaryAcknowledgement = {
           commandId: winner.id, replayId: winner.replayId, sequence: winner.sequence!,
           expectedSequence: winner.expectedSequence!, completionReceiptHash: proof.hash,
-        });
+        };
+        let result: OrdinaryReservationCommand;
+        if (winner.effect === 'RELEASE') {
+          const token = Object.freeze({});
+          releaseCompletions.set(token, { context, ack });
+          result = await this.commands.acknowledgeVerifiedReleaseLocked(context, token);
+        } else result = await this.commands.acknowledgeLocked(context, ack);
         return this.completed(result);
       });
     } catch {
@@ -96,7 +115,7 @@ export class OrdinaryCommandClosureService {
       const reference = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id } });
       const context = await this.owners.lockMarker(tx, reference.markerId);
       const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id } });
-      if (!['W1', 'CANCEL_W1'].includes(command.effect)) throw new Error('ORDINARY_CLOSURE_EFFECT_REJECTED');
+      if (!['W1', 'CANCEL_W1', 'RELEASE'].includes(command.effect)) throw new Error('ORDINARY_CLOSURE_EFFECT_REJECTED');
       return work(context, command);
     });
   }
@@ -122,6 +141,10 @@ export class OrdinaryCommandClosureService {
 
   private async identity(context: OrdinaryMarkerTransaction, command: OrdinaryReservationCommand): Promise<OrdinaryPhysicalIdentity> {
     const { tx, marker } = context;
+    if (command.effect === 'RELEASE') {
+      await requireReleasePublication(tx, command.id, false);
+      return releaseIdentity(tx, command, this.owners);
+    }
     if (command.markerId !== marker.id || command.sequence === null || command.expectedSequence === null
       || command.sequence <= command.expectedSequence) throw new Error('ORDINARY_CLOSURE_SEQUENCE_REJECTED');
     if (command.effect === 'CANCEL_W1') {
@@ -168,7 +191,12 @@ export class OrdinaryCommandClosureService {
     const expected = await this.identity(context, winner);
     if (proof.identity !== JSON.stringify(expected) || proof.envelope.action !== expected.action)
       throw new Error('ORDINARY_CLOSURE_IDENTITY_REJECTED');
-    if (expected.action === 'CANCEL_W1') {
+    if (expected.action === 'RELEASE') {
+      if (proof.envelope.result !== 'RELEASED') throw new Error('RELEASE_RESULT_REJECTED');
+      const owner = await this.owners.loadAuthority(winner.ownerId, context.tx);
+      if (owner.state !== (winner.state === 'ACKNOWLEDGED' ? 'CONSUMED' : 'RELEASE_PENDING'))
+        throw new Error('RELEASE_LIFECYCLE_REJECTED');
+    } else if (expected.action === 'CANCEL_W1') {
       if (proof.envelope.result !== 'CANCELLED') throw new Error('ORDINARY_CLOSURE_RESULT_REJECTED');
     } else {
       const e = proof.envelope.result, r = expected.target;

@@ -9,14 +9,25 @@ import { barrierAcknowledgement, canonicalInvalidationJson, invalidationDigest, 
 export class OrdinaryInvalidationPublicationService {
   constructor(private readonly repository: OrdinaryInvalidationRepository) {}
 
+  async publishNew(intentId: string, domain: (tx: Prisma.TransactionClient) => Promise<Prisma.InputJsonValue>) {
+    return this.publishInternal(intentId, domain, false);
+  }
+
   async publish(intentId: string, domain: (tx: Prisma.TransactionClient) => Promise<Prisma.InputJsonValue>) {
+    return this.publishInternal(intentId, domain, true);
+  }
+
+  private async publishInternal(intentId: string, domain: (tx: Prisma.TransactionClient) => Promise<Prisma.InputJsonValue>, recover: boolean) {
     const reference = await this.repository.read(intentId);
     if (!reference) throw new Error('UNKNOWN_INVALIDATION');
     const request = this.repository.request(reference.request);
     try {
       return await this.repository.locked(request, async tx => {
         const intent = await tx.ordinaryInvalidationIntent.findUniqueOrThrow({ where: { id: intentId } });
-        if (intent.status === 'PUBLISHED') return intent;
+        if (intent.status === 'PUBLISHED') {
+          if (!recover) throw new Error('PUBLICATION_ALREADY_COMMITTED');
+          return intent;
+        }
         const ack = barrierAcknowledgement(request);
         if (intent.status !== 'BARRIER_CONFIRMED' || intent.digest !== invalidationDigest(request)
           || intent.acknowledgement !== canonicalInvalidationJson(ack) || intent.acknowledgementHash !== invalidationDigest(ack))
@@ -39,6 +50,7 @@ export class OrdinaryInvalidationPublicationService {
         return result;
       });
     } catch (error) {
+      if (!recover) throw error;
       // Read the committed result, never invoke domain mutation a second time.
       const retained = await this.repository.read(intentId);
       if (retained?.status === 'PUBLISHED' && retained.digest === reference.digest) return retained;

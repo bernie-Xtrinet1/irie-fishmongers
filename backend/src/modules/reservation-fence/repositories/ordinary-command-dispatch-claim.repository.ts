@@ -1,3 +1,6 @@
+import { OrdinaryReleaseService } from '../services/ordinary-release.service';
+import { releaseIdentity } from '../types/ordinary-release.types';
+import { OrdinaryReservationCommandRepository } from './ordinary-reservation-command.repository';
 import { OrdinaryReservationCommand } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdinaryDispatchClaim, OrdinaryDispatchClaimResult, OrdinaryDispatchIdentity } from '../types/ordinary-command-dispatch-claim.types';
@@ -5,7 +8,7 @@ import { OrdinaryMarkerTransaction } from '../types/ordinary-reservation-provena
 import { legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ReservationFenceRepository } from './reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from './ordinary-reservation-owner.repository';
-import { requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
+import { requireReleasePublication, requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
 
 // INACTIVE: only for a future controlled composition in which every physical
 // submission is claim-gated. Zero attempts does NOT prove arbitrary older work
@@ -15,7 +18,7 @@ import { requireOrdinaryBarrierReadiness } from './ordinary-invalidation.reposit
 export class OrdinaryCommandDispatchClaimRepository {
   private readonly fences: ReservationFenceRepository;
   private readonly owners: OrdinaryReservationOwnerRepository;
-  private readonly grants = new WeakMap<OrdinaryDispatchClaim, OrdinaryDispatchIdentity>();
+  readonly #grants = new WeakMap<OrdinaryDispatchClaim, OrdinaryDispatchIdentity>();
 
   constructor(private readonly prisma: PrismaService) {
     this.fences = new ReservationFenceRepository(prisma);
@@ -61,15 +64,49 @@ export class OrdinaryCommandDispatchClaimRepository {
       // This line is reached only after confirmed outer COMMIT. Ambiguous commit
       // loses the grant permanently; reading positive attempts cannot recover it.
       const claim = Object.freeze({}) as OrdinaryDispatchClaim;
-      this.grants.set(claim, identity);
+      this.#grants.set(claim, identity);
+      return { status: 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED', claim };
+    } catch { return { status: 'NOT_AUTHORIZED' }; }
+  }
+
+  async claimRelease(admission: unknown, issuer: OrdinaryReleaseService): Promise<OrdinaryDispatchClaimResult> {
+    try {
+      if (!(issuer instanceof OrdinaryReleaseService)) return { status: 'NOT_AUTHORIZED' };
+      const inserted = OrdinaryReleaseService.prototype.consumeAdmission.call(issuer, admission);
+      if (!inserted || inserted.effect !== 'RELEASE') return { status: 'NOT_AUTHORIZED' };
+      const identity = await this.fences.locked(async tx => {
+        const fence = await this.fences.latest(tx), mode = await this.fences.mode(tx);
+        if (!fence || fence.status !== 'ACKNOWLEDGED' || !['OPEN', 'DRAINING'].includes(fence.phase)
+          || fence.protocol !== 1 || fence.mode !== mode.mode || fence.modeRevision !== mode.modeRevision
+          || !legalPair(mode.mode, fence.phase, true)) throw new Error('RELEASE_FENCE_REJECTED');
+        const context = await this.owners.lockMarker(tx, inserted.markerId);
+        const commands = new OrdinaryReservationCommandRepository(this.prisma);
+        let command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: inserted.id } });
+        if (command.replayId !== inserted.replayId || command.ownerId !== inserted.ownerId)
+          throw new Error('RELEASE_ADMISSION_REJECTED');
+        await requireReleasePublication(tx, command.id);
+        if (command.state === 'WAITING') command = await commands.promoteLocked(context, command.id) ?? command;
+        if (command.state !== 'PENDING' || command.attemptCount !== 0 || command.lastDispatchTransitionId
+          || command.nextAttemptAt || command.expectedSequence !== context.marker.ordinaryAcknowledgedSequence)
+          throw new Error('RELEASE_CLAIM_REJECTED');
+        const actual = await releaseIdentity(tx, command, this.owners);
+        if (actual.incarnation !== fence.incarnation || actual.epoch !== fence.epoch) throw new Error('RELEASE_EPOCH_REJECTED');
+        const changed = await tx.ordinaryReservationCommand.updateMany({ where: { id: command.id,
+          state: 'PENDING', attemptCount: 0, lastDispatchTransitionId: null },
+          data: { attemptCount: 1, lastDispatchTransitionId: fence.id } });
+        if (changed.count !== 1) throw new Error('RELEASE_CLAIM_LOST');
+        return actual;
+      });
+      const claim = Object.freeze({}) as OrdinaryDispatchClaim;
+      this.#grants.set(claim, identity);
       return { status: 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED', claim };
     } catch { return { status: 'NOT_AUTHORIZED' }; }
   }
 
   consume(claim: OrdinaryDispatchClaim): OrdinaryDispatchIdentity | null {
-    const identity = this.grants.get(claim);
+    const identity = this.#grants.get(claim);
     if (!identity) return null;
-    this.grants.delete(claim);
+    this.#grants.delete(claim);
     return structuredClone(identity);
   }
 

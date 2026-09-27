@@ -262,6 +262,48 @@ const migration47Catalog: Record<keyof Catalog, Record<string, string>> = {
   }
 };
 
+// Exact migration-48 delta. Historical 46/47 fingerprints above remain unchanged.
+const migration48Catalog: Record<keyof Catalog, Record<string, string>> = {
+  "constraints": {
+    "ordinary_release_consistency": "698fc09045e7267eeb19c5b09473ec8c40f237145be8c1cbd97b9dde2451ddc1"
+  },
+  "indexes": {},
+  "triggers": {
+    "ordinary_release_consistency": "43ab6c337d8f1e8d0c58d820f4b6ae5c6420348a83f8a8b44fdfa4838be0af0f",
+    "ordinary_release_dispatch_guard": "348be798b1fff44306bdbed881d352486c21506b5efb83acb1a60be32b60f745",
+    "z_ordinary_release_truncate_cart_items": "3b8ce1f82b7c5f6e58e269050d31c71dacf5bbc1262e94550012f9254e9d9717",
+    "z_ordinary_release_truncate_cart_reservation_sync_states": "769a9af01c8b7702cb2fa8cec742802b984d057574b650f5c0308b48478ce5aa",
+    "z_ordinary_release_truncate_carts": "9d549ca5303395dd68f4d75b8988bb9e82e63eefe918ec59a25257f0b82c82a5",
+    "z_ordinary_release_truncate_ordinary_command_barrier_bindings": "e30d5cbb594a17f85b33fe45d279ec8412289e8123811059afffd6e58e9248cf",
+    "z_ordinary_release_truncate_ordinary_invalidation_heads": "c5a6a2a9ef80fe6ef85a0040a398bcfe1c28b1fc2db9ced30352be36748ab305",
+    "z_ordinary_release_truncate_ordinary_invalidation_intents": "1b82f4c543b9b2be98ac0643ff26ed4a217174d30961679194f97f3ef82674fb",
+    "z_ordinary_release_truncate_ordinary_invalidation_scopes": "534d0dfc08f40158a7d89dd9fb8a678eb62ed0a2ed65ced983c9a7a36dcb2e2c",
+    "z_ordinary_release_truncate_ordinary_reservation_commands": "608596a127839fc2e9d3087a2dd9905824be63f61ff5ef4c7feb54b200bba74a",
+    "z_ordinary_release_truncate_ordinary_reservation_owners": "2ac170a98b7b2d7313d49948fb27135bfc4d3bbf8d13ca84ebd7d4c91e758fb6",
+    "z_ordinary_release_truncate_reservation_engine_mode_configs": "c4be10c30da858386ed4649ce1e340ad5baf16eacfc145847d7f931082908ac8",
+    "z_ordinary_release_truncate_reservation_fence_transitions": "f61bd88ee6b0fc3d73332ff9f769ee0041d818bbf4411674a3b6fa04eb9c6879"
+  },
+  "functions": {
+    "ordinary_invalidation_bind_command()": "a606f645ed8cac4d240574d17ef4e6d69c323348326fb8f90daca62c0955f937",
+    "ordinary_invalidation_binding_guard()": "f073cb8b9e6fd0d9babb4c290511bca7e1084f340d6bc5cb101ed1af0f023276",
+    "ordinary_release_binding(command_id uuid, creating boolean)": "6fdacd21d2a51d9af8b8df733d41605a902656c63496c4a9d0bbaa322f692fc9",
+    "ordinary_release_consistency()": "8a6bc438fde8f44ea4935025ceb2b15bca9ca6968cd30ab140468cb9197af8e4",
+    "ordinary_release_dispatch_guard()": "aadad0a856b1368dc1e668cff693ef5a9b389db432ba5287cc96cf74283d91e9",
+    "ordinary_release_dispatchable(command_id uuid)": "e9b4ae93569b3b786bc6b0bac2b187b1d853c6caf5777b59353833ab1c8fbed7",
+    "ordinary_release_hold_identity(marker text, generation integer)": "f08f417d12c927fe6c37debef3c85b3def958be9aa474bd1321712b02bbccd49",
+    "ordinary_release_truncate_guard()": "7362ad9d4a69d060a64aa2f4f68ab147d3bb6185caa14c025ecb2bc73665cd7f"
+  },
+  "enums": {}
+};
+
+function assertCatalog48(before: Catalog, after: Catalog): void {
+  for (const kind of ['constraints', 'indexes', 'triggers', 'functions', 'enums'] as const) {
+    const previous = Object.fromEntries(before[kind].map(row => [row.name, fingerprint(row.definition)]));
+    expect(Object.fromEntries(after[kind].map(row => [row.name, fingerprint(row.definition)])))
+      .toEqual({ ...previous, ...migration48Catalog[kind] });
+  }
+}
+
 function assertCatalogUpgrade(before: Catalog, after: Catalog): void {
   for (const kind of ['constraints', 'indexes', 'triggers', 'functions', 'enums'] as const) {
     const retained = before[kind].filter(row => kind !== 'indexes' || row.name !== 'checkout_reservation_resources_holdInstanceId_key');
@@ -355,9 +397,11 @@ describe('durable settlement manifests and forward migrations', () => {
     // runner then applies 45 and 46 without filtering or splitting execution.
     const migration45 = readFileSync(resolve(__dirname, '../../../../prisma/migrations/20260914000000_relax_settlement_hold_identity_uniqueness/migration.sql'), 'utf8');
     expect(migration45.replace(/^--.*$/gm, '').trim()).toBe('DROP INDEX "checkout_reservation_resources_holdInstanceId_key";');
-    upgrade();
+    upgrade(47);
     const catalogAfter = await catalog(db);
     assertCatalogUpgrade(catalogBefore, catalogAfter);
+    upgrade(48);
+    assertCatalog48(catalogAfter, await catalog(db));
     // The adapter must reject unexpected additions and changed definitions.
     expect(() => assertCatalogUpgrade(catalogBefore, { ...catalogAfter, functions: [
       ...catalogAfter.functions, { name: 'unexpected_function()', definition: 'unexpected' },
@@ -378,7 +422,7 @@ describe('durable settlement manifests and forward migrations', () => {
     // Restoring global uniqueness cannot succeed once historical references repeat.
     // PostgreSQL's failed CREATE is atomic; retained resources are never rewritten.
     await expect(db.$executeRaw`CREATE UNIQUE INDEX "checkout_reservation_resources_holdInstanceId_key" ON checkout_reservation_resources ("holdInstanceId")`).rejects.toThrow();
-    assertCatalogUpgrade(catalogBefore, await catalog(db));
+    assertCatalog48(catalogAfter, await catalog(db));
   }, 44));
 
   it.each([{ generation: -1, quantity: 2 }, { generation: 1, quantity: 0 },

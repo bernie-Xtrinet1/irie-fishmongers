@@ -1,7 +1,10 @@
+import { PublicationReleaseInput } from '../types/ordinary-release.types';
+import { consumeVerifiedReleaseCompletion } from '../services/ordinary-command-closure.service';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdinaryAcknowledgement, OrdinaryCommandPayload, OrdinaryMarkerTransaction, OrdinaryOwnerIssuance } from '../types/ordinary-reservation-provenance.types';
 import { OrdinaryReservationOwnerRepository } from './ordinary-reservation-owner.repository';
-import { requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
+import { requireReleasePublication, requireOrdinaryBarrierReadiness } from './ordinary-invalidation.repository';
 
 // Persistence foundation only. No Redis, dispatcher, permit, or runtime wiring.
 export class OrdinaryReservationCommandRepository {
@@ -44,6 +47,27 @@ export class OrdinaryReservationCommandRepository {
     return command;
   }
 
+
+  async insertPublicationRelease(tx: Prisma.TransactionClient, intentId: string, input: PublicationReleaseInput) {
+    const owner = await this.owners.loadAuthority(input.ownerId, tx);
+    const marker = await tx.cartReservationSyncState.findUniqueOrThrow({ where: { id: owner.markerId } });
+    const scope = await tx.ordinaryInvalidationScope.findUniqueOrThrow({ where: {
+      intentId_scope: { intentId, scope: `MARKER:${owner.markerId}` },
+    } });
+    const head = await tx.ordinaryInvalidationHead.findUniqueOrThrow({ where: { scope: scope.scope } });
+    if (head.pendingIntentId !== intentId || owner.state !== 'ACTIVE') throw new Error('RELEASE_PUBLICATION_REJECTED');
+    const counter = await tx.cartReservationSyncState.update({ where: { id: marker.id },
+      data: { ordinaryEnqueueSequence: { increment: 1 } } });
+    const command = await tx.ordinaryReservationCommand.create({ data: {
+      ownerId: owner.id, markerId: marker.id, effect: 'RELEASE', reason: input.reason,
+      causeTransitionId: input.causeTransitionId, intentGeneration: marker.generation,
+      expectedMutationVersion: marker.expectedMutationVersion, queueOrdinal: counter.ordinaryEnqueueSequence,
+    } });
+    // SQL derives the binding and independently checks publicationTx and scope.
+    await tx.ordinaryReservationOwner.update({ where: { id: owner.id }, data: { state: 'RELEASE_PENDING' } });
+    return command;
+  }
+
   promote(markerId: string) {
     return this.owners.locked(markerId, context => this.promoteLocked(context));
   }
@@ -53,13 +77,15 @@ export class OrdinaryReservationCommandRepository {
   async promoteLocked(context: OrdinaryMarkerTransaction, expectedCommandId?: string) {
     const markerId = context.marker.id;
     const { tx } = context;
-    await requireOrdinaryBarrierReadiness(tx, markerId);
     const active = await tx.ordinaryReservationCommand.findFirst({ where: { markerId, state: { in: ['PENDING', 'UNCERTAIN'] } } });
     const waiting = await tx.ordinaryReservationCommand.findMany({ where: { markerId, state: 'WAITING' }, orderBy: { queueOrdinal: 'asc' } });
     // Only a cancellation tied to the occupying W1 can bypass the queue.
     const candidate = active
       ? waiting.find(c => c.effect === 'CANCEL_W1' && c.cancelledCommandId === active.id && active.effect === 'W1')
       : await this.lowestEligible(context, waiting);
+    if (candidate?.effect === 'RELEASE' && await tx.ordinaryInvalidationHead.findUnique({ where: { scope: `MARKER:${markerId}` } }))
+      await requireReleasePublication(tx, candidate.id);
+    else await requireOrdinaryBarrierReadiness(tx, markerId);
     if (!candidate || (expectedCommandId !== undefined && candidate.id !== expectedCommandId)) return null;
     if (candidate.dependsOnCommandId) {
       const dependency = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: candidate.dependsOnCommandId } });
@@ -108,6 +134,19 @@ export class OrdinaryReservationCommandRepository {
   // Caller owns marker -> ordered owners -> ordered commands in this transaction.
   // Physical evidence verification remains the responsibility of the caller.
   async acknowledgeLocked({ tx, marker }: OrdinaryMarkerTransaction, evidence: OrdinaryAcknowledgement) {
+    const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: evidence.commandId } });
+    if (command.effect === 'RELEASE') throw new Error('RELEASE_VERIFIED_COMPLETION_REQUIRED');
+    return this.#applyAcknowledgement({ tx, marker }, evidence);
+  }
+
+  async acknowledgeVerifiedReleaseLocked(context: OrdinaryMarkerTransaction, token: unknown) {
+    const evidence = consumeVerifiedReleaseCompletion(context, token);
+    const command = await context.tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: evidence.commandId } });
+    if (command.effect !== 'RELEASE') throw new Error('RELEASE_VERIFIED_COMPLETION_REQUIRED');
+    return this.#applyAcknowledgement(context, evidence);
+  }
+
+  async #applyAcknowledgement({ tx, marker }: OrdinaryMarkerTransaction, evidence: OrdinaryAcknowledgement) {
       const markerId = marker.id;
       const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: evidence.commandId } });
       const owner = await this.owners.loadAuthority(command.ownerId, tx);
@@ -152,7 +191,7 @@ export class OrdinaryReservationCommandRepository {
   // transition, or rearm work, even when the current fence is restrictive.
   async recordUncertaintyLocked({ tx, marker }: OrdinaryMarkerTransaction, commandId: string) {
     const command = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: commandId } });
-    if (command.markerId !== marker.id || !['W1', 'CANCEL_W1'].includes(command.effect))
+    if (command.markerId !== marker.id || !['W1', 'CANCEL_W1', 'RELEASE'].includes(command.effect))
       throw new Error('ORDINARY_CLOSURE_COMMAND_REJECTED');
     if (command.state !== 'PENDING') return command;
     return tx.ordinaryReservationCommand.update({ where: { id: command.id }, data: { state: 'UNCERTAIN' } });
@@ -165,7 +204,7 @@ export class OrdinaryReservationCommandRepository {
     if (cursor && (!cursor.markerId || !cursor.id || !Number.isInteger(cursor.sequence) || cursor.sequence < 1))
       throw new Error('ORDINARY_CLOSURE_CURSOR_REJECTED');
     return this.prisma.ordinaryReservationCommand.findMany({ where: { AND: [
-      { effect: { in: ['W1', 'CANCEL_W1'] }, sequence: { not: null } },
+      { effect: { in: ['W1', 'CANCEL_W1', 'RELEASE'] }, sequence: { not: null } },
       { OR: [{ state: { in: ['PENDING', 'UNCERTAIN'] } }, { effect: 'W1', state: 'REVOCATION_PENDING' }] },
       ...(cursor ? [{ OR: [
         { markerId: { gt: cursor.markerId } },

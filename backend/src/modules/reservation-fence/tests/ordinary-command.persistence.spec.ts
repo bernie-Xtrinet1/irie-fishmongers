@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
-import { acknowledgement, activeOrdinary, openOrdinarySchema, ordinaryFixture, transferredOrdinary } from './ordinary-provenance-test-helpers';
+import { acknowledgement, activeOrdinary, openOrdinarySchema, ordinaryFixture, ordinaryReleaseFixture, releaseCompletionObservation, transferredOrdinary } from './ordinary-provenance-test-helpers';
+import { OrdinaryReleaseService } from '../services/ordinary-release.service';
+import { OrdinaryCommandClosureService } from '../services/ordinary-command-closure.service';
+import { barrierAcknowledgement, InvalidationRequest } from '../types/ordinary-invalidation.types';
 
 describe('ordinary command durable journal (no physical execution)', () => {
   jest.setTimeout(120000);
@@ -257,17 +260,32 @@ describe('ordinary command durable journal (no physical execution)', () => {
   });
 
   it('one permanent release obligation per exact owner, never retargeted from desired generation', async () => {
-    const f = await activeOrdinary(fixture.db);
-    await f.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 5, expectedQuantity: null } });
+    const isolated = await openOrdinarySchema();
+    try {
+    const f = await ordinaryReleaseFixture(isolated.db);
+    const scope = f.request.scopes[0];
+    if (!scope || scope.kind !== 'MARKER' || !scope.after) throw new Error('Missing marker scope');
+    scope.after.generation = 5;
+    scope.after.mutationVersion = 0;
+    await f.prepare();
     const payload = { ownerId: f.owner.id, effect: 'RELEASE', reason: 'CART_REMOVAL', intentGeneration: 5, expectedMutationVersion: 0 } as const;
-    const c = await f.commands.enqueue(f.marker.id, payload);
+    const published = await new OrdinaryReleaseService(f.db).publish(f.request.intentId, payload, async tx => {
+      await tx.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 5, expectedQuantity: null } });
+      return {};
+    });
+    if (published.status !== 'PUBLISHED') throw new Error('Missing publication');
+    const c = published.command;
     await expect(f.commands.enqueue(f.marker.id, payload)).rejects.toThrow();
     expect(c.ownerId).toBe(f.owner.id);
     const p = await f.commands.promote(f.marker.id);
-    await f.commands.acknowledge(f.marker.id, acknowledgement(p!));
+    if (!p) throw new Error('Missing release');
+    const observation = await releaseCompletionObservation(f.db, p.id);
+    expect((await new OrdinaryCommandClosureService(f.db, { observe: () => Promise.resolve(observation) }).close(p.id)).status)
+      .toBe('ACKNOWLEDGED');
     expect(await f.owners.loadAuthority(f.owner.id)).toMatchObject({ state: 'CONSUMED', generation: 0 });
     await expect(f.db.ordinaryReservationCommand.update({ where: { id: c.id }, data: { state: 'PENDING' } })).rejects.toThrow();
     await expect(f.db.ordinaryReservationCommand.delete({ where: { id: c.id } })).rejects.toThrow();
+    } finally { await isolated.close(); }
   });
 
   it('bridge is exact to transferred owner and terminal manifest; duplicates and wrong receipts fail', async () => {
@@ -341,17 +359,34 @@ describe('ordinary command durable journal (no physical execution)', () => {
   });
 
   it('AFTER_CONSUMPTION requires exact durable consumed source and does not reuse its lifetime', async () => {
-    const f = await activeOrdinary(fixture.db);
-    await f.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { expectedQuantity: null } });
-    await f.commands.enqueue(f.marker.id, { ownerId: f.owner.id, effect: 'RELEASE', reason: 'CART_REMOVAL',
-      intentGeneration: 0, expectedMutationVersion: 0 });
+    const isolated = await openOrdinarySchema();
+    try {
+    const f = await ordinaryReleaseFixture(isolated.db);
+    await f.prepare();
+    const result = await new OrdinaryReleaseService(f.db).publish(f.request.intentId,
+      { ownerId: f.owner.id, reason: 'CART_REMOVAL' }, f.domain);
+    if (result.status !== 'PUBLISHED') throw new Error('Missing release publication');
     const release = await f.commands.promote(f.marker.id);
-    await f.commands.acknowledge(f.marker.id, acknowledgement(release!));
-    await f.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 3, expectedQuantity: 2 } });
+    if (!release) throw new Error('Missing release');
+    const observation = await releaseCompletionObservation(f.db, release.id);
+    expect((await new OrdinaryCommandClosureService(f.db, { observe: () => Promise.resolve(observation) }).close(release.id)).status)
+      .toBe('ACKNOWLEDGED');
+    const scope = f.request.scopes[0];
+    if (!scope || scope.kind !== 'MARKER' || !scope.after) throw new Error('Missing marker scope');
+    const next: InvalidationRequest = { ...f.request, intentId: randomUUID(), operationId: randomUUID(), kind: 'CART', scopes: [{ ...scope,
+      revision: 2, before: scope.after, after: { generation: 3, mutationVersion: 1, quantity: 2 },
+      ownersBefore: [{ id: f.owner.id, state: 'CONSUMED' }], ownersAfter: [{ id: f.owner.id, state: 'CONSUMED' }] }] };
+    await f.repo.prepare(next); await f.repo.confirm(next, barrierAcknowledgement(next));
+    await f.publication.publish(next.intentId, async tx => {
+      await tx.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 3, expectedQuantity: 2 } });
+      return {};
+    });
+    await f.db.ordinaryInvalidationHead.updateMany({ data: { ready: true } });
     const later = await f.commands.issue({ ...f.issuance, generation: 3 }, { ...f.payload, intentGeneration: 3,
-      w1Transition: 'AFTER_CONSUMPTION', sourceOwnerId: f.owner.id });
+      expectedMutationVersion: 1, w1Transition: 'AFTER_CONSUMPTION', sourceOwnerId: f.owner.id });
     expect(later.owner.holdInstanceId).not.toBe(f.owner.holdInstanceId);
     expect(await f.commands.promote(f.marker.id)).toMatchObject({ id: later.command.id, expectedSequence: 2 });
+    } finally { await isolated.close(); }
   });
 
   it('live predecessor cannot be skipped or relabelled AFTER_CONSUMPTION', async () => {

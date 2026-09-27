@@ -11,9 +11,9 @@ describe('ordinary owner inert persistence', () => {
   beforeAll(async () => { fixture = await openOrdinarySchema(); });
   afterAll(async () => { if (fixture) await fixture.close(); });
 
-  it('fresh deployment applies all 47 migrations', async () => {
+  it('fresh deployment applies all 48 migrations', async () => {
     const rows = await fixture.db.$queryRaw<{ count: bigint }[]>`SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL`;
-    expect(Number(rows[0]!.count)).toBe(47);
+    expect(Number(rows[0]!.count)).toBe(48);
   });
 
   it('45 -> 46 preserves historical markers and old-code insert defaults with zero counters', async () => {

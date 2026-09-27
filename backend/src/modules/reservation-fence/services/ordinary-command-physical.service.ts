@@ -1,10 +1,13 @@
+import { OrdinaryCommandDispatchClaimRepository } from '../repositories/ordinary-command-dispatch-claim.repository';
+import { OrdinaryDispatchClaim } from '../types/ordinary-command-dispatch-claim.types';
+import { releaseIdentity } from '../types/ordinary-release.types';
 import { createHash, randomUUID } from 'crypto';
 import { OrdinaryReservationCommand, OrdinaryReservationOwner } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { ReservationFenceRepository, transitionTuple } from '../repositories/reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
-import { requireOrdinaryBarrierReadiness } from '../repositories/ordinary-invalidation.repository';
+import { requireReleasePublication, requireOrdinaryBarrierReadiness } from '../repositories/ordinary-invalidation.repository';
 import { legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ResourceAuthority } from '../types/reservation-mutation.types';
 import { OrdinaryPhysicalGrant, OrdinaryPhysicalIdentity, OrdinaryPhysicalResult,
@@ -23,14 +26,23 @@ export class OrdinaryCommandPhysicalService {
   execute(commandId: string): Promise<OrdinaryPhysicalResult> { return this.run(commandId, 'EXECUTE'); }
   observe(commandId: string): Promise<OrdinaryPhysicalResult> { return this.run(commandId, 'OBSERVE'); }
 
-  private async load(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE') {
+  async executeRelease(claim: OrdinaryDispatchClaim, claims: OrdinaryCommandDispatchClaimRepository): Promise<OrdinaryPhysicalResult> {
+    if (!(claims instanceof OrdinaryCommandDispatchClaimRepository)) return { code: 'REJECTED' };
+    let identity: OrdinaryPhysicalIdentity | null;
+    try { identity = OrdinaryCommandDispatchClaimRepository.prototype.consume.call(claims, claim); } catch { return { code: 'REJECTED' }; }
+    if (!identity || identity.action !== 'RELEASE') return { code: 'REJECTED' };
+    const result = await this.run(identity.commandId, 'EXECUTE', JSON.stringify(identity));
+    return result.code === 'REJECTED' ? { ...result, reason: 'RELEASE_AUTHORITY_REJECTED' } : result;
+  }
+
+  private async load(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string) {
     if (typeof commandId !== 'string' || commandId.length !== 36 || !UUID_PATTERN.test(commandId)) throw new Error('Invalid command');
     const fences = new ReservationFenceRepository(this.prisma);
     const owners = new OrdinaryReservationOwnerRepository(this.prisma);
     return fences.locked(async tx => {
       const fence = await fences.latest(tx), mode = await fences.mode(tx);
       if (!fence) throw new Error('Missing fence');
-      if (purpose !== 'OBSERVE' && (fence.status !== 'ACKNOWLEDGED' || fence.phase !== 'OPEN'
+      if (purpose !== 'OBSERVE' && (fence.status !== 'ACKNOWLEDGED' || (fence.phase !== 'OPEN' && !(releaseClaim && fence.phase === 'DRAINING'))
         || fence.protocol !== 1 || fence.mode !== mode.mode || fence.modeRevision !== mode.modeRevision
         || !legalPair(mode.mode, fence.phase, true))) throw new Error('Fence denied');
       // Read the immutable marker association before acquiring its subtree.
@@ -71,6 +83,19 @@ export class OrdinaryCommandPhysicalService {
       };
       let root = command;
       let result: OrdinaryPhysicalIdentity;
+      if (command.effect === 'RELEASE') {
+        if (purpose === 'GENESIS' || (purpose !== 'OBSERVE' && !releaseClaim)) throw new Error('RELEASE_CLAIM_REQUIRED');
+        result = await releaseIdentity(tx, command, owners);
+        if (purpose !== 'OBSERVE' && (JSON.stringify(result) !== releaseClaim || command.attemptCount !== 1
+          || command.lastDispatchTransitionId !== fence.id || result.incarnation !== fence.incarnation || result.epoch !== fence.epoch))
+          throw new Error('RELEASE_CLAIM_MISMATCH');
+        const parentId = (JSON.parse(result.parent!) as OrdinaryPhysicalIdentity).commandId;
+        const parent = rows.find(row => row.id === parentId);
+        if (!parent?.completionReceiptHash) throw new Error('RELEASE_RECEIPT_REQUIRED');
+        const publication = await requireReleasePublication(tx, command.id, purpose !== 'OBSERVE');
+        return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id,
+          binding: publication.binding, releasePublication: publication.publication, ownershipReceiptHash: parent.completionReceiptHash };
+      }
       if (command.effect === 'CANCEL_W1') {
         const parent = rows.find(row => row.id === command.cancelledCommandId);
         if (!parent || parent.ownerId !== command.ownerId || command.sequence === null || command.expectedSequence === null
@@ -90,9 +115,9 @@ export class OrdinaryCommandPhysicalService {
     });
   }
 
-  private async run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE'): Promise<OrdinaryPhysicalResult> {
+  private async run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string): Promise<OrdinaryPhysicalResult> {
     let authority: Awaited<ReturnType<OrdinaryCommandPhysicalService['load']>>;
-    try { authority = await this.load(commandId, purpose); } catch { return { code: 'REJECTED' }; }
+    try { authority = await this.load(commandId, purpose, releaseClaim); } catch { return { code: 'REJECTED' }; }
     // load() has fully committed before the first Redis operation.
     try {
       const ledger = ordinaryPhysicalLedgerKey(authority.markerId);
@@ -101,6 +126,13 @@ export class OrdinaryCommandPhysicalService {
       const grant: OrdinaryPhysicalGrant = { version: 1, grantId: randomUUID(), tuple: authority.tuple,
         identity: authority.identity, purpose, expiresAt: 0 };
       if (authority.binding) grant.barrierBinding = { ...authority.binding, version: 1 };
+      if (authority.releasePublication) {
+        const parent = (JSON.parse(authority.identity) as OrdinaryPhysicalIdentity).parent!;
+        const proof = this.decode(await this.redis.eval(ORDINARY_PHYSICAL_OBSERVE,
+          [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger], [parent]), parent);
+        if (proof.code !== 'COMPLETED' || proof.completionReceiptHash !== authority.ownershipReceiptHash) return { code: 'REJECTED' };
+        grant.releasePublication = { ...authority.releasePublication, ownershipReceipt: proof.receipt };
+      }
       const keys = [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger, ordinaryPhysicalGrantKey(grant.grantId)];
       const raw = await this.redis.eval(ORDINARY_PHYSICAL_REGISTER, keys, [JSON.stringify(grant)]);
       if (typeof raw !== 'string') return { code: 'UNCERTAIN' };

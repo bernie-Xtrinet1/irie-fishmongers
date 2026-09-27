@@ -4,7 +4,7 @@ import { ordinaryHoldInstanceId } from '../ordinary-hold-instance-id';
 describe('invalidation migration 47: fresh and actual 46 upgrade', () => {
   jest.setTimeout(120000);
   it('fresh deployment contains 47 migrations and zero production enrollment/bindings', async () => {
-    const f = await openOrdinarySchema();
+    const f = await openOrdinarySchema(47);
     try {
       const [row] = await f.db.$queryRaw<{ count: bigint }[]>`SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL`;
       expect(Number(row!.count)).toBe(47);
@@ -23,7 +23,7 @@ describe('invalidation migration 47: fresh and actual 46 upgrade', () => {
     } finally { await f.close(); }
   });
   it('genuinely unenrolled mode history preserves TRUNCATE compatibility without creating authority', async () => {
-    const f = await openOrdinarySchema();
+    const f = await openOrdinarySchema(47);
     try {
       await ordinaryFixture(f.db);
       expect(await f.db.reservationEngineModeConfig.count()).toBeGreaterThan(0);

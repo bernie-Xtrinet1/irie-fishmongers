@@ -95,6 +95,21 @@ return cjson.encode({code='CONFIRMED',acknowledgement=ARGV[1]})
 // Historical receipt observation intentionally does not require current readiness.
 export const ORDINARY_INVALIDATION_PHYSICAL_GUARD = `
 ${INVALIDATION_SHAPE}
+local function releaseBarrierAllowed(i,b,p)
+ if i.action~='RELEASE' or not fields(p,3) or type(p.ownershipReceipt)~='string' or type(p.global)~='string' or type(p.marker)~='string'
+  or not fields(b,8) or b.version~=1 or b.commandId~=i.commandId or b.replayId~=i.replayId
+  or b.markerId~=i.target.markerId or b.incarnation~=i.incarnation or b.epoch~=i.epoch then return false end
+ for _,part in ipairs({{scope='GLOBAL',revision=b.globalRevision,ack=p.global},
+  {scope='MARKER:'..b.markerId,revision=b.markerRevision,ack=p.marker}}) do
+  local key='reservation:fence:ordinary-invalidation:'..part.scope
+  if not invalidationHistory(key..':initialized',part.scope,b.incarnation,b.epoch)
+   or redis.call('TYPE',key).ok~='string' or redis.call('PTTL',key)~=-1 then return false end
+  local head=decode(redis.call('GET',key))
+  if not invalidationHead(head) or head.scope~=part.scope or head.revision~=part.revision
+   or head.incarnation~=b.incarnation or head.epoch~=b.epoch or head.acknowledgement~=part.ack then return false end
+ end
+ return true
+end
 local function ordinaryBarrierAllowed(i,b)
  local global='reservation:fence:ordinary-invalidation:GLOBAL'
  local marker='reservation:fence:ordinary-invalidation:MARKER:'..i.target.markerId

@@ -7,7 +7,7 @@ export interface OrdinaryPhysicalIdentity {
   version: 1;
   commandId: string;
   replayId: string;
-  action: 'W1' | 'CANCEL_W1';
+  action: 'W1' | 'CANCEL_W1' | 'RELEASE';
   sequence: number;
   expectedSequence: number;
   mutationVersion: number;
@@ -30,10 +30,11 @@ export interface OrdinaryPhysicalGrant {
   purpose: 'GENESIS' | 'EXECUTE';
   expiresAt: number;
   barrierBinding?: OrdinaryBarrierBinding;
+  releasePublication?: { global: string; marker: string; ownershipReceipt: string };
 }
 
 export type OrdinaryPhysicalResult =
-  | { code: 'REJECTED' }
+  | { code: 'REJECTED'; reason?: 'RELEASE_AUTHORITY_REJECTED' }
   | { code: 'UNCERTAIN' }
   | { code: 'INITIALIZED' }
   | { code: 'COMPLETED' | 'EXECUTION_WON' | 'CANCELLED'; historical: true;
