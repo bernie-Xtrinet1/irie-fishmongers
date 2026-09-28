@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../../common/redis/redis.service';
-import { openAcquisitionSchema } from '../../checkout/services/checkout-acquisition-test-helpers';
+import { openOrdinarySchema } from '../../reservation-fence/tests/ordinary-provenance-test-helpers';
 import { seedCartAndProduct, setUpCompensationFixture } from '../../mirror-compensation/repositories/compensation-repository-test-helpers';
 import { withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
 import { connectRealRedis, cleanupKeys, trackKeysFor } from './inventory-reservations.redis-test-helpers';
 import { OrdinaryReservationService } from './ordinary-reservation.service';
 import { ordinaryHoldInstanceId } from '../../reservation-fence/ordinary-hold-instance-id';
+import { productControlKey } from '../../reservation-fence/types/product-reservation-restriction.types';
 import { MUTATION_HISTORY_KEY, resourceGuardKey, executionGateKey } from '../../reservation-fence/lua/reservation-mutation-common.lua';
 import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
 import { ReservationFenceRepository, transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
@@ -17,16 +18,22 @@ import { CheckoutAcquisitionService } from '../../checkout/services/checkout-acq
 import { CheckoutSettlementAuthorityService } from '../../reservation-fence/services/checkout-settlement-authority.service';
 import { ReservationMutationAuthorityService } from '../../reservation-fence/services/reservation-mutation-authority.service';
 
+// CURRENT_SCHEMA: preserve the suite's fixture shape while deploying migration 49.
+async function openCurrentOrdinarySchema() {
+  const schema = await openOrdinarySchema();
+  return { prisma: schema.db, close: schema.close };
+}
+
 describe('W1 canonical creation and exact predecessor convergence', () => {
   jest.setTimeout(120000);
-  let schema: Awaited<ReturnType<typeof openAcquisitionSchema>>;
+  let schema: Awaited<ReturnType<typeof openCurrentOrdinarySchema>>;
   let redis: Awaited<ReturnType<typeof connectRealRedis>>;
   let fixtures: Awaited<ReturnType<typeof setUpCompensationFixture>>;
   let adapter: RedisService, service: OrdinaryReservationService;
   let tuple: ReturnType<typeof transitionTuple>;
   const keys = new Set<string>();
   beforeAll(async () => {
-    schema = await openAcquisitionSchema(); redis = await connectRealRedis();
+    schema = await openCurrentOrdinarySchema(); redis = await connectRealRedis();
     adapter = new RedisService(redis); service = new OrdinaryReservationService(schema.prisma, adapter);
     fixtures = await setUpCompensationFixture(schema.prisma);
     const mode = await schema.prisma.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: fixtures.userIds[0]! } });
@@ -46,6 +53,7 @@ describe('W1 canonical creation and exact predecessor convergence', () => {
     const marker = await schema.prisma.cartReservationSyncState.create({ data: { cartId: ids.cartId, productId: ids.productId,
       generation: 0, expectedQuantity: 2, expectedMutationVersion: 1 } });
     trackKeysFor(keys, ids.cartId, ids.productId); keys.add(resourceGuardKey(marker.id)); keys.add(checkoutPinKey(marker.id));
+    keys.add(productControlKey(ids.productId));
     const execute = (quantity = 2) => service.reserve(ids.cartId, ids.productId, ids.customerId, quantity);
     const entry = async () => JSON.parse((await redis.get(reservationKey(ids.cartId, ids.productId)))!) as Record<string, unknown>;
     const snapshot = () => Promise.all([reservationKey(ids.cartId, ids.productId), resourceGuardKey(marker.id),

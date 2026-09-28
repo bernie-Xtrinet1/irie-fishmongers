@@ -1,10 +1,11 @@
 import { MUTATION_COMMON_LUA } from './reservation-mutation-common.lua';
+import { PRODUCT_CONTROL_FUNCTIONS } from './product-reservation-restriction.lua';
 import { ORDINARY_INVALIDATION_PHYSICAL_GUARD } from './ordinary-invalidation.lua';
 import { MAX_RESERVATION_LIFETIME_SECONDS, RESERVATION_TTL_SECONDS } from '../../inventory/constants/inventory.constants';
 
 // Standalone Redis only: existing cart/product hash tags and global control
 // keys span slots. Scripts are inactive; no existing writer imports this file.
-const COMMON = MUTATION_COMMON_LUA + ORDINARY_INVALIDATION_PHYSICAL_GUARD + `
+const COMMON = MUTATION_COMMON_LUA + PRODUCT_CONTROL_FUNCTIONS + ORDINARY_INVALIDATION_PHYSICAL_GUARD + `
 local function deny() return cjson.encode({code='REJECTED'}) end
 local function identityValid(i)
   if not fields(i,16) or i.version~=1 or not uuid(i.commandId) or not uuid(i.replayId) or
@@ -150,6 +151,7 @@ local suspectKey='inv:reserved:product-total-suspect:{'..r.productId..'}'
 `;
 
 export const ORDINARY_PHYSICAL_GENESIS = GRANT + `
+if i.action=='W1' and not productAllowed(i.target.productId,g.tuple) then return deny() end
 if g.purpose~='GENESIS' then return deny() end
 local root=i.action=='W1' and i or decode(i.parent)
 if not identityValid(root) or root.action~='W1' or root.transition~='INITIAL' or root.expectedSequence~=0 or
@@ -191,6 +193,7 @@ return deny()
 `;
 
 export const ORDINARY_PHYSICAL_EXECUTE = GRANT + `
+if i.action=='W1' and not productAllowed(i.target.productId,g.tuple) then return deny() end
 if g.purpose~='EXECUTE' then return deny() end
 local c=cursor(i)
 if not c then return deny() end

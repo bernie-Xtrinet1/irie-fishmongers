@@ -1,4 +1,5 @@
 import { OrdinaryReservationCommand, OrdinaryReservationOwner } from '@prisma/client';
+import { requireUnrestrictedProduct } from '../repositories/product-reservation-restriction.repository';
 import { PrismaService } from '../../../database/prisma.service';
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
 import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-reservation-owner.repository';
@@ -71,6 +72,7 @@ export class OrdinaryW1IssuanceService {
           || !legalPair(mode.mode, fence.phase, true)) throw new Error('Fence rejected');
         const context = await this.owners.lockMarker(tx, intent.markerId);
         const { marker } = context;
+        await requireUnrestrictedProduct(tx, marker.productId);
         await requireOrdinaryBarrierReadiness(tx, marker.id);
         const cart = await tx.cart.findUniqueOrThrow({ where: { id: marker.cartId } });
         if (marker.generation !== intent.generation || marker.expectedMutationVersion !== intent.mutationVersion

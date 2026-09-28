@@ -1,4 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { requireUnrestrictedProduct } from '../../reservation-fence/repositories/product-reservation-restriction.repository';
+import { PRODUCT_CONTROL_INSTALL } from '../../reservation-fence/lua/product-reservation-restriction.lua';
+import { controlBytes, productControlKey } from '../../reservation-fence/types/product-reservation-restriction.types';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
@@ -39,6 +42,13 @@ export class OrdinaryReservationService {
           WHERE "cartId"=${cartId} AND "productId"=${productId} FOR UPDATE`;
         const marker = markers[0];
         if (!marker || marker.expectedQuantity !== quantity) return rejected;
+        await requireUnrestrictedProduct(tx, productId);
+        const productControl = controlBytes({ version: 1, productId, state: 'ALLOW', restrictionId: null,
+          restrictionRevision: 0, incarnation: fence.incarnation, epoch: fence.epoch });
+        const initialized = decodeMutationResult(await this.redis.eval(PRODUCT_CONTROL_INSTALL,
+          [RESERVATION_FENCE_KEY, productControlKey(productId)], [JSON.stringify(transitionTuple(fence)), productControl]),
+        (value): value is string => value === productControl);
+        if (initialized.code !== 'ACCEPTED') return initialized;
         const target: ResourceAuthority = { cartId, productId, customerId, markerId: marker.id,
           generation: marker.generation, holdInstanceId: ordinaryHoldInstanceId(marker.id, marker.generation) };
         // Redis selects no identity: it may only match one of the durable-derived

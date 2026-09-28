@@ -204,6 +204,7 @@ enum ProductUnit {
 }
 
 model Product {
+  reservationRestriction ProductReservationRestriction?
   id                String      @id @default(uuid())
   vendorId          String
   categoryId        String
@@ -247,6 +248,47 @@ model Product {
   @@index([categoryId])
   @@index([lotId])
   @@map("products")
+}
+
+enum ProductReservationRestrictionState {
+  PREPARED
+  ENFORCED
+}
+
+enum ProductReservationRestrictionReason {
+  ACCOUNTING_DRIFT
+  MALFORMED_RESOURCE
+  INCOMPLETE_EVIDENCE
+}
+
+model ProductReservationRestriction {
+  id                      String @id @default(uuid()) @db.Uuid
+  productId               String @unique
+  restrictionRevision     Int @default(1)
+  reasonCategory          ProductReservationRestrictionReason
+  observationDigest       String
+  state                   ProductReservationRestrictionState @default(PREPARED)
+  preparedAt              DateTime @default(now())
+  firstEnforcedAt          DateTime?
+  physicalProtocolVersion Int @default(1)
+  product                 Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  installations           ProductReservationRestrictionInstallation[]
+
+  @@map("reservation_product_restrictions")
+}
+
+model ProductReservationRestrictionInstallation {
+  restrictionId        String @db.Uuid
+  incarnation          String @db.Uuid
+  epoch                Int
+  protocolVersion      Int
+  acknowledgement      String
+  acknowledgementHash String
+  confirmedAt          DateTime @default(now())
+  restriction          ProductReservationRestriction @relation(fields: [restrictionId], references: [id], onDelete: Restrict)
+
+  @@id([restrictionId, incarnation, epoch, protocolVersion])
+  @@map("reservation_product_restriction_installations")
 }
 
 model Cart {

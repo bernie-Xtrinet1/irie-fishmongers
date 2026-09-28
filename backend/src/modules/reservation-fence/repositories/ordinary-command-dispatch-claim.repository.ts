@@ -1,4 +1,5 @@
 import { OrdinaryReleaseService } from '../services/ordinary-release.service';
+import { requireUnrestrictedProduct } from './product-reservation-restriction.repository';
 import { releaseIdentity } from '../types/ordinary-release.types';
 import { OrdinaryReservationCommandRepository } from './ordinary-reservation-command.repository';
 import { OrdinaryReservationCommand } from '@prisma/client';
@@ -46,6 +47,7 @@ export class OrdinaryCommandDispatchClaimRepository {
           || command.sequence === null || command.sequence > context.marker.ordinaryCommandSequence)
           throw new Error('CLAIM_ALREADY_CONSUMED_OR_INELIGIBLE');
         const actual = await this.identity(context, command);
+        if (command.effect === 'W1') await requireUnrestrictedProduct(tx, context.marker.productId);
         await requireOrdinaryBarrierReadiness(tx, command.markerId, command.id);
         if (actual.incarnation !== fence.incarnation || actual.epoch !== fence.epoch || JSON.stringify(actual) !== bytes)
           throw new Error('CLAIM_IDENTITY_REJECTED');

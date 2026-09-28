@@ -18,7 +18,7 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: (t
   const dir = mkdtempSync(join(tmpdir(), 'settlement-migrations-'));
   const source = resolve(__dirname, '../../../../prisma');
   const migrations = readdirSync(join(source, 'migrations')).filter(x => /^\d/.test(x)).sort();
-  if (migrations.length !== 48) throw new Error('Expected 48 migrations including inactive publication release');
+  if (migrations.length !== 49) throw new Error('Expected 49 migrations including product reservation restriction');
   cpSync(join(source, 'schema.prisma'), join(dir, 'schema.prisma'));
   for (const name of migrations.slice(0, baseline)) cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
   cpSync(join(source, 'migrations/migration_lock.toml'), join(dir, 'migrations/migration_lock.toml'));

@@ -1,7 +1,8 @@
 import { MUTATION_COMMON_LUA } from '../../reservation-fence/lua/reservation-mutation-common.lua';
+import { PRODUCT_CONTROL_FUNCTIONS } from '../../reservation-fence/lua/product-reservation-restriction.lua';
 import { MAX_RESERVATION_LIFETIME_SECONDS, RESERVATION_TTL_SECONDS } from '../constants/inventory.constants';
 
-const COMMON = MUTATION_COMMON_LUA + `
+const COMMON = MUTATION_COMMON_LUA + PRODUCT_CONTROL_FUNCTIONS + `
 local a=decode(ARGV[1])
 if not fields(a,7) or a.version~=1 or not resourceValid(a.target) or not uuid(a.requestId) or
   not integer(a.quantity) or a.quantity<1 or type(a.expiresAt)~='number' then return rejected('MALFORMED_PERMIT') end
@@ -40,6 +41,7 @@ if redis.call('TYPE',history).ok~='hash' or redis.call('HGET',history,'incarnati
 
 // W1 issuer only; same trusted Redis ACL boundary as existing permit registration.
 export const REGISTER_ORDINARY_RESERVATION = COMMON + `
+if not productAllowed(r.productId,a.tuple) then return rejected('CAPABILITY_REVOKED') end
 if KEYS[2]~='reservation:fence:w1:'..a.requestId or redis.call('EXISTS',KEYS[2])~=0 then return rejected('REPLAY_MISMATCH') end
 a.expiresAt=nowMs()+5000
 redis.call('SET',KEYS[2],cjson.encode(a),'PX',5000,'NX')
@@ -67,6 +69,7 @@ return accepted(e)
 `;
 
 export const WRITE_ORDINARY_RESERVATION = COMMON + `
+if not productAllowed(r.productId,a.tuple) then return rejected('CAPABILITY_REVOKED') end
 if KEYS[2]~='reservation:fence:w1:'..a.requestId then return rejected('MISSING_PERMIT') end
 local stored,se=read(KEYS[2])
 if se or not fields(stored,7) or stored.version~=a.version or compareTuple(stored.tuple,a.tuple) or

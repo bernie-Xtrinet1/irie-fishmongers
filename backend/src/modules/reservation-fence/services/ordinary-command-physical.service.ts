@@ -1,4 +1,7 @@
 import { OrdinaryCommandDispatchClaimRepository } from '../repositories/ordinary-command-dispatch-claim.repository';
+import { requireUnrestrictedProduct } from '../repositories/product-reservation-restriction.repository';
+import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
+import { controlBytes, productControlKey } from '../types/product-reservation-restriction.types';
 import { OrdinaryDispatchClaim } from '../types/ordinary-command-dispatch-claim.types';
 import { releaseIdentity } from '../types/ordinary-release.types';
 import { createHash, randomUUID } from 'crypto';
@@ -111,6 +114,16 @@ export class OrdinaryCommandPhysicalService {
         || marker.ordinaryAcknowledgedSequence !== 0 || rows.some(row => row.state === 'ACKNOWLEDGED')))
         throw new Error('Genesis denied');
       const binding = purpose === 'OBSERVE' ? null : await requireOrdinaryBarrierReadiness(tx, marker.id, command.id);
+      if (purpose !== 'OBSERVE' && command.effect === 'W1') {
+        await requireUnrestrictedProduct(tx, marker.productId);
+        const bytes = controlBytes({ version: 1, productId: marker.productId, state: 'ALLOW', restrictionId: null,
+          restrictionRevision: 0, incarnation: fence.incarnation, epoch: fence.epoch });
+        const raw = await this.redis.eval(PRODUCT_CONTROL_INSTALL,
+          [RESERVATION_FENCE_KEY, productControlKey(marker.productId)], [JSON.stringify(transitionTuple(fence)), bytes]);
+        const result: unknown = typeof raw === 'string' ? JSON.parse(raw) : null;
+        if (!result || typeof result !== 'object' || !('code' in result) || result.code !== 'ACCEPTED' ||
+          !('value' in result) || result.value !== bytes) throw new Error('Product readiness denied');
+      }
       return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id, binding };
     });
   }
@@ -118,7 +131,8 @@ export class OrdinaryCommandPhysicalService {
   private async run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string): Promise<OrdinaryPhysicalResult> {
     let authority: Awaited<ReturnType<OrdinaryCommandPhysicalService['load']>>;
     try { authority = await this.load(commandId, purpose, releaseClaim); } catch { return { code: 'REJECTED' }; }
-    // load() has fully committed before the first Redis operation.
+    // load() commits before command execution. Product readiness initialization
+    // runs inside its durable lock and never creates reservation authority.
     try {
       const ledger = ordinaryPhysicalLedgerKey(authority.markerId);
       if (purpose === 'OBSERVE') return this.decode(await this.redis.eval(ORDINARY_PHYSICAL_OBSERVE,

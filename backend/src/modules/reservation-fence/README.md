@@ -260,3 +260,45 @@ Rollback of this inactive implementation is a code revert before activation;
 leave the additive nullable columns/table in place. Do not drop capability data
 after it has been used. Writer migration, mode handoff, terminal cleanup,
 certification, operational scheduling and activation remain later subphases.
+# W3-P permanent product restriction
+
+W3-P adds deny-only product authority. It does not repair entries, indexes or totals,
+clear suspect, acknowledge ordinary commands, authorize release, or reopen products.
+The admission and restriction services remain unregistered and unscheduled. Existing
+W1 paths gain deny checks; no production cutover or W3-O implementation is included.
+
+An opaque, single-use WeakMap capability is minted only from the existing read-only
+reservation/accounting observation boundary. Malformed/untrusted resource data or
+untrustworthy accounting is material uncertainty. Infrastructure errors, absence and
+expiry alone do not mint authority. The bounded digest is an audit binding, not an
+admission credential. No caller-supplied digest or reason can prepare a restriction.
+
+T0 observation admission precedes T1: PREPARED commits under the existing fence lock.
+The first permanent product identity/reason wins. A lost commit response reloads
+only; it never remints an identity. PREPARED denies new W1 issuance and claims without
+claiming physical enforcement. T2 installation uses the durable row after restart;
+T3 exact Redis RESTRICTED installation precedes T4 append-only acknowledgement and
+PREPARED -> ENFORCED. Lost T3/T4 responses retry the same identity. ENFORCED records
+first enforcement, not perpetual proof that every incarnation contains the control.
+
+Product control has no TTL and binds product, restriction ID/revision, incarnation
+and epoch. Missing/malformed/conflicting control fails closed. ALLOW initialization
+is internal to trusted W1 validation under the shared durable lock, after proving no
+restriction. Physical mutation rechecks control even for loaded grants and unchanged
+quantity renewals. Clearing availability suspect cannot clear this restriction.
+
+Both older W1 registration/write and command-bound W1 issuance/claim/execution are
+guarded. RELEASE, cancellation and evidence-only closure retain their existing
+authority rules. W3-P adds no W2 grant and requires no product ALLOW for RELEASE.
+The database also rejects new W1 command insertion for restricted products, mutable
+restriction identity, acknowledgement mutation/deletion, premature enforcement,
+restriction deletion and statement-level TRUNCATE. Installation evidence is exact
+canonical bytes plus hash; PostgreSQL guards validate its structure, while the trusted
+service establishes physical completion. A privileged database writer is not a
+cryptographic Redis witness.
+
+See [Redis incarnation admission](../../../../docs/operations/redis-incarnation-admission.md)
+for the external exclusion prerequisite. A stale restored Redis image is not made
+safe by Lua alone. Existing restrictions and I1 evidence persist; I2 needs independent
+installation. No automatic reopening, network fencing implementation or allocation
+tooling is added here.
