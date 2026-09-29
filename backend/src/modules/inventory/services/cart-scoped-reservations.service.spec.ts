@@ -1,5 +1,6 @@
 import { OrdinaryReservationService } from './ordinary-reservation.service';
 import { Test } from '@nestjs/testing';
+import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { InventoryReservationsService } from './inventory-reservations.service';
 
@@ -32,7 +33,12 @@ describe('InventoryReservationsService (cart-scoped model)', () => {
     };
     ordinary.reserve.mockReset();
     const testingModule = await Test.createTestingModule({ providers: [InventoryReservationsService,
-      { provide: RedisService, useValue: redis }, { provide: OrdinaryReservationService, useValue: ordinary }] }).compile();
+      { provide: RedisService, useValue: redis }, { provide: OrdinaryReservationService, useValue: ordinary },
+      { provide: PrismaService, useValue: {
+        reservationFenceTransition: { findFirst: jest.fn() },
+        productReservationRestriction: { findUnique: jest.fn() },
+        productReservationRestrictionInstallation: { findUnique: jest.fn() },
+      } }] }).compile();
     service = testingModule.get(InventoryReservationsService);
   });
 

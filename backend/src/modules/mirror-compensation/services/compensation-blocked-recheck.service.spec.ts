@@ -1,3 +1,4 @@
+import { uncertainObservation } from '../../inventory/types/reservation-observation.types';
 import { CartReservationCompensation } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
@@ -17,7 +18,7 @@ type MockCompensationRepository = jest.Mocked<
   >
 >;
 type MockCartRepository = jest.Mocked<Pick<CartRepository, 'findItemByCartAndProduct'>>;
-type MockInventoryReservationsService = jest.Mocked<Pick<InventoryReservationsService, 'reconcileProductReservedTotal'>>;
+type MockInventoryReservationsService = jest.Mocked<Pick<InventoryReservationsService, 'observeProductReservations'>>;
 type MockModeService = jest.Mocked<Pick<ReservationEngineModeService, 'getCurrentMode'>>;
 
 function blockedRow(overrides: Partial<CartReservationCompensation> = {}): CartReservationCompensation {
@@ -62,7 +63,7 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
     };
     cartRepository = { findItemByCartAndProduct: jest.fn().mockResolvedValue({ quantity: 5 }) };
     inventoryReservations = {
-      reconcileProductReservedTotal: jest.fn().mockResolvedValue({ admissionSuspended: true }),
+      observeProductReservations: jest.fn().mockResolvedValue(uncertainObservation()),
     };
     modeService = { getCurrentMode: jest.fn().mockResolvedValue('DRAINING') };
 
@@ -106,7 +107,7 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
 
       const result = await service.recheckBlocked('comp-1', new Date());
 
-      expect(inventoryReservations.reconcileProductReservedTotal).not.toHaveBeenCalled();
+      expect(inventoryReservations.observeProductReservations).not.toHaveBeenCalled();
       expect(repository.unblockIfGenerationMatches).toHaveBeenCalledWith('comp-1', 3, expect.any(Date));
       expect(result).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: 'comp-1' });
     });
@@ -129,7 +130,7 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
     });
 
     it('still admissionSuspended reschedules without touching attemptCount', async () => {
-      inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({ admissionSuspended: true } as never);
+      inventoryReservations.observeProductReservations.mockResolvedValue(uncertainObservation());
 
       const result = await service.recheckBlocked('comp-1', new Date());
 
@@ -142,13 +143,15 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
       expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: 'comp-1' });
     });
 
-    it('a healthy reconciliation unblocks', async () => {
-      inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({ admissionSuspended: false } as never);
+    it.each(['CONSISTENT', 'ABSENT', 'PREPARED', 'ENFORCED', 'INFRASTRUCTURE_UNCERTAIN'] as const)('keeps PRODUCT_SUSPECT blocked after %s observation', async (finding) => {
+      inventoryReservations.observeProductReservations.mockResolvedValue({ ...uncertainObservation(), findings: finding === 'CONSISTENT' ? ['CONSISTENT'] : ['INFRASTRUCTURE_UNCERTAIN'], restriction: { ...uncertainObservation().restriction, durableState: finding === 'ABSENT' || finding === 'PREPARED' || finding === 'ENFORCED' ? finding : 'UNKNOWN' } });
 
       const result = await service.recheckBlocked('comp-1', new Date());
 
-      expect(repository.unblockIfGenerationMatches).toHaveBeenCalledWith('comp-1', 3, expect.any(Date));
-      expect(result).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: 'comp-1' });
+      expect(repository.unblockIfGenerationMatches).not.toHaveBeenCalled();
+      expect(repository.rescheduleBlockedCheckIfGenerationMatches).toHaveBeenCalledWith('comp-1', 3, expect.any(Date));
+      expect(inventoryReservations.observeProductReservations).toHaveBeenCalledWith('product-1', ['cart-1']);
+      expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: 'comp-1' });
     });
   });
 
@@ -191,7 +194,7 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
     });
 
     it('a stale reschedule reports STALE_BLOCKED_CHECK', async () => {
-      inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({ admissionSuspended: true } as never);
+      inventoryReservations.observeProductReservations.mockResolvedValue(uncertainObservation());
       repository.rescheduleBlockedCheckIfGenerationMatches.mockResolvedValue({ count: 0 });
 
       const result = await service.recheckBlocked('comp-1', new Date());

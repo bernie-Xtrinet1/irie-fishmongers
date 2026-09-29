@@ -1,3 +1,4 @@
+import { cartIndexKey, productIndexKey, reservationKey } from '../../inventory/constants/inventory.constants';
 import { Redis } from 'ioredis';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -119,7 +120,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     expect(await inventoryReservations.getActiveReservation(cartId, productId)).toEqual({ status: 'ABSENT' });
   });
 
-  it('3. a genuine PRODUCT_SUSPECT block heals via real reconciliation and then converges', async () => {
+  it('3. a genuine PRODUCT_SUSPECT block remains blocked after observation', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 3);
     await redisClient.set(productSuspectKey(productId), '1');
@@ -132,15 +133,28 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     expect(blocked).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row.id });
     expect((await compensationRepository.findById(row.id))?.blockReason).toBe('PRODUCT_SUSPECT');
 
-    const unblocked = await blockedRecheckService.recheckBlocked(row.id, new Date());
-    expect(unblocked).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: row.id });
-    expect(await redisClient.get(productSuspectKey(productId))).toBeNull();
-
-    const converged = await reconciliationService.attemptRecovery(row.id, new Date());
-    expect(converged).toEqual({ outcome: 'RESOLVED_CONVERGED', compensationId: row.id });
+    Object.assign(inventoryReservations, { observationPrisma: prisma });
+    const snapshot = async () => ({
+      entry: await redisClient.get(reservationKey(cartId, productId)),
+      total: await redisClient.get(productTotalKey(productId)),
+      suspect: await redisClient.get(productSuspectKey(productId)),
+      products: (await redisClient.smembers(cartIndexKey(cartId))).sort(),
+      carts: (await redisClient.smembers(productIndexKey(productId))).sort(),
+    });
+    const before = await snapshot();
+    const beforeRow = await compensationRepository.findById(row.id);
+    const now = new Date();
+    const result = await blockedRecheckService.recheckBlocked(row.id, now);
+    expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row.id });
+    expect(await snapshot()).toEqual(before);
+    const after = await compensationRepository.findById(row.id);
+    expect(after?.status).toBe('BLOCKED');
+    expect(after?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(after?.attemptCount).toBe(beforeRow?.attemptCount);
+    expect(after?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
   });
 
-  it('4. a genuine ACCOUNTING_UNDERFLOW block heals via real reconciliation and then converges', async () => {
+  it('4. a genuine ACCOUNTING_UNDERFLOW block remains blocked after observation', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 10);
     await redisClient.set(productTotalKey(productId), '2'); // corrupt below the upcoming negative delta
@@ -154,11 +168,25 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     expect(blocked).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row.id });
     expect((await compensationRepository.findById(row.id))?.reasonCode).toBe('ACCOUNTING_UNDERFLOW');
 
-    const unblocked = await blockedRecheckService.recheckBlocked(row.id, new Date());
-    expect(unblocked).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: row.id });
-
-    const converged = await reconciliationService.attemptRecovery(row.id, new Date());
-    expect(converged).toEqual({ outcome: 'RESOLVED_CONVERGED', compensationId: row.id });
+    Object.assign(inventoryReservations, { observationPrisma: prisma });
+    const snapshot = async () => ({
+      entry: await redisClient.get(reservationKey(cartId, productId)),
+      total: await redisClient.get(productTotalKey(productId)),
+      suspect: await redisClient.get(productSuspectKey(productId)),
+      products: (await redisClient.smembers(cartIndexKey(cartId))).sort(),
+      carts: (await redisClient.smembers(productIndexKey(productId))).sort(),
+    });
+    const before = await snapshot();
+    const beforeRow = await compensationRepository.findById(row.id);
+    const now = new Date();
+    const result = await blockedRecheckService.recheckBlocked(row.id, now);
+    expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row.id });
+    expect(await snapshot()).toEqual(before);
+    const after = await compensationRepository.findById(row.id);
+    expect(after?.status).toBe('BLOCKED');
+    expect(after?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(after?.attemptCount).toBe(beforeRow?.attemptCount);
+    expect(after?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
   });
 
   it('5. a concurrent divergence arrival mid-recovery supersedes the attempt: old worker cannot resolve', async () => {

@@ -46,7 +46,7 @@ export class CompensationBlockedRecheckService {
     }
 
     // Captured before any I/O - a slow check (a Redis round trip to
-    // reconcileProductReservedTotal, or getCurrentMode) must judge itself
+    // observeProductReservations, or getCurrentMode) must judge itself
     // against the generation it started with, never one read later.
     const observedGeneration = row.generation;
 
@@ -67,11 +67,9 @@ export class CompensationBlockedRecheckService {
     }
 
     // PRODUCT_SUSPECT
-    const reconciliation = await this.inventoryReservations.reconcileProductReservedTotal(row.productId);
-    if (reconciliation.admissionSuspended) {
-      return this.rescheduleBlocked(compensationId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
-    }
-    return this.unblock(compensationId, observedGeneration, now);
+    await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
+    // Observation cannot authorize repair or clear a durable PRODUCT_SUSPECT block.
+    return this.rescheduleBlocked(compensationId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
   }
 
   private async unblock(

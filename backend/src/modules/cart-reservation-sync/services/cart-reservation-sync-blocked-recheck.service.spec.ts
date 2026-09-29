@@ -1,3 +1,4 @@
+import { uncertainObservation } from '../../inventory/types/reservation-observation.types';
 import { CartReservationSyncState } from '@prisma/client';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
@@ -44,7 +45,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
     >
   >;
   let cartRepository: jest.Mocked<Pick<CartRepository, 'findItemByCartAndProduct'>>;
-  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'reconcileProductReservedTotal'>>;
+  let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'observeProductReservations'>>;
   let modeService: jest.Mocked<Pick<ReservationEngineModeService, 'getCurrentMode'>>;
   let service: CartReservationSyncBlockedRecheckService;
 
@@ -55,7 +56,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
       rescheduleBlockedCheckIfGenerationMatches: jest.fn(),
     };
     cartRepository = { findItemByCartAndProduct: jest.fn() };
-    inventoryReservations = { reconcileProductReservedTotal: jest.fn() };
+    inventoryReservations = { observeProductReservations: jest.fn() };
     modeService = { getCurrentMode: jest.fn() };
     service = new CartReservationSyncBlockedRecheckService(
       syncState as unknown as CartReservationSyncStateRepository,
@@ -100,7 +101,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
     const outcome = await service.recheckBlocked('marker-1', new Date());
 
     expect(syncState.unblockIfGenerationMatches).toHaveBeenCalledWith('marker-1', 3);
-    expect(inventoryReservations.reconcileProductReservedTotal).not.toHaveBeenCalled();
+    expect(inventoryReservations.observeProductReservations).not.toHaveBeenCalled();
     expect(modeService.getCurrentMode).not.toHaveBeenCalled();
     expect(outcome).toEqual({ outcome: 'UNBLOCKED_PENDING', markerId: 'marker-1' });
   });
@@ -156,9 +157,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
         quantity: 4,
         mutationVersion: 1,
       } as never);
-      inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({
-        admissionSuspended: true,
-      } as never);
+      inventoryReservations.observeProductReservations.mockResolvedValue(uncertainObservation());
       syncState.rescheduleBlockedCheckIfGenerationMatches.mockResolvedValue({ count: 1 });
 
       const outcome = await service.recheckBlocked('marker-1', new Date());
@@ -166,7 +165,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
       expect(outcome).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', markerId: 'marker-1' });
     });
 
-    it('unblocks once accounting reconciliation clears the suspension', async () => {
+    it.each(['CONSISTENT', 'ABSENT', 'PREPARED', 'ENFORCED', 'INFRASTRUCTURE_UNCERTAIN'] as const)('keeps PRODUCT_SUSPECT blocked after %s observation', async (finding) => {
       syncState.findById.mockResolvedValue(buildBlockedMarker({ blockReason: 'PRODUCT_SUSPECT' }));
       cartRepository.findItemByCartAndProduct.mockResolvedValue({
         id: 'item-1',
@@ -175,14 +174,14 @@ describe('CartReservationSyncBlockedRecheckService', () => {
         quantity: 4,
         mutationVersion: 1,
       } as never);
-      inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({
-        admissionSuspended: false,
-      } as never);
-      syncState.unblockIfGenerationMatches.mockResolvedValue({ count: 1 });
+      inventoryReservations.observeProductReservations.mockResolvedValue({ ...uncertainObservation(), findings: finding === 'CONSISTENT' ? ['CONSISTENT'] : ['INFRASTRUCTURE_UNCERTAIN'], restriction: { ...uncertainObservation().restriction, durableState: finding === 'ABSENT' || finding === 'PREPARED' || finding === 'ENFORCED' ? finding : 'UNKNOWN' } });
+      syncState.rescheduleBlockedCheckIfGenerationMatches.mockResolvedValue({ count: 1 });
 
       const outcome = await service.recheckBlocked('marker-1', new Date());
 
-      expect(outcome).toEqual({ outcome: 'UNBLOCKED_PENDING', markerId: 'marker-1' });
+      expect(outcome).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', markerId: 'marker-1' });
+      expect(syncState.unblockIfGenerationMatches).not.toHaveBeenCalled();
+      expect(inventoryReservations.observeProductReservations).toHaveBeenCalledWith('product-1', ['cart-1']);
     });
   });
 
@@ -205,7 +204,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
       quantity: 4,
       mutationVersion: 1,
     } as never);
-    inventoryReservations.reconcileProductReservedTotal.mockResolvedValue({ admissionSuspended: true } as never);
+    inventoryReservations.observeProductReservations.mockResolvedValue(uncertainObservation());
     syncState.rescheduleBlockedCheckIfGenerationMatches.mockResolvedValue({ count: 0 });
 
     const outcome = await service.recheckBlocked('marker-1', new Date());

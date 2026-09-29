@@ -1,3 +1,8 @@
+import { RESERVATION_OBSERVATION_SCRIPT } from '../lua/reservation-observation-lua';
+import { parseRedisObservation } from '../types/reservation-observation.types';
+import { productControlKey } from '../../reservation-fence/types/product-reservation-restriction.types';
+import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
+import { productIndexKey, productTotalKey, productSuspectKey } from '../constants/inventory.constants';
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 
@@ -7,8 +12,6 @@ import { InventoryReservationsService } from './inventory-reservations.service';
 import {
   cleanupKeys,
   connectRealRedis,
-  getCartIndexMembers,
-  getProductIndexMembers,
   getRawReservation,
   getStoredTotal,
   getSuspectFlag,
@@ -32,6 +35,7 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
   let createdKeys: Set<string>;
 
   beforeAll(async () => {
+    if (process.env.REDIS_URL !== 'redis://127.0.0.1:16479') throw new Error('Exact disposable Redis required');
     client = await connectRealRedis();
     authority = await openOrdinaryAccountingFixture(client);
     service = authority.service;
@@ -90,54 +94,66 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     expect(await getRawReservation(client, cartId, productId)).toBe(mismatched);
   });
 
-  it('14. reconciliation OVERCOUNT: writes the calculated total, admission is not suspended', async () => {
+  async function observe(productId: string, expected: string[] = []) {
+    return parseRedisObservation(await client.eval(RESERVATION_OBSERVATION_SCRIPT, 5,
+      productIndexKey(productId), productTotalKey(productId), productSuspectKey(productId),
+      productControlKey(productId), RESERVATION_FENCE_KEY,
+      productId, Date.now(), 100, JSON.stringify(expected)));
+  }
+  async function snapshot(productId: string) {
+    const keys = [...createdKeys, productControlKey(productId), RESERVATION_FENCE_KEY].sort();
+    return Promise.all(keys.map(async key => [key, await client.dump(key)]));
+  }
+  it.each([2, 20])('observes total %s drift without repairing accounting or suspect', async total => {
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
-
     await authority.reserveWithIntent(cartId, productId, customerId, 5);
-    await client.set(`inv:reserved:product-total:{${productId}}`, '20');
-
-    const result = await service.reconcileProductReservedTotal(productId);
-
-    expect(result.driftDirection).toBe('OVERCOUNT');
-    expect(result.calculatedTotal).toBe(5);
-    expect(result.repairedValue).toBe(5);
-    expect(result.admissionSuspended).toBe(false);
-    expect(await getStoredTotal(client, productId)).toBe('5');
-    expect(await getSuspectFlag(client, productId)).toBeNull();
+    await client.set(productTotalKey(productId), String(total));
+    await client.set(productSuspectKey(productId), '1');
+    const before = await snapshot(productId);
+    const result = await observe(productId, [cartId]);
+    expect(result.findings).toContain('QUANTITY_MISMATCH');
+    expect(result.accounting.observedQuantityTotal).toBe(5);
+    expect(await snapshot(productId)).toEqual(before);
   });
-
-  it('15. reconciliation UNDERCOUNT: suspects before repair, verifies, clears suspect only after success', async () => {
+  it('retains stale membership and reports missing entry', async () => {
     const { cartId, productId, customerId } = ids();
     trackKeysFor(createdKeys, cartId, productId);
-
-    await authority.reserveWithIntent(cartId, productId, customerId, 9);
-    await client.set(`inv:reserved:product-total:{${productId}}`, '2');
-
-    const result = await service.reconcileProductReservedTotal(productId);
-
-    expect(result.driftDirection).toBe('UNDERCOUNT');
-    expect(result.calculatedTotal).toBe(9);
-    expect(result.repairedValue).toBe(9);
-    expect(result.admissionSuspended).toBe(false);
-    expect(await getStoredTotal(client, productId)).toBe('9');
-    expect(await getSuspectFlag(client, productId)).toBeNull();
-  });
-
-  it('16. stale product-index member: removed atomically, both indexes cleaned', async () => {
-    const { cartId, productId, customerId } = ids();
-    trackKeysFor(createdKeys, cartId, productId);
-
     await authority.reserveWithIntent(cartId, productId, customerId, 4);
     await client.del(reservationKey(cartId, productId));
-
-    const result = await service.reconcileProductReservedTotal(productId);
-
-    expect(result.staleMembersRemoved).toBe(1);
-    expect(await getProductIndexMembers(client, productId)).toEqual([]);
-    expect(await getCartIndexMembers(client, cartId)).toEqual([]);
+    const before = await snapshot(productId);
+    expect((await observe(productId)).findings).toContain('MISSING');
+    expect(await snapshot(productId)).toEqual(before);
   });
-
+  it('detects a known hold outside the index without adopting it', async () => {
+    const { cartId, productId, customerId } = ids();
+    trackKeysFor(createdKeys, cartId, productId);
+    await authority.reserveWithIntent(cartId, productId, customerId, 4);
+    await client.srem(productIndexKey(productId), cartId);
+    const before = await snapshot(productId);
+    expect((await observe(productId, [cartId])).findings).toContain('EXTRA');
+    expect(await snapshot(productId)).toEqual(before);
+  });
+  it.each(['malformed', 'wrong-type', 'overflow', 'reciprocal-missing'])('observes %s with zero writes', async scenario => {
+    const { cartId, productId, customerId } = ids();
+    trackKeysFor(createdKeys, cartId, productId);
+    await authority.reserveWithIntent(cartId, productId, customerId, 4);
+    if (scenario === 'malformed') await client.set(reservationKey(cartId, productId), '{broken');
+    if (scenario === 'wrong-type') { await client.del(productIndexKey(productId)); await client.set(productIndexKey(productId), 'wrong'); }
+    if (scenario === 'overflow') await client.sadd(productIndexKey(productId), ...Array.from({ length: 101 }, () => randomUUID()));
+    if (scenario === 'reciprocal-missing') await client.del('inv:reserved:cart-index:{' + cartId + '}');
+    const before = await snapshot(productId);
+    expect((await observe(productId, [cartId])).findings).toContain('MEMBERSHIP_UNCERTAIN');
+    expect(await snapshot(productId)).toEqual(before);
+  });
+  it('concurrent observers preserve identical physical state', async () => {
+    const { cartId, productId, customerId } = ids();
+    trackKeysFor(createdKeys, cartId, productId);
+    await authority.reserveWithIntent(cartId, productId, customerId, 3);
+    const before = await snapshot(productId);
+    await Promise.all([observe(productId), observe(productId)]);
+    expect(await snapshot(productId)).toEqual(before);
+  });
   it('17. concurrent reserve operations: the final total equals the sum of active quantities', async () => {
     const productId = randomUUID();
     const carts = Array.from({ length: 5 }, () => randomUUID());
@@ -150,22 +166,14 @@ describe('InventoryReservationsService (real Redis integration - reconciliation)
     expect(await getStoredTotal(client, productId)).toBe(String(carts.length * 2));
   });
 
-  it('18. concurrent reconciliation and reservation mutation: no lost update, final total matches active reservations', async () => {
+  it('observation concurrent with W1 does not lose the authorized update', async () => {
     const { cartId, productId, customerId } = ids();
-    trackKeysFor(createdKeys, cartId, productId);
     const otherCart = randomUUID();
-    createdKeys.add(reservationKey(otherCart, productId));
-
+    trackKeysFor(createdKeys, cartId, productId);
+    trackKeysFor(createdKeys, otherCart, productId);
     await authority.reserveWithIntent(cartId, productId, customerId, 3);
-
-    await Promise.all([
-      service.reconcileProductReservedTotal(productId),
-      authority.reserveWithIntent(otherCart, productId, randomUUID(), 4),
-    ]);
-
-    const verify = await service.reconcileProductReservedTotal(productId);
-    expect(verify.driftDirection).toBe('NO_DRIFT');
-    expect(verify.calculatedTotal).toBe(7);
+    await Promise.all([observe(productId), authority.reserveWithIntent(otherCart, productId, randomUUID(), 4)]);
+    expect((await observe(productId)).accounting.observedQuantityTotal).toBe(7);
     expect(await getStoredTotal(client, productId)).toBe('7');
   });
 });

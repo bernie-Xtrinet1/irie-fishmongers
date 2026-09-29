@@ -1,9 +1,14 @@
+import { PrismaService } from '../../../database/prisma.service';
+import { RESERVATION_OBSERVATION_SCRIPT } from '../lua/reservation-observation-lua';
+import { OBSERVATION_LIMIT, ReservationObservation, uncertainObservation, parseRedisObservation } from '../types/reservation-observation.types';
+import { productControlKey, controlBytes, restrictionDigest } from '../../reservation-fence/types/product-reservation-restriction.types';
+import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
+import { transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
 import { OrdinaryReservationService } from './ordinary-reservation.service';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { RedisService } from '../../../common/redis/redis.service';
 import {
-  RESERVATION_ENTRY_VERSION,
   RESERVATION_HASH_TTL_SECONDS,
   RESERVATION_TTL_SECONDS,
   cartIndexKey,
@@ -14,7 +19,6 @@ import {
   reservationKey,
 } from '../constants/inventory.constants';
 import {
-  RECONCILE_PRODUCT_RESERVED_TOTAL_SCRIPT,
   RELEASE_RESERVATION_SCRIPT,
 } from '../lua/reservation-lua-scripts';
 import {
@@ -86,20 +90,7 @@ export type ProductTotalDriftDirection = 'NO_DRIFT' | 'OVERCOUNT' | 'UNDERCOUNT'
 // computeAvailableToPurchase instead).
 export type SuspectAwareAvailability = { status: 'OK'; available: number } | { status: 'SUSPECT' };
 
-export interface ProductReservedTotalReconciliation {
-  productId: string;
-  membersChecked: number;
-  activeReservations: number;
-  staleMembersRemoved: number;
-  malformedEntries: number;
-  versionMismatches: number;
-  storedTotal: number;
-  calculatedTotal: number;
-  difference: number;
-  driftDirection: ProductTotalDriftDirection;
-  repairedValue: number;
-  admissionSuspended: boolean;
-}
+
 
 /**
  * Redis-backed soft holds on stock, keyed per product as a hash of
@@ -116,6 +107,9 @@ export class InventoryReservationsService {
 
   @Inject(OrdinaryReservationService)
   private readonly ordinary!: OrdinaryReservationService;
+
+  @Inject(PrismaService)
+  private readonly observationPrisma!: PrismaService;
 
   constructor(private readonly redis: RedisService) {}
 
@@ -274,22 +268,54 @@ export class InventoryReservationsService {
     return { status: 'OK', available: Math.max(0, quantityAvailable - observation.reservedByOthers) };
   }
 
-  async reconcileProductReservedTotal(
-    productId: string,
-  ): Promise<ProductReservedTotalReconciliation> {
-    const keys = [productIndexKey(productId), productTotalKey(productId), productSuspectKey(productId)];
-    const args = [productId, Date.now(), RESERVATION_ENTRY_VERSION];
-
-    const raw = await this.redis.eval(RECONCILE_PRODUCT_RESERVED_TOTAL_SCRIPT, keys, args);
-    const result = parseScriptResult<ProductReservedTotalReconciliation>(raw);
-
-    if (result.driftDirection !== 'NO_DRIFT') {
-      this.logger.warn(
-        `Product reserved-total reconciliation found ${result.driftDirection} for ${productId}`,
-        result,
-      );
-    }
-
-    return result;
+  // Cross-store reads are observations, never an atomic authority snapshot.
+  async observeProductReservations(productId: string, expectedCartIds: readonly string[] = []): Promise<ReservationObservation> {
+    const result = uncertainObservation();
+    const valid = (id: string) => /^[a-zA-Z0-9_-]{1,128}$/.test(id);
+    if (!valid(productId) || expectedCartIds.length > OBSERVATION_LIMIT || !expectedCartIds.every(valid)) return result;
+    try {
+      const read = async () => {
+        const fence = await this.observationPrisma.reservationFenceTransition.findFirst({ orderBy: { revision: 'desc' } });
+        const restriction = await this.observationPrisma.productReservationRestriction.findUnique({ where: { productId } });
+        const installation = fence && restriction ? await this.observationPrisma.productReservationRestrictionInstallation.findUnique({
+          where: { restrictionId_incarnation_epoch_protocolVersion: { restrictionId: restriction.id,
+            incarnation: fence.incarnation, epoch: fence.epoch, protocolVersion: fence.protocol } },
+        }) : null;
+        return { fence, restriction, installation };
+      };
+      const before = await read();
+      const raw = await this.redis.eval(RESERVATION_OBSERVATION_SCRIPT,
+        [productIndexKey(productId), productTotalKey(productId), productSuspectKey(productId),
+          productControlKey(productId), RESERVATION_FENCE_KEY],
+        [productId, Date.now(), OBSERVATION_LIMIT, JSON.stringify(expectedCartIds)]);
+      const observed = parseRedisObservation(raw);
+      const after = await read();
+      result.findings = [...observed.findings];
+      result.accounting = observed.accounting;
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        result.findings = [...result.findings.filter(f => f !== 'CONSISTENT'), 'INFRASTRUCTURE_UNCERTAIN'];
+        return result;
+      }
+      const { fence, restriction, installation } = before;
+      result.restriction.durableState = restriction?.state ?? 'ABSENT';
+      result.restriction.revision = restriction?.restrictionRevision ?? null;
+      result.restriction.observationDigest = restriction?.observationDigest ?? null;
+      if (restriction) result.findings.push(restriction.state === 'PREPARED' ? 'RESTRICTION_PREPARED' : 'RESTRICTION_ENFORCED');
+      const uncertain = () => { result.findings = [...new Set([...result.findings.filter(f => f !== 'CONSISTENT'), 'MEMBERSHIP_UNCERTAIN' as const])]; };
+      if (observed.control === null) result.restriction.physicalState = 'ABSENT';
+      if (!fence || fence.status !== 'ACKNOWLEDGED' || fence.protocol !== 1 ||
+        observed.fence !== JSON.stringify(transitionTuple(fence))) { uncertain(); return result; }
+      const expected = controlBytes({ version: 1, productId, state: restriction ? 'RESTRICTED' : 'ALLOW',
+        restrictionId: restriction?.id ?? null, restrictionRevision: restriction ? 1 : 0,
+        incarnation: fence.incarnation, epoch: fence.epoch });
+      if (observed.control !== expected) { uncertain(); return result; }
+      result.restriction.physicalState = restriction ? 'RESTRICTED' : 'ALLOW';
+      // This is observed equality only; a concurrent change can occur after these reads.
+      result.restriction.crossStoreConsistency = 'OBSERVED_MATCH';
+      if (restriction && installation?.acknowledgement === expected && installation.acknowledgementHash === restrictionDigest(expected))
+        result.restriction.installation = 'MATCHES_OBSERVED_TUPLE';
+      else if (restriction) uncertain();
+      return result;
+    } catch { return uncertainObservation(); }
   }
 }

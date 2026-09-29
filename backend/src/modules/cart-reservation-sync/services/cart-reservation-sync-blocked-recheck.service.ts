@@ -68,11 +68,9 @@ export class CartReservationSyncBlockedRecheckService {
     }
 
     if (row.blockReason === 'PRODUCT_SUSPECT') {
-      const reconciliation = await this.inventoryReservations.reconcileProductReservedTotal(row.productId);
-      if (reconciliation.admissionSuspended) {
-        return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
-      }
-      return this.unblock(markerId, observedGeneration);
+      await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
+      // Observation cannot authorize repair or clear a durable PRODUCT_SUSPECT block.
+      return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
     }
 
     // Structurally unreachable - blockIfGenerationMatches always sets

@@ -1,3 +1,4 @@
+import { cartIndexKey, productIndexKey, productSuspectKey, reservationKey } from '../../inventory/constants/inventory.constants';
 import { Redis } from 'ioredis';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -100,7 +101,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
     batchService = new CompensationBatchService(compensationRepository, reconciliationService, blockedRecheckService);
   });
 
-  it('1. end-to-end: converges a due PENDING row, reclaims a stale PROCESSING row, and unblocks a due BLOCKED row in one run', async () => {
+  it('1. end-to-end: converges PENDING, reclaims stale PROCESSING, and preserves PRODUCT_SUSPECT blocking', async () => {
     const pending = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(pending.cartId, pending.productId, 4);
     const pendingRow = await compensationRepository.create(
@@ -127,13 +128,25 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
       data: { status: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', nextAttemptAt: new Date(Date.now() - 1000) },
     });
 
-    const result = await batchService.runBatch({ now: new Date(), limit: 200 });
+    Object.assign(inventoryReservations, { observationPrisma: prisma });
+    await redisClient.set(productTotalKey(blocked.productId), '0');
+    await redisClient.set(productSuspectKey(blocked.productId), '1');
+    const snapshot = async () => ({
+      entry: await redisClient.get(reservationKey(blocked.cartId, blocked.productId)),
+      total: await redisClient.get(productTotalKey(blocked.productId)),
+      suspect: await redisClient.get(productSuspectKey(blocked.productId)),
+      products: (await redisClient.smembers(cartIndexKey(blocked.cartId))).sort(),
+      carts: (await redisClient.smembers(productIndexKey(blocked.productId))).sort(),
+    });
+    const physicalBefore = await snapshot();
+    const now = new Date();
+    const result = await batchService.runBatch({ now, limit: 200 });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.result.candidatesFound).toBeGreaterThanOrEqual(3);
     expect(result.result.resolved).toBeGreaterThanOrEqual(2); // pendingRow + staleRow converge
-    expect(result.result.unblocked).toBeGreaterThanOrEqual(1); // blockedRow unblocks (healthy product accounting)
+    expect(result.result.unblocked).toBe(0);
 
     expect(await redisClient.get(productTotalKey(pending.productId))).toBe('4');
     expect(await redisClient.get(productTotalKey(stale.productId))).toBe('2');
@@ -142,16 +155,23 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
     const updatedBlocked = await compensationRepository.findById(blockedRow.id);
     expect(updatedPending?.status).toBe('RESOLVED');
     expect(updatedStale?.status).toBe('RESOLVED');
-    // Unblocked to PENDING (not yet RESOLVED - that's a second, separate
-    // attemptRecovery pass, exactly what the follow-up call below proves
-    // and also drains it so it can't pollute a later test's whole-table
-    // candidate scan as a stray due row).
-    expect(updatedBlocked?.status).toBe('PENDING');
+    expect(updatedBlocked?.status).toBe('BLOCKED');
+    expect(updatedBlocked?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(updatedBlocked?.attemptCount).toBe(blockedRow.attemptCount);
+    expect(updatedBlocked?.resolvedAt).toBeNull();
+    expect(updatedBlocked?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
+    expect(await snapshot()).toEqual(physicalBefore);
 
-    const followUp = await batchService.runBatch({ now: new Date(), limit: 200 });
+    if (!updatedBlocked?.nextAttemptAt) throw new Error('Expected blocked recheck schedule');
+    const followUp = await batchService.runBatch({ now: updatedBlocked.nextAttemptAt, limit: 200 });
     expect(followUp.ok).toBe(true);
     const finalBlocked = await compensationRepository.findById(blockedRow.id);
-    expect(finalBlocked?.status).toBe('RESOLVED');
+    expect(finalBlocked?.status).toBe('BLOCKED');
+    expect(finalBlocked?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(finalBlocked?.attemptCount).toBe(blockedRow.attemptCount);
+    expect(finalBlocked?.resolvedAt).toBeNull();
+    expect(finalBlocked?.nextAttemptAt?.getTime()).toBeGreaterThan(updatedBlocked.nextAttemptAt.getTime());
+    expect(await snapshot()).toEqual(physicalBefore);
   });
 
   describe('PENDING atomic-claim exclusion under concurrent workers', () => {
@@ -218,7 +238,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
   });
 
   describe('BLOCKED overlapping recheck behavior (no exactly-once claim)', () => {
-    it('4. two concurrent batch runs recheck the same due BLOCKED row: convergence is safe, exactly-once is not required', async () => {
+    it('4. two concurrent batch runs recheck the same due BLOCKED row: observation preserves blocking and attempts', async () => {
       const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
       await cartRepository.addOrIncrementItem(cartId, productId, 3);
       const row = await compensationRepository.create(
@@ -228,6 +248,16 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
         where: { id: row.id },
         data: { status: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT', nextAttemptAt: new Date(Date.now() - 1000) },
       });
+      Object.assign(inventoryReservations, { observationPrisma: prisma });
+      const snapshot = async () => ({
+      entry: await redisClient.get(reservationKey(cartId, productId)),
+      total: await redisClient.get(productTotalKey(productId)),
+      suspect: await redisClient.get(productSuspectKey(productId)),
+      products: (await redisClient.smembers(cartIndexKey(cartId))).sort(),
+      carts: (await redisClient.smembers(productIndexKey(productId))).sort(),
+    });
+      const physicalBefore = await snapshot();
+      const attemptsBefore = (await compensationRepository.findById(row.id))!.attemptCount;
       const now = new Date();
 
       const [first, second] = await Promise.all([
@@ -238,18 +268,13 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
       expect(first.ok).toBe(true);
       expect(second.ok).toBe(true);
 
-      // Deliberately not asserting on the aggregate unblocked counters
-      // (pollution-sensitive in a whole-table scan, same rationale as
-      // above) and deliberately NOT asserting exactly-once processing -
-      // both runs may legitimately report UNBLOCKED_PENDING for this row
-      // (harmless duplicate bookkeeping: neither unblockIfGenerationMatches
-      // nor rescheduleBlockedCheckIfGenerationMatches advances generation,
-      // so two concurrent reads of the same generation can both satisfy
-      // their own WHERE clause). Only the row's own final state matters.
-
       const updated = await compensationRepository.findById(row.id);
-      expect(updated?.status).toBe('PENDING');
-      expect(updated?.blockReason).toBeNull();
+      expect(updated?.status).toBe('BLOCKED');
+      expect(updated?.blockReason).toBe('PRODUCT_SUSPECT');
+      expect(updated?.attemptCount).toBe(attemptsBefore);
+      expect(updated?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
+      expect(updated?.resolvedAt).toBeNull();
+      expect(await snapshot()).toEqual(physicalBefore);
     });
   });
 

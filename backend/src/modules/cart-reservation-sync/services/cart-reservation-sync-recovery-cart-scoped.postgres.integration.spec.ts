@@ -23,7 +23,7 @@ import {
 // Phase 16A.0-DA, Unit DA.4B (see the DA.4B frozen plan). Real Postgres +
 // real Redis proof of the frozen four-mode matrix: negative-authority
 // proofs (each mode's recovery touches ONLY its own system), the
-// PRODUCT_SUSPECT block -> unblock -> converge cycle under CART_SCOPED, a
+// PRODUCT_SUSPECT observation with continued blocking under CART_SCOPED, a
 // genuine CHECKOUT_IN_PROGRESS retry, and the DRAINING reserve/release
 // policy. Mode-transition races (REQUEUED_MODE_CHANGED, legal ABA) live in
 // the sibling cart-reservation-sync-recovery-mode-race.postgres.integration.spec.ts.
@@ -103,9 +103,9 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     releaseReservationSpy.mockRestore();
   });
 
-  it('5. a genuine PRODUCT_SUSPECT block under CART_SCOPED heals via a real recheck and then converges', async () => {
+  it('5. PRODUCT_SUSPECT observation preserves physical state and remains blocked', async () => {
     await ensureMode(fixture, 'CART_SCOPED');
-    const { productId, markerId } = await unresolvedReserveMarker(fixture, 4);
+    const { cartId, productId, markerId } = await unresolvedReserveMarker(fixture, 4);
     await fixture.redisClient.set(productSuspectKey(productId), '1');
 
     const blocked = await fixture.recoveryService.reconcileOne(markerId, new Date());
@@ -115,18 +115,38 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     expect(blockedRow?.blockReason).toBe('PRODUCT_SUSPECT');
     expect(blockedRow?.nextAttemptAt).not.toBeNull();
 
-    // reconcileProductReservedTotal is an active reconciliation, not a
-    // passive flag read - with no genuine corruption behind this
-    // artificially-set suspect flag, it correctly lifts the suspicion on
-    // the very first recheck (matching CompensationBlockedRecheckService's
-    // own proven real-Redis precedent - see that suite's identically
-    // shaped test).
-    const unblocked = await fixture.blockedRecheckService.recheckBlocked(markerId, new Date());
-    expect(unblocked).toEqual({ outcome: 'UNBLOCKED_PENDING', markerId });
-
-    const converged = await fixture.recoveryService.reconcileOne(markerId, new Date());
-    expect(converged).toEqual({ outcome: 'RESOLVED_CONVERGED', markerId });
-    expect(await fixture.redisClient.get(productTotalKey(productId))).toBe('4');
+    Object.assign(fixture.inventoryReservations, { observationPrisma: fixture.prisma });
+    const originalObserve = fixture.inventoryReservations.observeProductReservations.bind(fixture.inventoryReservations);
+    let observation: ReturnType<typeof originalObserve> | undefined;
+    const observe = jest.spyOn(fixture.inventoryReservations, 'observeProductReservations').mockImplementation((...args) => {
+      observation = originalObserve(...args);
+      return observation;
+    });
+    const snapshot = async () => ({
+      entry: await fixture.redisClient.get(reservationKey(cartId, productId)),
+      total: await fixture.redisClient.get(productTotalKey(productId)),
+      suspect: await fixture.redisClient.get(productSuspectKey(productId)),
+      products: (await fixture.redisClient.smembers(cartIndexKey(cartId))).sort(),
+      carts: (await fixture.redisClient.smembers(productIndexKey(productId))).sort(),
+    });
+    const before = await snapshot();
+    const now = new Date();
+    const result = await fixture.blockedRecheckService.recheckBlocked(markerId, now);
+    expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', markerId });
+    expect(observe).toHaveBeenCalledWith(productId, [cartId]);
+    expect(observation).toBeDefined();
+    await expect(observation).resolves.toMatchObject({
+      authority: 'NONE',
+      physicalConvergenceProven: false,
+    });
+    expect(await snapshot()).toEqual(before);
+    const after = await fixture.syncStateRepository.findById(markerId);
+    expect(after?.status).toBe('BLOCKED');
+    expect(after?.blockReason).toBe('PRODUCT_SUSPECT');
+    expect(after?.attemptCount).toBe(blockedRow?.attemptCount);
+    expect(after?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
+    expect(after?.resolvedAt).toBeNull();
+    observe.mockRestore();
   });
 
   it('6. a genuine RESERVATION_CHECKOUT_IN_PROGRESS is retried, not blocked, and succeeds once checkout clears', async () => {
