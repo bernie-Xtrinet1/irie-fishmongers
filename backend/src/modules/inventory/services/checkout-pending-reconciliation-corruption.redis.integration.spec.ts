@@ -73,7 +73,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     );
   }
 
-  it('reverts on a corrupted stored deadline alone (hardLimitViolationProductIds), never attempting extension', async () => {
+  it('defers on a corrupted stored deadline alone (hardLimitViolationProductIds), never attempting extension', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -91,14 +91,14 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'HARD_PENDING_LIMIT_REACHED' });
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
     const after = await getRawCheckoutFields(client, cartId, productId);
-    expect(after?.status).toBe('ACTIVE');
+    expect(after?.status).toBe('CHECKOUT_PENDING');
     // Never extended - the stored deadline is untouched by the revert.
-    expect(after?.checkoutPendingExpiresAt).toBeNull();
+    expect(after?.checkoutPendingExpiresAt).toBe(now + 600_000);
   });
 
-  it('reverts when the cart-wide earliestCheckoutPendingAt alone has reached the hard ceiling', async () => {
+  it('defers when the cart-wide earliestCheckoutPendingAt alone has reached the hard ceiling', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -114,10 +114,10 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'HARD_PENDING_LIMIT_REACHED' });
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
   });
 
-  it('reverts directly (no extension attempt) when the cart mixes ACTIVE and CHECKOUT_PENDING members', async () => {
+  it('defers directly (no extension attempt) when the cart mixes ACTIVE and CHECKOUT_PENDING members', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const pendingId = `product-${Math.random()}`;
     const activeId = `product-${Math.random()}`;
@@ -139,12 +139,12 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'REDIS_STATE_INCOMPLETE' });
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
     // Never extended: the pending member's expiry is exactly as seeded.
-    expect((await getRawCheckoutFields(client, cartId, pendingId))?.checkoutPendingExpiresAt).toBeNull();
+    expect((await getRawCheckoutFields(client, cartId, pendingId))?.checkoutPendingExpiresAt).toBe(now - 1_000);
   });
 
-  it('reverts and preserves evidence for a malformed member, reported in the revert result', async () => {
+  it('defers and preserves evidence for a malformed member, reported in the lease observation', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const pendingId = `product-${Math.random()}`;
     const malformedId = `product-${Math.random()}`;
@@ -162,13 +162,13 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     });
 
     expect(result.ok).toBe(true);
-    if (result.ok && result.action === 'REVERTED') {
-      expect(result.reason).toBe('REDIS_STATE_INCOMPLETE');
-      expect(result.revertResult.malformedProductIds).toEqual([malformedId]);
+    if (result.ok && result.action === 'NONE' && result.reason === 'SETTLEMENT_AUTHORITY_REQUIRED') {
+      expect(result.reason).toBe('SETTLEMENT_AUTHORITY_REQUIRED');
+      expect(result.leaseState?.malformedProductIds).toEqual([malformedId]);
     }
   });
 
-  it('reverts and preserves evidence for a version-mismatched member, reported in the revert result', async () => {
+  it('defers and preserves evidence for a version-mismatched member, reported in the revert result', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const pendingId = `product-${Math.random()}`;
     const wrongVersionId = `product-${Math.random()}`;
@@ -191,12 +191,12 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     });
 
     expect(result.ok).toBe(true);
-    if (result.ok && result.action === 'REVERTED') {
-      expect(result.revertResult.versionMismatchedProductIds).toEqual([wrongVersionId]);
+    if (result.ok && result.action === 'NONE' && result.reason === 'SETTLEMENT_AUTHORITY_REQUIRED') {
+      expect(result.leaseState?.versionMismatchedProductIds).toEqual([wrongVersionId]);
     }
   });
 
-  it('reverts when a member belongs to a different checkout idempotency key', async () => {
+  it('defers when a member belongs to a different checkout idempotency key', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const ownedId = `product-${Math.random()}`;
     const conflictingId = `product-${Math.random()}`;
@@ -213,10 +213,10 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'REDIS_STATE_INCOMPLETE' });
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
   });
 
-  it('reverts and cleans the stale cart-index membership for a missing reservation entry', async () => {
+  it('defers and preserves the stale cart-index membership for a missing reservation entry', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const pendingId = `product-${Math.random()}`;
     const missingId = `product-${Math.random()}`;
@@ -233,7 +233,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'REDIS_STATE_INCOMPLETE' });
-    expect(await client.sismember(cartIndexKey(cartId), missingId)).toBe(0);
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+    expect(await client.sismember(cartIndexKey(cartId), missingId)).toBe(1);
   });
 });

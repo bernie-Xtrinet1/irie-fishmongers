@@ -156,6 +156,7 @@ export type CheckoutPendingReconciliationExtensionFailureCode =
 // the nested result(s) that were actually produced, never an optional
 // field that happens to be undefined for some branches.
 export type CheckoutPendingReconciliationSuccess =
+  | { ok: true; action: 'NONE'; reason: 'SETTLEMENT_AUTHORITY_REQUIRED'; leaseState?: CheckoutPendingLeaseStateResult }
   | {
       ok: true;
       action: 'NONE';

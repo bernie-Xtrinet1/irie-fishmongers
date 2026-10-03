@@ -293,22 +293,8 @@ export class CheckoutCoordinatorService {
     now: Date,
     transactionError: unknown,
   ): Promise<'ORDER_TRANSACTION_FAILED' | 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE'> {
-    let revertIncomplete = false;
-    try {
-      const revertResult = await this.checkoutReservationRecovery.checkoutRevert(cartId, idempotencyKey, nowMs);
-      if (!revertResult.ok) {
-        revertIncomplete = true;
-      }
-    } catch (revertError) {
-      revertIncomplete = true;
-      this.logger.error('checkoutRevert failed while recovering from a durable transaction failure', {
-        message: sanitizeErrorMessage(CheckoutCoordinatorService.errorMessage(revertError), MAX_LOG_MESSAGE_LENGTH),
-      });
-    }
-
-    const failureCode = revertIncomplete
-      ? 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE'
-      : 'ORDER_TRANSACTION_FAILED';
+    // This compatibility path has no sealed W5 authority. Never perform raw cleanup.
+    const failureCode = 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' as const;
     await this.markAttemptFailed(
       attemptId,
       customerId,

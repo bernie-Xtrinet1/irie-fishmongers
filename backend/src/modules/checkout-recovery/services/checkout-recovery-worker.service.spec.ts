@@ -1,7 +1,6 @@
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
-import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
-import { CheckoutAttemptStaleFencingService } from '../../checkout-attempt/services/checkout-attempt-stale-fencing.service';
-import { CheckoutReservationRecoveryService } from '../../inventory/services/checkout-reservation-recovery.service';
+import { CheckoutRecoverySettlementRepository } from '../repositories/checkout-recovery-settlement.repository';
+import { CheckoutStaleSettlementService } from './checkout-stale-settlement.service';
 import { CheckoutRecoveryWorkerService } from './checkout-recovery-worker.service';
 import { CheckoutRecoveryOwnershipLost } from './checkout-recovery-lock.service';
 import { CheckoutRecoveryTelemetryService } from './checkout-recovery-telemetry.service';
@@ -16,9 +15,8 @@ describe('Checkout recovery worker', () => {
     lastHeartbeatAt: new Date(0),
   };
   let attempts: { findStalePage: jest.Mock };
-  let repository: { findFencedCleanupPage: jest.Mock };
-  let fence: { fence: jest.Mock };
-  let recovery: { checkoutRevert: jest.Mock };
+  let repository: { findPendingStaleSettlementsPage: jest.Mock; authorizeStaleRecoverySettlement: jest.Mock };
+  let recovery: { continueStaleRecoverySettlement: jest.Mock };
   let telemetry: { record: jest.Mock };
   let lease: { assertHeld: jest.Mock };
   let worker: CheckoutRecoveryWorkerService;
@@ -28,59 +26,49 @@ describe('Checkout recovery worker', () => {
         .fn()
         .mockResolvedValue({ ok: true, page: { items: [candidate], nextCursor: null } }),
     };
-    repository = { findFencedCleanupPage: jest.fn().mockResolvedValue([]) };
-    fence = { fence: jest.fn().mockResolvedValue({ ok: true, outcome: 'FENCED' }) };
+    repository = { findPendingStaleSettlementsPage: jest.fn().mockResolvedValue([]),
+      authorizeStaleRecoverySettlement: jest.fn().mockResolvedValue({ code: 'AUTHORIZED', manifestId: 'manifest' }) };
     recovery = {
-      checkoutRevert: jest.fn().mockResolvedValue({
-        ok: true,
-        admissionSuspended: false,
-        restoredProductIds: ['product'],
-        deletedProductIds: [],
-      }),
+      continueStaleRecoverySettlement: jest.fn().mockResolvedValue({ code: 'SETTLED' }),
     };
     telemetry = { record: jest.fn() };
     lease = { assertHeld: jest.fn().mockResolvedValue(undefined) };
     worker = new CheckoutRecoveryWorkerService(
       attempts as unknown as CheckoutAttemptService,
-      repository as unknown as CheckoutAttemptRepository,
-      fence as unknown as CheckoutAttemptStaleFencingService,
-      recovery as unknown as CheckoutReservationRecoveryService,
+      repository as unknown as CheckoutRecoverySettlementRepository,
+      recovery as unknown as CheckoutStaleSettlementService,
       telemetry as unknown as CheckoutRecoveryTelemetryService,
     );
   });
-  it('cleans only after G.PR0 FENCED, using durable cart/key and observed heartbeat', async () => {
+  it('continues only after atomic authorization, using the exact observed heartbeat', async () => {
     await worker.runCycle(lease);
-    expect(fence.fence).toHaveBeenCalledWith(
+    expect(repository.authorizeStaleRecoverySettlement).toHaveBeenCalledWith(
       expect.objectContaining({
         attemptId: candidate.id,
         customerId: candidate.customerId,
-        selectedPath: 'CART_SCOPED',
         observedHeartbeatAt: candidate.lastHeartbeatAt,
       }),
     );
-    expect(fence.fence.mock.invocationCallOrder[0]!).toBeLessThan(
-      recovery.checkoutRevert.mock.invocationCallOrder[0]!,
+    expect(repository.authorizeStaleRecoverySettlement.mock.invocationCallOrder[0]!).toBeLessThan(
+      recovery.continueStaleRecoverySettlement.mock.invocationCallOrder[0]!,
     );
-    expect(recovery.checkoutRevert).toHaveBeenCalledWith('cart', 'private-key', expect.any(Number));
+    expect(recovery.continueStaleRecoverySettlement).toHaveBeenCalledWith('manifest');
     expect(telemetry.record).toHaveBeenCalledWith(
-      'checkout_attempt_recovered',
-      'CLEANED',
+      'checkout_pending_recovered',
+      'SETTLEMENT_ACKNOWLEDGED',
       'CART_SCOPED',
       expect.any(Number),
     );
   });
   it.each([
-    'STALE_OBSERVATION',
-    'ALREADY_COMMITTED',
-    'ALREADY_FAILED',
-    'OWNERSHIP_MISMATCH',
-    'PATH_MISMATCH',
-    'UNKNOWN_PATH',
+    'DEFERRED',
+    'FINALIZATION_REQUIRED',
+    'UNRESOLVED',
   ])('does not clean or refence after %s', async (code) => {
-    fence.fence.mockResolvedValue({ ok: false, code });
+    repository.authorizeStaleRecoverySettlement.mockResolvedValue({ code });
     await worker.runCycle(lease);
-    expect(recovery.checkoutRevert).not.toHaveBeenCalled();
-    expect(fence.fence).toHaveBeenCalledTimes(1);
+    expect(recovery.continueStaleRecoverySettlement).not.toHaveBeenCalled();
+    expect(repository.authorizeStaleRecoverySettlement).toHaveBeenCalledTimes(1);
   });
   it.each([null, 'LEGACY'])(
     'skips unsupported ownership %s in both queues',
@@ -89,10 +77,10 @@ describe('Checkout recovery worker', () => {
         ok: true,
         page: { items: [{ ...candidate, selectedPath }], nextCursor: null },
       });
-      repository.findFencedCleanupPage.mockResolvedValue([{ ...candidate, selectedPath }]);
+      repository.findPendingStaleSettlementsPage.mockResolvedValue([]);
       await worker.runCycle(lease);
-      expect(fence.fence).not.toHaveBeenCalled();
-      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
+      expect(repository.authorizeStaleRecoverySettlement).not.toHaveBeenCalled();
+      expect(recovery.continueStaleRecoverySettlement).not.toHaveBeenCalled();
       expect(telemetry.record).toHaveBeenCalledWith(
         'checkout_recovery_skipped',
         selectedPath === null ? 'UNKNOWN_PATH' : 'UNSUPPORTED_LEGACY',
@@ -100,49 +88,50 @@ describe('Checkout recovery worker', () => {
       );
     },
   );
-  it('retries durable FAILED obligations without attempting another fence', async () => {
+  it('retries explicit pending manifest references without allocating another replay', async () => {
     attempts.findStalePage.mockResolvedValue({ ok: true, page: { items: [], nextCursor: null } });
-    repository.findFencedCleanupPage.mockResolvedValue([candidate]);
-    recovery.checkoutRevert.mockRejectedValueOnce(new Error('secret Redis error'));
+    repository.findPendingStaleSettlementsPage.mockResolvedValue([candidate]);
+    recovery.continueStaleRecoverySettlement.mockRejectedValueOnce(new Error('secret Redis error'));
     await worker.runCycle(lease);
     await worker.runCycle(lease);
-    expect(fence.fence).not.toHaveBeenCalled();
-    expect(recovery.checkoutRevert).toHaveBeenCalledTimes(2);
+    expect(repository.authorizeStaleRecoverySettlement).not.toHaveBeenCalled();
+    expect(recovery.continueStaleRecoverySettlement).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(telemetry.record.mock.calls)).not.toMatch(
       /secret|private-key|customer|cart/,
     );
   });
   it('continues after one cleanup failure; reports corruption as incomplete', async () => {
-    repository.findFencedCleanupPage.mockResolvedValue([{ ...candidate, id: 'old' }]);
-    recovery.checkoutRevert
+    repository.findPendingStaleSettlementsPage.mockResolvedValue([{ ...candidate, id: 'old' }]);
+    recovery.continueStaleRecoverySettlement
       .mockRejectedValueOnce(new Error('failure'))
-      .mockResolvedValueOnce({ ok: true, admissionSuspended: true });
+      .mockResolvedValueOnce({ code: 'UNRESOLVED' });
     await worker.runCycle(lease);
-    expect(recovery.checkoutRevert).toHaveBeenCalledTimes(2);
+    expect(recovery.continueStaleRecoverySettlement).toHaveBeenCalledTimes(2);
     expect(telemetry.record).toHaveBeenCalledWith(
       'checkout_recovery_failed',
       'CLEANUP_INCOMPLETE',
       'CART_SCOPED',
+      expect.any(Number),
     );
   });
   it('aborts on lost scheduler session before another mutation', async () => {
     lease.assertHeld.mockRejectedValue(new CheckoutRecoveryOwnershipLost());
     await expect(worker.runCycle(lease)).rejects.toBeInstanceOf(CheckoutRecoveryOwnershipLost);
-    expect(fence.fence).not.toHaveBeenCalled();
-    expect(recovery.checkoutRevert).not.toHaveBeenCalled();
+    expect(repository.authorizeStaleRecoverySettlement).not.toHaveBeenCalled();
+    expect(recovery.continueStaleRecoverySettlement).not.toHaveBeenCalled();
   });
   it('uses one bounded page per queue and carries cursor progress across cycles', async () => {
     const rows = Array.from({ length: 100 }, (_, index) => ({ ...candidate, id: String(index) }));
     const last = rows[99]!;
-    repository.findFencedCleanupPage.mockResolvedValueOnce(rows).mockResolvedValueOnce([]);
+    repository.findPendingStaleSettlementsPage.mockResolvedValueOnce(rows).mockResolvedValueOnce([]);
     attempts.findStalePage.mockResolvedValue({ ok: true, page: { items: [], nextCursor: null } });
     await worker.runCycle(lease);
-    expect(recovery.checkoutRevert).toHaveBeenCalledTimes(100);
-    expect(repository.findFencedCleanupPage).toHaveBeenCalledTimes(1);
+    expect(recovery.continueStaleRecoverySettlement).toHaveBeenCalledTimes(100);
+    expect(repository.findPendingStaleSettlementsPage).toHaveBeenCalledTimes(1);
     await worker.runCycle(lease);
-    expect(repository.findFencedCleanupPage).toHaveBeenLastCalledWith({
+    expect(repository.findPendingStaleSettlementsPage).toHaveBeenLastCalledWith({
       limit: 100,
-      cursor: { id: last.id, lastHeartbeatAt: last.lastHeartbeatAt },
+      afterManifestId: last.id,
     });
     expect(attempts.findStalePage).toHaveBeenLastCalledWith(
       expect.objectContaining({ limit: 100 }),

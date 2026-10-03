@@ -16,7 +16,7 @@ describe('CheckoutPendingReconciliationService (dependency contracts)', () => {
     Pick<CheckoutLeaseStateService, 'getCheckoutPendingLeaseState' | 'extendCheckoutLease'>
   >;
   let recovery: jest.Mocked<
-    Pick<CheckoutReservationRecoveryService, 'checkoutRevert' | 'finalizeCheckoutConsumption'>
+    Pick<CheckoutReservationRecoveryService, 'finalizeCheckoutConsumption'> & { checkoutRevert: jest.Mock }
   >;
   let service: CheckoutPendingReconciliationService;
 
@@ -95,7 +95,7 @@ describe('CheckoutPendingReconciliationService (dependency contracts)', () => {
       expect(recovery.checkoutRevert).not.toHaveBeenCalled();
     });
 
-    it('throws when checkoutRevert unexpectedly returns INVALID_INPUT', async () => {
+    it('never calls the obsolete raw method even if it would return INVALID_INPUT', async () => {
       recovery.checkoutRevert.mockResolvedValue({
         ok: false,
         code: 'INVALID_INPUT',
@@ -104,7 +104,8 @@ describe('CheckoutPendingReconciliationService (dependency contracts)', () => {
       });
       await expect(
         service.reconcileExpiredCheckoutPending(input({ durableAttemptState: 'FAILED' })),
-      ).rejects.toThrow('Internal contract error: checkoutRevert rejected input');
+      ).resolves.toEqual({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
     });
 
     it('throws when finalizeCheckoutConsumption unexpectedly returns INVALID_INPUT', async () => {

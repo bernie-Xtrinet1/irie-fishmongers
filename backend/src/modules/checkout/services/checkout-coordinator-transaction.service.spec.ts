@@ -28,7 +28,7 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
   let priceLock: jest.Mocked<Pick<PriceLockService, 'validateCartPriceLocks'>>;
   let checkoutReservationState: jest.Mocked<Pick<CheckoutReservationStateService, 'checkoutMark'>>;
   let checkoutReservationRecovery: jest.Mocked<
-    Pick<CheckoutReservationRecoveryService, 'checkoutRevert' | 'finalizeCheckoutConsumption'>
+    Pick<CheckoutReservationRecoveryService, 'finalizeCheckoutConsumption'> & { checkoutRevert: jest.Mock }
   >;
   let ordersService: jest.Mocked<
     Pick<OrdersService, 'prepareCheckout' | 'createOrderInTransaction' | 'getCustomerOrderById' | 'toOrderResponseWithPayment'>
@@ -114,12 +114,12 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
     it('a non-ok markCommittedInTransaction result throws inside the transaction, which the outer transaction-failure recovery catches and handles like any other durable failure', async () => {
       checkoutAttempt.markCommittedInTransaction.mockResolvedValue({ ok: false, code: 'NOT_FOUND' });
       const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
-      expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
-      expect(checkoutReservationRecovery.checkoutRevert).toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
+      expect(checkoutReservationRecovery.checkoutRevert).not.toHaveBeenCalled();
       expect(checkoutAttempt.markFailed).toHaveBeenCalledWith(
         'attempt-1',
         'user-1',
-        'ORDER_TRANSACTION_FAILED',
+        'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE',
         expect.stringContaining('Internal consistency error: could not commit checkout attempt attempt-1: NOT_FOUND'),
         now,
       );
@@ -131,20 +131,20 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
       prisma.$transaction.mockRejectedValue(new Error('stock race lost'));
     });
 
-    it('reverts and marks FAILED with ORDER_TRANSACTION_FAILED when revert succeeds', async () => {
+    it('marks FAILED/incomplete without invoking an obsolete successful revert stub', async () => {
       const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
-      expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
-      expect(checkoutReservationRecovery.checkoutRevert).toHaveBeenCalledWith('cart-1', 'key-1', now.getTime());
+      expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
+      expect(checkoutReservationRecovery.checkoutRevert).not.toHaveBeenCalled();
       expect(checkoutAttempt.markFailed).toHaveBeenCalledWith(
         'attempt-1',
         'user-1',
-        'ORDER_TRANSACTION_FAILED',
+        'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE',
         'stock race lost',
         now,
       );
     });
 
-    it('marks FAILED with ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE when revert returns a non-success result', async () => {
+    it('marks FAILED with ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE without invoking an obsolete rejected revert stub', async () => {
       checkoutReservationRecovery.checkoutRevert.mockResolvedValue({ ok: false, code: 'INVALID_INPUT', field: 'cartId', reason: 'x' });
       const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
       expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
@@ -157,19 +157,18 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
       );
     });
 
-    it('marks FAILED with ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE when revert itself throws, and logs the sanitized error', async () => {
+    it('marks FAILED with ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE without invoking an obsolete throwing revert stub', async () => {
       checkoutReservationRecovery.checkoutRevert.mockRejectedValue(new Error('Bearer abc123 leaked during revert'));
       const result = await service.checkout('user-1', 'key-1', checkoutDto, now);
       expect(result).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
-      expect(logger.error).toHaveBeenCalledWith(
-        'checkoutRevert failed while recovering from a durable transaction failure',
-        expect.objectContaining({ message: 'Bearer [REDACTED] leaked during revert' }),
-      );
+      expect(checkoutReservationRecovery.checkoutRevert).not.toHaveBeenCalled();
+      expect(paymentsService.initiatePayment).not.toHaveBeenCalled();
+      expect(eventEmitter.emitAsync).not.toHaveBeenCalled();
       const allErrorCalls = JSON.stringify(logger.error.mock.calls);
       expect(allErrorCalls).not.toContain('abc123');
     });
 
-    it('still attempts markFailed even when checkoutRevert fails', async () => {
+    it('marks FAILED without attempting the obsolete checkoutRevert', async () => {
       checkoutReservationRecovery.checkoutRevert.mockRejectedValue(new Error('revert infra failure'));
       await service.checkout('user-1', 'key-1', checkoutDto, now);
       expect(checkoutAttempt.markFailed).toHaveBeenCalledTimes(1);
@@ -181,7 +180,7 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
       expect(checkoutAttempt.markFailed).toHaveBeenCalledWith(
         'attempt-1',
         'user-1',
-        'ORDER_TRANSACTION_FAILED',
+        'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE',
         'ECONNRESET',
         now,
       );
@@ -264,7 +263,7 @@ describe('CheckoutCoordinatorService - transaction / finalize / payment / plan c
   });
 
   describe('plan consistency', () => {
-    it('checkoutMark receives the same idempotency key passed to createOrResume/checkoutRevert/finalize', async () => {
+    it('checkoutMark receives the same idempotency key passed to createOrResume/finalize', async () => {
       await service.checkout('user-1', 'my-key', checkoutDto, now);
       expect(checkoutAttempt.createOrResume).toHaveBeenCalledWith(
         expect.objectContaining({ idempotencyKey: 'my-key' }),

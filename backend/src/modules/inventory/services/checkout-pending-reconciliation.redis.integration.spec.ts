@@ -121,7 +121,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     }
   });
 
-  it('reverts an expired lease when the durable heartbeat is stale', async () => {
+  it('defers an expired lease when the durable heartbeat is stale', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -137,10 +137,10 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     });
 
     expect(result.ok).toBe(true);
-    if (result.ok && result.action === 'REVERTED') {
-      expect(result.reason).toBe('DURABLE_HEARTBEAT_STALE');
+    if (result.ok && result.action === 'NONE') {
+      expect(result.reason).toBe('SETTLEMENT_AUTHORITY_REQUIRED');
     }
-    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
 
   it('finalizes every matching entry for a durably COMMITTED attempt', async () => {
@@ -168,7 +168,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     expect(await getRawCheckoutFields(client, cartId, productId)).toBeNull();
   });
 
-  it('reverts for a durably FAILED attempt without inspecting Redis lease state', async () => {
+  it('defers for a durably FAILED attempt without inspecting Redis lease state', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -183,11 +183,11 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'DURABLE_ATTEMPT_FAILED' });
-    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
 
-  it('reverts for a durable NOT_FOUND attempt without inspecting Redis lease state', async () => {
+  it('defers for a durable NOT_FOUND attempt without inspecting Redis lease state', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -202,7 +202,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
       now,
     });
 
-    expect(result).toMatchObject({ ok: true, action: 'REVERTED', reason: 'DURABLE_ATTEMPT_NOT_FOUND' });
-    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
+    expect(result).toMatchObject({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
 });

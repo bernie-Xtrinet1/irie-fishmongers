@@ -13,9 +13,6 @@ import { PaymentsRepository } from '../../payments/repositories/payments.reposit
 import { RefundsRepository } from '../../payments/repositories/refunds.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { WiPayAdapter } from '../../payments/providers/wipay.adapter';
-import { CheckoutRecoveryWorkerService } from '../../checkout-recovery/services/checkout-recovery-worker.service';
-import { CheckoutRecoveryLockService } from '../../checkout-recovery/services/checkout-recovery-lock.service';
-import { CheckoutRecoveryTelemetryService } from '../../checkout-recovery/services/checkout-recovery-telemetry.service';
 import { PaymentReconciliationService } from '../../payments/services/payment-reconciliation.service';
 import { PaymentReconciliationBatchService } from '../../payments/services/payment-reconciliation-batch.service';
 import { cleanupKeys, trackKeysFor, connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
@@ -146,24 +143,24 @@ describe('G.4a saga failure evidence (real PostgreSQL/Redis)', () => {
     jest.spyOn(handles.ordersService, 'prepareCheckout').mockRejectedValueOnce(fault());
     await expect(checkout()).rejects.toThrow('G4A'); await noOrder(null);
   });
-  it('M08 uncertain successful Redis mark leaves PROCESSING; M16/M19/M21 fresh recovery fences and reverts', async () => {
+  it('M08 uncertain successful Redis mark leaves PROCESSING; M16/M19/M21 fresh recovery defers historical unproven ownership', async () => {
     const mark = handles.checkoutReservationState.checkoutMark.bind(handles.checkoutReservationState);
     jest.spyOn(handles.checkoutReservationState, 'checkoutMark').mockImplementationOnce(async (...args) => { await mark(...args); throw fault(); });
     await expect(checkout()).rejects.toThrow('G4A'); await noOrder('PROCESSING', 'CHECKOUT_PENDING');
     expect(await checkout()).toEqual({ ok: false, code: 'CHECKOUT_ALREADY_IN_PROGRESS' });
     await stale(); expect((await runFreshRecovery()).acquired).toBe(true);
-    const e = await noOrder('FAILED'); expect(e.failed).toEqual({ STALE_RECOVERY_FENCED: 1 });
+    const e = await noOrder('PROCESSING', 'CHECKOUT_PENDING'); expect(e.failed).toEqual({});
   });
-  it('M09/M10 transaction rolls back stock/order/commit and successful revert restores ACTIVE', async () => {
+  it('M09/M10 transaction rolls back stock/order/commit and cleanup defers without settlement authority', async () => {
     jest.spyOn(handles.checkoutAttemptService, 'markCommittedInTransaction').mockRejectedValueOnce(fault());
-    expect(await checkout()).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
+    expect(await checkout()).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
     expect((await prisma.product.findUniqueOrThrow({ where: { id: scenario.productId } })).quantityAvailable).toBe(50);
-    await noOrder('FAILED');
+    await noOrder('FAILED', 'CHECKOUT_PENDING');
     expect(await checkout()).toMatchObject({ ok: false, code: 'CHECKOUT_ALREADY_FAILED' });
   });
   it('M11/M33 BLOCKER-2 non-fenced failed revert stays pending and is absent from fresh-worker discovery', async () => {
     jest.spyOn(handles.checkoutAttemptService, 'markCommittedInTransaction').mockRejectedValueOnce(fault());
-    jest.spyOn(handles.checkoutReservationRecovery, 'checkoutRevert').mockRejectedValueOnce(fault());
+    expect(handles.checkoutReservationRecovery).not.toHaveProperty('checkoutRevert');
     expect(await checkout()).toMatchObject({ code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
     const before = await noOrder('FAILED', 'CHECKOUT_PENDING');
     expect(before.failed).toEqual({ ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE: 1 });
@@ -210,7 +207,7 @@ describe('G.4a saga failure evidence (real PostgreSQL/Redis)', () => {
     await runPayments();
     expect((await evidence()).payments).toEqual([expect.objectContaining({ initiationStatus: status, providerReferencePresent: false })]);
   });
-  it('M19/M20/M21 fence survives crash and cleanup failure; restart is idempotent but ACTIVE still remains', async () => {
+  it('M19/M20/M21 historical FAILED fence alone never supplies settlement authority after restart', async () => {
     const mark = handles.checkoutReservationState.checkoutMark.bind(handles.checkoutReservationState);
     jest.spyOn(handles.checkoutReservationState, 'checkoutMark').mockImplementationOnce(async (...args) => { await mark(...args); throw fault(); });
     await expect(checkout()).rejects.toThrow('G4A'); await stale();
@@ -220,10 +217,9 @@ describe('G.4a saga failure evidence (real PostgreSQL/Redis)', () => {
       staleBefore: new Date(Date.now() - 180000), now: new Date() })).toEqual({ ok: true, outcome: 'FENCED' });
     // Crash boundary: no cleanup has run. A fresh worker must discover the DB row.
     await noOrder('FAILED', 'CHECKOUT_PENDING');
-    const { CheckoutReservationRecoveryService } = await import('../../inventory/services/checkout-reservation-recovery.service');
-    jest.spyOn(CheckoutReservationRecoveryService.prototype, 'checkoutRevert').mockRejectedValueOnce(fault());
+
     await runFreshRecovery(); await noOrder('FAILED', 'CHECKOUT_PENDING');
-    await runFreshRecovery(); const cleaned = await noOrder('FAILED', 'ACTIVE');
+    await runFreshRecovery(); const cleaned = await noOrder('FAILED', 'CHECKOUT_PENDING');
     await runFreshRecovery(); expect((await evidence()).holds).toEqual(cleaned.holds);
     expect(cleaned.holds[0]!.total).toBe('2');
   });
@@ -268,21 +264,14 @@ describe('G.4a saga failure evidence (real PostgreSQL/Redis)', () => {
     expect(stored.amount.toFixed(2)).toBe('1000.00'); expect(stored.orderId === orderId).toBe(true);
     expect((await evidence()).orders).toHaveLength(1);
   });
-  it('M34 more than one real discovery page advances without skipping tied heartbeats', async () => {
+  it('M34 historical FAILED rows are excluded from settlement discovery across repeated cycles', async () => {
     const heartbeat = new Date(Date.now() - 600000);
     const rows = Array.from({ length: 105 }, () => ({ id: randomUUID(), customerId: scenario.customerId, cartId: scenario.cartId,
       idempotencyKey: randomUUID(), selectedPath: 'CART_SCOPED' as const, status: 'FAILED' as const,
       failureCode: 'STALE_RECOVERY_FENCED', lastHeartbeatAt: heartbeat }));
     await prisma.checkoutAttempt.createMany({ data: rows });
-    const cleanup = jest.spyOn(handles.checkoutReservationRecovery, 'checkoutRevert');
-    const worker = new CheckoutRecoveryWorkerService(handles.checkoutAttemptService, attempts, new CheckoutAttemptStaleFencingService(attempts),
-      handles.checkoutReservationRecovery, new CheckoutRecoveryTelemetryService());
-    const lock = new CheckoutRecoveryLockService(new ConfigService({ DATABASE_URL: process.env.DATABASE_URL }));
-    expect(await lock.runExclusive(lease => worker.runCycle(lease))).toBe(true);
-    expect(cleanup).toHaveBeenCalledTimes(100);
-    expect(await lock.runExclusive(lease => worker.runCycle(lease))).toBe(true);
-    expect(cleanup).toHaveBeenCalledTimes(105);
-    expect(isDeepStrictEqual(new Set(cleanup.mock.calls.map(call => call[1])), new Set(rows.map(row => row.idempotencyKey)))).toBe(true);
+    expect(await runFreshRecovery()).toEqual(undiscovered);
+    expect(await runFreshRecovery()).toEqual(undiscovered);
     const e = await evidence(); expect(e.failed).toEqual({ STALE_RECOVERY_FENCED: 105 });
     expect(e.orders).toHaveLength(0); expect(e.payments).toHaveLength(0);
     expect(e.holds[0]!.total).toBe('2');

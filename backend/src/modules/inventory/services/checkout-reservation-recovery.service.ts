@@ -3,10 +3,8 @@ import { Injectable } from '@nestjs/common';
 import { RedisService } from '../../../common/redis/redis.service';
 import { cartIndexKey, getReservationKeySegmentValidationError } from '../constants/inventory.constants';
 import { FINALIZE_CHECKOUT_CONSUMPTION_SCRIPT } from '../lua/checkout-finalize-lua-scripts';
-import { CHECKOUT_REVERT_SCRIPT } from '../lua/checkout-revert-lua-scripts';
 import {
   CheckoutInputValidationFailure,
-  CheckoutRevertOutcome,
   FinalizeCheckoutConsumptionOutcome,
 } from './checkout-reservation-state.types';
 import { ReservationUnderflowDetails } from './reservation-accounting.types';
@@ -16,25 +14,12 @@ import { ReservationUnderflowDetails } from './reservation-accounting.types';
 // the Unit 2.4.3 decision to leave duplicated protocol helpers local
 // rather than extract a shared production utility (a later cleanup
 // commit may consolidate them once every checkout-state unit is stable).
-const CHECKOUT_REVERT_SCRIPT_VERSION = 1;
 const FINALIZE_CHECKOUT_CONSUMPTION_SCRIPT_VERSION = 1;
 
 interface RawUnderflowEntry {
   productId?: unknown;
   reservationQuantity?: unknown;
   storedTotal?: unknown;
-}
-
-interface RawCheckoutRevertScriptResult {
-  scriptVersion?: unknown;
-  ok?: true;
-  restoredProductIds?: unknown;
-  deletedProductIds?: unknown;
-  skippedProductIds?: unknown;
-  malformedProductIds?: unknown;
-  versionMismatchedProductIds?: unknown;
-  underflow?: unknown;
-  admissionSuspended?: unknown;
 }
 
 interface RawFinalizeCheckoutConsumptionScriptResult {
@@ -48,80 +33,10 @@ interface RawFinalizeCheckoutConsumptionScriptResult {
   admissionSuspended?: unknown;
 }
 
-// Owns whole-cart checkout recovery: checkoutRevert (restore/expire an
-// abandoned or failed checkout attempt) and finalizeCheckoutConsumption
-// (consume every reservation a durably-COMMITTED checkout was holding).
-// See docs/architecture/reservation-lifecycle.md §10 and the Unit 2.4.3
-// planning decisions. Deliberately a sibling of
-// CheckoutReservationStateService/CheckoutLeaseStateService, not a method
-// addition to either. Additive and not wired to any caller.
+// Deferred finalize compatibility only. Raw revert is not a production API.
 @Injectable()
 export class CheckoutReservationRecoveryService {
   constructor(private readonly redis: RedisService) {}
-
-  async checkoutRevert(
-    cartId: string,
-    checkoutIdempotencyKey: string,
-    now: number,
-  ): Promise<CheckoutRevertOutcome> {
-    const validationFailure = CheckoutReservationRecoveryService.validateCheckoutRevertInputs(
-      cartId,
-      checkoutIdempotencyKey,
-      now,
-    );
-    if (validationFailure) {
-      return validationFailure;
-    }
-
-    const raw = await this.redis.eval(
-      CHECKOUT_REVERT_SCRIPT,
-      [cartIndexKey(cartId)],
-      [cartId, checkoutIdempotencyKey, now],
-    );
-    const parsed =
-      CheckoutReservationRecoveryService.parseScriptResult<RawCheckoutRevertScriptResult>(
-        raw,
-        CHECKOUT_REVERT_SCRIPT_VERSION,
-      );
-
-    return {
-      ok: true,
-      restoredProductIds: CheckoutReservationRecoveryService.sortIds(
-        CheckoutReservationRecoveryService.toStringArray(parsed.restoredProductIds, 'restoredProductIds'),
-      ),
-      deletedProductIds: CheckoutReservationRecoveryService.sortIds(
-        CheckoutReservationRecoveryService.toStringArray(parsed.deletedProductIds, 'deletedProductIds'),
-      ),
-      skippedProductIds: CheckoutReservationRecoveryService.sortIds(
-        CheckoutReservationRecoveryService.toStringArray(parsed.skippedProductIds, 'skippedProductIds'),
-      ),
-      malformedProductIds: CheckoutReservationRecoveryService.sortIds(
-        CheckoutReservationRecoveryService.toStringArray(
-          parsed.malformedProductIds,
-          'malformedProductIds',
-        ),
-      ),
-      versionMismatchedProductIds: CheckoutReservationRecoveryService.sortIds(
-        CheckoutReservationRecoveryService.toStringArray(
-          parsed.versionMismatchedProductIds,
-          'versionMismatchedProductIds',
-        ),
-      ),
-      underflow: CheckoutReservationRecoveryService.sortUnderflow(
-        CheckoutReservationRecoveryService.toUnderflowArray(
-          parsed.underflow,
-          'underflow',
-          cartId,
-          'checkoutRevert',
-          now,
-        ),
-      ),
-      admissionSuspended: CheckoutReservationRecoveryService.toBoolean(
-        parsed.admissionSuspended,
-        'admissionSuspended',
-      ),
-    };
-  }
 
   async finalizeCheckoutConsumption(
     cartId: string,
@@ -209,31 +124,6 @@ export class CheckoutReservationRecoveryService {
         code: 'INVALID_INPUT',
         field: 'checkoutIdempotencyKey',
         reason: 'checkoutIdempotencyKey cannot contain whitespace',
-      };
-    }
-
-    return null;
-  }
-
-  private static validateCheckoutRevertInputs(
-    cartId: string,
-    checkoutIdempotencyKey: string,
-    now: number,
-  ): CheckoutInputValidationFailure | null {
-    const baseFailure = CheckoutReservationRecoveryService.validateCartAndCheckoutKey(
-      cartId,
-      checkoutIdempotencyKey,
-    );
-    if (baseFailure) {
-      return baseFailure;
-    }
-
-    if (!Number.isFinite(now) || now < 0) {
-      return {
-        ok: false,
-        code: 'INVALID_INPUT',
-        field: 'now',
-        reason: 'now must be a finite, non-negative number',
       };
     }
 

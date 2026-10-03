@@ -71,7 +71,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     );
   }
 
-  it('leaves a single consistent state when a concurrent revert races an in-flight resync attempt', async () => {
+  it('leaves a single consistent state when a concurrent failed-attempt observation races an in-flight resync attempt', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -86,7 +86,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
         durableLastHeartbeatAt: now,
         now,
       }),
-      recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now),
+      reconciliation.reconcileExpiredCheckoutPending({ cartId, checkoutIdempotencyKey, now, durableAttemptState: 'FAILED', durableLastHeartbeatAt: null }),
     ]);
 
     expect(resyncAttempt.ok).toBe(true);
@@ -95,8 +95,8 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     // ACTIVE state (existing incomplete-state path). Neither extends a lease.
     expect(resyncAttempt).toMatchObject(resyncAttempt.ok && resyncAttempt.action === 'NONE'
       ? { action: 'NONE', reason: 'EXTENSION_AUTHORITY_REQUIRED' }
-      : { action: 'REVERTED', reason: 'REDIS_STATE_INCOMPLETE' });
-    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
+      : { action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
   it('remains idempotent under two concurrent duplicate reconciliation calls', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
@@ -151,7 +151,7 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
     expect(await getRawCheckoutFields(client, cartId, productId)).toBeNull();
   });
 
-  it('leaves a single consistent, fully-reverted state when reconciliation races a concurrent revert', async () => {
+  it('leaves a single consistent, unchanged pending state when reconciliation races a concurrent failed-attempt observation', async () => {
     const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
     const productId = `product-${Math.random()}`;
     trackCheckoutKeysFor(createdKeys, cartId, [productId]);
@@ -166,12 +166,12 @@ describe('CheckoutPendingReconciliationService.reconcileExpiredCheckoutPending (
         durableLastHeartbeatAt: null,
         now,
       }),
-      recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now),
+      reconciliation.reconcileExpiredCheckoutPending({ cartId, checkoutIdempotencyKey, now, durableAttemptState: 'FAILED', durableLastHeartbeatAt: null }),
     ]);
 
     expect(reconcileResult.ok).toBe(true);
     expect(concurrentRevert.ok).toBe(true);
-    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('ACTIVE');
+    expect((await getRawCheckoutFields(client, cartId, productId))?.status).toBe('CHECKOUT_PENDING');
   });
 
   it('is never referenced by CartService, OrdersService, or ProductsService', () => {

@@ -6,6 +6,17 @@ characterization test can prove an **ACTIVATION BLOCKER**, not safe behavior.
 No production failure hooks, path rewrites, schema changes, provider retries,
 refunds, dispatcher imports, or checkout route changes belong to this slice.
 
+## Slice B revision
+
+The stale-checkout recovery boundary now requires an explicit sealed settlement
+manifest and matching positive execution epoch/incarnation. Historical G.PR0
+FAILED rows alone are excluded. The historical NULL-E coordinator fixtures in
+this matrix remain unresolved; their old raw-revert cleanup is removed.
+See [stale settlement protocol](phase-g-stale-checkout-settlement.md).
+This revision does not approve activation. Slice A publication remains deferred.
+Redis integration verification for this revision is NOT RUN — ENVIRONMENT
+BLOCKED; no historical passing result is a new runtime certification.
+
 ## Running the evidence
 
 Use a newly created local disposable PostgreSQL database, apply the repository's
@@ -75,12 +86,12 @@ for every row:
 - **OWNED**: same-key retry follows stored path or returns existing attempt state.
   No policy reread. Stop is not cancellation. Operator must account for delayed
   pre-attempt execution before final drain; no operation expiry owner exists.
-- **PROCESSING**: retry returns in-progress; G.PR0 must fence stale ownership
-  before G.PR1 cleanup. No policy reread. Healthy worker recovery is automatic
-  when cron is enabled; unavailable/corrupt infrastructure requires intervention.
-- **FENCED**: retry returns terminal failure, no new attempt/order. Fresh G.PR1
-  discovers the durable row, independently of policy. Cleanup is automatic but
-  restored ACTIVE inventory still requires release/expiry before drain.
+- **PROCESSING**: retry returns in-progress. Slice B atomically binds FAILED and
+  a delete-only REVERT_PENDING obligation only for authenticated sealed acquired
+  provenance (or exact positive PREPARED proof). NULL-E historical rows defer.
+- **FENCED**: FAILED alone is never cleanup authority. Restart discovery requires
+  the explicit stale settlement action/replay and durable capture provenance.
+  An exact retained receipt permits acknowledgement, not another physical effect.
 - **UNOWNED**: retry cannot repair the terminal boundary; no current automatic
   owner for the stated gap. No policy reread or path change. Operator/reviewed
   follow-up required. Never manually erase the obligation to make a test pass.
@@ -112,20 +123,20 @@ do not delete it or mark it skipped.
 | 05 | Price preparation exception — S M05 | O CART_SCOPED unchanged; A/D/P none; R ACTIVE | PRE | SAFE failure boundary |
 | 06 | Bound price expiry/change — S M06 | Fingerprint retained, reconfirmation required; A/D/P none; R ACTIVE | PRE | SAFE |
 | 07 | Coordinator before attempt — S M07 | O assigned, no A/D/P, R ACTIVE | PRE | SAFE |
-| 08 | Uncertain successful checkoutMark — S M08 | O assigned; A PROCESSING; D/P none; R CHECKOUT_PENDING | PROCESSING | SAFE with durable fencing/recovery |
-| 09 | Order transaction rollback — S M09 | No order/payment or stock decrement survives; A becomes FAILED; R ACTIVE after revert | OWNED | SAFE rollback |
-| 10 | Transaction failure + revert success — S M10 | FAILED/ORDER_TRANSACTION_FAILED; no D/P; R ACTIVE | OWNED | SAFE compensation, not drained |
+| 08 | Uncertain successful historical checkoutMark — S M08 | O assigned; A PROCESSING; D/P none; R CHECKOUT_PENDING; no manifest/E authority | UNOWNED | Historical obligation remains unresolved |
+| 09 | Order transaction rollback — S M09 | No order/payment or stock decrement survives; A FAILED; R pending | UNOWNED | SAFE database rollback; cleanup authority missing |
+| 10 | Transaction failure without raw fallback — S M10 | FAILED/ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE; no D/P; R pending | UNOWNED | Explicit settlement integration required |
 | 11 | Transaction failure + revert failure — S M11 | FAILED/ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE; no D/P; R pending after restart | UNOWNED | BLOCKER-2 |
 | 12 | COMMITTED before finalize — S M12 | Order+COMMITTED; normal payment can establish; R pending if finalize failed | COMMITTED / UNOWNED | BLOCKER-4 |
 | 13 | COMMITTED before initiation — S M13 | Order+COMMITTED; P absent; R finalized; replay returns same order | COMMITTED / UNOWNED | BLOCKER-3 |
 | 14 | Ambiguous initiation — S M14, P | One payment; NOT_STARTED/INITIATING/RECONCILE_REQUIRED classified; null reference not automatically initiated; create invoked once | PAYMENT | Ambiguity retained; BLOCKER-3 for missing initiation owner |
 | 15 | Duplicate/invalid return — S M15, P | Stored order/amount/currency/reference unchanged; duplicate success emits once; unsigned failure cannot downgrade PAID | PAYMENT | SAFE authentication/idempotent transition |
-| 16 | Stale fence — S M16, R | PROCESSING becomes FAILED/STALE_RECOVERY_FENCED; no D/P created | FENCED | SAFE |
+| 16 | Stale candidate — Slice B persistence | Exact H0 plus sealed acquired provenance commits FAILED + REVERT_PENDING atomically | FENCED | Source/PG proof; Redis runtime blocked |
 | 17 | Heartbeat wins fence race — R “concurrent H2 heartbeat” | New heartbeat retains PROCESSING; pending hold not cleaned; no new D/P | PROCESSING | SAFE |
 | 18 | Commit wins fence race — R “concurrent commit” | COMMITTED/order/PAID preserved; stale fence refused | COMMITTED | SAFE ownership |
-| 19 | Crash after fence before cleanup — S M19, R | Durable fenced failure; pending R survives crash boundary | FENCED | SAFE rediscovery |
-| 20 | Redis cleanup failure — S M20, R | Same durable fence remains; pending R remains until successful next cycle | FENCED | SAFE retry ownership |
-| 21 | Fresh worker restart — S M21, R | Fresh connections discover row, cleanup repeats without double decrement | FENCED | SAFE; ACTIVE may remain |
+| 19 | Crash after fence before cleanup — S M19 / Slice B | Historical FAILED alone excluded; explicit manifest obligation rediscovered | FENCED / UNOWNED | Durable authority distinguished from historical failure |
+| 20 | Redis cleanup failure — Slice B continuation | Explicit pending action/replay retained on uncertainty | FENCED | Deterministic proof; Redis runtime blocked |
+| 21 | Fresh worker restart — R / Slice B | Historical rows unchanged; exact retained completion permits ACK only | FENCED / UNOWNED | No raw restoration; Redis runtime blocked |
 | 22 | Distributed recovery contention — L | One session owns actual cycle; contender skips; release/termination permits replacement | FENCED | SAFE lock scope, not cross-store atomicity |
 | 23 | Participant disable race — G | Assignment or disable wins serialized order; no retroactive path rewrite | PRE / OWNED | SAFE atomic decision |
 | 24 | Emergency stop race — G | Assignment before stop survives; stop before new assignment denies | PRE / OWNED | SAFE atomic decision |
@@ -137,8 +148,8 @@ do not delete it or mark it skipped.
 | 30 | Scan vs delayed writer — D M30 | LEGACY commits while old writer paused; subsequent ACTIVE hold/total appears; marker requeued | MODE | BLOCKER-1 |
 | 31 | Malformed/missing structures — D M31 | One missing signal blocks; both missing can hide hold; malformed+zero can set suspect yet pass | MODE | BLOCKER-5 |
 | 32 | Cart-sync revision race — D M32 | Redis write persists; changed revision refuses marker resolution; next reserve repair blocked in DRAINING | MODE | SAFE marker fence; BLOCKER-1 external-write gap |
-| 33 | Terminal non-fenced discovery — S M33 | Fenced row discoverable; non-fenced failed row excluded and pending hold survives | UNOWNED | BLOCKER-2 |
-| 34 | More than one page — S M34 | 105 real fenced rows, 100 then 5 calls; tied heartbeat IDs neither skipped nor duplicated; no D/P writes | FENCED | SAFE bounded progress |
+| 33 | Terminal failure discovery — S M33 | FAILED without explicit manifest excluded; hold survives | UNOWNED | BLOCKER-2 for historical coordinator path |
+| 34 | Historical batch exclusion — S M34 / Slice B pagination | 105 historical fenced rows excluded; explicit obligations bounded by manifest ID, maximum 100 | FENCED / UNOWNED | No inferred cleanup authority |
 | 35 | Finalization failure/restart — S M35 | COMMITTED replay and fresh worker leave matching pending hold unchanged | COMMITTED / UNOWNED | BLOCKER-4 |
 | 36 | Post-order/pre-payment restart — S M36 | Fresh coordinator replays; fresh checkout/payment workers do not create missing payment | COMMITTED / UNOWNED | BLOCKER-3 |
 

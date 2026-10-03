@@ -81,7 +81,7 @@ describe('CheckoutCoordinatorService failure windows / event emission (real Post
         new Date(),
       );
 
-      expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
+      expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
       expect(events).toHaveLength(0);
     });
 

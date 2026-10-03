@@ -1,14 +1,18 @@
+import { CheckoutRecoverySettlementRepository } from '../../checkout-recovery/repositories/checkout-recovery-settlement.repository';
+import { CheckoutRecoveryAcquisitionEvidenceService } from '../../checkout-recovery/services/checkout-recovery-acquisition-evidence.service';
+import { CheckoutStaleSettlementService } from '../../checkout-recovery/services/checkout-stale-settlement.service';
+import { ReservationFenceRepository } from '../../reservation-fence/repositories/reservation-fence.repository';
+import { CheckoutSettlementRepository } from '../../reservation-fence/repositories/checkout-settlement.repository';
+import { CheckoutSettlementAuthorityService } from '../../reservation-fence/services/checkout-settlement-authority.service';
 import { Redis } from 'ioredis';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
-import { CheckoutAttemptStaleFencingService } from '../../checkout-attempt/services/checkout-attempt-stale-fencing.service';
 import { CheckoutRecoveryWorkerService } from '../../checkout-recovery/services/checkout-recovery-worker.service';
 import { CheckoutRecoveryLockService } from '../../checkout-recovery/services/checkout-recovery-lock.service';
 import { CheckoutRecoveryTelemetryService } from '../../checkout-recovery/services/checkout-recovery-telemetry.service';
-import { CheckoutReservationRecoveryService } from '../../inventory/services/checkout-reservation-recovery.service';
 import { cartIndexKey, productTotalKey, reservationKey, productSuspectKey } from '../../inventory/constants/inventory.constants';
 
 // Test-only, explicit fixture scope. Never scans or resets the ambient keyspace.
@@ -148,18 +152,20 @@ export async function runFreshRecovery() {
   const repo = new CheckoutAttemptRepository(prisma);
   return withCleanup(async () => {
     await prisma.$connect();
-    const cleanupPage = jest.spyOn(repo, 'findFencedCleanupPage');
+    const fences = new ReservationFenceRepository(prisma), manifests = new CheckoutSettlementRepository(prisma, fences);
+    const adapter = new RedisService(redis);
+    const settlements = new CheckoutRecoverySettlementRepository(prisma, fences, manifests, new CheckoutRecoveryAcquisitionEvidenceService(adapter));
+    const cleanupPage = jest.spyOn(settlements, 'findPendingStaleSettlementsPage');
     const attemptService = new CheckoutAttemptService(repo);
     const stalePage = jest.spyOn(attemptService, 'findStalePage');
-    const recovery = new CheckoutReservationRecoveryService(new RedisService(redis));
-    const cleanup = jest.spyOn(recovery, 'checkoutRevert');
+    const recovery = new CheckoutStaleSettlementService(settlements, new CheckoutSettlementAuthorityService(manifests, fences, adapter), adapter);
+    const cleanup = jest.spyOn(recovery, 'continueStaleRecoverySettlement');
     const telemetry = new CheckoutRecoveryTelemetryService();
     const events = jest.spyOn(telemetry, 'record');
-    const worker = new CheckoutRecoveryWorkerService(attemptService, repo,
-      new CheckoutAttemptStaleFencingService(repo), recovery, telemetry);
+    const worker = new CheckoutRecoveryWorkerService(attemptService, settlements, recovery, telemetry);
     const lock = new CheckoutRecoveryLockService(new ConfigService({ DATABASE_URL: process.env.DATABASE_URL }));
     const acquired = await lock.runExclusive(lease => worker.runCycle(lease));
-    const cleanupPages = await Promise.all(cleanupPage.mock.results.map(r => r.value as ReturnType<typeof repo.findFencedCleanupPage>));
+    const cleanupPages = await Promise.all(cleanupPage.mock.results.map(r => r.value as ReturnType<typeof settlements.findPendingStaleSettlementsPage>));
     const stalePages = await Promise.all(stalePage.mock.results.map(r => r.value as ReturnType<typeof attemptService.findStalePage>));
     return { acquired, cleanupQueries: cleanupPages.length, staleQueries: stalePages.length,
       cleanupCandidates: cleanupPages.reduce((n, page) => n + page.length, 0),

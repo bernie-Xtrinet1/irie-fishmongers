@@ -20,7 +20,7 @@ describe('CheckoutPendingReconciliationService', () => {
     Pick<CheckoutLeaseStateService, 'getCheckoutPendingLeaseState' | 'extendCheckoutLease'>
   >;
   let recovery: jest.Mocked<
-    Pick<CheckoutReservationRecoveryService, 'checkoutRevert' | 'finalizeCheckoutConsumption'>
+    Pick<CheckoutReservationRecoveryService, 'finalizeCheckoutConsumption'> & { checkoutRevert: jest.Mock }
   >;
   let service: CheckoutPendingReconciliationService;
 
@@ -136,34 +136,33 @@ describe('CheckoutPendingReconciliationService', () => {
       expect(recovery.checkoutRevert).not.toHaveBeenCalled();
     });
 
-    it('FAILED calls checkoutRevert once and returns REVERTED/DURABLE_ATTEMPT_FAILED', async () => {
+    it('FAILED defers without raw mutation: SETTLEMENT_AUTHORITY_REQUIRED', async () => {
       recovery.checkoutRevert.mockResolvedValue(revertResult);
       const result = await service.reconcileExpiredCheckoutPending(
         input({ durableAttemptState: 'FAILED' }),
       );
-      expect(result).toEqual({ ok: true, action: 'REVERTED', reason: 'DURABLE_ATTEMPT_FAILED', revertResult });
-      expect(recovery.checkoutRevert).toHaveBeenCalledTimes(1);
-      expect(recovery.checkoutRevert).toHaveBeenCalledWith(cartId, checkoutIdempotencyKey, now);
+      expect(result).toEqual({ ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' });
+      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
+      expect(recovery.finalizeCheckoutConsumption).not.toHaveBeenCalled();
       expect(leaseState.getCheckoutPendingLeaseState).not.toHaveBeenCalled();
     });
 
-    it('NOT_FOUND calls checkoutRevert once and returns REVERTED/DURABLE_ATTEMPT_NOT_FOUND', async () => {
+    it('NOT_FOUND defers without raw mutation: SETTLEMENT_AUTHORITY_REQUIRED', async () => {
       recovery.checkoutRevert.mockResolvedValue(revertResult);
       const result = await service.reconcileExpiredCheckoutPending(
         input({ durableAttemptState: 'NOT_FOUND' }),
       );
       expect(result).toEqual({
         ok: true,
-        action: 'REVERTED',
-        reason: 'DURABLE_ATTEMPT_NOT_FOUND',
-        revertResult,
+        action: 'NONE',
+        reason: 'SETTLEMENT_AUTHORITY_REQUIRED',
       });
       expect(leaseState.getCheckoutPendingLeaseState).not.toHaveBeenCalled();
     });
   });
 
   describe('PROCESSING - hard ceiling', () => {
-    it('reverts when hardLimitViolationProductIds alone is non-empty', async () => {
+    it('defers when hardLimitViolationProductIds alone is non-empty', async () => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(
         leaseResult({ hardLimitViolationProductIds: ['product-1'] }),
       );
@@ -171,13 +170,13 @@ describe('CheckoutPendingReconciliationService', () => {
       const result = await service.reconcileExpiredCheckoutPending(input());
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.action).toBe('REVERTED');
-        expect((result as { reason: string }).reason).toBe('HARD_PENDING_LIMIT_REACHED');
+        expect(result.action).toBe('NONE');
+        expect((result as { reason: string }).reason).toBe('SETTLEMENT_AUTHORITY_REQUIRED');
       }
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
     });
 
-    it('reverts when earliestCheckoutPendingAt alone reaches the cart-wide ceiling', async () => {
+    it('defers when earliestCheckoutPendingAt alone reaches the cart-wide ceiling', async () => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(
         leaseResult({ earliestCheckoutPendingAt: now - 600_000 }),
       );
@@ -185,10 +184,9 @@ describe('CheckoutPendingReconciliationService', () => {
       const result = await service.reconcileExpiredCheckoutPending(input());
       expect(result).toEqual({
         ok: true,
-        action: 'REVERTED',
-        reason: 'HARD_PENDING_LIMIT_REACHED',
+        action: 'NONE',
+        reason: 'SETTLEMENT_AUTHORITY_REQUIRED',
         leaseState: leaseResult({ earliestCheckoutPendingAt: now - 600_000 }),
-        revertResult,
       });
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
     });
@@ -205,7 +203,7 @@ describe('CheckoutPendingReconciliationService', () => {
     });
   });
 
-  describe('PROCESSING - unsafe/incomplete state (direct revert, no extension attempt)', () => {
+  describe('PROCESSING - unsafe/incomplete state (authority required, no extension attempt)', () => {
     it.each([
       ['found: false', leaseResult({ found: false, complete: false })],
       ['missingProductIds non-empty', leaseResult({ complete: false, missingProductIds: ['product-2'] })],
@@ -219,40 +217,38 @@ describe('CheckoutPendingReconciliationService', () => {
         'conflictingKeyProductIds non-empty',
         leaseResult({ complete: false, conflictingKeyProductIds: ['product-2'] }),
       ],
-    ])('%s reverts directly with REDIS_STATE_INCOMPLETE, never calling extendCheckoutLease', async (_label, lease) => {
+    ])('%s defers with SETTLEMENT_AUTHORITY_REQUIRED, never calling extendCheckoutLease', async (_label, lease) => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(lease);
       recovery.checkoutRevert.mockResolvedValue(revertResult);
       const result = await service.reconcileExpiredCheckoutPending(input());
       expect(result).toEqual({
         ok: true,
-        action: 'REVERTED',
-        reason: 'REDIS_STATE_INCOMPLETE',
+        action: 'NONE',
+        reason: 'SETTLEMENT_AUTHORITY_REQUIRED',
         leaseState: lease,
-        revertResult,
       });
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
-      expect(recovery.checkoutRevert).toHaveBeenCalledTimes(1);
+      expect(recovery.checkoutRevert).not.toHaveBeenCalled();
     });
   });
 
   describe('PROCESSING - complete, expired lease, heartbeat handling', () => {
     const expiredLease = leaseResult({ expiredLeaseProductIds: ['product-1'] });
 
-    it('reverts with DURABLE_HEARTBEAT_MISSING when durableLastHeartbeatAt is null', async () => {
+    it('defers with SETTLEMENT_AUTHORITY_REQUIRED when durableLastHeartbeatAt is null', async () => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(expiredLease);
       recovery.checkoutRevert.mockResolvedValue(revertResult);
       const result = await service.reconcileExpiredCheckoutPending(input({ durableLastHeartbeatAt: null }));
       expect(result).toEqual({
         ok: true,
-        action: 'REVERTED',
-        reason: 'DURABLE_HEARTBEAT_MISSING',
+        action: 'NONE',
+        reason: 'SETTLEMENT_AUTHORITY_REQUIRED',
         leaseState: expiredLease,
-        revertResult,
       });
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
     });
 
-    it('reverts with DURABLE_HEARTBEAT_STALE when the heartbeat is older than the freshness window', async () => {
+    it('defers with SETTLEMENT_AUTHORITY_REQUIRED when the heartbeat is older than the freshness window', async () => {
       leaseState.getCheckoutPendingLeaseState.mockResolvedValue(expiredLease);
       recovery.checkoutRevert.mockResolvedValue(revertResult);
       const staleHeartbeat = now - 180_001;
@@ -261,10 +257,9 @@ describe('CheckoutPendingReconciliationService', () => {
       );
       expect(result).toEqual({
         ok: true,
-        action: 'REVERTED',
-        reason: 'DURABLE_HEARTBEAT_STALE',
+        action: 'NONE',
+        reason: 'SETTLEMENT_AUTHORITY_REQUIRED',
         leaseState: expiredLease,
-        revertResult,
       });
       expect(leaseState.extendCheckoutLease).not.toHaveBeenCalled();
     });

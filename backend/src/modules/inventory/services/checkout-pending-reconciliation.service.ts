@@ -56,14 +56,10 @@ export class CheckoutPendingReconciliationService {
         return { ok: true, action: 'FINALIZED', reason: 'DURABLE_ATTEMPT_COMMITTED', finalizeResult };
       }
       case 'FAILED': {
-        const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-        CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-        return { ok: true, action: 'REVERTED', reason: 'DURABLE_ATTEMPT_FAILED', revertResult };
+        return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' };
       }
       case 'NOT_FOUND': {
-        const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-        CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-        return { ok: true, action: 'REVERTED', reason: 'DURABLE_ATTEMPT_NOT_FOUND', revertResult };
+        return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED' };
       }
       case 'PROCESSING':
         return this.reconcileProcessing(cartId, checkoutIdempotencyKey, durableLastHeartbeatAt, now);
@@ -89,15 +85,7 @@ export class CheckoutPendingReconciliationService {
       (leaseState.earliestCheckoutPendingAt !== null &&
         now >= leaseState.earliestCheckoutPendingAt + MAX_CHECKOUT_PENDING_SECONDS * 1000);
     if (hardCeilingReached) {
-      const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-      CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-      return {
-        ok: true,
-        action: 'REVERTED',
-        reason: 'HARD_PENDING_LIMIT_REACHED',
-        leaseState,
-        revertResult,
-      };
+      return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED', leaseState };
     }
 
     if (leaseState.complete && leaseState.expiredLeaseProductIds.length === 0) {
@@ -105,41 +93,17 @@ export class CheckoutPendingReconciliationService {
     }
 
     if (!leaseState.found || !leaseState.complete) {
-      const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-      CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-      return {
-        ok: true,
-        action: 'REVERTED',
-        reason: 'REDIS_STATE_INCOMPLETE',
-        leaseState,
-        revertResult,
-      };
+      return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED', leaseState };
     }
 
     // Structurally complete, uniformly owned - only the lease itself has
     // expired. This is the one case a fresh durable heartbeat may resync.
     if (durableLastHeartbeatAt === null) {
-      const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-      CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-      return {
-        ok: true,
-        action: 'REVERTED',
-        reason: 'DURABLE_HEARTBEAT_MISSING',
-        leaseState,
-        revertResult,
-      };
+      return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED', leaseState };
     }
 
     if (now - durableLastHeartbeatAt > CHECKOUT_HEARTBEAT_FRESHNESS_SECONDS * 1000) {
-      const revertResult = await this.recovery.checkoutRevert(cartId, checkoutIdempotencyKey, now);
-      CheckoutPendingReconciliationService.assertOk(revertResult, 'checkoutRevert');
-      return {
-        ok: true,
-        action: 'REVERTED',
-        reason: 'DURABLE_HEARTBEAT_STALE',
-        leaseState,
-        revertResult,
-      };
+      return { ok: true, action: 'NONE', reason: 'SETTLEMENT_AUTHORITY_REQUIRED', leaseState };
     }
 
     // Asserted state and heartbeat do not authenticate operation/attempt authority.

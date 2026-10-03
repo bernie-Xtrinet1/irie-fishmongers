@@ -161,7 +161,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     };
     const pay = jest.spyOn(handles.paymentsService, 'initiatePayment');
     const rawMark = jest.spyOn(handles.checkoutReservationState, 'checkoutMark');
-    const revert = jest.spyOn(handles.checkoutReservationRecovery, 'checkoutRevert');
+    expect(handles.checkoutReservationRecovery).not.toHaveProperty('checkoutRevert');
     const finalize = jest.spyOn(handles.checkoutReservationRecovery, 'finalizeCheckoutConsumption');
     const markAcquired = jest.spyOn(manifests, 'markAcquired');
     const physicalEval = jest.spyOn(adapter, 'eval');
@@ -185,7 +185,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     const w4Call = physicalEval.mock.calls.findIndex(call => call[0] === CHECKOUT_ACQUIRE_SCRIPT);
     expect(w4Call).toBeGreaterThanOrEqual(0);
     expect(physicalEval.mock.invocationCallOrder[w4Call]!).toBeLessThan(markAcquired.mock.invocationCallOrder[0]!);
-    expect(rawMark).not.toHaveBeenCalled(); expect(revert).not.toHaveBeenCalled(); expect(finalize).not.toHaveBeenCalled();
+    expect(rawMark).not.toHaveBeenCalled(); expect(finalize).not.toHaveBeenCalled();
     expect(
       await prisma.checkoutAttempt.findUnique({
         where: { idempotencyKey: operation.operationKey },
@@ -404,7 +404,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
   it('proven order rollback settles W5 without invoking old revert or W6', async () => {
     const f = await scenario();
     jest.spyOn(handles.ordersService, 'createOrderInTransaction').mockRejectedValueOnce(new Error('Injected transaction failure'));
-    const revert = jest.spyOn(handles.checkoutReservationRecovery, 'checkoutRevert');
+    expect(handles.checkoutReservationRecovery).not.toHaveProperty('checkoutRevert');
     const finalize = jest.spyOn(handles.checkoutReservationRecovery, 'finalizeCheckoutConsumption');
     expect(await dispatcher.checkout({ customerId: f.customerId, cartId: f.cartId, retryKey: f.retryKey,
       dto: f.dto, now: f.now })).toEqual({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
@@ -412,7 +412,7 @@ describe('G.2b dispatch through the real coordinator (Postgres and Redis)', () =
     expect(a).toMatchObject({ status: 'FAILED', orderId: null, failureCode: 'ORDER_TRANSACTION_ROLLED_BACK' });
     expect(await prisma.checkoutReservationSettlement.findUnique({ where: { attemptId: a.id } }))
       .toMatchObject({ state: 'SETTLED', effect: 'CHECKOUT_REVERT_DELETE_ONLY' });
-    expect(revert).not.toHaveBeenCalled(); expect(finalize).not.toHaveBeenCalled();
+    expect(finalize).not.toHaveBeenCalled();
     expect(await prisma.order.count({ where: { customerId: f.customerId } })).toBe(0);
     expect(await prisma.payment.count({ where: { order: { customerId: f.customerId } } })).toBe(0);
   });

@@ -110,38 +110,31 @@ describe('CheckoutCoordinatorService (real Redis)', () => {
     );
   });
 
-  it('3. a durable transaction failure reverts the reservation back to ACTIVE, not stuck CHECKOUT_PENDING', async () => {
+  it('3. a durable transaction failure preserves CHECKOUT_PENDING without settlement authority', async () => {
     const scenario = await seedReadyCheckout(fixture, handles, { quantity: 5 });
     await prisma.product.update({ where: { id: scenario.productId }, data: { quantityAvailable: 1 } });
     const idempotencyKey = randomUUID();
 
     const result = await handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date());
-    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
+    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
 
     const raw = await getRawReservation(redisClient, scenario.cartId, scenario.productId);
     expect(raw).not.toBeNull();
     const entry = parseRawReservation(raw!);
-    expect(entry.status).toBe('ACTIVE');
-    expect(entry.checkoutIdempotencyKey).toBeNull();
+    expect(entry.status).toBe('CHECKOUT_PENDING');
+    expect(entry.checkoutIdempotencyKey).toBe(idempotencyKey);
     expect(entry.quantity).toBe(5);
   });
 
-  it('4. a checkoutRevert failure still marks the attempt FAILED, with REVERT_INCOMPLETE', async () => {
+  it('4. absence of raw checkoutRevert still marks the attempt FAILED, with REVERT_INCOMPLETE', async () => {
     const scenario = await seedReadyCheckout(fixture, handles, { quantity: 5 });
     await prisma.product.update({ where: { id: scenario.productId }, data: { quantityAvailable: 1 } });
     const idempotencyKey = randomUUID();
 
-    // Narrowest documented fault injection: everything else in this call
-    // (checkoutMark, the real transaction failure, markFailed) is real -
-    // only checkoutRevert's own outcome is overridden for this one call,
-    // since a real Redis-level revert failure isn't safely reproducible
-    // without corrupting shared infrastructure.
-    const spy = jest
-      .spyOn(handles.checkoutReservationRecovery, 'checkoutRevert')
-      .mockRejectedValueOnce(new Error('simulated Redis outage during revert'));
+    expect(handles.checkoutReservationRecovery).not.toHaveProperty('checkoutRevert');
 
     const result = await handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date());
-    spy.mockRestore();
+
 
     expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
 

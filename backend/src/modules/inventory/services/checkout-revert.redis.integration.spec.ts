@@ -8,7 +8,7 @@ import {
   getRawCheckoutFields,
   seedRawReservation,
 } from './checkout-reservation-state.redis-test-helpers';
-import { CheckoutReservationRecoveryService } from './checkout-reservation-recovery.service';
+import { HistoricalCheckoutRevertFixture as CheckoutReservationRecoveryService } from '../../../../test/fixtures/historical-checkout-revert.fixture';
 import {
   cleanupKeys,
   connectRealRedis,

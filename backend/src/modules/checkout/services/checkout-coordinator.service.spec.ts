@@ -26,7 +26,7 @@ describe('CheckoutCoordinatorService', () => {
   let priceLock: jest.Mocked<Pick<PriceLockService, 'validateCartPriceLocks'>>;
   let checkoutReservationState: jest.Mocked<Pick<CheckoutReservationStateService, 'checkoutMark'>>;
   let checkoutReservationRecovery: jest.Mocked<
-    Pick<CheckoutReservationRecoveryService, 'checkoutRevert' | 'finalizeCheckoutConsumption'>
+    Pick<CheckoutReservationRecoveryService, 'finalizeCheckoutConsumption'> & { checkoutRevert: jest.Mock }
   >;
   let ordersService: jest.Mocked<
     Pick<OrdersService, 'prepareCheckout' | 'createOrderInTransaction' | 'getCustomerOrderById' | 'toOrderResponseWithPayment'>

@@ -1,3 +1,9 @@
+import { CheckoutRecoverySettlementRepository } from '../repositories/checkout-recovery-settlement.repository';
+import { CheckoutRecoveryAcquisitionEvidenceService } from './checkout-recovery-acquisition-evidence.service';
+import { CheckoutStaleSettlementService } from './checkout-stale-settlement.service';
+import { ReservationFenceRepository } from '../../reservation-fence/repositories/reservation-fence.repository';
+import { CheckoutSettlementRepository } from '../../reservation-fence/repositories/checkout-settlement.repository';
+import { CheckoutSettlementAuthorityService } from '../../reservation-fence/services/checkout-settlement-authority.service';
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 import { PrismaService } from '../../../database/prisma.service';
@@ -6,7 +12,6 @@ import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/c
 import { CheckoutAttemptService } from '../../checkout-attempt/services/checkout-attempt.service';
 import { CheckoutAttemptStaleFencingService } from '../../checkout-attempt/services/checkout-attempt-stale-fencing.service';
 import { CheckoutReservationStateService } from '../../inventory/services/checkout-reservation-state.service';
-import { CheckoutReservationRecoveryService } from '../../inventory/services/checkout-reservation-recovery.service';
 import {
   connectRealRedis,
   cleanupKeys,
@@ -19,7 +24,7 @@ import { CheckoutRecoveryTelemetryService } from './checkout-recovery-telemetry.
 import { CheckoutRolloutParticipantsRepository } from '../../checkout-rollout/repositories/checkout-rollout-participants.repository';
 import { CheckoutRolloutParticipantsService } from '../../checkout-rollout/services/checkout-rollout-participants.service';
 
-describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
+describe('Historical G.PR1 attempts lack explicit stale settlement authority (Postgres and Redis)', () => {
   const prisma = new PrismaService();
   const live = new PrismaService();
   const repo = new CheckoutAttemptRepository(prisma);
@@ -27,7 +32,8 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
   const fence = new CheckoutAttemptStaleFencingService(repo);
   const keys = new Set<string>();
   let redis: Redis;
-  let recovery: CheckoutReservationRecoveryService;
+  let recovery: CheckoutStaleSettlementService;
+  let settlements: CheckoutRecoverySettlementRepository;
   let customerId: string;
   let cartId: string;
   const lease = { assertHeld: () => Promise.resolve() };
@@ -35,15 +41,18 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
   const worker = () =>
     new CheckoutRecoveryWorkerService(
       attempts,
-      repo,
-      fence,
+      settlements,
       recovery,
       new CheckoutRecoveryTelemetryService(),
     );
   beforeAll(async () => {
+    if (process.env.REDIS_URL !== 'redis://127.0.0.1:16479/11') throw new Error('Exact disposable Redis required');
     await Promise.all([prisma.$connect(), live.$connect()]);
     redis = await connectRealRedis();
-    recovery = new CheckoutReservationRecoveryService(new RedisService(redis));
+    const adapter = new RedisService(redis), fences = new ReservationFenceRepository(prisma);
+    const manifests = new CheckoutSettlementRepository(prisma, fences);
+    settlements = new CheckoutRecoverySettlementRepository(prisma, fences, manifests, new CheckoutRecoveryAcquisitionEvidenceService(adapter));
+    recovery = new CheckoutStaleSettlementService(settlements, new CheckoutSettlementAuthorityService(manifests, fences, adapter), adapter);
     customerId = (
       await prisma.user.create({
         data: {
@@ -79,7 +88,7 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
       })
     ).attempt;
   }
-  it('rediscovers a committed fence after crash before cleanup; repeated new workers preserve totals and ownership', async () => {
+  it('does not interpret a historical FAILED fence as a settlement obligation; repeated workers preserve totals and ownership', async () => {
     const attempt = await create();
     const productId = randomUUID();
     trackKeysFor(keys, cartId, productId);
@@ -119,7 +128,7 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
     ]);
     await worker().runCycle(lease);
     const restored = await redis.get(reservationKey(cartId, productId));
-    expect(JSON.parse(restored!)).toMatchObject({ status: 'ACTIVE', quantity: 2 });
+    expect(JSON.parse(restored!)).toMatchObject({ status: 'CHECKOUT_PENDING', quantity: 2 });
     expect(await redis.get(productTotalKey(productId))).toBe('2');
     await worker().runCycle(lease);
     expect(await redis.get(reservationKey(cartId, productId))).toBe(restored);
@@ -150,7 +159,7 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
       );
       return page;
     });
-    const cleanup = jest.spyOn(recovery, 'checkoutRevert');
+    const cleanup = jest.spyOn(recovery, 'continueStaleRecoverySettlement');
     await worker().runCycle(lease);
     expect(cleanup).not.toHaveBeenCalled();
     expect(await repo.findById(attempt.id)).toMatchObject({
@@ -194,7 +203,7 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
       });
       return page;
     });
-    const cleanup = jest.spyOn(recovery, 'checkoutRevert');
+    const cleanup = jest.spyOn(recovery, 'continueStaleRecoverySettlement');
     await worker().runCycle(lease);
     expect(cleanup).not.toHaveBeenCalled();
     expect(await repo.findById(attempt.id)).toMatchObject({
@@ -225,17 +234,17 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
     const lookup = jest
       .spyOn(CheckoutRolloutParticipantsRepository.prototype, 'findCurrent')
       .mockRejectedValue(new Error('lookup unavailable'));
-    const cleanup = jest.spyOn(recovery, 'checkoutRevert');
+    const cleanup = jest.spyOn(recovery, 'continueStaleRecoverySettlement');
     await worker().runCycle(lease);
     expect(lookup).not.toHaveBeenCalled();
-    expect(cleanup).toHaveBeenCalledWith(cartId, attempt.idempotencyKey, expect.any(Number));
+    expect(cleanup).not.toHaveBeenCalled();
     expect(await repo.findById(attempt.id)).toMatchObject({
-      status: 'FAILED',
+      status: 'PROCESSING',
       selectedPath: 'CART_SCOPED',
-      failureCode: 'STALE_RECOVERY_FENCED',
+      failureCode: null,
     });
   });
-  it('retries a failed cleanup next cycle and deletes expired pending inventory only once', async () => {
+  it('never cleans historical expired inventory without explicit manifest authority', async () => {
     const attempt = await create();
     const productId = randomUUID();
     trackKeysFor(keys, cartId, productId);
@@ -265,20 +274,20 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
     entry.expiresAt = Date.now() - 1;
     await redis.set(reservationKey(cartId, productId), JSON.stringify(entry));
     jest
-      .spyOn(recovery, 'checkoutRevert')
+      .spyOn(recovery, 'continueStaleRecoverySettlement')
       .mockRejectedValueOnce(new Error('simulated Redis outage'));
     const running = worker();
     await running.runCycle(lease);
     expect(await repo.findById(attempt.id)).toMatchObject({
-      status: 'FAILED',
-      failureCode: 'STALE_RECOVERY_FENCED',
+      status: 'PROCESSING',
+      failureCode: null,
     });
     expect(await redis.get(productTotalKey(productId))).toBe('2');
     await running.runCycle(lease);
-    expect(await redis.get(reservationKey(cartId, productId))).toBeNull();
-    expect(await redis.get(productTotalKey(productId))).toBe('0');
+    expect(await redis.get(reservationKey(cartId, productId))).toBe(JSON.stringify(entry));
+    expect(await redis.get(productTotalKey(productId))).toBe('2');
     await running.runCycle(lease);
-    expect(await redis.get(productTotalKey(productId))).toBe('0');
+    expect(await redis.get(productTotalKey(productId))).toBe('2');
   });
   it('cleanup paging excludes unrelated failures and advances tied heartbeat IDs without duplication', async () => {
     const rows = await Promise.all([create(), create(), create()]);
@@ -291,6 +300,7 @@ describe('G.PR1 durable restart cleanup (Postgres and Redis)', () => {
       where: { id: unrelated.id },
       data: { status: 'FAILED', failureCode: 'OTHER_FAILURE' },
     });
+    expect(await settlements.findPendingStaleSettlementsPage({ afterManifestId: null, limit: 100 })).toEqual([]);
     const first = await repo.findFencedCleanupPage({ cursor: null, limit: 2 });
     expect(first).toHaveLength(2);
     const second = await repo.findFencedCleanupPage({

@@ -1,5 +1,5 @@
 import { RedisService } from '../../../common/redis/redis.service';
-import { CheckoutReservationRecoveryService } from './checkout-reservation-recovery.service';
+import { HistoricalCheckoutRevertFixture as CheckoutReservationRecoveryService } from '../../../../test/fixtures/historical-checkout-revert.fixture';
 
 // CheckoutReservationRecoveryService coverage: input validation, KEYS/ARGV
 // construction, scriptVersion protocol, every result-bucket mapping,

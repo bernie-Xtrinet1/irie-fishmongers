@@ -91,7 +91,7 @@ describe('CheckoutCoordinatorService (real Postgres)', () => {
 
     const result = await handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date());
 
-    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
+    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
 
     const orders = await prisma.order.findMany({ where: { customerId: scenario.customerId } });
     expect(orders).toHaveLength(0);
@@ -103,7 +103,7 @@ describe('CheckoutCoordinatorService (real Postgres)', () => {
     const attempt = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { idempotencyKey } });
     expect(attempt.status).toBe('FAILED');
     expect(attempt.orderId).toBeNull();
-    expect(attempt.failureCode).toBe('ORDER_TRANSACTION_FAILED');
+    expect(attempt.failureCode).toBe('ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE');
   });
 
   it('3. a non-success markCommittedInTransaction result rolls back the whole transaction - never a partially-created order', async () => {
@@ -121,7 +121,7 @@ describe('CheckoutCoordinatorService (real Postgres)', () => {
     const result = await handles.coordinator.checkout(scenario.customerId, idempotencyKey, checkoutDto, new Date());
     spy.mockRestore();
 
-    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED' });
+    expect(result).toMatchObject({ ok: false, code: 'ORDER_TRANSACTION_FAILED_REVERT_INCOMPLETE' });
 
     const orders = await prisma.order.findMany({ where: { customerId: scenario.customerId } });
     expect(orders).toHaveLength(0);
