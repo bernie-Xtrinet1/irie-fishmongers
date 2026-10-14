@@ -42,7 +42,7 @@ describe('claim consumption across restart with disposable Redis observation onl
         generation: 0, holdInstanceId: issued.owner.holdInstanceId }, source: null, transition: 'INITIAL', quantity: 2, parent: null };
     const before = await client.info('commandstats');
     const first = new OrdinaryCommandDispatchClaimRepository(schema.db);
-    const grant = await first.claim(identity);
+    const grant = await first.claim(identity, 'EXECUTE_ONLY');
     expect(grant.status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
     // Process loss: discard first repository/grant. No physical API is invoked.
     const fresh = schema.fresh();
@@ -51,8 +51,8 @@ describe('claim consumption across restart with disposable Redis observation onl
       expect(await client.get(`claim-observation-only:${randomUUID()}`)).toBeNull();
       const observation = kind === 'missing' ? null : '{invalid-json';
       expect(observation === null || !observation.endsWith('}')).toBe(true);
-      if (grant.status === 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED') expect(restarted.consume(grant.claim)).toBeNull();
-      expect(await restarted.claim(identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+      if (grant.status === 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED') expect(restarted.consumeMutation(grant.claim, 'EXECUTE')).toBeNull();
+      expect(await restarted.claim(identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
       expect(await fresh.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: command.id } }))
         .toMatchObject({ attemptCount: 1, replayId: command.replayId, state: 'PENDING' });
       expect(await fresh.ordinaryReservationCommand.count({ where: { markerId: f.marker.id } })).toBe(1);

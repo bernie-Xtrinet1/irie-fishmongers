@@ -1,8 +1,9 @@
+import { OrdinaryPurposePlan, OrdinaryMutationCapability } from '../types/ordinary-command-dispatch-claim.types';
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { assertDisposableEnvironment, latch, withCleanup } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
-import { openOrdinarySchema, ordinaryFixture } from './ordinary-provenance-test-helpers';
+import { claimOrdinaryMutation, openOrdinarySchema, ordinaryFixture } from './ordinary-provenance-test-helpers';
 import { OrdinaryInvalidationRepository } from '../repositories/ordinary-invalidation.repository';
 import { OrdinaryInvalidationService } from '../services/ordinary-invalidation.service';
 import { OrdinaryInvalidationPublicationService } from '../services/ordinary-invalidation-publication.service';
@@ -100,12 +101,34 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
         cancelledCommandId: command.id, intentGeneration: 0, expectedMutationVersion: 0 });
       await f.commands.promote(f.marker.id); return row;
     };
+    let admission: Awaited<ReturnType<typeof claimOrdinaryMutation>> | undefined;
+    let capability: OrdinaryMutationCapability | undefined;
+    const admit = async (plan: OrdinaryPurposePlan) => {
+      admission = await claimOrdinaryMutation(f.db, command.id, plan);
+      capability = admission.capability;
+    };
+    const initialize = async () => {
+      await admit('GENESIS_THEN_EXECUTE');
+      if (!admission || !capability) throw new Error('Missing genesis claim');
+      const result = await physical.initialize(capability, admission.issuer);
+      if (result.code === 'INITIALIZED') capability = result.continuation;
+      return { code: result.code };
+    };
+    const execute = () => {
+      if (!admission || !capability) throw new Error('Missing execution claim');
+      return physical.execute(capability, admission.issuer);
+    };
+    const executeCancellation = async (id: string) => {
+      const a = await claimOrdinaryMutation(f.db, id, 'EXECUTE_ONLY');
+      return physical.execute(a.capability, a.issuer);
+    };
     return { ...f, schema, client, redis, repo, service, publication, physical, command, request, initial, ledger,
+      admit, initialize, execute, executeCancellation,
       invalidate, snapshot, evaluate, cancel };
   }
 
   it.each(['REGISTER', 'GENESIS', 'EXECUTE'] as const)('delayed %s really arrives after timeout/barrier and makes zero physical writes', purpose => fixture(async f => {
-    if (purpose === 'EXECUTE') expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
+    if (purpose === 'EXECUTE') expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
     const reached = latch(), release = latch();
     const script = purpose === 'REGISTER' ? ORDINARY_PHYSICAL_REGISTER : purpose === 'GENESIS' ? ORDINARY_PHYSICAL_GENESIS : ORDINARY_PHYSICAL_EXECUTE;
     let delivery: Promise<unknown> | undefined;
@@ -116,7 +139,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
       throw new Error('SIMULATED_CLIENT_TIMEOUT');
     });
     try {
-      const result = purpose === 'EXECUTE' ? f.physical.execute(f.command.id) : f.physical.initialize(f.command.id);
+      const result = purpose === 'EXECUTE' ? f.execute() : f.initialize();
       await reached.promise;
       expect(await result).toEqual({ code: 'UNCERTAIN' });
       await f.invalidate(); const before = await f.snapshot();
@@ -127,7 +150,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
   }));
 
   it('lost head rejects original INSTALL and READY packets and delayed revision-one EXECUTE with zero writes', () => fixture(async f => {
-    expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
+    expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
     const reached = latch(), release = latch();
     let delivery: Promise<unknown> | undefined;
     let grantKey: string | undefined;
@@ -138,7 +161,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
       throw new Error('SIMULATED_CLIENT_TIMEOUT');
     });
     try {
-      const execution = f.physical.execute(f.command.id);
+      const execution = f.execute();
       await reached.promise; expect(await execution).toEqual({ code: 'UNCERTAIN' });
       const key = invalidationRedisKey(`MARKER:${f.marker.id}`), historyKey = invalidationHistoryKey(key);
       const retained = await f.client.get(historyKey);
@@ -169,14 +192,14 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
     const binding = await f.db.ordinaryCommandBarrierBinding.findUniqueOrThrow({ where: { commandId: f.command.id } });
     expect(binding).toMatchObject({ globalRevision: 1, markerRevision: 1 });
     await expect(f.db.ordinaryCommandBarrierBinding.update({ where: { commandId: f.command.id }, data: { markerRevision: 2 } })).rejects.toThrow();
-    expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
-    expect((await f.physical.execute(f.command.id)).code).toBe('COMPLETED');
+    expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
+    expect((await f.execute()).code).toBe('COMPLETED');
     await f.invalidate();
     const before = await f.snapshot();
     const fresh = f.schema.fresh();
     try {
       const observer = new OrdinaryCommandPhysicalService(fresh, f.redis);
-      expect(await observer.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+      expect(await Reflect.apply(observer.execute.bind(observer), observer, [f.command.id])).toEqual({ code: 'REJECTED' });
       expect(await new OrdinaryCommandClosureService(fresh, observer).close(f.command.id))
         .toMatchObject({ status: 'ACKNOWLEDGED', historical: true });
       expect(await f.snapshot()).toEqual(before);
@@ -194,7 +217,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
       }
       return f.evaluate(...args);
     });
-    expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
+    expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
     if (!registered) throw new Error('Missing captured grant');
     const unbound = { ...registered, grantId: randomUUID() };
     delete unbound.barrierBinding;
@@ -207,7 +230,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
   }));
 
   it.each(['missing', 'corrupt'] as const)('%s completion evidence never becomes acknowledgement', fault => fixture(async f => {
-    expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
+    expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
     if (fault === 'corrupt') await f.client.hset(f.ledger, `receipt:${f.command.id}`, '{}');
     await f.invalidate();
     expect(await new OrdinaryCommandClosureService(f.db, f.physical).close(f.command.id)).toEqual({ status: 'UNRESOLVED' });
@@ -215,10 +238,10 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
   }));
 
   it.each(['W1', 'CANCEL'] as const)('preserves %s first-winner evidence independently of invalidation', winner => fixture(async f => {
-    expect(await f.physical.initialize(f.command.id)).toEqual({ code: 'INITIALIZED' });
-    if (winner === 'W1') expect((await f.physical.execute(f.command.id)).code).toBe('COMPLETED');
+    expect(await f.initialize()).toEqual({ code: 'INITIALIZED' });
+    if (winner === 'W1') expect((await f.execute()).code).toBe('COMPLETED');
     const cancellation = await f.cancel();
-    const result = await f.physical.execute(cancellation.id);
+    const result = await f.executeCancellation(cancellation.id);
     expect(result.code).toBe(winner === 'W1' ? 'EXECUTION_WON' : 'COMPLETED');
     if (!('receipt' in result)) throw new Error('Missing winner receipt');
     expect(JSON.parse(result.receipt)).toMatchObject(winner === 'W1'
@@ -230,6 +253,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
   }));
 
   it('recovers lost Redis response and fresh PREPARED/confirmed/published services without reallocating', () => fixture(async f => {
+    await f.admit('EXECUTE_ONLY');
     const prepare = f.repo.prepare.bind(f.repo);
     jest.spyOn(f.repo, 'prepare').mockImplementationOnce(async request => { await prepare(request); throw new Error('PREPARE_COMMIT_RESPONSE_LOST'); });
     expect((await f.service.prepare(f.request)).status).toBe('PREPARED');
@@ -265,11 +289,12 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
       await restarted.reconcileReadiness(f.request.intentId);
       expect(await fresh.ordinaryInvalidationHead.findUniqueOrThrow({ where: { scope: `MARKER:${f.marker.id}` } }))
         .toMatchObject({ publishedRevision: 2, allocatedRevision: 2, ready: true });
-      expect(await f.physical.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+      expect(await f.execute()).toEqual({ code: 'REJECTED' });
     } finally { await fresh.$disconnect(); }
   }));
 
   it('supersession advances the installed barrier and cannot revive old readiness or authority', () => fixture(async f => {
+    await f.admit('EXECUTE_ONLY');
     await f.service.prepare(f.request);
     const replacement: InvalidationRequest = { ...f.request, intentId: randomUUID(), operationId: randomUUID(),
       scopes: f.request.scopes.map(scope => ({ ...scope, revision: 2 })) };
@@ -280,10 +305,11 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
     await f.publication.publish(replacement.intentId, () => Promise.resolve({ replacement: true }));
     await f.service.reconcileReadiness(replacement.intentId);
     await expect(f.service.reconcileReadiness(f.initial.intentId)).rejects.toThrow('READINESS_SUPERSEDED');
-    expect(await f.physical.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await f.execute()).toEqual({ code: 'REJECTED' });
   }));
 
   it('publishes a restrictive fence only after its global barrier; old physical authority cannot execute', () => fixture(async f => {
+    await f.admit('EXECUTE_ONLY');
     const before = transitionTuple(f.transition), id = randomUUID();
     const after = { ...before, transitionId: id, revision: before.revision + 1, phase: 'DRAINING' as const };
     const request: InvalidationRequest = { ...f.request, kind: 'FENCE', scopes: [{ kind: 'GLOBAL', revision: 1,
@@ -297,7 +323,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
         mode: 'CART_SCOPED', modeRevision: f.transition.modeRevision, reason: 'RESTRICT', actorId: randomUUID() });
       return { transitionId: row.id };
     });
-    expect(await f.physical.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await f.execute()).toEqual({ code: 'REJECTED' });
     expect((await f.repo.read(request.intentId))?.status).toBe('PUBLISHED');
   }));
 
@@ -317,6 +343,7 @@ describe('inactive invalidation: real PostgreSQL/standalone Redis ordering', () 
       return { ownerId };
     });
     expect(await f.db.ordinaryReservationOwner.findUniqueOrThrow({ where: { id: ownerId } })).toMatchObject({ state: 'REVOKED' });
-    expect(await f.physical.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await Reflect.apply(f.physical.execute.bind(f.physical), f.physical, [f.command.id])).toEqual({ code: 'REJECTED' });
+    await expect(f.admit('EXECUTE_ONLY')).rejects.toThrow();
   }, false));
 });

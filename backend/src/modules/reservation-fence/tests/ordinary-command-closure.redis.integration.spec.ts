@@ -1,7 +1,7 @@
 import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { assertDisposableEnvironment, withCleanup, latch } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
-import { ordinaryFixture, openOrdinarySchema } from './ordinary-provenance-test-helpers';
+import { claimOrdinaryMutation, ordinaryFixture, openOrdinarySchema } from './ordinary-provenance-test-helpers';
 import { OrdinaryCommandPhysicalService } from '../services/ordinary-command-physical.service';
 import { OrdinaryCommandClosureService } from '../services/ordinary-command-closure.service';
 import { ordinaryPhysicalLedgerKey } from '../types/ordinary-command-physical.types';
@@ -47,6 +47,10 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
   }, [async () => { if (client) { if (client.status === 'ready') await client.quit(); else client.disconnect(); } }]),
   async () => { if (schema) await schema.close(); }]));
 
+  async function executionArgs(commandId: string) {
+    const a = await claimOrdinaryMutation(schema.db, commandId, 'EXECUTE_ONLY');
+    return [a.capability, a.issuer] as const;
+  }
   async function fixture() {
     const f = await ordinaryFixture(schema.db);
     const issued = await f.commands.issue(f.issuance, f.payload);
@@ -60,7 +64,11 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
     const owned = [ledger, entry, guard, cartIndexKey(f.cartId), productIndexKey(f.productId), productTotalKey(f.productId)];
     owned.forEach(k => keys.add(k)); history.add(ledger); history.add(guard);
     jest.spyOn(redis, 'eval').mockImplementation(evaluate);
-    expect(await physical.initialize(command.id)).toEqual({ code: 'INITIALIZED' });
+    const admission = await claimOrdinaryMutation(schema.db, command.id, 'GENESIS_THEN_EXECUTE');
+    const initialized = await physical.initialize(admission.capability, admission.issuer);
+    expect(initialized.code).toBe('INITIALIZED');
+    if (initialized.code !== 'INITIALIZED') throw new Error('Fixture initialization rejected');
+    const execute = () => physical.execute(initialized.continuation, admission.issuer);
     const snapshot = async () => Promise.all(owned.map(async k => (await client.dumpBuffer(k))?.toString('base64') ?? null));
     const cancel = async () => {
       const row = await f.commands.enqueue(f.marker.id, { ownerId: issued.owner.id, effect: 'CANCEL_W1', reason: 'STALE_W1',
@@ -68,12 +76,12 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
       await f.commands.promote(f.marker.id);
       return row;
     };
-    return { ...f, ...issued, command, tuple, ledger, entry, guard, snapshot, cancel };
+    return { ...f, ...issued, command, tuple, ledger, entry, guard, snapshot, cancel, execute };
   }
 
   it('ACKs exact physical evidence and repeated/concurrent closure never mutates Redis', async () => {
     const f = await fixture();
-    expect((await physical.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     const before = await f.snapshot();
     const execute = jest.spyOn(physical, 'execute'), initialize = jest.spyOn(physical, 'initialize');
     const results = await Promise.all(Array.from({ length: 5 }, () => closure.close(f.command.id)));
@@ -91,7 +99,7 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
       if (args[0] === ORDINARY_PHYSICAL_EXECUTE) throw new Error('lost response');
       return result;
     });
-    expect(await physical.execute(f.command.id)).toEqual({ code: 'UNCERTAIN' });
+    expect(await f.execute()).toEqual({ code: 'UNCERTAIN' });
     jest.restoreAllMocks();
     await client.pexpire(f.entry, 1);
     await new Promise(resolve => setTimeout(resolve, 5));
@@ -112,7 +120,7 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
   it.each(['receipt-missing', 'receipt-corrupt', 'cursor-missing', 'history-missing', 'ledger-missing'] as const)(
     '%s remains unresolved without rearm, repair or physical retry', async fault => {
       const f = await fixture();
-      expect((await physical.execute(f.command.id)).code).toBe('COMPLETED');
+      expect((await f.execute()).code).toBe('COMPLETED');
       if (fault === 'receipt-missing') await client.hdel(f.ledger, `receipt:${f.command.id}`);
       if (fault === 'receipt-corrupt') await client.hset(f.ledger, `receipt:${f.command.id}`, '{}');
       if (fault === 'cursor-missing') await client.hdel(f.ledger, 'cursor');
@@ -123,7 +131,7 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
       expect(await closure.close(f.command.id)).toEqual({ status: 'UNRESOLVED' });
       expect(await closure.close(f.command.id)).toEqual({ status: 'UNRESOLVED' });
       expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: f.command.id } }))
-        .toMatchObject({ state: 'UNCERTAIN', attemptCount: 0, completionReceiptHash: null });
+        .toMatchObject({ state: 'UNCERTAIN', attemptCount: 1, completionReceiptHash: null });
       expect(await f.snapshot()).toEqual(before);
       expect(execute).not.toHaveBeenCalled(); expect(initialize).not.toHaveBeenCalled();
     });
@@ -135,12 +143,12 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
       if (args[0] === ORDINARY_PHYSICAL_EXECUTE) { reached.release(); await release.promise; }
       return evaluate(...args);
     });
-    const running = physical.execute(f.command.id);
+    const running = f.execute();
     try {
       await reached.promise;
       const cancellation = await f.cancel();
       jest.spyOn(redis, 'eval').mockImplementation(evaluate);
-      expect((await physical.execute(cancellation.id)).code).toBe('COMPLETED');
+      expect((await physical.execute(...await executionArgs(cancellation.id))).code).toBe('COMPLETED');
       release.release();
       expect((await running).code).toBe('CANCELLED');
       const before = await f.snapshot();
@@ -154,9 +162,9 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
 
   it('W1-first closes execution-won and permits the legal sequence gap acknowledgement', async () => {
     const f = await fixture();
-    expect((await physical.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     const cancellation = await f.cancel();
-    expect((await physical.execute(cancellation.id)).code).toBe('EXECUTION_WON');
+    expect((await physical.execute(...await executionArgs(cancellation.id))).code).toBe('EXECUTION_WON');
     const results = await Promise.all([closure.close(cancellation.id), closure.close(f.command.id)]);
     expect(results.every(r => r.status === 'ACKNOWLEDGED' && r.commandId === f.command.id)).toBe(true);
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: cancellation.id } })).toMatchObject({ state: 'REVOKED' });
@@ -164,7 +172,7 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
     const next = await f.commands.enqueue(f.marker.id, { ...f.payload, ownerId: f.owner.id, sourceOwnerId: f.owner.id,
       effect: 'W1', w1Transition: 'SAME_GENERATION', expectedMutationVersion: 1 });
     expect(await f.commands.promote(f.marker.id)).toMatchObject({ sequence: 3, expectedSequence: 1 });
-    expect((await physical.execute(next.id)).code).toBe('COMPLETED');
+    expect((await physical.execute(...await executionArgs(next.id))).code).toBe('COMPLETED');
     expect((await closure.close(next.id)).status).toBe('ACKNOWLEDGED');
     expect(await schema.db.cartReservationSyncState.findUniqueOrThrow({ where: { id: f.marker.id } }))
       .toMatchObject({ ordinaryAcknowledgedSequence: 3 });
@@ -172,13 +180,13 @@ describe('closure real retained evidence: disposable standalone Redis', () => {
 
   it('replacement ACK atomically activates target and supersedes exact predecessor', async () => {
     const f = await fixture();
-    expect((await physical.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     expect((await closure.close(f.command.id)).status).toBe('ACKNOWLEDGED');
     await schema.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 1, expectedMutationVersion: 1, expectedQuantity: 3 } });
     const next = await f.commands.issue({ ...f.issuance, generation: 1 }, { ...f.payload, sourceOwnerId: f.owner.id,
       w1Transition: 'IMMEDIATE_PREDECESSOR', intentGeneration: 1, expectedMutationVersion: 1, authorizedQuantity: 3 });
     await f.commands.promote(f.marker.id);
-    expect((await physical.execute(next.command.id)).code).toBe('COMPLETED');
+    expect((await physical.execute(...await executionArgs(next.command.id))).code).toBe('COMPLETED');
     expect((await closure.close(next.command.id)).status).toBe('ACKNOWLEDGED');
     const predecessor = await f.owners.loadAuthority(f.owner.id);
     expect(predecessor.state).toBe('SUPERSEDED');

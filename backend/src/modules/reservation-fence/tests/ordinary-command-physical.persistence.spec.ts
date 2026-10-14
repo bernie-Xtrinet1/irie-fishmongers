@@ -2,7 +2,7 @@ import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { OrdinaryCommandPhysicalService } from '../services/ordinary-command-physical.service';
 import { OrdinaryPhysicalGrant } from '../types/ordinary-command-physical.types';
-import { acknowledgement, ordinaryFixture, openOrdinarySchema } from './ordinary-provenance-test-helpers';
+import { claimOrdinaryMutation, acknowledgement, ordinaryFixture, openOrdinarySchema } from './ordinary-provenance-test-helpers';
 import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
 import { ORDINARY_PHYSICAL_REGISTER } from '../lua/ordinary-command-physical.lua';
 import { controlBytes, productControlKey } from '../types/product-reservation-restriction.types';
@@ -28,13 +28,16 @@ describe('Stage B independently reloads committed authority (no Redis connection
       else await f.commands.acknowledge(f.marker.id, acknowledgement(p));
     }
     const evalSpy = jest.spyOn(redis, 'eval').mockResolvedValue('{}');
-    expect(await new OrdinaryCommandPhysicalService(schema.db, redis).execute(issued.command.id)).toEqual({ code: 'REJECTED' });
+    await expect(claimOrdinaryMutation(schema.db, issued.command.id, 'EXECUTE_ONLY')).rejects.toThrow();
+    const physical = new OrdinaryCommandPhysicalService(schema.db, redis);
+    expect(await Reflect.apply(physical.execute.bind(physical), physical, [issued.command.id])).toEqual({ code: 'REJECTED' });
     expect(evalSpy).not.toHaveBeenCalled();
   });
   it('reads committed pending state and releases the marker lock before registration', async () => {
     const f = await ordinaryFixture(schema.db);
     const issued = await f.commands.issue(f.issuance, f.payload);
     await f.commands.promote(f.marker.id);
+    const admission = await claimOrdinaryMutation(schema.db, issued.command.id, 'EXECUTE_ONLY');
     const fresh = schema.fresh();
     const observed: string[] = [];
     const failures: unknown[] = [];
@@ -71,22 +74,23 @@ describe('Stage B independently reloads committed authority (no Redis connection
       } catch (error) { failures.push(error); throw error; }
     });
     try {
-      await new OrdinaryCommandPhysicalService(schema.db, redis).execute(issued.command.id);
+      await new OrdinaryCommandPhysicalService(schema.db, redis).execute(admission.capability, admission.issuer);
       expect(failures).toEqual([]); // Service error handling must not swallow test failures.
       expect(observed).toEqual(['initialized-under-lock', 'exact-registration-after-unlock']);
       expect(evalSpy).toHaveBeenCalledTimes(2);
     }
     finally { await fresh.$disconnect(); }
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: issued.command.id } }))
-      .toMatchObject({ state: 'PENDING', attemptCount: 0, completionReceiptHash: null });
+      .toMatchObject({ state: 'PENDING', attemptCount: 1, completionReceiptHash: null });
   });
   it('rejects a stale desired generation before Redis registration', async () => {
     const f = await ordinaryFixture(schema.db);
     const issued = await f.commands.issue(f.issuance, f.payload);
     await f.commands.promote(f.marker.id);
+    const admission = await claimOrdinaryMutation(schema.db, issued.command.id, 'EXECUTE_ONLY');
     await schema.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 1 } });
     const evalSpy = jest.spyOn(redis, 'eval').mockResolvedValue('{}');
-    expect(await new OrdinaryCommandPhysicalService(schema.db, redis).execute(issued.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await new OrdinaryCommandPhysicalService(schema.db, redis).execute(admission.capability, admission.issuer)).toEqual({ code: 'REJECTED' });
     expect(evalSpy).not.toHaveBeenCalled();
   });
   it('UNCERTAIN observation reloads identity but never registers a grant', async () => {

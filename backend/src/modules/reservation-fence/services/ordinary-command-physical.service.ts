@@ -1,8 +1,9 @@
+import { ordinaryCommandAuthority } from './ordinary-command-authority';
 import { OrdinaryCommandDispatchClaimRepository } from '../repositories/ordinary-command-dispatch-claim.repository';
 import { requireUnrestrictedProduct } from '../repositories/product-reservation-restriction.repository';
 import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
 import { controlBytes, productControlKey } from '../types/product-reservation-restriction.types';
-import { OrdinaryDispatchClaim } from '../types/ordinary-command-dispatch-claim.types';
+import { OrdinaryDispatchClaim, OrdinaryMutationCapability, OrdinaryMutationAdmission, OrdinaryInitializationResult } from '../types/ordinary-command-dispatch-claim.types';
 import { releaseIdentity } from '../types/ordinary-release.types';
 import { createHash, randomUUID } from 'crypto';
 import { OrdinaryReservationCommand, OrdinaryReservationOwner } from '@prisma/client';
@@ -25,20 +26,47 @@ import { ORDINARY_PHYSICAL_REGISTER, ORDINARY_PHYSICAL_GENESIS, ORDINARY_PHYSICA
 export class OrdinaryCommandPhysicalService {
   constructor(private readonly prisma: PrismaService, private readonly redis: RedisService) {}
 
-  initialize(commandId: string): Promise<OrdinaryPhysicalResult> { return this.run(commandId, 'GENESIS'); }
-  execute(commandId: string): Promise<OrdinaryPhysicalResult> { return this.run(commandId, 'EXECUTE'); }
-  observe(commandId: string): Promise<OrdinaryPhysicalResult> { return this.run(commandId, 'OBSERVE'); }
+  readonly #continuations = new WeakMap<OrdinaryMutationCapability, { admission: OrdinaryMutationAdmission; issuer: OrdinaryCommandDispatchClaimRepository }>();
+
+  async initialize(capability: OrdinaryMutationCapability, issuer: OrdinaryCommandDispatchClaimRepository): Promise<OrdinaryInitializationResult> {
+    let admission: OrdinaryMutationAdmission | null;
+    try {
+      if (!(issuer instanceof OrdinaryCommandDispatchClaimRepository)) return { code: 'REJECTED' };
+      admission = OrdinaryCommandDispatchClaimRepository.prototype.consumeMutation.call(issuer, capability, 'GENESIS');
+    } catch { return { code: 'REJECTED' }; }
+    if (!admission) return { code: 'REJECTED' };
+    const result = await this.#run(admission.identity.commandId, 'GENESIS', undefined, admission);
+    if (result.code !== 'INITIALIZED') return { code: result.code === 'REJECTED' ? 'REJECTED' : 'UNCERTAIN' };
+    const continuation = Object.freeze({}) as OrdinaryMutationCapability;
+    this.#continuations.set(continuation, { admission, issuer });
+    return { code: 'INITIALIZED', continuation };
+  }
+
+  async execute(capability: OrdinaryMutationCapability, issuer: OrdinaryCommandDispatchClaimRepository): Promise<OrdinaryPhysicalResult> {
+    let admission: OrdinaryMutationAdmission | null;
+    try {
+      if (!(issuer instanceof OrdinaryCommandDispatchClaimRepository)) return { code: 'REJECTED' };
+      const continuation = this.#continuations.get(capability);
+      if (continuation) {
+        this.#continuations.delete(capability);
+        admission = continuation.issuer === issuer ? continuation.admission : null;
+      } else admission = OrdinaryCommandDispatchClaimRepository.prototype.consumeMutation.call(issuer, capability, 'EXECUTE');
+    } catch { return { code: 'REJECTED' }; }
+    if (!admission) return { code: 'REJECTED' };
+    return this.#run(admission.identity.commandId, 'EXECUTE', undefined, admission);
+  }
+  observe(commandId: string): Promise<OrdinaryPhysicalResult> { return this.#run(commandId, 'OBSERVE'); }
 
   async executeRelease(claim: OrdinaryDispatchClaim, claims: OrdinaryCommandDispatchClaimRepository): Promise<OrdinaryPhysicalResult> {
     if (!(claims instanceof OrdinaryCommandDispatchClaimRepository)) return { code: 'REJECTED' };
     let identity: OrdinaryPhysicalIdentity | null;
     try { identity = OrdinaryCommandDispatchClaimRepository.prototype.consume.call(claims, claim); } catch { return { code: 'REJECTED' }; }
     if (!identity || identity.action !== 'RELEASE') return { code: 'REJECTED' };
-    const result = await this.run(identity.commandId, 'EXECUTE', JSON.stringify(identity));
+    const result = await this.#run(identity.commandId, 'EXECUTE', JSON.stringify(identity));
     return result.code === 'REJECTED' ? { ...result, reason: 'RELEASE_AUTHORITY_REJECTED' } : result;
   }
 
-  private async load(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string) {
+  async #load(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string, admission?: OrdinaryMutationAdmission) {
     if (typeof commandId !== 'string' || commandId.length !== 36 || !UUID_PATTERN.test(commandId)) throw new Error('Invalid command');
     const fences = new ReservationFenceRepository(this.prisma);
     const owners = new OrdinaryReservationOwnerRepository(this.prisma);
@@ -84,6 +112,20 @@ export class OrdinaryCommandPhysicalService {
           epoch: o.reservationExecutionEpoch, ownerId: o.id, sourceOwnerId: s?.id ?? null, target: resource(o),
           source: s ? resource(s) : null, transition: c.w1Transition, quantity: c.authorizedQuantity, parent: null };
       };
+      if (purpose !== 'OBSERVE' && command.effect !== 'RELEASE') {
+        if (!admission || command.attemptCount !== 1 || command.lastDispatchTransitionId !== admission.dispatchTransitionId
+          || fence.id !== admission.dispatchTransitionId || command.nextAttemptAt !== null
+          || command.expectedSequence !== marker.ordinaryAcknowledgedSequence || command.sequence === null
+          || command.sequence > marker.ordinaryCommandSequence) throw new Error('MUTATION_CLAIM_MISMATCH');
+        const actual = await ordinaryCommandAuthority({ tx, marker }, command, owners);
+        if (JSON.stringify(actual) !== JSON.stringify(admission.identity)
+          || actual.incarnation !== fence.incarnation || actual.epoch !== fence.epoch) throw new Error('MUTATION_IDENTITY_MISMATCH');
+        if (command.dependsOnCommandId) {
+          const dependency = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: command.dependsOnCommandId } });
+          if (dependency.markerId !== marker.id || dependency.queueOrdinal >= command.queueOrdinal
+            || !['ACKNOWLEDGED', 'CANCELLED'].includes(dependency.state)) throw new Error('MUTATION_DEPENDENCY_REJECTED');
+        }
+      }
       let root = command;
       let result: OrdinaryPhysicalIdentity;
       if (command.effect === 'RELEASE') {
@@ -128,9 +170,9 @@ export class OrdinaryCommandPhysicalService {
     });
   }
 
-  private async run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string): Promise<OrdinaryPhysicalResult> {
-    let authority: Awaited<ReturnType<OrdinaryCommandPhysicalService['load']>>;
-    try { authority = await this.load(commandId, purpose, releaseClaim); } catch { return { code: 'REJECTED' }; }
+  async #run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string, admission?: OrdinaryMutationAdmission): Promise<OrdinaryPhysicalResult> {
+    const authority = await this.#load(commandId, purpose, releaseClaim, admission).catch(() => null);
+    if (!authority) return { code: 'REJECTED' };
     // load() commits before command execution. Product readiness initialization
     // runs inside its durable lock and never creates reservation authority.
     try {

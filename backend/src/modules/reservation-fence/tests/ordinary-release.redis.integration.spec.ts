@@ -30,7 +30,7 @@ describe('inactive exact RELEASE: standalone Redis', () => {
       }
       return first;
     });
-    expect((await f.physical.execute(f.release.id)).code).toBe('REJECTED');
+    expect(await Reflect.apply(f.physical.execute.bind(f.physical), f.physical, [f.release.id, f.claims])).toMatchObject({ code: 'REJECTED' });
     expect((await f.physical.executeRelease(f.claim, f.claims)).code).toBe('COMPLETED');
     expect(await f.client.get(f.entry)).toBeNull();
     expect(await f.client.get(f.total)).toBe('0');

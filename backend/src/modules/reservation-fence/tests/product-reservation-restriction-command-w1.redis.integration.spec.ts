@@ -67,7 +67,6 @@ async function setup(client: Redis, keys: Set<string>, fields: Set<string>) {
 
 import { ORDINARY_PHYSICAL_REGISTER, ORDINARY_PHYSICAL_GENESIS, ORDINARY_PHYSICAL_EXECUTE } from '../lua/ordinary-command-physical.lua';
 import { OrdinaryPhysicalGrant, OrdinaryPhysicalIdentity, ordinaryPhysicalLedgerKey } from '../types/ordinary-command-physical.types';
-import { RedisService } from '../../../common/redis/redis.service';
 import { withOrdinaryReleaseRedis } from './ordinary-provenance-test-helpers';
 
 describe('W3-P command W1 mutation-time restriction', () => {
@@ -75,15 +74,19 @@ describe('W3-P command W1 mutation-time restriction', () => {
   it.each(['OPEN', 'DRAINING'] as const)('permanent restriction preserves exact W2 %s release and closure', phase => isolated(async outer => {
     // The existing release fixture tracks its resources; additionally retain new
     // product-control keys for failure-safe cleanup even if fixture setup fails.
-    const tracker = jest.spyOn(RedisService.prototype, 'eval');
-    const evaluate = tracker.getMockImplementation();
-    if (!evaluate) throw new Error('Missing physical evaluator');
-    tracker.mockImplementation(function (this: RedisService, script, keys, args) {
-      if (script === PRODUCT_CONTROL_INSTALL && keys[1]) outer.keys.add(keys[1]);
-      return evaluate.call(this, script, keys, args);
-    });
-    try {
-      await withOrdinaryReleaseRedis(async f => {
+    await withOrdinaryReleaseRedis(async f => {
+      outer.keys.add(productControlKey(f.productId));
+      const existingEval = (f.redis.eval as jest.Mock).getMockImplementation() as
+        | ((...a: unknown[]) => Promise<unknown>)
+        | undefined;
+      jest.spyOn(f.redis, 'eval').mockImplementation(async (script: string, keys: string[], args: (string | number)[]) => {
+        if (script === PRODUCT_CONTROL_INSTALL && keys[1]) outer.keys.add(keys[1]);
+        const result: unknown = existingEval
+          ? await existingEval(script, keys, args)
+          : await f.client.eval(script, keys.length, ...keys, ...args);
+        return result;
+      });
+      try {
         const restriction = await f.db.productReservationRestriction.create({ data: { productId: f.productId,
           reasonCategory: 'ACCOUNTING_DRIFT', observationDigest: 'a'.repeat(64) } });
         const bytes = controlBytes({ version: 1, productId: f.productId, state: 'RESTRICTED', restrictionId: restriction.id,
@@ -99,8 +102,10 @@ describe('W3-P command W1 mutation-time restriction', () => {
         expect((await f.physical.executeRelease(f.claim, f.claims)).code).toBe('REJECTED');
         expect(await f.snapshot()).toEqual(after);
         expect(await f.client.get(productControlKey(f.productId))).toBe(bytes);
-      }, phase);
-    } finally { tracker.mockRestore(); }
+      } finally {
+        if (existingEval) (f.redis.eval as jest.Mock).mockImplementation(existingEval);
+      }
+    }, phase);
   }));
   it.each(['RESTRICTED', 'MISSING', 'WRONG_INCARNATION', 'I1_GRANT_I2_FENCE'] as const)('loaded command denied by %s without resource writes', fault => isolated(async f => {
     expect(await f.client.exists('reservation:fence:ordinary-invalidation:GLOBAL', 'reservation:fence:ordinary-invalidation:GLOBAL:initialized')).toBe(0);

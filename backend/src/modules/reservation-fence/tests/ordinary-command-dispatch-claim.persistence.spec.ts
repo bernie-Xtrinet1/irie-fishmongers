@@ -31,19 +31,19 @@ describe('first-dispatch claim real PostgreSQL', () => {
     const clients = Array.from({ length: 4 }, () => schema.fresh());
     try {
       const repos = clients.map(db => new OrdinaryCommandDispatchClaimRepository(db));
-      const results = await Promise.all(repos.map(repo => repo.claim(f.identity)));
+      const results = await Promise.all(repos.map(repo => repo.claim(f.identity, 'EXECUTE_ONLY')));
       expect(results.filter(r => r.status === 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED')).toHaveLength(1);
       expect(await f.snapshot()).toMatchObject({ state: 'PENDING', attemptCount: 1, lastDispatchTransitionId: f.transition.id, nextAttemptAt: null });
       const index = results.findIndex(r => r.status === 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
       const result = results[index];
       const winner = repos[index];
       if (!result || !winner || result.status !== 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED') throw new Error('Missing grant');
-      expect(f.repo.consume(result.claim)).toBeNull();
-      expect(winner.consume(structuredClone(result.claim))).toBeNull();
-      expect(winner.consume(result.claim)).toEqual(f.identity);
-      expect(winner.consume(result.claim)).toBeNull();
+      expect(f.repo.consumeMutation(result.claim, 'EXECUTE')).toBeNull();
+      expect(winner.consumeMutation(structuredClone(result.claim), 'EXECUTE')).toBeNull();
+      expect(winner.consumeMutation(result.claim, 'EXECUTE')).toEqual({ identity: f.identity, dispatchTransitionId: f.transition.id });
+      expect(winner.consumeMutation(result.claim, 'EXECUTE')).toBeNull();
       const before = await f.snapshot();
-      expect(await f.repo.claim(f.identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+      expect(await f.repo.claim(f.identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
       expect(await f.snapshot()).toEqual(before);
     } finally { await Promise.all(clients.map(db => db.$disconnect())); }
   });
@@ -56,10 +56,10 @@ describe('first-dispatch claim real PostgreSQL', () => {
       await original(work);
       throw new Error('commit response lost');
     });
-    expect(await f.repo.claim(f.identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await f.repo.claim(f.identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     jest.restoreAllMocks();
     expect((await f.snapshot()).attemptCount).toBe(fault === 'rollback' ? 0 : 1);
-    expect((await f.repo.claim(f.identity)).status).toBe(fault === 'rollback' ? 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED' : 'NOT_AUTHORIZED');
+    expect((await f.repo.claim(f.identity, 'EXECUTE_ONLY')).status).toBe(fault === 'rollback' ? 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED' : 'NOT_AUTHORIZED');
   });
 
   it.each(['commandId', 'replayId', 'ownerId', 'incarnation', 'epoch', 'sequence', 'expectedSequence', 'quantity',
@@ -69,7 +69,7 @@ describe('first-dispatch claim real PostgreSQL', () => {
       Object.assign(input.target, { [key]: key === 'generation' ? 9 : randomUUID() });
     else Object.assign(input, { [key]: ['epoch', 'sequence', 'expectedSequence', 'quantity'].includes(key) ? 9 : randomUUID() });
     const before = await f.snapshot();
-    expect(await f.repo.claim(input)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await f.repo.claim(input, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     expect(await f.snapshot()).toEqual(before);
   });
 
@@ -89,7 +89,7 @@ describe('first-dispatch claim real PostgreSQL', () => {
           epoch: fault === 'epoch' ? 2 : 1 } });
       }
       const before = await f.snapshot();
-      expect(await f.repo.claim(f.identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+      expect(await f.repo.claim(f.identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
       expect(await f.snapshot()).toEqual(before);
     });
 
@@ -97,14 +97,14 @@ describe('first-dispatch claim real PostgreSQL', () => {
     const f = await fixture();
     await f.commands.enqueue(f.marker.id, { ownerId: f.owner.id, effect: 'CANCEL_W1', reason: 'STALE_W1',
       cancelledCommandId: f.command.id, intentGeneration: 0, expectedMutationVersion: 0 });
-    if (order === 'claim-first') expect((await f.repo.claim(f.identity)).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
+    if (order === 'claim-first') expect((await f.repo.claim(f.identity, 'EXECUTE_ONLY')).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
     const cancel = await f.commands.promote(f.marker.id);
     if (!cancel) throw new Error('Missing cancellation');
-    expect(await f.repo.claim(f.identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await f.repo.claim(f.identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     const identity: OrdinaryDispatchIdentity = { ...f.identity, commandId: cancel.id, replayId: cancel.replayId, action: 'CANCEL_W1',
       sequence: cancel.sequence!, expectedSequence: cancel.expectedSequence!, transition: null, quantity: null, parent: JSON.stringify(f.identity) };
-    expect((await f.repo.claim(identity)).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
-    expect(await f.repo.claim(identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect((await f.repo.claim(identity, 'EXECUTE_ONLY')).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
+    expect(await f.repo.claim(identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     expect((await f.snapshot()).attemptCount).toBe(order === 'claim-first' ? 1 : 0);
   });
 
@@ -112,7 +112,7 @@ describe('first-dispatch claim real PostgreSQL', () => {
     const f = await fixture();
     const waiting = await f.commands.enqueue(f.marker.id, { ...f.payload, effect: 'W1', ownerId: f.owner.id, dependsOnCommandId: f.command.id });
     expect(await f.commands.promote(f.marker.id)).toBeNull();
-    expect(await f.repo.claim({ ...f.identity, commandId: waiting.id, replayId: waiting.replayId })).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await f.repo.claim({ ...f.identity, commandId: waiting.id, replayId: waiting.replayId }, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: waiting.id } })).toMatchObject({ state: 'WAITING', attemptCount: 0 });
   });
 
@@ -120,11 +120,11 @@ describe('first-dispatch claim real PostgreSQL', () => {
     const f = await fixture();
     await f.commands.enqueue(f.marker.id, { ownerId: f.owner.id, effect: 'CANCEL_W1', reason: 'STALE_W1',
       cancelledCommandId: f.command.id, intentGeneration: 0, expectedMutationVersion: 0 });
-    const [claim, cancellation] = await Promise.all([f.repo.claim(f.identity), f.commands.promote(f.marker.id)]);
+    const [claim, cancellation] = await Promise.all([f.repo.claim(f.identity, 'EXECUTE_ONLY'), f.commands.promote(f.marker.id)]);
     expect(cancellation?.effect).toBe('CANCEL_W1');
     expect(await f.snapshot()).toMatchObject({ state: 'REVOCATION_PENDING',
       attemptCount: claim.status === 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED' ? 1 : 0 });
-    expect(await f.repo.claim(f.identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await f.repo.claim(f.identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
   });
 
   it('legal losing cancellation sequence gaps remain claimable', async () => {
@@ -139,6 +139,6 @@ describe('first-dispatch claim real PostgreSQL', () => {
     if (!next) throw new Error('Missing next command');
     expect(next).toMatchObject({ sequence: 3, expectedSequence: 1 });
     expect((await f.repo.claim({ ...f.identity, commandId: next.id, replayId: next.replayId, sequence: 3, expectedSequence: 1,
-      sourceOwnerId: f.owner.id, source: f.identity.target, transition: 'SAME_GENERATION' })).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
+      sourceOwnerId: f.owner.id, source: f.identity.target, transition: 'SAME_GENERATION' }, 'EXECUTE_ONLY')).status).toBe('FIRST_PHYSICAL_DISPATCH_AUTHORIZED');
   });
 });

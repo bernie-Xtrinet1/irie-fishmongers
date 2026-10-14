@@ -1,3 +1,5 @@
+import { ordinaryCommandAuthority } from '../services/ordinary-command-authority';
+import { OrdinaryPurposePlan } from '../types/ordinary-command-dispatch-claim.types';
 import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { OrdinaryCommandPhysicalService } from '../services/ordinary-command-physical.service';
@@ -269,8 +271,11 @@ async function setupReleaseRedis(db: PrismaService, client: Redis, keys: Set<str
   };
   await install(f.initial, 'INSTALL'); await install(f.initial, 'READY');
   const physical = new OrdinaryCommandPhysicalService(db, redis), closure = new OrdinaryCommandClosureService(db, physical);
-  expect((await physical.initialize(f.pending.id)).code).toBe('INITIALIZED');
-  expect((await physical.execute(f.pending.id)).code).toBe('COMPLETED');
+  const admission = await claimOrdinaryMutation(db, f.pending.id, 'GENESIS_THEN_EXECUTE');
+  const initialized = await physical.initialize(admission.capability, admission.issuer);
+  expect(initialized.code).toBe('INITIALIZED');
+  if (initialized.code !== 'INITIALIZED') throw new Error('Fixture initialization rejected');
+  expect((await physical.execute(initialized.continuation, admission.issuer)).code).toBe('COMPLETED');
   expect((await closure.close(f.pending.id)).status).toBe('ACKNOWLEDGED');
   if (phase === 'DRAINING') {
     const after = { ...tuple, phase: 'DRAINING' as const, revision: tuple.revision + 1, transitionId: randomUUID() };
@@ -282,7 +287,7 @@ async function setupReleaseRedis(db: PrismaService, client: Redis, keys: Set<str
     await f.publication.publish(restriction.intentId, async tx => {
       await tx.reservationFenceTransition.create({ data: { id: after.transitionId, incarnation: after.incarnation, epoch: after.epoch,
         revision: after.revision, phase: 'DRAINING', protocol: 1, mode: 'CART_SCOPED', modeRevision: f.transition.modeRevision,
-        status: 'ACKNOWLEDGED', acknowledgedAt: new Date(), reason: 'DRAINING', actorId: randomUUID() } });
+        status: 'ACKNOWLEDGED', acknowledgedAt: new Date(), reason: 'RESTRICT', actorId: randomUUID() } });
       return { restriction: true };
     });
     tuple = after;
@@ -300,4 +305,19 @@ async function setupReleaseRedis(db: PrismaService, client: Redis, keys: Set<str
     ledger: await client.hgetall(ledger), barrier: await client.get(markerBarrier) });
   return { ...f, client, redis, physical, closure, issuer, claims, claim: claimed.claim, release: published.command,
     entry, guard, ledger, pin, cartIndex, productIndex, total, markerBarrier, tuple, install, snapshot, drainingOrdinaryChecked };
+}
+
+// Obtain real admission through the production claim primitive. Never fabricate
+// a capability, reset attempts, or retry a previously consumed claim.
+export async function claimOrdinaryMutation(db: PrismaService, commandId: string, plan: OrdinaryPurposePlan) {
+  const owners = new OrdinaryReservationOwnerRepository(db);
+  const reference = await db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: commandId } });
+  const identity = await owners.locked(reference.markerId, async context => {
+    const command = await context.tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: commandId } });
+    return ordinaryCommandAuthority(context, command, owners);
+  });
+  const issuer = new OrdinaryCommandDispatchClaimRepository(db);
+  const result = await issuer.claim(identity, plan);
+  if (result.status !== 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED') throw new Error('Fixture admission rejected');
+  return { capability: result.claim, issuer };
 }

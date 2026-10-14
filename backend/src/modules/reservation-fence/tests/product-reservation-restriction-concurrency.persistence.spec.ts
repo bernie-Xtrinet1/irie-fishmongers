@@ -39,7 +39,7 @@ describe('W3-P shared-lock serialization and W2 separation (PostgreSQL only)', (
         generation: 0, holdInstanceId: issued.owner.holdInstanceId }, source: null, transition: 'INITIAL', quantity: 2, parent: null };
     await schema.db.productReservationRestriction.create({ data: { productId: f.productId,
       reasonCategory: 'ACCOUNTING_DRIFT', observationDigest: 'a'.repeat(64) } });
-    expect(await new OrdinaryCommandDispatchClaimRepository(schema.db).claim(identity)).toEqual({ status: 'NOT_AUTHORIZED' });
+    expect(await new OrdinaryCommandDispatchClaimRepository(schema.db).claim(identity, 'EXECUTE_ONLY')).toEqual({ status: 'NOT_AUTHORIZED' });
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: c.id } })).toEqual(c);
   });
   it('restriction does not block exact publication-aware RELEASE creation or claim', async () => {

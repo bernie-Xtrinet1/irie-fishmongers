@@ -1,11 +1,10 @@
+import { ordinaryCommandAuthority } from '../services/ordinary-command-authority';
 import { OrdinaryReleaseService } from '../services/ordinary-release.service';
 import { requireUnrestrictedProduct } from './product-reservation-restriction.repository';
 import { releaseIdentity } from '../types/ordinary-release.types';
 import { OrdinaryReservationCommandRepository } from './ordinary-reservation-command.repository';
-import { OrdinaryReservationCommand } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
-import { OrdinaryDispatchClaim, OrdinaryDispatchClaimResult, OrdinaryDispatchIdentity } from '../types/ordinary-command-dispatch-claim.types';
-import { OrdinaryMarkerTransaction } from '../types/ordinary-reservation-provenance.types';
+import { OrdinaryDispatchClaim, OrdinaryDispatchClaimResult, OrdinaryDispatchIdentity, OrdinaryPurposePlan, OrdinaryMutationCapability, OrdinaryMutationAdmission, OrdinaryMutationClaimResult } from '../types/ordinary-command-dispatch-claim.types';
 import { legalPair, UUID_PATTERN } from '../types/reservation-fence.types';
 import { ReservationFenceRepository } from './reservation-fence.repository';
 import { OrdinaryReservationOwnerRepository } from './ordinary-reservation-owner.repository';
@@ -26,8 +25,11 @@ export class OrdinaryCommandDispatchClaimRepository {
     this.owners = new OrdinaryReservationOwnerRepository(prisma);
   }
 
-  async claim(expected: OrdinaryDispatchIdentity): Promise<OrdinaryDispatchClaimResult> {
+  readonly #mutationGrants = new WeakMap<OrdinaryMutationCapability, { admission: OrdinaryMutationAdmission; purpose: 'GENESIS' | 'EXECUTE' }>();
+
+  async claim(expected: OrdinaryDispatchIdentity, plan: OrdinaryPurposePlan): Promise<OrdinaryMutationClaimResult> {
     try {
+      if (!['EXECUTE_ONLY', 'GENESIS_THEN_EXECUTE'].includes(plan)) return { status: 'NOT_AUTHORIZED' };
       if (!expected || typeof expected.commandId !== 'string' || !UUID_PATTERN.test(expected.commandId))
         return { status: 'NOT_AUTHORIZED' };
       // Snapshot caller data before the first await. Comparison rejects extra
@@ -46,7 +48,7 @@ export class OrdinaryCommandDispatchClaimRepository {
           || command.nextAttemptAt !== null || command.expectedSequence !== context.marker.ordinaryAcknowledgedSequence
           || command.sequence === null || command.sequence > context.marker.ordinaryCommandSequence)
           throw new Error('CLAIM_ALREADY_CONSUMED_OR_INELIGIBLE');
-        const actual = await this.identity(context, command);
+        const actual = await ordinaryCommandAuthority(context, command, this.owners);
         if (command.effect === 'W1') await requireUnrestrictedProduct(tx, context.marker.productId);
         await requireOrdinaryBarrierReadiness(tx, command.markerId, command.id);
         if (actual.incarnation !== fence.incarnation || actual.epoch !== fence.epoch || JSON.stringify(actual) !== bytes)
@@ -61,12 +63,20 @@ export class OrdinaryCommandDispatchClaimRepository {
           lastDispatchTransitionId: null, nextAttemptAt: null,
         }, data: { attemptCount: 1, lastDispatchTransitionId: fence.id, nextAttemptAt: null } });
         if (changed.count !== 1) throw new Error('CLAIM_CAS_REJECTED');
-        return actual;
+        if (plan === 'GENESIS_THEN_EXECUTE') {
+          const root = command.effect === 'CANCEL_W1'
+            ? await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: command.cancelledCommandId! } }) : command;
+          if (root.w1Transition !== 'INITIAL' || root.queueOrdinal !== 1 || root.expectedSequence !== 0
+            || context.marker.ordinaryAcknowledgedSequence !== 0
+            || await tx.ordinaryReservationCommand.count({ where: { markerId: command.markerId, state: 'ACKNOWLEDGED' } }))
+            throw new Error('CLAIM_GENESIS_REJECTED');
+        }
+        return { identity: actual, dispatchTransitionId: fence.id };
       });
       // This line is reached only after confirmed outer COMMIT. Ambiguous commit
       // loses the grant permanently; reading positive attempts cannot recover it.
-      const claim = Object.freeze({}) as OrdinaryDispatchClaim;
-      this.#grants.set(claim, identity);
+      const claim = Object.freeze({}) as OrdinaryMutationCapability;
+      this.#mutationGrants.set(claim, { admission: identity, purpose: plan === 'GENESIS_THEN_EXECUTE' ? 'GENESIS' : 'EXECUTE' });
       return { status: 'FIRST_PHYSICAL_DISPATCH_AUTHORIZED', claim };
     } catch { return { status: 'NOT_AUTHORIZED' }; }
   }
@@ -112,48 +122,11 @@ export class OrdinaryCommandDispatchClaimRepository {
     return structuredClone(identity);
   }
 
-  private async identity(context: OrdinaryMarkerTransaction, command: OrdinaryReservationCommand): Promise<OrdinaryDispatchIdentity> {
-    const { tx, marker } = context;
-    if (command.markerId !== marker.id || command.sequence === null || command.expectedSequence === null
-      || command.sequence <= command.expectedSequence) throw new Error('CLAIM_SEQUENCE_REJECTED');
-    if (command.effect === 'CANCEL_W1') {
-      const parent = await tx.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: command.cancelledCommandId! } });
-      if (parent.effect !== 'W1' || parent.state !== 'REVOCATION_PENDING' || parent.ownerId !== command.ownerId
-        || parent.markerId !== marker.id || parent.sequence === null || parent.sequence >= command.sequence
-        || parent.queueOrdinal >= command.queueOrdinal || parent.expectedSequence !== command.expectedSequence
-        || command.reason !== 'STALE_W1') throw new Error('CLAIM_PARENT_REJECTED');
-      const p = await this.w1(context, parent, false);
-      return { ...p, commandId: command.id, replayId: command.replayId, action: 'CANCEL_W1',
-        sequence: command.sequence, expectedSequence: command.expectedSequence, mutationVersion: command.expectedMutationVersion,
-        transition: null, quantity: null, parent: JSON.stringify(p) };
-    }
-    return this.w1(context, command, true);
-  }
-
-  private async w1({ tx, marker }: OrdinaryMarkerTransaction, command: OrdinaryReservationCommand, current: boolean): Promise<OrdinaryDispatchIdentity> {
-    if (command.effect !== 'W1' || command.reason !== 'CART_INTENT' || command.authorizedQuantity === null
-      || command.authorizedQuantity < 1 || command.sequence === null || command.expectedSequence === null
-      || command.sequence <= command.expectedSequence || command.checkoutManifestId || command.cancelledCommandId
-      || command.causeTransitionId || command.settlementReceiptHash) throw new Error('CLAIM_W1_REJECTED');
-    const owner = await this.owners.loadAuthority(command.ownerId, tx);
-    const source = command.sourceOwnerId ? await this.owners.loadAuthority(command.sourceOwnerId, tx) : null;
-    if (owner.markerId !== marker.id || owner.generation !== command.intentGeneration || owner.cartId !== marker.cartId
-      || owner.productId !== marker.productId || owner.checkoutManifestId || !['ISSUED', 'ACTIVE'].includes(owner.state)
-      || (source && (source.markerId !== owner.markerId || source.cartId !== owner.cartId || source.productId !== owner.productId
-        || source.customerId !== owner.customerId || source.incarnation !== owner.incarnation
-        || source.reservationExecutionEpoch !== owner.reservationExecutionEpoch || source.state !== 'ACTIVE')))
-      throw new Error('CLAIM_OWNER_REJECTED');
-    if (current && (marker.generation !== command.intentGeneration || marker.expectedMutationVersion !== command.expectedMutationVersion
-      || marker.expectedQuantity !== command.authorizedQuantity)) throw new Error('CLAIM_STALE_INTENT');
-    if (!((command.w1Transition === 'INITIAL' && !source && owner.state === 'ISSUED')
-      || (command.w1Transition === 'SAME_GENERATION' && source?.id === owner.id && owner.state === 'ACTIVE')
-      || (command.w1Transition === 'IMMEDIATE_PREDECESSOR' && source && source.generation + 1 === owner.generation && owner.state === 'ISSUED')))
-      throw new Error('CLAIM_TRANSITION_REJECTED');
-    const resource = (o: typeof owner) => ({ customerId: o.customerId, cartId: o.cartId, productId: o.productId,
-      markerId: o.markerId, generation: o.generation, holdInstanceId: o.holdInstanceId });
-    return { version: 1, commandId: command.id, replayId: command.replayId, action: 'W1', sequence: command.sequence,
-      expectedSequence: command.expectedSequence, mutationVersion: command.expectedMutationVersion, incarnation: owner.incarnation,
-      epoch: owner.reservationExecutionEpoch, ownerId: owner.id, sourceOwnerId: source?.id ?? null, target: resource(owner),
-      source: source ? resource(source) : null, transition: command.w1Transition, quantity: command.authorizedQuantity, parent: null };
+  consumeMutation(claim: OrdinaryMutationCapability, purpose: 'GENESIS' | 'EXECUTE'): OrdinaryMutationAdmission | null {
+    const grant = this.#mutationGrants.get(claim);
+    if (!grant) return null;
+    // An authentic but misused ticket is burned, never repurposed.
+    this.#mutationGrants.delete(claim);
+    return grant.purpose === purpose ? structuredClone(grant.admission) : null;
   }
 }

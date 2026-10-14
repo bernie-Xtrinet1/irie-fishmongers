@@ -9,7 +9,7 @@ import { OrdinaryCommandPhysicalService } from '../services/ordinary-command-phy
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
 import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
 import { controlBytes, restrictionDigest } from '../types/product-reservation-restriction.types';
-import { openOrdinarySchema, ordinaryFixture } from './ordinary-provenance-test-helpers';
+import { claimOrdinaryMutation, openOrdinarySchema, ordinaryFixture } from './ordinary-provenance-test-helpers';
 
 describe('W3-P permanent PostgreSQL restriction, mocked physical acknowledgement', () => {
   jest.setTimeout(120000);
@@ -52,10 +52,11 @@ describe('W3-P permanent PostgreSQL restriction, mocked physical acknowledgement
   it('denies execution of preloaded pending W1 without changing command evidence', async () => {
     const f = await fixture(); const issued = await f.commands.issue(f.issuance, f.payload);
     await f.commands.promote(f.marker.id);
+    const admission = await claimOrdinaryMutation(schema.db, issued.command.id, 'EXECUTE_ONLY');
     const before = await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: issued.command.id } });
     expect(await f.prepare()).not.toBeNull();
     const evaluate = jest.spyOn(redis, 'eval');
-    expect(await new OrdinaryCommandPhysicalService(schema.db, redis).execute(issued.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await new OrdinaryCommandPhysicalService(schema.db, redis).execute(admission.capability, admission.issuer)).toEqual({ code: 'REJECTED' });
     expect(evaluate).not.toHaveBeenCalled();
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: issued.command.id } })).toEqual(before);
   });

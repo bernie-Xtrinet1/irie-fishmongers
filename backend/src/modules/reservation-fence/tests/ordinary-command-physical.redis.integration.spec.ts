@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { assertDisposableEnvironment, withCleanup, latch } from '../../checkout-rollback/tests/rollback-evidence-test-helpers';
-import { ordinaryFixture, openOrdinarySchema, acknowledgement } from './ordinary-provenance-test-helpers';
+import { claimOrdinaryMutation, ordinaryFixture, openOrdinarySchema, acknowledgement } from './ordinary-provenance-test-helpers';
 import { OrdinaryCommandPhysicalService } from '../services/ordinary-command-physical.service';
 import { OrdinaryPhysicalGrant, ordinaryPhysicalLedgerKey } from '../types/ordinary-command-physical.types';
 import { ORDINARY_PHYSICAL_EXECUTE } from '../lua/ordinary-command-physical.lua';
@@ -58,6 +58,10 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
   }, [async () => { if (client) { if (client.status === 'ready') await client.quit(); else client.disconnect(); } }]),
   async () => { if (schema) await schema.close(); }]));
 
+  async function executionArgs(commandId: string) {
+    const admission = await claimOrdinaryMutation(schema.db, commandId, 'EXECUTE_ONLY');
+    return [admission.capability, admission.issuer] as const;
+  }
   async function fixture(initialize = true) {
     const f = await ordinaryFixture(schema.db);
     const issued = await f.commands.issue(f.issuance, f.payload);
@@ -76,7 +80,13 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       if (scriptKeys[3]) keys.add(scriptKeys[3]);
       return original(script, scriptKeys, args);
     });
-    if (initialize) expect(await service.initialize(command.id)).toEqual({ code: 'INITIALIZED' });
+    const admission = initialize ? await claimOrdinaryMutation(schema.db, command.id, 'GENESIS_THEN_EXECUTE') : null;
+    const initialized = admission ? await service.initialize(admission.capability, admission.issuer) : null;
+    if (initialize) expect(initialized?.code).toBe('INITIALIZED');
+    const execute = () => {
+      if (!admission || initialized?.code !== 'INITIALIZED') throw new Error('Missing fixture continuation');
+      return service.execute(initialized.continuation, admission.issuer);
+    };
     const snapshot = async () => ({ values: await Promise.all(physical.map(async key => (await client.dumpBuffer(key))?.toString('base64') ?? null)),
       history: await client.hmget(MUTATION_HISTORY_KEY, ledger, guard) });
     const cancel = async () => {
@@ -85,12 +95,17 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       await f.commands.promote(f.marker.id);
       return row;
     };
-    return { ...f, ...issued, command, ledger, entry, guard, pin, tuple, snapshot, cancel };
+    return { ...f, ...issued, command, ledger, entry, guard, pin, tuple, snapshot, cancel, execute };
   }
 
   it('executes committed INITIAL atomically and exact replay never renews', async () => {
     const f = await fixture();
-    const result = await service.execute(f.command.id);
+    let replay: Parameters<RedisService['eval']> | undefined;
+    jest.spyOn(redis, 'eval').mockImplementation(async (...args) => {
+      if (args[0] === ORDINARY_PHYSICAL_EXECUTE) replay = args;
+      return evaluate(...args);
+    });
+    const result = await f.execute();
     expect(result.code).toBe('COMPLETED');
     const e = parseJsonObject((await client.get(f.entry))!);
     expect(e).toMatchObject({ quantity: 2, holdInstanceId: ordinaryHoldInstanceId(f.marker.id, 0), reservationMutationId: f.command.replayId });
@@ -99,7 +114,11 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
     expect(await client.smembers(productIndexKey(f.productId))).toEqual([f.cartId]);
     expect(JSON.parse((await client.hget(f.ledger, 'cursor'))!)).toMatchObject({ sequence: 1, commandId: f.command.id });
     const before = await f.snapshot();
-    expect(await service.execute(f.command.id)).toEqual(result);
+    expect(await f.execute()).toEqual({ code: 'REJECTED' });
+    expect(await service.observe(f.command.id)).toEqual(result);
+    if (!replay || !('receipt' in result)) throw new Error('Missing original script evidence');
+    const replayed: unknown = JSON.parse(String(await evaluate(...replay)));
+    expect(replayed).toMatchObject({ code: 'COMPLETED', receipt: result.receipt, identity: result.identity });
     expect(await f.snapshot()).toEqual(before);
     expect(await schema.db.ordinaryReservationCommand.findUniqueOrThrow({ where: { id: f.command.id } })).toMatchObject({ state: 'PENDING', completionReceiptHash: null });
   });
@@ -111,7 +130,7 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       if (args[0] === ORDINARY_PHYSICAL_EXECUTE) throw new Error('response lost');
       return result;
     });
-    expect(await service.execute(f.command.id)).toEqual({ code: 'UNCERTAIN' });
+    expect(await f.execute()).toEqual({ code: 'UNCERTAIN' });
     jest.restoreAllMocks();
     await f.commands.recordDispatch(f.marker.id, f.command.id, f.transition.id, true, null);
     await client.pexpire(f.entry, 1);
@@ -122,7 +141,7 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       const restarted = new OrdinaryCommandPhysicalService(fresh, redis);
       const observed = await restarted.observe(f.command.id);
       expect(observed.code).toBe('COMPLETED');
-      expect(await restarted.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+      expect(await Reflect.apply(restarted.execute.bind(restarted), restarted, [f.command.id])).toEqual({ code: 'REJECTED' });
       await client.set(f.entry, 'later unrelated live state');
       expect(await restarted.observe(f.command.id)).toEqual(observed);
     } finally { await fresh.$disconnect(); }
@@ -133,7 +152,9 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
     if (fault === 'physical-entry') await client.set(f.entry, '{}');
     if (fault === 'physical-guard') await client.set(f.guard, '{}');
     const before = await f.snapshot();
-    expect(await (fault === 'missing' ? service.execute(f.command.id) : service.initialize(f.command.id))).toEqual({ code: 'REJECTED' });
+    const admission = await claimOrdinaryMutation(schema.db, f.command.id, fault === 'missing' ? 'EXECUTE_ONLY' : 'GENESIS_THEN_EXECUTE');
+    expect(await (fault === 'missing' ? service.execute(admission.capability, admission.issuer)
+      : service.initialize(admission.capability, admission.issuer))).toEqual({ code: 'REJECTED' });
     expect(await f.snapshot()).toEqual(before);
   });
   it.each(['pin', 'suspect', 'cart-type', 'product-type', 'total-type', 'negative-total', 'overflow-total', 'cart-membership',
@@ -158,12 +179,12 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       }
       if (fault === 'receipt-malformed') await client.hset(f.ledger, `receipt:${f.command.id}`, '{}');
       const before = await f.snapshot();
-      expect(await service.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+      expect(await f.execute()).toEqual({ code: 'REJECTED' });
       expect(await f.snapshot()).toEqual(before);
     });
   it.each(['SAME_GENERATION', 'IMMEDIATE_PREDECESSOR'] as const)('executes exact %s and denies non-initial genesis', async transition => {
     const f = await fixture();
-    expect((await service.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     // Fixture advancement only, using the existing inert journal API. The
     // Stage-B service never acknowledges PostgreSQL, even in these tests.
     await f.commands.acknowledge(f.marker.id, acknowledgement(f.command));
@@ -175,8 +196,8 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       : (await f.commands.issue({ ...f.issuance, generation }, { ...f.payload, sourceOwnerId: f.owner.id,
         w1Transition: transition, intentGeneration: generation, expectedMutationVersion: 1, authorizedQuantity: 3 })).command;
     await f.commands.promote(f.marker.id);
-    expect(await service.initialize(command.id)).toEqual({ code: 'REJECTED' });
-    expect((await service.execute(command.id)).code).toBe('COMPLETED');
+    await expect(claimOrdinaryMutation(schema.db, command.id, 'GENESIS_THEN_EXECUTE')).rejects.toThrow();
+    expect((await service.execute(...await executionArgs(command.id))).code).toBe('COMPLETED');
     expect(JSON.parse((await client.get(f.entry))!)).toMatchObject({ quantity: 3, generation, holdInstanceId: ordinaryHoldInstanceId(f.marker.id, generation) });
     expect(await client.get(productTotalKey(f.productId))).toBe('3');
     expect((await service.observe(f.command.id)).code).toBe('COMPLETED');
@@ -192,13 +213,13 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       }
       return original(...args);
     });
-    const running = service.execute(f.command.id);
+    const running = f.execute();
     let result: Awaited<typeof running> | undefined;
     try {
       await reached.promise;
       const cancel = await f.cancel();
       if (order === 'execution-first') { release.release(); result = await running; }
-      const cancellation = await service.execute(cancel.id);
+      const cancellation = await service.execute(...await executionArgs(cancel.id));
       expect(cancellation.code).toBe(order === 'cancel-first' ? 'COMPLETED' : 'EXECUTION_WON');
       release.release(); result = await running;
       expect(result.code).toBe(order === 'cancel-first' ? 'CANCELLED' : 'COMPLETED');
@@ -209,8 +230,11 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
   it('initial cancellation establishes genesis without creating a reservation', async () => {
     const f = await fixture(false);
     const cancel = await f.cancel();
-    expect(await service.initialize(cancel.id)).toEqual({ code: 'INITIALIZED' });
-    expect((await service.execute(cancel.id)).code).toBe('COMPLETED');
+    const admission = await claimOrdinaryMutation(schema.db, cancel.id, 'GENESIS_THEN_EXECUTE');
+    const initialized = await service.initialize(admission.capability, admission.issuer);
+    expect(initialized.code).toBe('INITIALIZED');
+    if (initialized.code !== 'INITIALIZED') throw new Error('Cancellation genesis rejected');
+    expect((await service.execute(initialized.continuation, admission.issuer)).code).toBe('COMPLETED');
     expect(await client.get(f.entry)).toBeNull();
   });
   it.each(['commandId', 'replayId', 'ownerId', 'markerId', 'epoch', 'expired'] as const)('grant %s tampering fails without writes', async field => {
@@ -239,21 +263,21 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       return original(script, scriptKeys, args);
     });
     const before = await f.snapshot();
-    expect(await service.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await f.execute()).toEqual({ code: 'REJECTED' });
     expect(await f.snapshot()).toEqual(before);
   });
 
   it('accepts the legal sequence gap after execution wins cancellation', async () => {
     const f = await fixture();
-    expect((await service.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     const cancel = await f.cancel();
-    expect((await service.execute(cancel.id)).code).toBe('EXECUTION_WON');
+    expect((await service.execute(...await executionArgs(cancel.id))).code).toBe('EXECUTION_WON');
     await f.commands.acknowledge(f.marker.id, acknowledgement(f.command));
     await schema.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { expectedMutationVersion: 1 } });
     const next = await f.commands.enqueue(f.marker.id, { ...f.payload, effect: 'W1', ownerId: f.owner.id,
       sourceOwnerId: f.owner.id, w1Transition: 'SAME_GENERATION', expectedMutationVersion: 1 });
     expect(await f.commands.promote(f.marker.id)).toMatchObject({ sequence: 3, expectedSequence: 1 });
-    expect((await service.execute(next.id)).code).toBe('COMPLETED');
+    expect((await service.execute(...await executionArgs(next.id))).code).toBe('COMPLETED');
     expect(JSON.parse((await client.hget(f.ledger, 'cursor'))!)).toMatchObject({ sequence: 3 });
   });
 
@@ -266,11 +290,11 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
       }
       return evaluate(...args);
     });
-    const running = service.execute(f.command.id);
+    const running = f.execute();
     try {
       await reached.promise;
       const cancel = await f.cancel();
-      const cancellation = service.execute(cancel.id);
+      const cancellation = service.execute(...await executionArgs(cancel.id));
       release.release();
       const [w, c] = await Promise.all([running, cancellation]);
       expect([['COMPLETED', 'EXECUTION_WON'], ['CANCELLED', 'COMPLETED']]).toContainEqual([w.code, c.code]);
@@ -280,19 +304,19 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
 
   it('retains identical receipt/hash after its grant expires and after fence restriction', async () => {
     const f = await fixture();
-    const result = await service.execute(f.command.id);
+    const result = await f.execute();
     expect(result.code).toBe('COMPLETED');
     for (const key of keys) if (key.startsWith('reservation:fence:ordinary-command-grant:')) await client.pexpire(key, 1);
     await new Promise(resolve => setTimeout(resolve, 5));
     await client.set(RESERVATION_FENCE_KEY, JSON.stringify({ ...f.tuple, phase: 'FROZEN' }));
     expect(await service.observe(f.command.id)).toEqual(result);
-    expect(await service.execute(f.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await f.execute()).toEqual({ code: 'REJECTED' });
   });
 
   it.each(['missing-receipt', 'wrong-command', 'wrong-replay', 'wrong-owner', 'wrong-quantity', 'stale-cursor'] as const)(
     'observation rejects %s without repairing evidence', async fault => {
       const f = await fixture();
-      expect((await service.execute(f.command.id)).code).toBe('COMPLETED');
+      expect((await f.execute()).code).toBe('COMPLETED');
       const receiptKey = `receipt:${f.command.id}`;
       if (fault === 'missing-receipt') await client.hdel(f.ledger, receiptKey);
       else if (fault === 'stale-cursor') {
@@ -323,7 +347,7 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
   it.each(['generation', 'hold', 'guard-incarnation', 'guard-epoch', 'checkout-operation', 'checkout-attempt', 'checkout-key',
     'pin', 'accounting', 'index', 'absolute-expiry'] as const)('replacement rejects contradictory %s with zero writes', async fault => {
     const f = await fixture();
-    expect((await service.execute(f.command.id)).code).toBe('COMPLETED');
+    expect((await f.execute()).code).toBe('COMPLETED');
     await f.commands.acknowledge(f.marker.id, acknowledgement(f.command));
     await schema.db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { generation: 1, expectedMutationVersion: 1, expectedQuantity: 3 } });
     const next = await f.commands.issue({ ...f.issuance, generation: 1 }, { ...f.payload, sourceOwnerId: f.owner.id,
@@ -344,7 +368,7 @@ describe('inactive ordinary command physical protocol: standalone disposable Red
     if (fault === 'absolute-expiry') e.absoluteExpiresAt = 1;
     await client.set(f.entry, JSON.stringify(e)); await client.set(f.guard, JSON.stringify(guard));
     const before = await f.snapshot();
-    expect(await service.execute(next.command.id)).toEqual({ code: 'REJECTED' });
+    expect(await service.execute(...await executionArgs(next.command.id))).toEqual({ code: 'REJECTED' });
     expect(await f.snapshot()).toEqual(before);
   });
 });
