@@ -6,21 +6,40 @@ import { BarrierAcknowledgement, barrierAcknowledgement, canonicalInvalidationJs
 
 const json = (value: unknown): Prisma.InputJsonValue => JSON.parse(canonicalInvalidationJson(value)) as Prisma.InputJsonValue;
 
-// Inactive persistence boundary. There is deliberately no enrollment API.
-export async function requireOrdinaryBarrierReadiness(tx: Prisma.TransactionClient, markerId: string,
-  commandId?: string): Promise<OrdinaryCommandBarrierBinding | null> {
+export async function assertOrdinaryBarrierReadiness(tx: Prisma.TransactionClient, markerId: string): Promise<void> {
   const marker = await tx.ordinaryInvalidationHead.findUnique({ where: { scope: `MARKER:${markerId}` } });
-  if (!marker) return null;
+  if (!marker) throw new Error('ORDINARY_MARKER_NOT_ENROLLED');
+  if (marker.pendingIntentId !== null) throw new Error('INVALIDATION_PENDING');
+  if (!marker.ready) throw new Error('ORDINARY_MARKER_NOT_READY');
+
   const global = await tx.ordinaryInvalidationHead.findUnique({ where: { scope: 'GLOBAL' } });
-  if (!global || !global.ready || !marker.ready || global.pendingIntentId || marker.pendingIntentId
-    || global.incarnation !== marker.incarnation || global.epoch !== marker.epoch)
-    throw new Error('INVALIDATION_PENDING');
-  if (!commandId) return null;
+  if (!global) throw new Error('GLOBAL_INVALIDATION_NOT_READY');
+  if (global.pendingIntentId !== null) throw new Error('INVALIDATION_PENDING');
+  if (!global.ready) throw new Error('GLOBAL_INVALIDATION_NOT_READY');
+  if (global.incarnation !== marker.incarnation) throw new Error('ORDINARY_INCARNATION_MISMATCH');
+  if (global.epoch !== marker.epoch) throw new Error('ORDINARY_EPOCH_MISMATCH');
+}
+
+export async function requireOrdinaryCommandBinding(tx: Prisma.TransactionClient, markerId: string,
+  commandId: string): Promise<OrdinaryCommandBarrierBinding> {
+  await assertOrdinaryBarrierReadiness(tx, markerId);
+  const marker = await tx.ordinaryInvalidationHead.findUniqueOrThrow({ where: { scope: `MARKER:${markerId}` } });
+  const global = await tx.ordinaryInvalidationHead.findUniqueOrThrow({ where: { scope: 'GLOBAL' } });
+
   const binding = await tx.ordinaryCommandBarrierBinding.findUnique({ where: { commandId } });
   if (!binding || binding.markerId !== markerId || binding.version !== 1 || binding.incarnation !== global.incarnation
     || binding.epoch !== global.epoch || binding.globalRevision !== global.publishedRevision
     || binding.markerRevision !== marker.publishedRevision) throw new Error('INVALIDATION_BINDING_REJECTED');
   return binding;
+}
+
+export async function requireOrdinaryBarrierReadiness(tx: Prisma.TransactionClient, markerId: string,
+  commandId?: string): Promise<OrdinaryCommandBarrierBinding | null> {
+  const global = await tx.ordinaryInvalidationHead.findUnique({ where: { scope: 'GLOBAL' } });
+  if (!global) return null;
+  await assertOrdinaryBarrierReadiness(tx, markerId);
+  if (!commandId) return null;
+  return requireOrdinaryCommandBinding(tx, markerId, commandId);
 }
 
 export class OrdinaryInvalidationRepository {
