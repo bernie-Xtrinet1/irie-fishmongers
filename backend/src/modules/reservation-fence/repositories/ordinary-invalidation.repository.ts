@@ -60,6 +60,15 @@ export class OrdinaryInvalidationRepository {
       ORDER BY i.id LIMIT ${limit}`;
   }
 
+  discoverUnreadyEnrolledMarkerHeads(limit: number) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('INVALID_DISCOVERY_LIMIT');
+    return this.prisma.$queryRaw<{ scope: string; incarnation: string; epoch: number }[]>`
+      SELECT h.scope, h.incarnation, h.epoch FROM ordinary_invalidation_heads h
+      WHERE h.scope LIKE 'MARKER:%' AND NOT h.ready AND h."pendingIntentId" IS NULL
+        AND h."publishedRevision" = 0 AND h."allocatedRevision" = 0
+      ORDER BY h.scope LIMIT ${limit}`;
+  }
+
   request(value: unknown): InvalidationRequest {
     validateInvalidationRequest(value);
     return structuredClone(value);
