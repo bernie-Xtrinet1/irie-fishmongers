@@ -48,3 +48,35 @@ export interface InvalidationRecoveryHandler {
   assertPreconditions(tx: Prisma.TransactionClient, request: InvalidationRequest): Promise<void>;
   execute(tx: Prisma.TransactionClient, request: InvalidationRequest): Promise<Prisma.InputJsonValue>;
 }
+
+export interface RecoveryBackoffConfig {
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+  readonly factor: number;
+  readonly jitter: boolean;
+  readonly ttlSeconds: number;
+}
+
+export interface RecoveryDiagnosticRecord {
+  readonly intentId: string;
+  readonly attempts: number;
+  readonly nextAttemptAt: string;
+  readonly reason?: string;
+  readonly lastError?: string;
+  readonly lastWorkerId?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface RecoveryBackoffDecision {
+  readonly shouldRetry: boolean;
+  readonly remainingWaitMs: number;
+  readonly attempts: number;
+  readonly nextAttemptAt?: Date;
+  readonly reason?: string;
+}
+
+export interface ClearBackoffOptions {
+  readonly ifMatchesUpdatedAt?: string;
+  readonly ifAttemptsLessThanOrEqual?: number;
+}
