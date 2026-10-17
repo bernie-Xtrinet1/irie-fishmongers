@@ -80,3 +80,19 @@ export interface ClearBackoffOptions {
   readonly ifMatchesUpdatedAt?: string;
   readonly ifAttemptsLessThanOrEqual?: number;
 }
+
+export interface CommandSweepOptions {
+  readonly limit?: number;
+  readonly maxPages?: number;
+  readonly workerId?: string;
+}
+
+export interface CommandSweepResult {
+  readonly attemptedCount: number;
+  readonly acknowledgedCount: number;
+  readonly unresolvedCount: number;
+  readonly skippedBackoffCount: number;
+  readonly errorCount: number;
+  readonly pagesProcessed: number;
+  readonly hasMore: boolean;
+}
