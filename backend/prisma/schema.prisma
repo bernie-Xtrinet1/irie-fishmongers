@@ -79,6 +79,8 @@ model User {
   checkoutRolloutRevisions     CheckoutRolloutParticipant[]     @relation("CheckoutRolloutCustomer")
   checkoutRolloutChanges       CheckoutRolloutParticipant[]     @relation("CheckoutRolloutActor")
   checkoutRolloutControls      CheckoutRolloutControlRevision[]
+  requestedRegulatoryOverrides RegulatoryOverride[]             @relation("RegulatoryOverrideRequester")
+  approvedRegulatoryOverrides  RegulatoryOverride[]             @relation("RegulatoryOverrideApprover")
 
   @@map("users")
 }
@@ -191,7 +193,8 @@ model Category {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  products Product[]
+  products       Product[]
+  catalogueItems SeafoodCatalogueItem[]
 
   @@map("categories")
 }
@@ -203,20 +206,127 @@ enum ProductUnit {
   PER_ITEM
 }
 
+enum CatalogueCompositionMode {
+  SINGLE_SPECIES
+  FIXED_COMPOSITE
+  VARIABLE_COMPOSITE
+  UNVERIFIED_COMPOSITION
+}
+
+enum CatalogueLifecycleStatus {
+  DRAFT
+  UNDER_REVIEW
+  PUBLISHED
+  RETIRED
+}
+
+enum CatalogueRetirementReason {
+  COMMERCIAL_RETIREMENT
+  DUPLICATE_CONSOLIDATION
+  SAFETY_REGULATORY_RETIREMENT
+  DATA_CORRECTION
+}
+
+enum InventoryMode {
+  LEGACY_PRODUCT
+  MIGRATION_PENDING
+  LISTING_BACKED
+}
+
+enum RegulatoryOverrideReason {
+  DATA_CORRECTION
+}
+
+model SeafoodCatalogueItem {
+  id                  String                    @id @default(uuid())
+  name                String
+  scientificName      String?
+  scientificFamily    String?
+  commonName          String
+  jamaicanNames       String[]                  @default([])
+  description         String?
+  categoryId          String
+  compositionMode     CatalogueCompositionMode  @default(UNVERIFIED_COMPOSITION)
+  lifecycleStatus     CatalogueLifecycleStatus  @default(DRAFT)
+  retirementReason    CatalogueRetirementReason?
+  retirementNotes     String?
+  consolidatedIntoId  String?
+  referenceImageUrl   String?
+  imageSourceLicense  String?
+  typicalUnit         ProductUnit               @default(PER_POUND)
+  typicalSizeMinCm    Decimal?                  @db.Decimal(6, 2)
+  typicalSizeMaxCm    Decimal?                  @db.Decimal(6, 2)
+  typicalWeightMinLbs Decimal?                  @db.Decimal(6, 2)
+  typicalWeightMaxLbs Decimal?                  @db.Decimal(6, 2)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  category            Category                  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  speciesLinks        CatalogueItemSpecies[]
+  products            Product[]
+  regulatoryOverrides RegulatoryOverride[]
+  consolidatedInto    SeafoodCatalogueItem?     @relation("CatalogueConsolidation", fields: [consolidatedIntoId], references: [id])
+  consolidatedFrom    SeafoodCatalogueItem[]    @relation("CatalogueConsolidation")
+
+  @@index([categoryId])
+  @@index([lifecycleStatus])
+  @@index([compositionMode])
+  @@index([consolidatedIntoId])
+  @@map("seafood_catalogue_items")
+}
+
+model CatalogueItemSpecies {
+  catalogueItemId   String
+  speciesId         String
+  isPrimary         Boolean  @default(false)
+  typicalProportion Decimal? @db.Decimal(5, 2)
+  createdAt         DateTime @default(now())
+
+  catalogueItem SeafoodCatalogueItem @relation(fields: [catalogueItemId], references: [id], onDelete: Cascade)
+  species       Species              @relation(fields: [speciesId], references: [id], onDelete: Restrict)
+
+  @@id([catalogueItemId, speciesId])
+  @@index([speciesId])
+  @@map("catalogue_item_species")
+}
+
+model RegulatoryOverride {
+  id                  String                   @id @default(uuid())
+  catalogueItemId     String
+  requestedByUserId   String
+  approvedByUserId    String?
+  reason              RegulatoryOverrideReason @default(DATA_CORRECTION)
+  justification       String
+  documentEvidenceUrl String?
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  createdAt           DateTime                 @default(now())
+
+  catalogueItem   SeafoodCatalogueItem @relation(fields: [catalogueItemId], references: [id], onDelete: Cascade)
+  requestedByUser User                 @relation("RegulatoryOverrideRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  approvedByUser  User?                @relation("RegulatoryOverrideApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([catalogueItemId])
+  @@index([expiresAt])
+  @@map("regulatory_overrides")
+}
+
 model Product {
   reservationRestriction ProductReservationRestriction?
-  id                String      @id @default(uuid())
+  id                String        @id @default(uuid())
   vendorId          String
   categoryId        String
   lotId             String?
+  catalogueItemId   String?
+  inventoryMode     InventoryMode @default(LEGACY_PRODUCT)
   name              String
   description       String
   unit              ProductUnit
-  price             Decimal     @db.Decimal(10, 2)
-  currency          String      @default("JMD")
-  quantityAvailable Int         @default(0)
+  price             Decimal       @db.Decimal(10, 2)
+  currency          String        @default("JMD")
+  quantityAvailable Int           @default(0)
   imageUrl          String
-  isActive          Boolean     @default(true)
+  isActive          Boolean       @default(true)
   // Per-unit weight (matching `unit`'s own measure, e.g. per pound/kg/package/
   // item) - nullable because most products predate this field. Added for the
   // 10A Fleet Dispatch Engine's driver/fleet-asset capacity check; existing
@@ -225,13 +335,14 @@ model Product {
   // computePoundsEquivalent() heuristic (PER_POUND/PER_KILOGRAM only, silently
   // 0 for PER_PACKAGE/PER_ITEM) - this field is the real, direct value that
   // heuristic was always a stand-in for.
-  weightLbs         Decimal?    @db.Decimal(10, 2)
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  weightLbs         Decimal?      @db.Decimal(10, 2)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   vendor                          Vendor                        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   category                        Category                      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   lot                             SeafoodLot?                   @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  catalogueItem                   SeafoodCatalogueItem?         @relation(fields: [catalogueItemId], references: [id], onDelete: Restrict)
   cartItems                       CartItem[]
   orderItems                      OrderItem[]
   requestedInFulfillmentDecisions FulfillmentDecision[]
@@ -247,6 +358,7 @@ model Product {
   @@index([vendorId])
   @@index([categoryId])
   @@index([lotId])
+  @@index([catalogueItemId])
   @@map("products")
 }
 
@@ -1451,8 +1563,9 @@ model Species {
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
-  catchItems CatchItem[]
-  lots       SeafoodLot[]
+  catchItems         CatchItem[]
+  lots               SeafoodLot[]
+  catalogueItemLinks CatalogueItemSpecies[]
 
   @@map("species")
 }

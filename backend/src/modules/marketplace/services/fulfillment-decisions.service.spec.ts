@@ -44,6 +44,8 @@ function buildCandidate(overrides: Partial<ProductCandidate> = {}): ProductCandi
     vendorId: 'vendor-1',
     categoryId: 'cat-1',
     lotId: null,
+    catalogueItemId: null,
+    inventoryMode: 'LEGACY_PRODUCT',
     name: 'Fresh Snapper',
     description: 'desc',
     unit: 'PER_POUND',

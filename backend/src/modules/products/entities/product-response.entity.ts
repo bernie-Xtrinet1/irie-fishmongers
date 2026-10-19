@@ -21,6 +21,12 @@ export class ProductResponseEntity {
   @ApiProperty({ required: false, nullable: true })
   lotId!: string | null;
 
+  @ApiProperty({ required: false, nullable: true })
+  catalogueItemId?: string | null;
+
+  @ApiProperty({ required: false, default: 'LEGACY_PRODUCT' })
+  inventoryMode?: string;
+
   @ApiProperty()
   name!: string;
 

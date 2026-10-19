@@ -69,6 +69,8 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
       vendorId: 'vendor-1',
       categoryId: 'cat-1',
       lotId: 'lot-1',
+      catalogueItemId: null,
+      inventoryMode: 'LEGACY_PRODUCT',
       name: 'Fresh Snapper',
       description: 'Caught this morning',
       unit: 'PER_POUND',

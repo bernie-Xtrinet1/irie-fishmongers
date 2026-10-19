@@ -1,5 +1,5 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { Prisma, ProductUnit } from '@prisma/client';
+import { InventoryMode, Prisma, ProductUnit } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -15,6 +15,7 @@ export interface CreateProductInput {
   vendorId: string;
   categoryId: string;
   lotId?: string;
+  catalogueItemId?: string;
   name: string;
   description: string;
   unit: ProductUnit;
@@ -26,6 +27,7 @@ export interface CreateProductInput {
 
 export interface UpdateProductInput {
   categoryId?: string;
+  catalogueItemId?: string;
   name?: string;
   description?: string;
   unit?: ProductUnit;

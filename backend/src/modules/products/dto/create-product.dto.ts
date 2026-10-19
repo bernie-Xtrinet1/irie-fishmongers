@@ -3,9 +3,18 @@ import { ProductUnit } from '@prisma/client';
 import { IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUrl, IsUUID, Min, MinLength } from 'class-validator';
 
 export class CreateProductDto {
-  @ApiProperty()
+  @ApiProperty({ required: false, description: 'Category ID - derived from master catalogue item if linked' })
+  @IsOptional()
   @IsUUID()
-  categoryId!: string;
+  categoryId?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Master seafood catalogue item this product anchors to',
+  })
+  @IsOptional()
+  @IsUUID()
+  catalogueItemId?: string;
 
   @ApiProperty({
     required: false,

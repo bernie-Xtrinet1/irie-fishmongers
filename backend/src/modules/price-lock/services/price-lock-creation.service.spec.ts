@@ -73,6 +73,8 @@ describe('PriceLockService (createPriceLock)', () => {
       vendorId: 'vendor-1',
       categoryId: 'category-1',
       lotId: null,
+      catalogueItemId: null,
+      inventoryMode: 'LEGACY_PRODUCT',
       name: 'Snapper',
       description: 'Fresh snapper',
       unit: 'PER_POUND',

@@ -3,10 +3,12 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InventoryEventType, SeafoodLot } from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { PrismaService } from '../../../database/prisma.service';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
@@ -51,6 +53,7 @@ export class ProductsService {
     private readonly inventoryEventsRepository: InventoryEventsRepository,
     private readonly inventoryReservations: InventoryReservationsService,
     private readonly reviewsQueryService: ReviewsQueryService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   async create(userId: string, dto: CreateProductDto): Promise<ProductResponseEntity> {
@@ -63,7 +66,29 @@ export class ProductsService {
     }
     await this.vendorDocumentsService.assertCanSell(vendor.id, vendor.tier);
 
-    const category = await this.categoriesRepository.findById(dto.categoryId);
+    let finalCategoryId = dto.categoryId;
+
+    if (dto.catalogueItemId) {
+      if (!this.prisma) {
+        throw new BadRequestException('Catalogue verification unavailable');
+      }
+      const catalogueItem = await this.prisma.seafoodCatalogueItem.findUnique({
+        where: { id: dto.catalogueItemId },
+      });
+      if (!catalogueItem) {
+        throw new BadRequestException('Catalogue item does not exist');
+      }
+      if (catalogueItem.lifecycleStatus !== 'PUBLISHED') {
+        throw new BadRequestException('Only PUBLISHED catalogue items may be linked to products');
+      }
+      finalCategoryId = catalogueItem.categoryId;
+    }
+
+    if (!finalCategoryId) {
+      throw new BadRequestException('Category ID is required when not linking to a catalogue item');
+    }
+
+    const category = await this.categoriesRepository.findById(finalCategoryId);
     if (!category) {
       throw new BadRequestException('Category does not exist');
     }
@@ -83,7 +108,11 @@ export class ProductsService {
       this.seafoodLotsService.assertSellable(lot);
     }
 
-    const product = await this.productsRepository.create({ ...dto, vendorId: vendor.id });
+    const product = await this.productsRepository.create({
+      ...dto,
+      categoryId: finalCategoryId,
+      vendorId: vendor.id,
+    });
     return ProductsService.toResponse(product);
   }
 
@@ -94,14 +123,40 @@ export class ProductsService {
   ): Promise<ProductResponseEntity> {
     const product = await this.getOwnedProduct(userId, productId);
 
-    if (dto.categoryId) {
+    let finalCategoryId = dto.categoryId;
+
+    // ADR-005 API write rule: a request supplying categoryId for a catalogue-linked product is rejected, not silently overwritten.
+    if (dto.categoryId && (product.catalogueItemId || dto.catalogueItemId)) {
+      throw new BadRequestException(
+        'Category cannot be set directly on a catalogue-linked product; it is derived from the master catalogue item',
+      );
+    }
+
+    if (dto.catalogueItemId) {
+      if (!this.prisma) {
+        throw new BadRequestException('Catalogue verification unavailable');
+      }
+      const catalogueItem = await this.prisma.seafoodCatalogueItem.findUnique({
+        where: { id: dto.catalogueItemId },
+      });
+      if (!catalogueItem) {
+        throw new BadRequestException('Catalogue item does not exist');
+      }
+      if (catalogueItem.lifecycleStatus !== 'PUBLISHED') {
+        throw new BadRequestException('Only PUBLISHED catalogue items may be linked to products');
+      }
+      finalCategoryId = catalogueItem.categoryId;
+    } else if (dto.categoryId) {
       const category = await this.categoriesRepository.findById(dto.categoryId);
       if (!category) {
         throw new BadRequestException('Category does not exist');
       }
     }
 
-    const updated = await this.productsRepository.update(product.id, dto);
+    const updated = await this.productsRepository.update(product.id, {
+      ...dto,
+      categoryId: finalCategoryId,
+    });
     return ProductsService.toResponse(updated);
   }
 
@@ -305,6 +360,8 @@ export class ProductsService {
       vendorId: product.vendorId,
       categoryId: product.categoryId,
       lotId: product.lotId,
+      catalogueItemId: product.catalogueItemId,
+      inventoryMode: product.inventoryMode,
       name: product.name,
       description: product.description,
       unit: product.unit,
