@@ -15,20 +15,37 @@ import {
   CommandSweepResult,
   SweepResult,
 } from '../types/ordinary-invalidation-recovery.types';
+import {
+  IOrdinaryRecoveryLockService,
+  OrdinaryRecoveryExecutionPermit,
+  OrdinaryRecoveryOwnershipLost,
+  OrdinaryRecoveryLockOutcome,
+} from '../types/ordinary-recovery-lock.types';
 
 describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)', () => {
   let mockCommandWorker: {
-    runSweep: jest.Mock<Promise<OrdinaryCommandWorkerRunResult>, [CommandSweepOptions?]>;
+    runSweep: jest.Mock<Promise<OrdinaryCommandWorkerRunResult>, [CommandSweepOptions?, OrdinaryRecoveryExecutionPermit?]>;
     onModuleDestroy?: jest.Mock<void, []>;
     isBusy?: boolean;
     isScheduled?: boolean;
   };
 
   let mockInvalidationWorker: {
-    runSweep: jest.Mock<Promise<SweepResult>, [number?]>;
+    runSweep: jest.Mock<Promise<SweepResult>, [number?, OrdinaryRecoveryExecutionPermit?]>;
     onModuleDestroy?: jest.Mock<void, []>;
     isBusy?: boolean;
     isScheduled?: boolean;
+  };
+
+  let mockPermit: {
+    signal: AbortSignal;
+    ownerPid: number;
+    acquisitionId: string;
+    assertHeld: jest.Mock<Promise<void>, []>;
+  };
+
+  let mockLockService: {
+    withExclusiveLock: jest.Mock<Promise<OrdinaryRecoveryLockOutcome<any>>, [(permit: OrdinaryRecoveryExecutionPermit) => Promise<any>]>;
   };
 
   const sampleCommandResult: CommandSweepResult = {
@@ -50,9 +67,38 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     errors: [],
   };
 
+  function createCoordinator(
+    options?: OrdinaryRecoveryCoordinatorOptions,
+    customLockService?: IOrdinaryRecoveryLockService,
+  ): OrdinaryRecoveryCoordinatorService {
+    return new OrdinaryRecoveryCoordinatorService(
+      mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
+      mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+      customLockService ?? (mockLockService as unknown as IOrdinaryRecoveryLockService),
+      options,
+    );
+  }
+
   beforeEach(() => {
+    mockPermit = {
+      signal: new AbortController().signal,
+      ownerPid: 9876,
+      acquisitionId: 'test-acq-uuid',
+      assertHeld: jest.fn<Promise<void>, []>().mockResolvedValue(undefined),
+    };
+
+    mockLockService = {
+      withExclusiveLock: jest.fn().mockImplementation(async (cb: (permit: OrdinaryRecoveryExecutionPermit) => Promise<any>) => {
+        const value = await cb(mockPermit as unknown as OrdinaryRecoveryExecutionPermit);
+        return {
+          status: 'EXECUTED',
+          value,
+        };
+      }),
+    };
+
     mockCommandWorker = {
-      runSweep: jest.fn<Promise<OrdinaryCommandWorkerRunResult>, [CommandSweepOptions?]>().mockResolvedValue({
+      runSweep: jest.fn<Promise<OrdinaryCommandWorkerRunResult>, [CommandSweepOptions?, OrdinaryRecoveryExecutionPermit?]>().mockResolvedValue({
         status: 'COMPLETED',
         result: sampleCommandResult,
       }),
@@ -62,7 +108,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     };
 
     mockInvalidationWorker = {
-      runSweep: jest.fn<Promise<SweepResult>, [number?]>().mockResolvedValue({
+      runSweep: jest.fn<Promise<SweepResult>, [number?, OrdinaryRecoveryExecutionPermit?]>().mockResolvedValue({
         ...sampleInvalidationResult,
       }),
       onModuleDestroy: jest.fn<void, []>(),
@@ -73,10 +119,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
   describe('1. Instantiation and Dependency Validation', () => {
     it('instantiates cleanly with valid worker dependencies and default options', () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       expect(coordinator).toBeDefined();
       expect(coordinator.defaultCommandLimit).toBe(20);
@@ -97,11 +140,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         defaultContinueOnCommandFailure: false,
       };
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-        options,
-      );
+      const coordinator = createCoordinator(options);
 
       expect(coordinator.defaultCommandLimit).toBe(50);
       expect(coordinator.defaultCommandMaxPages).toBe(5);
@@ -116,6 +155,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             null as unknown as OrdinaryCommandRecoverySweepWorker,
             mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
           ),
       ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
 
@@ -124,6 +164,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             {} as unknown as OrdinaryCommandRecoverySweepWorker,
             mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
           ),
       ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
     });
@@ -134,6 +175,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
             null as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
           ),
       ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
 
@@ -142,6 +184,27 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
             {} as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
+          ),
+      ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
+    });
+
+    it('rejects missing or non-callable lockService', () => {
+      expect(
+        () =>
+          new OrdinaryRecoveryCoordinatorService(
+            mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
+            mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            null as unknown as IOrdinaryRecoveryLockService,
+          ),
+      ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
+
+      expect(
+        () =>
+          new OrdinaryRecoveryCoordinatorService(
+            mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
+            mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            {} as unknown as IOrdinaryRecoveryLockService,
           ),
       ).toThrow('INVALID_COORDINATOR_DEPENDENCIES');
     });
@@ -152,6 +215,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
             mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
             'invalid' as unknown as OrdinaryRecoveryCoordinatorOptions,
           ),
       ).toThrow('INVALID_COORDINATOR_OPTIONS');
@@ -161,6 +225,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
           new OrdinaryRecoveryCoordinatorService(
             mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
             mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+            mockLockService as unknown as IOrdinaryRecoveryLockService,
             [] as unknown as OrdinaryRecoveryCoordinatorOptions,
           ),
       ).toThrow('INVALID_COORDINATOR_OPTIONS');
@@ -187,6 +252,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
             new OrdinaryRecoveryCoordinatorService(
               mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
               mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
+              mockLockService as unknown as IOrdinaryRecoveryLockService,
               invalid,
             ),
         ).toThrow('INVALID_COORDINATOR_OPTIONS');
@@ -212,10 +278,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         return sampleInvalidationResult;
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep();
 
@@ -253,14 +316,16 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         result: metricsWithUnresolved,
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep();
 
-      expect(result.status).toBe('COMPLETED');
+      expect(result.status).toBe('PARTIAL');
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_HAS_MORE',
+      });
       if (result.command.status === 'SUCCEEDED') {
         expect(result.command.result).toEqual({
           status: 'COMPLETED',
@@ -274,26 +339,23 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
   describe('3. Default and Custom Option Forwarding', () => {
     it('forwards default options when none are supplied at runtime', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       await coordinator.runCoordinatedSweep();
 
-      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith({
-        limit: 20,
-        maxPages: 10,
-        workerId: 'recovery-coordinator',
-      });
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(20);
+      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith(
+        {
+          limit: 20,
+          maxPages: 10,
+          workerId: 'recovery-coordinator',
+        },
+        mockPermit,
+      );
+      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(20, mockPermit);
     });
 
     it('forwards custom runtime options to child workers', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const customOptions: CoordinatedRecoveryOptions = {
         commandSweepOptions: {
@@ -307,43 +369,42 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
       await coordinator.runCoordinatedSweep(customOptions);
 
-      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith({
-        limit: 5,
-        maxPages: 2,
-        workerId: 'custom-sweep-id',
-      });
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(15);
+      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith(
+        {
+          limit: 5,
+          maxPages: 2,
+          workerId: 'custom-sweep-id',
+        },
+        mockPermit,
+      );
+      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(15, mockPermit);
     });
 
     it('inherits constructor defaults for omitted sweep options', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-        {
-          defaultCommandLimit: 40,
-          defaultCommandMaxPages: 8,
-          defaultInvalidationLimit: 35,
-          defaultWorkerId: 'configured-coord',
-        },
-      );
+      const coordinator = createCoordinator({
+        defaultCommandLimit: 40,
+        defaultCommandMaxPages: 8,
+        defaultInvalidationLimit: 35,
+        defaultWorkerId: 'configured-coord',
+      });
 
       await coordinator.runCoordinatedSweep({});
 
-      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith({
-        limit: 40,
-        maxPages: 8,
-        workerId: 'configured-coord',
-      });
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(35);
+      expect(mockCommandWorker.runSweep).toHaveBeenCalledWith(
+        {
+          limit: 40,
+          maxPages: 8,
+          workerId: 'configured-coord',
+        },
+        mockPermit,
+      );
+      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledWith(35, mockPermit);
     });
   });
 
   describe('4. Invalid Option Handling with NOT_ATTEMPTED Representation', () => {
     it('returns FAILED with explicit NOT_ATTEMPTED child results when options are invalid', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const invalidCases: CoordinatedRecoveryOptions[] = [
         { invalidationLimit: 0 },
@@ -378,22 +439,21 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     });
   });
 
-  describe('5. Command Failure Continuation Policy', () => {
-    it('continues to invalidation recovery on command failure when continueOnCommandFailure is true (default)', async () => {
+  describe('5. Command Failure Continuation Policy and Safety Barrier', () => {
+    it('halts and sets invalidation to NOT_ATTEMPTED on command failure even when continueOnCommandFailure is true', async () => {
       mockCommandWorker.runSweep.mockResolvedValue({
         status: 'FAILED',
         errorCode: 'RECOVERY_SWEEP_FAILED',
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
-      const result = await coordinator.runCoordinatedSweep();
+      const result = await coordinator.runCoordinatedSweep({
+        continueOnCommandFailure: true,
+      });
 
       expect(mockCommandWorker.runSweep).toHaveBeenCalledTimes(1);
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledTimes(1);
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
       expect(result.status).toBe('PARTIAL');
       expect(result.command).toEqual({
         status: 'SUCCEEDED',
@@ -403,8 +463,8 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         },
       });
       expect(result.invalidation).toEqual({
-        status: 'SUCCEEDED',
-        result: sampleInvalidationResult,
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_FAILED',
       });
     });
 
@@ -414,10 +474,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         errorCode: 'RECOVERY_SWEEP_FAILED',
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({
         continueOnCommandFailure: false,
@@ -435,17 +492,14 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       });
       expect(result.invalidation).toEqual({
         status: 'NOT_ATTEMPTED',
-        reason: 'COMMAND_FAILURE_CONTINUATION_DISABLED',
+        reason: 'COMMAND_WORKER_FAILED',
       });
     });
 
     it('halts when command worker throws and continueOnCommandFailure is false', async () => {
       mockCommandWorker.runSweep.mockRejectedValue(new Error('DATABASE_CONNECTION_RESET'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({
         continueOnCommandFailure: false,
@@ -460,58 +514,52 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       });
       expect(result.invalidation).toEqual({
         status: 'NOT_ATTEMPTED',
-        reason: 'COMMAND_FAILURE_CONTINUATION_DISABLED',
+        reason: 'COMMAND_RECOVERY_FAILED',
       });
     });
 
-    it('continues when command worker throws and continueOnCommandFailure is true', async () => {
+    it('halts when command worker throws even when continueOnCommandFailure is true', async () => {
       mockCommandWorker.runSweep.mockRejectedValue(new Error('DATABASE_CONNECTION_RESET'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({
         continueOnCommandFailure: true,
       });
 
       expect(mockCommandWorker.runSweep).toHaveBeenCalledTimes(1);
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledTimes(1);
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
       expect(result.status).toBe('PARTIAL');
       expect(result.command).toEqual({
         status: 'FAILED',
         errorCode: 'COMMAND_WORKER_THREW',
       });
       expect(result.invalidation).toEqual({
-        status: 'SUCCEEDED',
-        result: sampleInvalidationResult,
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_RECOVERY_FAILED',
       });
     });
   });
 
   describe('6. Busy and Stopped Child Results', () => {
-    it('handles command worker SKIPPED_BUSY with continuation true', async () => {
+    it('handles command worker SKIPPED_BUSY and halts invalidation under command-first barrier', async () => {
       mockCommandWorker.runSweep.mockResolvedValue({
         status: 'SKIPPED_BUSY',
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({ continueOnCommandFailure: true });
 
-      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledTimes(1);
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
       expect(result.status).toBe('PARTIAL');
       expect(result.command).toEqual({
         status: 'SUCCEEDED',
         result: { status: 'SKIPPED_BUSY' },
       });
       expect(result.invalidation).toEqual({
-        status: 'SUCCEEDED',
-        result: sampleInvalidationResult,
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_SKIPPED_BUSY',
       });
     });
 
@@ -520,10 +568,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         status: 'SKIPPED_BUSY',
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({ continueOnCommandFailure: false });
 
@@ -535,19 +580,16 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       });
       expect(result.invalidation).toEqual({
         status: 'NOT_ATTEMPTED',
-        reason: 'COMMAND_FAILURE_CONTINUATION_DISABLED',
+        reason: 'COMMAND_WORKER_SKIPPED_BUSY',
       });
     });
 
-    it('handles command worker STOPPED when continueOnCommandFailure is false', async () => {
+    it('handles command worker STOPPED and halts invalidation under command-first barrier', async () => {
       mockCommandWorker.runSweep.mockResolvedValue({
         status: 'STOPPED',
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({ continueOnCommandFailure: false });
 
@@ -559,7 +601,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       });
       expect(result.invalidation).toEqual({
         status: 'NOT_ATTEMPTED',
-        reason: 'COMMAND_FAILURE_CONTINUATION_DISABLED',
+        reason: 'COMMAND_WORKER_STOPPED',
       });
     });
 
@@ -575,10 +617,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
       mockInvalidationWorker.runSweep.mockResolvedValue(busyInvalidationResult);
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep();
 
@@ -598,10 +637,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     it('contains invalidation worker exception and reports PARTIAL with FAILED invalidation child', async () => {
       mockInvalidationWorker.runSweep.mockRejectedValue(new Error('DATABASE_CONNECTION_LOST'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep();
 
@@ -616,50 +652,44 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       });
     });
 
-    it('reports FAILED when both command and invalidation workers fail', async () => {
+    it('enforces command-first barrier: does not run invalidation worker when command fails', async () => {
       mockCommandWorker.runSweep.mockResolvedValue({
         status: 'FAILED',
         errorCode: 'COMMAND_SWEEP_FAILED',
       });
-      mockInvalidationWorker.runSweep.mockRejectedValue(new Error('POSTGRES_DISCONNECTED'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({ continueOnCommandFailure: true });
 
-      expect(result.status).toBe('FAILED');
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+      expect(result.status).toBe('PARTIAL');
       expect(result.command).toEqual({
         status: 'SUCCEEDED',
         result: { status: 'FAILED', errorCode: 'COMMAND_SWEEP_FAILED' },
       });
       expect(result.invalidation).toEqual({
-        status: 'FAILED',
-        errorCode: 'INVALIDATION_WORKER_THREW',
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_FAILED',
       });
     });
 
-    it('reports FAILED when command throws and invalidation throws', async () => {
+    it('enforces command-first barrier: does not run invalidation worker when command throws', async () => {
       mockCommandWorker.runSweep.mockRejectedValue(new Error('FATAL_COMMAND_CORRUPTION'));
-      mockInvalidationWorker.runSweep.mockRejectedValue(new Error('POSTGRES_DISCONNECTED'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const result = await coordinator.runCoordinatedSweep({ continueOnCommandFailure: true });
 
-      expect(result.status).toBe('FAILED');
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+      expect(result.status).toBe('PARTIAL');
       expect(result.command).toEqual({
         status: 'FAILED',
         errorCode: 'COMMAND_WORKER_THREW',
       });
       expect(result.invalidation).toEqual({
-        status: 'FAILED',
-        errorCode: 'INVALIDATION_WORKER_THREW',
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_RECOVERY_FAILED',
       });
     });
   });
@@ -676,10 +706,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
         return { status: 'COMPLETED', result: sampleCommandResult };
       });
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const firstPromise = coordinator.runCoordinatedSweep();
       expect(coordinator.isBusy).toBe(true);
@@ -705,10 +732,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     it('releases busy guard cleanly even after command failure', async () => {
       mockCommandWorker.runSweep.mockRejectedValueOnce(new Error('TRANSIENT_FAILURE'));
 
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       const failedResult = await coordinator.runCoordinatedSweep({
         continueOnCommandFailure: false,
@@ -729,10 +753,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
   describe('9. Shutdown Races and Teardown Lifecycle', () => {
     it('immediately returns STOPPED if coordinator was destroyed before runCoordinatedSweep', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       coordinator.onModuleDestroy();
       expect(coordinator.isStopped).toBe(true);
@@ -750,10 +771,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     });
 
     it('prevents starting invalidation recovery if shutdown occurs between child invocations', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       mockCommandWorker.runSweep.mockImplementation(() => {
         // Shutdown triggered while command recovery is in-flight
@@ -780,10 +798,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
     });
 
     it('handles shutdown immediately after invalidation recovery settles', async () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       mockInvalidationWorker.runSweep.mockImplementation(() => {
         coordinator.onModuleDestroy();
@@ -806,10 +821,7 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
 
   describe('10. Borrowed-Worker Lifecycle Independence', () => {
     it('does NOT invoke onModuleDestroy on borrowed workers when coordinator is destroyed', () => {
-      const coordinator = new OrdinaryRecoveryCoordinatorService(
-        mockCommandWorker as unknown as OrdinaryCommandRecoverySweepWorker,
-        mockInvalidationWorker as unknown as OrdinaryRecoverySweepWorker,
-      );
+      const coordinator = createCoordinator();
 
       coordinator.onModuleDestroy();
 
@@ -912,6 +924,309 @@ describe('OrdinaryRecoveryCoordinatorService (Phase C.3.4 - Corrected Contract)'
       expect(source).not.toContain('commandResult?:');
       expect(source).not.toContain('invalidationResult?:');
       expect(source).not.toMatch(/error\?: string;/);
+    });
+  });
+
+  describe('12. Distributed Recovery Lock Integration (Phase C Batch 2)', () => {
+    it('acquires lock via lockService.withExclusiveLock and executes sweep', async () => {
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(mockLockService.withExclusiveLock).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('COMPLETED');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation.status).toBe('SUCCEEDED');
+    });
+
+    it('returns SKIPPED_LOCK_BUSY when lock outcome is LOCK_BUSY', async () => {
+      mockLockService.withExclusiveLock.mockResolvedValueOnce({
+        status: 'LOCK_BUSY',
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('SKIPPED_LOCK_BUSY');
+      expect(result.command).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'DISTRIBUTED_LOCK_BUSY',
+      });
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'DISTRIBUTED_LOCK_BUSY',
+      });
+      expect(mockCommandWorker.runSweep).not.toHaveBeenCalled();
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('passes the exact same OrdinaryRecoveryExecutionPermit reference to both workers', async () => {
+      const coordinator = createCoordinator();
+
+      await coordinator.runCoordinatedSweep();
+
+      expect(mockCommandWorker.runSweep).toHaveBeenCalledTimes(1);
+      expect(mockInvalidationWorker.runSweep).toHaveBeenCalledTimes(1);
+
+      const commandPermit = mockCommandWorker.runSweep.mock.calls[0]![1];
+      const invalidationPermit = mockInvalidationWorker.runSweep.mock.calls[0]![1];
+
+      expect(commandPermit).toBeDefined();
+      expect(invalidationPermit).toBeDefined();
+      expect(commandPermit).toBe(invalidationPermit);
+      expect(commandPermit).toBe(mockPermit);
+    });
+
+    it('propagates OrdinaryRecoveryOwnershipLost when permit.assertHeld throws before command worker', async () => {
+      mockPermit.assertHeld.mockRejectedValueOnce(
+        new OrdinaryRecoveryOwnershipLost('LOST_BEFORE_COMMAND'),
+      );
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.command).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COORDINATED_SWEEP_FAILED',
+      });
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'OWNERSHIP_LOST',
+      });
+      expect(mockCommandWorker.runSweep).not.toHaveBeenCalled();
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('propagates OrdinaryRecoveryOwnershipLost from commandWorker.runSweep', async () => {
+      mockCommandWorker.runSweep.mockRejectedValueOnce(
+        new OrdinaryRecoveryOwnershipLost('LOST_DURING_COMMAND'),
+      );
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'OWNERSHIP_LOST',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('propagates OrdinaryRecoveryOwnershipLost when permit.assertHeld throws between command and invalidation', async () => {
+      // 1st assertHeld succeeds (before command)
+      // 2nd assertHeld throws (between command and invalidation)
+      mockPermit.assertHeld
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new OrdinaryRecoveryOwnershipLost('LOST_BETWEEN_WORKERS'));
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'OWNERSHIP_LOST',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('propagates OrdinaryRecoveryOwnershipLost from invalidationWorker.runSweep', async () => {
+      mockInvalidationWorker.runSweep.mockRejectedValueOnce(
+        new OrdinaryRecoveryOwnershipLost('LOST_DURING_INVALIDATION'),
+      );
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'OWNERSHIP_LOST',
+      });
+    });
+
+    it('propagates OrdinaryRecoveryOwnershipLost when permit.assertHeld throws after invalidation recovery', async () => {
+      // 1st assertHeld: before command -> ok
+      // 2nd assertHeld: after command -> ok
+      // 3rd assertHeld: before invalidation -> ok
+      // 4th assertHeld: after invalidation -> throws
+      mockPermit.assertHeld
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new OrdinaryRecoveryOwnershipLost('LOST_AFTER_INVALIDATION'));
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'OWNERSHIP_LOST',
+      });
+    });
+
+    it('halts invalidation recovery if command worker reports unresolved items (unresolvedCount > 0)', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'COMPLETED',
+        result: {
+          ...sampleCommandResult,
+          unresolvedCount: 3,
+        },
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_UNRESOLVED',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('halts invalidation recovery if command worker reports error items (errorCount > 0)', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'COMPLETED',
+        result: {
+          ...sampleCommandResult,
+          errorCount: 2,
+        },
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_UNRESOLVED',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('halts invalidation recovery if command worker reports hasMore === true', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'COMPLETED',
+        result: {
+          ...sampleCommandResult,
+          hasMore: true,
+        },
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command.status).toBe('SUCCEEDED');
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_HAS_MORE',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('halts invalidation recovery if command worker reports FAILED status', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'FAILED',
+        errorCode: 'COMMAND_SWEEP_FAILED',
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command).toEqual({
+        status: 'SUCCEEDED',
+        result: {
+          status: 'FAILED',
+          errorCode: 'COMMAND_SWEEP_FAILED',
+        },
+      });
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_FAILED',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('halts invalidation recovery if command worker reports SKIPPED_BUSY status', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'SKIPPED_BUSY',
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command).toEqual({
+        status: 'SUCCEEDED',
+        result: {
+          status: 'SKIPPED_BUSY',
+        },
+      });
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_SKIPPED_BUSY',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('halts invalidation recovery if command worker reports STOPPED status', async () => {
+      mockCommandWorker.runSweep.mockResolvedValueOnce({
+        status: 'STOPPED',
+      });
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('PARTIAL');
+      expect(result.command).toEqual({
+        status: 'SUCCEEDED',
+        result: {
+          status: 'STOPPED',
+        },
+      });
+      expect(result.invalidation).toEqual({
+        status: 'NOT_ATTEMPTED',
+        reason: 'COMMAND_WORKER_STOPPED',
+      });
+      expect(mockInvalidationWorker.runSweep).not.toHaveBeenCalled();
+    });
+
+    it('releases process-local isRunning flag even when lockService throws a fatal error', async () => {
+      mockLockService.withExclusiveLock.mockRejectedValueOnce(new Error('FATAL_LOCK_DATABASE_DOWN'));
+
+      const coordinator = createCoordinator();
+
+      const result = await coordinator.runCoordinatedSweep();
+
+      expect(result.status).toBe('FAILED');
+      expect(result.invalidation).toEqual({
+        status: 'FAILED',
+        errorCode: 'COORDINATED_SWEEP_FAILED',
+      });
+      expect(coordinator.isBusy).toBe(false);
     });
   });
 });

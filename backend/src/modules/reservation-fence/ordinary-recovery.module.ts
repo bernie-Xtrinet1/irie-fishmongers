@@ -22,6 +22,7 @@ import { OrdinaryCommandRecoveryService } from './services/ordinary-command-reco
 import { OrdinaryCommandRecoverySweepWorker } from './workers/ordinary-command-recovery-sweep.worker';
 import { OrdinaryRecoveryCoordinatorService } from './services/ordinary-recovery-coordinator.service';
 import { OrdinaryRecoveryTelemetryAdapter } from './services/ordinary-recovery-telemetry-adapter.service';
+import { OrdinaryRecoveryLockService } from './services/ordinary-recovery-lock.service';
 
 /**
  * Phase C.3.5 — Dedicated Dormant Ordinary Recovery Module (Option DI-C).
@@ -135,14 +136,34 @@ import { OrdinaryRecoveryTelemetryAdapter } from './services/ordinary-recovery-t
       inject: [OrdinaryCommandRecoveryService],
     },
 
+    // 7.5 Phase C Distributed Lock Service
+    {
+      provide: OrdinaryRecoveryLockService,
+      useFactory: (config?: ConfigService) => {
+        const effectiveConfig =
+          config ??
+          new ConfigService({
+            DATABASE_URL: process.env.DATABASE_URL || 'postgresql://localhost:5432/db',
+            DIRECT_DATABASE_URL: process.env.DIRECT_DATABASE_URL,
+          });
+        return new OrdinaryRecoveryLockService(effectiveConfig);
+      },
+      inject: [{ token: ConfigService, optional: true }],
+    },
+
     // 8. C.3.4 Orchestration Coordinator
     {
       provide: OrdinaryRecoveryCoordinatorService,
       useFactory: (
         cmdWorker: OrdinaryCommandRecoverySweepWorker,
         invWorker: OrdinaryRecoverySweepWorker,
-      ) => new OrdinaryRecoveryCoordinatorService(cmdWorker, invWorker),
-      inject: [OrdinaryCommandRecoverySweepWorker, OrdinaryRecoverySweepWorker],
+        lockService: OrdinaryRecoveryLockService,
+      ) => new OrdinaryRecoveryCoordinatorService(cmdWorker, invWorker, lockService),
+      inject: [
+        OrdinaryCommandRecoverySweepWorker,
+        OrdinaryRecoverySweepWorker,
+        OrdinaryRecoveryLockService,
+      ],
     },
 
     // 9. C.3.5 Telemetry Adapter
@@ -158,6 +179,7 @@ import { OrdinaryRecoveryTelemetryAdapter } from './services/ordinary-recovery-t
   exports: [
     OrdinaryRecoveryTelemetryAdapter,
     OrdinaryRecoveryCoordinatorService,
+    OrdinaryRecoveryLockService,
   ],
 })
 export class OrdinaryRecoveryModule {}

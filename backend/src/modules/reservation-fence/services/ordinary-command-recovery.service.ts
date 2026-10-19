@@ -6,6 +6,10 @@ import {
   CommandSweepOptions,
   CommandSweepResult,
 } from '../types/ordinary-invalidation-recovery.types';
+import {
+  OrdinaryRecoveryExecutionPermit,
+  OrdinaryRecoveryOwnershipLost,
+} from '../types/ordinary-recovery-lock.types';
 
 const WORKER_ID_PATTERN = /^[a-zA-Z0-9_\-.:]+$/;
 
@@ -31,7 +35,10 @@ export class OrdinaryCommandRecoveryService {
    * Discovers unresolved ordinary commands across PostgreSQL markers,
    * evaluates advisory Redis backoff, and executes observation closure.
    */
-  async sweep(options: CommandSweepOptions = {}): Promise<CommandSweepResult> {
+  async sweep(
+    options: CommandSweepOptions = {},
+    permit?: OrdinaryRecoveryExecutionPermit,
+  ): Promise<CommandSweepResult> {
     const { limit, maxPages, workerId } = this.validateOptions(options);
 
     let cursor: { markerId: string; sequence: number; id: string } | undefined;
@@ -43,14 +50,35 @@ export class OrdinaryCommandRecoveryService {
     let errorCount = 0;
 
     while (pagesProcessed < maxPages) {
+      // Checkpoint: Before each discovery page
+      if (permit) {
+        await permit.assertHeld();
+      }
+
       // 5.5 PostgreSQL discovery failure aborts the sweep and surfaces to caller
       const page = await this.commands.discoverClosure({ limit, cursor });
+
+      // Checkpoint: After awaited discovery calls and before processing their results
+      if (permit) {
+        await permit.assertHeld();
+      }
+
       if (page.length === 0) {
         break;
       }
       pagesProcessed++;
 
       for (const command of page) {
+        // Checkpoint: Before processing another command
+        if (permit) {
+          await permit.assertHeld();
+        }
+
+        // Checkpoint: Before Redis receipt observation where practical
+        if (permit) {
+          await permit.assertHeld();
+        }
+
         // 5.2 Advisory backoff check before observation
         let decision;
         try {
@@ -58,6 +86,11 @@ export class OrdinaryCommandRecoveryService {
         } catch {
           // Fail-safe advisory: Redis outage does not block PostgreSQL recovery
           decision = { shouldRetry: true, remainingWaitMs: 0, attempts: 0 };
+        }
+
+        // Checkpoint: After awaited Redis receipt observation
+        if (permit) {
+          await permit.assertHeld();
         }
 
         if (!decision.shouldRetry) {
@@ -68,6 +101,11 @@ export class OrdinaryCommandRecoveryService {
         // 5.3 Closure observation
         attemptedCount++;
         try {
+          // Checkpoint: Immediately before initiating command closure
+          if (permit) {
+            await permit.assertHeld();
+          }
+
           const outcome = await this.closure.close(command.id);
           if (outcome.status === 'ACKNOWLEDGED') {
             acknowledgedCount++;
@@ -90,6 +128,9 @@ export class OrdinaryCommandRecoveryService {
             }
           }
         } catch (err) {
+          if (err instanceof OrdinaryRecoveryOwnershipLost) {
+            throw err;
+          }
           errorCount++;
           const message = err instanceof Error ? err.message : String(err);
           try {
@@ -115,6 +156,11 @@ export class OrdinaryCommandRecoveryService {
         cursor = undefined;
         break;
       }
+    }
+
+    // Checkpoint: Before returning successful command-recovery completion
+    if (permit) {
+      await permit.assertHeld();
     }
 
     // hasMore is a continuation indicator: last page was full and processing reached maxPages

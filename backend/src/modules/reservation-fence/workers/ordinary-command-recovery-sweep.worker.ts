@@ -4,6 +4,10 @@ import {
   CommandSweepOptions,
   CommandSweepResult,
 } from '../types/ordinary-invalidation-recovery.types';
+import {
+  OrdinaryRecoveryExecutionPermit,
+  OrdinaryRecoveryOwnershipLost,
+} from '../types/ordinary-recovery-lock.types';
 
 const WORKER_ID_PATTERN = /^[a-zA-Z0-9_\-.:]+$/;
 
@@ -105,6 +109,7 @@ export class OrdinaryCommandRecoverySweepWorker implements OnModuleInit, OnModul
 
   async runSweep(
     options?: CommandSweepOptions,
+    permit?: OrdinaryRecoveryExecutionPermit,
   ): Promise<OrdinaryCommandWorkerRunResult> {
     if (this.isStopped) {
       return { status: 'STOPPED' };
@@ -121,18 +126,27 @@ export class OrdinaryCommandRecoverySweepWorker implements OnModuleInit, OnModul
         return { status: 'STOPPED' };
       }
 
+      if (permit) {
+        await permit.assertHeld();
+      }
+
       const sweepOptions: CommandSweepOptions = {
         limit: options?.limit ?? this.defaultLimit,
         maxPages: options?.maxPages ?? this.defaultMaxPages,
         workerId: options?.workerId ?? this.defaultWorkerId,
       };
 
-      const result = await this.recoveryService.sweep(sweepOptions);
+      const result = permit !== undefined
+        ? await this.recoveryService.sweep(sweepOptions, permit)
+        : await this.recoveryService.sweep(sweepOptions);
       return {
         status: 'COMPLETED',
         result,
       };
     } catch (err) {
+      if (err instanceof OrdinaryRecoveryOwnershipLost) {
+        throw err;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Ordinary command recovery sweep execution failed: ${message}`);
       return {

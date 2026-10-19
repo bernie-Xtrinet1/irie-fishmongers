@@ -8,6 +8,11 @@ import {
   CommandSweepOptions,
   SweepResult,
 } from '../types/ordinary-invalidation-recovery.types';
+import {
+  IOrdinaryRecoveryLockService,
+  OrdinaryRecoveryExecutionPermit,
+  OrdinaryRecoveryOwnershipLost,
+} from '../types/ordinary-recovery-lock.types';
 
 const WORKER_ID_PATTERN = /^[a-zA-Z0-9_\-.:]+$/;
 
@@ -44,6 +49,7 @@ export type CoordinatedRecoveryStatus =
   | 'PARTIAL'
   | 'FAILED'
   | 'SKIPPED_BUSY'
+  | 'SKIPPED_LOCK_BUSY'
   | 'STOPPED';
 
 export interface CoordinatedRecoveryResult {
@@ -87,12 +93,16 @@ export class OrdinaryRecoveryCoordinatorService implements OnModuleDestroy {
   constructor(
     private readonly commandWorker: OrdinaryCommandRecoverySweepWorker,
     private readonly invalidationWorker: OrdinaryRecoverySweepWorker,
+    private readonly lockService: IOrdinaryRecoveryLockService,
     options?: OrdinaryRecoveryCoordinatorOptions,
   ) {
     if (!commandWorker || typeof commandWorker.runSweep !== 'function') {
       throw new Error('INVALID_COORDINATOR_DEPENDENCIES');
     }
     if (!invalidationWorker || typeof invalidationWorker.runSweep !== 'function') {
+      throw new Error('INVALID_COORDINATOR_DEPENDENCIES');
+    }
+    if (!lockService || typeof lockService.withExclusiveLock !== 'function') {
       throw new Error('INVALID_COORDINATOR_DEPENDENCIES');
     }
 
@@ -155,6 +165,15 @@ export class OrdinaryRecoveryCoordinatorService implements OnModuleDestroy {
     this.isRunning = true;
     const startMs = Date.now();
 
+    let commandChild: CoordinatedChildExecution<OrdinaryCommandWorkerRunResult> = {
+      status: 'NOT_ATTEMPTED',
+      reason: 'SWEEP_NOT_STARTED',
+    };
+    let invalidationChild: CoordinatedChildExecution<SweepResult> = {
+      status: 'NOT_ATTEMPTED',
+      reason: 'SWEEP_NOT_STARTED',
+    };
+
     try {
       if (this._isStopped) {
         return {
@@ -185,108 +204,177 @@ export class OrdinaryRecoveryCoordinatorService implements OnModuleDestroy {
         };
       }
 
-      // 1. Invoke Command Recovery Sweep First
-      let commandChild: CoordinatedChildExecution<OrdinaryCommandWorkerRunResult>;
-      try {
-        const rawCommandResult = await this.commandWorker.runSweep(validated.commandSweepOptions);
-        commandChild = {
-          status: 'SUCCEEDED',
-          result: rawCommandResult,
-        };
-      } catch (cmdErr) {
-        const message = cmdErr instanceof Error ? cmdErr.message : String(cmdErr);
-        this.logger.error(`Command recovery worker threw unexpected error: ${message}`);
-        commandChild = {
-          status: 'FAILED',
-          errorCode: 'COMMAND_WORKER_THREW',
-        };
-      }
+      const lockOutcome = await this.lockService.withExclusiveLock(async (permit) => {
+        // Step 1: Verify ownership before beginning command recovery
+        await permit.assertHeld();
 
-      // 2. Check Shutdown Between Child Invocations
-      if (this._isStopped) {
-        return {
-          status: 'STOPPED',
-          command: commandChild,
-          invalidation: {
+        if (this._isStopped) {
+          return {
+            status: 'STOPPED' as CoordinatedRecoveryStatus,
+            command: { status: 'NOT_ATTEMPTED' as const, reason: 'COORDINATOR_STOPPED' },
+            invalidation: { status: 'NOT_ATTEMPTED' as const, reason: 'COORDINATOR_STOPPED' },
+            durationMs: Math.max(0, Date.now() - startMs),
+          };
+        }
+
+        // Step 2: Invoke Command Recovery Sweep First
+        try {
+          const rawCommandResult = await this.commandWorker.runSweep(
+            validated.commandSweepOptions,
+            permit,
+          );
+          commandChild = {
+            status: 'SUCCEEDED',
+            result: rawCommandResult,
+          };
+        } catch (cmdErr) {
+          if (cmdErr instanceof OrdinaryRecoveryOwnershipLost) {
+            throw cmdErr;
+          }
+          const message = cmdErr instanceof Error ? cmdErr.message : String(cmdErr);
+          this.logger.error(`Command recovery worker threw unexpected error: ${message}`);
+          commandChild = {
+            status: 'FAILED',
+            errorCode: 'COMMAND_WORKER_THREW',
+          };
+        }
+
+        // Step 3: Verify ownership again after command recovery
+        await permit.assertHeld();
+
+        // Step 4: Check Shutdown Between Child Invocations
+        if (this._isStopped) {
+          return {
+            status: 'STOPPED' as CoordinatedRecoveryStatus,
+            command: commandChild,
+            invalidation: {
+              status: 'NOT_ATTEMPTED' as const,
+              reason: 'COORDINATOR_STOPPED_BEFORE_INVALIDATION',
+            },
+            durationMs: Math.max(0, Date.now() - startMs),
+          };
+        }
+
+        // Step 5: Evaluate Mandatory Command-First Safety Barrier
+        // Invalidation recovery is ONLY attempted if command recovery completed fully with zero unresolved work and zero errors.
+        const isCommandFullyCompleted =
+          commandChild.status === 'SUCCEEDED' &&
+          commandChild.result.status === 'COMPLETED' &&
+          commandChild.result.result.unresolvedCount === 0 &&
+          commandChild.result.result.errorCount === 0 &&
+          !commandChild.result.result.hasMore;
+
+        if (!isCommandFullyCompleted) {
+          const notAttemptedReason =
+            commandChild.status === 'FAILED'
+              ? 'COMMAND_RECOVERY_FAILED'
+              : commandChild.result.status !== 'COMPLETED'
+              ? `COMMAND_WORKER_${commandChild.result.status}`
+              : commandChild.result.result.hasMore
+              ? 'COMMAND_WORKER_HAS_MORE'
+              : 'COMMAND_WORKER_UNRESOLVED';
+
+          if (validated.continueOnCommandFailure) {
+            this.logger.warn(
+              `continueOnCommandFailure override suppressed by mandatory command-first safety barrier; skipping invalidation recovery (${notAttemptedReason})`,
+            );
+          }
+
+          invalidationChild = {
             status: 'NOT_ATTEMPTED',
-            reason: 'COORDINATOR_STOPPED_BEFORE_INVALIDATION',
-          },
-          durationMs: Math.max(0, Date.now() - startMs),
-        };
-      }
+            reason: notAttemptedReason,
+          };
 
-      // 3. Evaluate Continuation Policy
-      const commandCompleted =
-        commandChild.status === 'SUCCEEDED' && commandChild.result.status === 'COMPLETED';
+          return {
+            status: 'PARTIAL' as CoordinatedRecoveryStatus,
+            command: commandChild,
+            invalidation: invalidationChild,
+            durationMs: Math.max(0, Date.now() - startMs),
+          };
+        }
 
-      if (!commandCompleted && !validated.continueOnCommandFailure) {
+        // Step 6: Verify ownership before beginning invalidation recovery
+        await permit.assertHeld();
+
+        // Step 7: Invoke Invalidation Recovery Sweep Second
+        try {
+          const rawInvalidationResult = await this.invalidationWorker.runSweep(
+            validated.invalidationLimit,
+            permit,
+          );
+          invalidationChild = {
+            status: 'SUCCEEDED',
+            result: rawInvalidationResult,
+          };
+        } catch (invErr) {
+          if (invErr instanceof OrdinaryRecoveryOwnershipLost) {
+            throw invErr;
+          }
+          const message = invErr instanceof Error ? invErr.message : String(invErr);
+          this.logger.error(`Invalidation recovery worker threw unexpected error: ${message}`);
+          invalidationChild = {
+            status: 'FAILED',
+            errorCode: 'INVALIDATION_WORKER_THREW',
+          };
+        }
+
+        // Step 8: Verify ownership after invalidation recovery
+        await permit.assertHeld();
+
+        // Step 9: Check Shutdown Immediately After Invalidation Settles
+        if (this._isStopped) {
+          return {
+            status: 'STOPPED' as CoordinatedRecoveryStatus,
+            command: commandChild,
+            invalidation: invalidationChild,
+            durationMs: Math.max(0, Date.now() - startMs),
+          };
+        }
+
+        const durationMs = Math.max(0, Date.now() - startMs);
+
+        // Step 10: Compute Composite Status
+        const invalidationCompleted = invalidationChild.status === 'SUCCEEDED';
+
+        let status: CoordinatedRecoveryStatus;
+        if (invalidationCompleted) {
+          status = 'COMPLETED';
+        } else {
+          status = 'PARTIAL';
+        }
+
         return {
-          status: 'PARTIAL',
-          command: commandChild,
-          invalidation: {
-            status: 'NOT_ATTEMPTED',
-            reason: 'COMMAND_FAILURE_CONTINUATION_DISABLED',
-          },
-          durationMs: Math.max(0, Date.now() - startMs),
-        };
-      }
-
-      // 4. Invoke Invalidation Recovery Sweep Second
-      let invalidationChild: CoordinatedChildExecution<SweepResult>;
-      try {
-        const rawInvalidationResult = await this.invalidationWorker.runSweep(
-          validated.invalidationLimit,
-        );
-        invalidationChild = {
-          status: 'SUCCEEDED',
-          result: rawInvalidationResult,
-        };
-      } catch (invErr) {
-        const message = invErr instanceof Error ? invErr.message : String(invErr);
-        this.logger.error(`Invalidation recovery worker threw unexpected error: ${message}`);
-        invalidationChild = {
-          status: 'FAILED',
-          errorCode: 'INVALIDATION_WORKER_THREW',
-        };
-      }
-
-      // 5. Check Shutdown Immediately After Invalidation Settles
-      if (this._isStopped) {
-        return {
-          status: 'STOPPED',
+          status,
           command: commandChild,
           invalidation: invalidationChild,
+          durationMs,
+        };
+      });
+
+      if (lockOutcome.status === 'LOCK_BUSY') {
+        return {
+          status: 'SKIPPED_LOCK_BUSY',
+          command: { status: 'NOT_ATTEMPTED', reason: 'DISTRIBUTED_LOCK_BUSY' },
+          invalidation: { status: 'NOT_ATTEMPTED', reason: 'DISTRIBUTED_LOCK_BUSY' },
           durationMs: Math.max(0, Date.now() - startMs),
         };
       }
 
-      const durationMs = Math.max(0, Date.now() - startMs);
-
-      // 6. Compute Composite Status
-      const invalidationCompleted = invalidationChild.status === 'SUCCEEDED';
-
-      let status: CoordinatedRecoveryStatus;
-      if (commandCompleted && invalidationCompleted) {
-        status = 'COMPLETED';
-      } else if (!commandCompleted && !invalidationCompleted) {
-        status = 'FAILED';
-      } else {
-        status = 'PARTIAL';
-      }
-
-      return {
-        status,
-        command: commandChild,
-        invalidation: invalidationChild,
-        durationMs,
-      };
+      return lockOutcome.value;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Coordinated recovery sweep encountered fatal error: ${message}`);
       return {
         status: 'FAILED',
-        command: { status: 'NOT_ATTEMPTED', reason: 'COORDINATED_SWEEP_FAILED' },
-        invalidation: { status: 'NOT_ATTEMPTED', reason: 'COORDINATED_SWEEP_FAILED' },
+        command: commandChild.status !== 'NOT_ATTEMPTED'
+          ? commandChild
+          : { status: 'NOT_ATTEMPTED', reason: 'COORDINATED_SWEEP_FAILED' },
+        invalidation: {
+          status: 'FAILED',
+          errorCode: err instanceof OrdinaryRecoveryOwnershipLost
+            ? 'OWNERSHIP_LOST'
+            : 'COORDINATED_SWEEP_FAILED',
+        },
         durationMs: Math.max(0, Date.now() - startMs),
       };
     } finally {
