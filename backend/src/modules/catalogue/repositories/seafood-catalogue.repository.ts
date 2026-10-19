@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   CatalogueCompositionMode,
   CatalogueLifecycleStatus,
@@ -89,8 +89,9 @@ export interface CatalogueFilterInput {
 export class SeafoodCatalogueRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findById(id: string): Promise<CatalogueItemWithDetails | null> {
-    return this.prisma.seafoodCatalogueItem.findUnique({
+  async findById(id: string, tx?: Prisma.TransactionClient): Promise<CatalogueItemWithDetails | null> {
+    const client = tx || this.prisma;
+    return client.seafoodCatalogueItem.findUnique({
       where: { id },
       include: catalogueItemWithDetails.include,
     });
@@ -174,6 +175,63 @@ export class SeafoodCatalogueRepository {
     species?: LinkSpeciesDto[],
   ): Promise<CatalogueItemWithDetails> {
     return this.prisma.$transaction(async (tx) => {
+      // Deterministic lock ordering: lock source item, and if consolidating, also lock target in sorted order
+      const idsToLock = [id];
+      if (data.consolidatedIntoId) {
+        if (data.consolidatedIntoId === id) {
+          throw new BadRequestException('Consolidation target cannot be self-referential.');
+        }
+        idsToLock.push(data.consolidatedIntoId);
+      }
+      idsToLock.sort();
+
+      if (typeof (tx as any).$queryRaw === 'function') {
+        for (const itemToLock of idsToLock) {
+          await tx.$queryRaw`SELECT id FROM seafood_catalogue_items WHERE id = ${itemToLock} FOR UPDATE`;
+        }
+      }
+
+      if (data.consolidatedIntoId) {
+
+        // 2. Re-fetch locked target state
+        const target = await tx.seafoodCatalogueItem.findUnique({
+          where: { id: data.consolidatedIntoId },
+          select: { id: true, lifecycleStatus: true, consolidatedIntoId: true },
+        });
+        if (!target) {
+          throw new BadRequestException('Consolidation target not found.');
+        }
+        if (target.lifecycleStatus === CatalogueLifecycleStatus.RETIRED || target.lifecycleStatus !== CatalogueLifecycleStatus.PUBLISHED) {
+          throw new BadRequestException(
+            'Consolidation target must be in PUBLISHED status and not retired.',
+          );
+        }
+        // 3. Cycle prevention
+        if (target.consolidatedIntoId === id) {
+          throw new BadRequestException(
+            'Consolidation cycle detected: target item is already consolidated into this item.',
+          );
+        }
+        const reverseLink = await tx.seafoodCatalogueItem.findFirst({
+          where: {
+            id: data.consolidatedIntoId,
+            consolidatedIntoId: id,
+          },
+        });
+        if (reverseLink) {
+          throw new BadRequestException(
+            'Consolidation cycle detected: target item is already consolidated into this item.',
+          );
+        }
+
+        // 4. Multi-hop chaining prevention
+        if (target.consolidatedIntoId !== null) {
+          throw new BadRequestException(
+            'Consolidation target must not be already consolidated into another item (chaining is prohibited).',
+          );
+        }
+      }
+
       await tx.seafoodCatalogueItem.update({
         where: { id },
         data: {
@@ -258,8 +316,9 @@ export class SeafoodCatalogueRepository {
     });
   }
 
-  async findActiveOverride(catalogueItemId: string, atDate: Date) {
-    return this.prisma.regulatoryOverride.findFirst({
+  async findActiveOverride(catalogueItemId: string, atDate: Date, tx?: Prisma.TransactionClient) {
+    const client = tx || this.prisma;
+    return client.regulatoryOverride.findFirst({
       where: {
         catalogueItemId,
         revokedAt: null,

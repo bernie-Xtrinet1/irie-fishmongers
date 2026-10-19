@@ -50,6 +50,8 @@ export function buildLot(overrides: Partial<SeafoodLot> = {}): SeafoodLot {
     qualityScore: null,
     foodSafetyStatus: 'SAFE',
     statusNotes: null,
+    originType: null,
+    acquisitionType: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

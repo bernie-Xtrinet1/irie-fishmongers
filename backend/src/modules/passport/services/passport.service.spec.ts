@@ -68,6 +68,8 @@ function buildLot(overrides: Partial<SeafoodLot> = {}): LotWithVendor {
     qualityScore: 95,
     foodSafetyStatus: 'SAFE',
     statusNotes: null,
+    originType: null,
+    acquisitionType: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     vendor: buildVendor(),

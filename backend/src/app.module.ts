@@ -16,6 +16,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
 import { CatalogueModule } from './modules/catalogue/catalogue.module';
+import { DailyListingsModule } from './modules/daily-listings/daily-listings.module';
 import { CheckoutRecoveryModule } from './modules/checkout-recovery/checkout-recovery.module';
 import { CheckoutRolloutAdminModule } from './modules/checkout-rollout-admin/checkout-rollout-admin.module';
 import { CatchesModule } from './modules/catches/catches.module';
@@ -66,6 +67,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     ProductsModule,
     CartModule,
     CatalogueModule,
+    DailyListingsModule,
     CheckoutRecoveryModule,
     CheckoutRolloutAdminModule,
     // Phase 16A.0-C4.5: the first C4.x unit to become reachable from

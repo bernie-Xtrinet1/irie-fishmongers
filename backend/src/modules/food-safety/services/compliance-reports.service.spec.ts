@@ -22,6 +22,8 @@ function buildLot(overrides: Partial<LotWithVendor> = {}): LotWithVendor {
     qualityScore: 92,
     foodSafetyStatus: 'SAFE',
     statusNotes: null,
+    originType: null,
+    acquisitionType: null,
     createdAt: new Date('2026-01-16T00:00:00.000Z'),
     updatedAt: new Date(),
     vendor: {

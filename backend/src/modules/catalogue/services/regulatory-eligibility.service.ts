@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   CatalogueCompositionMode,
   CatalogueLifecycleStatus,
+  Prisma,
   RegulatoryStatus,
 } from '@prisma/client';
 
@@ -13,6 +14,7 @@ export interface RegulatoryEvaluationContext {
   vendorDailyListingId?: string;
   seafoodLotId?: string;
   atDate?: Date;
+  tx?: Prisma.TransactionClient;
 }
 
 export interface SpeciesEvaluationDetail {
@@ -70,7 +72,7 @@ export class RegulatoryEligibilityService {
     // 2. Fetch catalogue item with species relations and active overrides
     let item;
     try {
-      item = await this.catalogueRepository.findById(context.catalogueItemId);
+      item = await this.catalogueRepository.findById(context.catalogueItemId, context.tx);
     } catch (err: unknown) {
       this.logger.error(
         `Failed to query database for regulatory evaluation of catalogueItem=${context.catalogueItemId}: ${err}`,
@@ -192,7 +194,7 @@ export class RegulatoryEligibilityService {
     // - Requester cannot be approver (two-party separation).
     // - Expired overrides fail closed.
     let overrideApplied = false;
-    const activeOverride = await this.catalogueRepository.findActiveOverride(item.id, evalDate);
+    const activeOverride = await this.catalogueRepository.findActiveOverride(item.id, evalDate, context.tx);
 
     if (activeOverride) {
       if (!activeOverride.approvedByUserId || activeOverride.requestedByUserId === activeOverride.approvedByUserId) {

@@ -81,6 +81,7 @@ model User {
   checkoutRolloutControls      CheckoutRolloutControlRevision[]
   requestedRegulatoryOverrides RegulatoryOverride[]             @relation("RegulatoryOverrideRequester")
   approvedRegulatoryOverrides  RegulatoryOverride[]             @relation("RegulatoryOverrideApprover")
+  withdrawnListingPhotos       ListingPhoto[]                   @relation("ListingPhotoWithdrawnBy")
 
   @@map("users")
 }
@@ -182,6 +183,7 @@ model Vendor {
   temperatureDevices TemperatureDevice[]
   certifications     RegulatoryCertification[]
   reviews            Review[]
+  dailyListings      VendorDailyListing[]
 
   @@map("vendors")
 }
@@ -267,6 +269,7 @@ model SeafoodCatalogueItem {
   regulatoryOverrides RegulatoryOverride[]
   consolidatedInto    SeafoodCatalogueItem?     @relation("CatalogueConsolidation", fields: [consolidatedIntoId], references: [id])
   consolidatedFrom    SeafoodCatalogueItem[]    @relation("CatalogueConsolidation")
+  dailyListings       VendorDailyListing[]
 
   @@index([categoryId])
   @@index([lifecycleStatus])
@@ -309,6 +312,119 @@ model RegulatoryOverride {
   @@index([catalogueItemId])
   @@index([expiresAt])
   @@map("regulatory_overrides")
+}
+
+enum ListingLifecycleStatus {
+  DRAFT
+  PUBLISHED
+  WITHDRAWN
+  SUSPENDED
+}
+
+enum ListingPhotoModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SeafoodOriginType {
+  WILD_CAUGHT
+  AQUACULTURE
+  IMPORTED
+  PROCESSED
+}
+
+enum SeafoodAcquisitionType {
+  DIRECT_CATCH
+  COOPERATIVE_PURCHASE
+  WHOLESALE_PURCHASE
+  TRANSFER
+  CONSIGNMENT
+  OTHER
+}
+
+model VendorDailyListing {
+  id                 String                      @id @default(uuid())
+  vendorId           String
+  productId          String
+  catalogueItemId    String
+  lotId              String
+  landingSiteId      String?
+  listingTitle       String?
+  description        String?
+  catchDate          DateTime
+  availableFrom      DateTime                    @default(now())
+  expiresAt          DateTime
+  unit               ProductUnit                 @default(PER_POUND)
+  price              Decimal                     @db.Decimal(10, 2)
+  currency           String                      @default("JMD")
+  quantityUploaded   Decimal                     @db.Decimal(10, 2)
+  quantityAvailable  Decimal                     @db.Decimal(10, 2)
+  quantityReserved   Decimal                     @default(0) @db.Decimal(10, 2)
+  quantitySold       Decimal                     @default(0) @db.Decimal(10, 2)
+  preparationOptions Json?
+  deliveryAvailable  Boolean                     @default(true)
+  pickupAvailable    Boolean                     @default(true)
+  status             ListingLifecycleStatus      @default(DRAFT)
+  withdrawnAt        DateTime?
+  withdrawnReason    String?
+  suspendedAt        DateTime?
+  suspensionReason   String?
+  publishedAt        DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+
+  vendor              Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  product             Product                     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  catalogueItem       SeafoodCatalogueItem        @relation(fields: [catalogueItemId], references: [id], onDelete: Restrict)
+  lot                 SeafoodLot                  @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  landingSite         LandingSite?                @relation(fields: [landingSiteId], references: [id], onDelete: SetNull)
+  photos              ListingPhoto[]
+  speciesDeclarations VendorDailyListingSpecies[]
+
+  @@index([vendorId, status])
+  @@index([catalogueItemId, status])
+  @@index([productId])
+  @@index([lotId])
+  @@index([status, expiresAt])
+  @@map("vendor_daily_listings")
+}
+
+model ListingPhoto {
+  id                   String                       @id @default(uuid())
+  vendorDailyListingId String
+  url                  String
+  caption              String?
+  isPrimary            Boolean                      @default(false)
+  moderationStatus     ListingPhotoModerationStatus @default(APPROVED)
+  uploadedAt           DateTime                     @default(now())
+  captureDate          DateTime?
+  withdrawnAt          DateTime?
+  withdrawnByUserId    String?
+  withdrawnReason      String?
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  listing         VendorDailyListing @relation(fields: [vendorDailyListingId], references: [id], onDelete: Cascade)
+  withdrawnByUser User?              @relation("ListingPhotoWithdrawnBy", fields: [withdrawnByUserId], references: [id], onDelete: SetNull)
+
+  @@index([vendorDailyListingId])
+  @@map("listing_photos")
+}
+
+model VendorDailyListingSpecies {
+  id                   String             @id @default(uuid())
+  vendorDailyListingId String
+  speciesId            String
+  proportion           Decimal?           @db.Decimal(5, 2)
+  notes                String?
+  createdAt            DateTime           @default(now())
+
+  listing VendorDailyListing @relation(fields: [vendorDailyListingId], references: [id], onDelete: Cascade)
+  species Species            @relation(fields: [speciesId], references: [id], onDelete: Restrict)
+
+  @@unique([vendorDailyListingId, speciesId])
+  @@map("vendor_daily_listing_species")
 }
 
 model Product {
@@ -354,6 +470,7 @@ model Product {
   reservationCompensations        CartReservationCompensation[]
   reservationSyncStates           CartReservationSyncState[]
   cartItemAddAttempts             CartItemAddAttempt[]
+  dailyListings                   VendorDailyListing[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -689,7 +806,7 @@ model VendorOrder {
 model OrderItem {
   id            String      @id @default(uuid())
   vendorOrderId String
-  productId     String
+  productId            String
   productName   String
   unitPrice     Decimal     @db.Decimal(10, 2)
   unit          ProductUnit
@@ -1260,6 +1377,8 @@ model SeafoodLot {
   qualityScore     Int?
   foodSafetyStatus FoodSafetyStatus   @default(SAFE)
   statusNotes      String?
+  originType       SeafoodOriginType?
+  acquisitionType  SeafoodAcquisitionType?
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -1267,6 +1386,7 @@ model SeafoodLot {
   catchItem            CatchItem?            @relation(fields: [catchItemId], references: [id], onDelete: Restrict)
   speciesRef           Species?              @relation(fields: [speciesId], references: [id], onDelete: SetNull)
   products             Product[]
+  dailyListings        VendorDailyListing[]
   temperatureReadings  TemperatureReading[]
   temperatureAlerts    TemperatureAlert[]
   inspections          QualityInspection[]
@@ -1499,6 +1619,7 @@ model LandingSite {
   fishermen      Fisherman[]
   catches        Catch[]
   certifications RegulatoryCertification[]
+  dailyListings  VendorDailyListing[]
 
   @@map("landing_sites")
 }
@@ -1563,9 +1684,10 @@ model Species {
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
-  catchItems         CatchItem[]
-  lots               SeafoodLot[]
-  catalogueItemLinks CatalogueItemSpecies[]
+  catchItems                  CatchItem[]
+  lots                        SeafoodLot[]
+  catalogueItemLinks          CatalogueItemSpecies[]
+  listingSpeciesDeclarations  VendorDailyListingSpecies[]
 
   @@map("species")
 }

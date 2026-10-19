@@ -1,0 +1,793 @@
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  CatalogueCompositionMode,
+  CatalogueLifecycleStatus,
+  FoodSafetyStatus,
+  ListingLifecycleStatus,
+  ListingPhotoModerationStatus,
+  Prisma,
+  ProductUnit,
+  RegulatoryStatus,
+  VendorStatus,
+  VendorTier,
+} from '@prisma/client';
+
+import { PrismaService } from '../../../database/prisma.service';
+import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
+import { RegulatoryEligibilityService } from '../../catalogue/services/regulatory-eligibility.service';
+import { SeafoodCatalogueRepository } from '../../catalogue/repositories/seafood-catalogue.repository';
+import { ProductsRepository } from '../../products/repositories/products.repository';
+import { VendorDocumentsService } from '../../vendor-tiers/services/vendor-documents.service';
+import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { CreateDailyListingDto } from '../dto/create-daily-listing.dto';
+import { RepeatDailyListingDto } from '../dto/repeat-daily-listing.dto';
+import {
+  DailyListingWithDetails,
+  DailyListingsRepository,
+} from '../repositories/daily-listings.repository';
+import { DailyListingsService } from '../services/daily-listings.service';
+
+describe('DailyListingsService', () => {
+  let service: DailyListingsService;
+  let dailyListingsRepo: jest.Mocked<DailyListingsRepository>;
+  let vendorsRepo: jest.Mocked<VendorsRepository>;
+  let vendorDocsService: jest.Mocked<VendorDocumentsService>;
+  let catalogueRepo: jest.Mocked<SeafoodCatalogueRepository>;
+  let seafoodLotsRepo: jest.Mocked<SeafoodLotsRepository>;
+  let productsRepo: jest.Mocked<ProductsRepository>;
+  let regulatoryService: jest.Mocked<RegulatoryEligibilityService>;
+  let prisma: jest.Mocked<PrismaService>;
+
+  const mockVendor = {
+    id: 'vendor-1',
+    userId: 'user-1',
+    businessName: 'Port Royal Fish Co',
+    description: 'Fresh seafood from Port Royal',
+    phone: '876-555-0100',
+    parish: 'KINGSTON' as const,
+    logoUrl: null,
+    status: VendorStatus.APPROVED,
+    tier: VendorTier.COMMUNITY_FISHER,
+    complianceScore: 90,
+    complianceScoreUpdatedAt: null,
+    termsAcceptedAt: new Date(),
+    primaryZoneId: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const mockCatalogueItem = {
+    id: 'cat-item-1',
+    name: 'Yellowtail Snapper',
+    scientificName: 'Ocyurus chrysurus',
+    scientificFamily: 'Lutjanidae',
+    commonName: 'Yellowtail Snapper',
+    jamaicanNames: ['Yellowtail'],
+    description: 'Fine-flaked white meat',
+    categoryId: 'cat-1',
+    compositionMode: CatalogueCompositionMode.SINGLE_SPECIES,
+    lifecycleStatus: CatalogueLifecycleStatus.PUBLISHED,
+    retirementReason: null,
+    retirementNotes: null,
+    consolidatedIntoId: null,
+    referenceImageUrl: 'https://images.example.com/snapper.jpg',
+    imageSourceLicense: 'Public Domain',
+    typicalUnit: ProductUnit.PER_POUND,
+    typicalSizeMinCm: null,
+    typicalSizeMaxCm: null,
+    typicalWeightMinLbs: null,
+    typicalWeightMaxLbs: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    category: { id: 'cat-1', name: 'Fish', slug: 'fish', createdAt: new Date(), updatedAt: new Date() },
+    speciesLinks: [],
+    regulatoryOverrides: [],
+    consolidatedInto: null,
+  };
+
+  const mockLot = {
+    id: 'lot-1',
+    lotNumber: 'LOT-2026-000101',
+    publicTraceToken: 'trace-token-101',
+    vendorId: 'vendor-1',
+    catchItemId: null,
+    species: 'Yellowtail Snapper',
+    speciesId: 'sp-1',
+    storageType: 'FRESH' as const,
+    catchDate: new Date(Date.now() - 3600_000),
+    catchLocation: 'Old Harbour Bay',
+    landingSite: 'Old Harbour Bay Landing Site',
+    weight: new Prisma.Decimal(100),
+    weightUnit: 'POUNDS' as const,
+    freshnessGrade: 'GRADE_A' as const,
+    qualityScore: 95,
+    foodSafetyStatus: FoodSafetyStatus.SAFE,
+    statusNotes: null,
+    originType: 'WILD_CAUGHT' as const,
+    acquisitionType: 'DIRECT_CATCH' as const,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const mockPhoto = {
+    id: 'photo-1',
+    vendorDailyListingId: 'listing-1',
+    url: 'https://cdn.example.com/listings/catch1.jpg',
+    caption: 'Fresh snapper catch',
+    isPrimary: true,
+    moderationStatus: ListingPhotoModerationStatus.APPROVED,
+    uploadedAt: new Date(),
+    captureDate: null,
+    withdrawnAt: null,
+    withdrawnByUserId: null,
+    withdrawnReason: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const mockListing: DailyListingWithDetails = {
+    id: 'listing-1',
+    vendorId: 'vendor-1',
+    productId: 'prod-1',
+    catalogueItemId: 'cat-item-1',
+    lotId: 'lot-1',
+    landingSiteId: null,
+    listingTitle: 'Morning Snapper Catch',
+    description: 'Landed at dawn',
+    catchDate: new Date(Date.now() - 3600_000),
+    availableFrom: new Date(Date.now() - 1800_000),
+    expiresAt: new Date(Date.now() + 86400_000),
+    unit: ProductUnit.PER_POUND,
+    price: new Prisma.Decimal(850),
+    currency: 'JMD',
+    quantityUploaded: new Prisma.Decimal(50),
+    quantityAvailable: new Prisma.Decimal(50),
+    quantityReserved: new Prisma.Decimal(0),
+    quantitySold: new Prisma.Decimal(0),
+    preparationOptions: null,
+    deliveryAvailable: true,
+    pickupAvailable: true,
+    status: ListingLifecycleStatus.DRAFT,
+    withdrawnAt: null,
+    withdrawnReason: null,
+    suspendedAt: null,
+    suspensionReason: null,
+    publishedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    photos: [mockPhoto],
+    speciesDeclarations: [],
+    vendor: {
+      id: 'vendor-1',
+      businessName: 'Port Royal Fish Co',
+      tier: VendorTier.COMMUNITY_FISHER,
+      parish: 'KINGSTON',
+    },
+    catalogueItem: {
+      id: 'cat-item-1',
+      name: 'Yellowtail Snapper',
+      commonName: 'Yellowtail Snapper',
+      categoryId: 'cat-1',
+      compositionMode: CatalogueCompositionMode.SINGLE_SPECIES,
+      referenceImageUrl: 'https://images.example.com/snapper.jpg',
+    },
+    lot: {
+      id: 'lot-1',
+      lotNumber: 'LOT-2026-000101',
+      publicTraceToken: 'trace-token-101',
+      freshnessGrade: 'GRADE_A',
+      foodSafetyStatus: FoodSafetyStatus.SAFE,
+      originType: 'WILD_CAUGHT',
+      acquisitionType: 'DIRECT_CATCH',
+    },
+    landingSite: null,
+    product: {
+      id: 'prod-1',
+      name: 'Morning Snapper Catch',
+      inventoryMode: 'LEGACY_PRODUCT',
+      quantityAvailable: 50,
+    },
+  };
+
+  beforeEach(() => {
+    dailyListingsRepo = {
+      findById: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      addPhoto: jest.fn(),
+      withdrawPhoto: jest.fn(),
+      setPrimaryPhoto: jest.fn(),
+      publishListing: jest.fn(),
+      withdrawListing: jest.fn(),
+      suspendListing: jest.fn(),
+      reinstateListing: jest.fn(),
+      updateQuantities: jest.fn(),
+      syncProductProjectionUnderLock: jest.fn(),
+      findActiveByCatalogueItemId: jest.fn(),
+    } as unknown as jest.Mocked<DailyListingsRepository>;
+
+    vendorsRepo = {
+      findByUserId: jest.fn().mockResolvedValue(mockVendor),
+      findById: jest.fn().mockResolvedValue(mockVendor),
+    } as unknown as jest.Mocked<VendorsRepository>;
+
+    vendorDocsService = {
+      assertCanSell: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<VendorDocumentsService>;
+
+    catalogueRepo = {
+      findById: jest.fn().mockResolvedValue(mockCatalogueItem),
+    } as unknown as jest.Mocked<SeafoodCatalogueRepository>;
+
+    seafoodLotsRepo = {
+      findById: jest.fn().mockResolvedValue(mockLot),
+    } as unknown as jest.Mocked<SeafoodLotsRepository>;
+
+    productsRepo = {
+      findById: jest.fn().mockResolvedValue({
+        id: 'prod-1',
+        vendorId: 'vendor-1',
+        catalogueItemId: 'cat-item-1',
+        name: 'Snapper',
+      }),
+      update: jest.fn(),
+    } as unknown as jest.Mocked<ProductsRepository>;
+
+    regulatoryService = {
+      evaluate: jest.fn().mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      }),
+    } as unknown as jest.Mocked<RegulatoryEligibilityService>;
+
+    prisma = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'prod-1', inventoryMode: 'LEGACY_PRODUCT', quantityAvailable: 50 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'prod-1', inventoryMode: 'LEGACY_PRODUCT', quantityAvailable: 50 }),
+        create: jest.fn().mockResolvedValue({ id: 'prod-new', inventoryMode: 'LEGACY_PRODUCT', quantityAvailable: 0 }),
+        update: jest.fn().mockResolvedValue({ id: 'prod-1' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      landingSite: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'site-1', name: 'Old Harbour' }),
+      },
+      listingPhoto: {
+        count: jest.fn().mockResolvedValue(1),
+        update: jest.fn().mockResolvedValue({ id: 'photo-1', isPrimary: true }),
+      },
+      vendorDailyListing: {
+        findMany: jest.fn().mockResolvedValue([{ quantityAvailable: new Prisma.Decimal(50) }]),
+      },
+      $transaction: jest.fn().mockImplementation((fn: (tx: any) => Promise<any>) => fn(prisma)),
+    } as unknown as jest.Mocked<PrismaService>;
+
+    service = new DailyListingsService(
+      dailyListingsRepo,
+      vendorsRepo,
+      vendorDocsService,
+      catalogueRepo,
+      seafoodLotsRepo,
+      productsRepo,
+      regulatoryService,
+      prisma,
+    );
+  });
+
+  describe('create', () => {
+    const createDto: CreateDailyListingDto = {
+      catalogueItemId: 'cat-item-1',
+      lotId: 'lot-1',
+      catchDate: new Date(Date.now() - 3600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+      unit: ProductUnit.PER_POUND,
+      price: 850,
+      quantityUploaded: 50,
+    };
+
+    it('creates a daily listing in DRAFT status when parameters are valid', async () => {
+      dailyListingsRepo.create.mockResolvedValue(mockListing);
+
+      const result = await service.create('user-1', createDto);
+
+      expect(vendorsRepo.findByUserId).toHaveBeenCalledWith('user-1');
+      expect(vendorDocsService.assertCanSell).toHaveBeenCalledWith('vendor-1', VendorTier.COMMUNITY_FISHER);
+      expect(catalogueRepo.findById).toHaveBeenCalledWith('cat-item-1');
+      expect(seafoodLotsRepo.findById).toHaveBeenCalledWith('lot-1');
+      expect(dailyListingsRepo.create).toHaveBeenCalled();
+      expect(result.status).toBe(ListingLifecycleStatus.DRAFT);
+      expect(result.derivedStatus).toBe(ListingLifecycleStatus.DRAFT);
+    });
+
+    it('rejects creation if vendor is not APPROVED', async () => {
+      vendorsRepo.findByUserId.mockResolvedValue({
+        ...mockVendor,
+        status: VendorStatus.PENDING,
+      });
+
+      await expect(service.create('user-1', createDto)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects creation if master catalogue item is not PUBLISHED', async () => {
+      catalogueRepo.findById.mockResolvedValue({
+        ...mockCatalogueItem,
+        lifecycleStatus: CatalogueLifecycleStatus.DRAFT,
+      });
+
+      await expect(service.create('user-1', createDto)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects creation if seafood lot does not belong to vendor', async () => {
+      seafoodLotsRepo.findById.mockResolvedValue({
+        ...mockLot,
+        vendorId: 'other-vendor',
+      });
+
+      await expect(service.create('user-1', createDto)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects creation if seafood lot food safety status is not SAFE', async () => {
+      seafoodLotsRepo.findById.mockResolvedValue({
+        ...mockLot,
+        foodSafetyStatus: FoodSafetyStatus.RECALLED,
+      });
+
+      await expect(service.create('user-1', createDto)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects creation for VARIABLE_COMPOSITE item without species declarations', async () => {
+      catalogueRepo.findById.mockResolvedValue({
+        ...mockCatalogueItem,
+        compositionMode: CatalogueCompositionMode.VARIABLE_COMPOSITE,
+      });
+
+      await expect(service.create('user-1', createDto)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects catch date in future', async () => {
+      const futureCatchDto = {
+        ...createDto,
+        catchDate: new Date(Date.now() + 100_000).toISOString(),
+      };
+
+      await expect(service.create('user-1', futureCatchDto)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects expiresAt before or equal to availableFrom', async () => {
+      const invalidExpiryDto = {
+        ...createDto,
+        availableFrom: new Date(Date.now() + 1000).toISOString(),
+        expiresAt: new Date(Date.now() + 500).toISOString(),
+      };
+
+      await expect(service.create('user-1', invalidExpiryDto)).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('publish', () => {
+    it('publishes listing after verifying photos and regulatory compliance', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      dailyListingsRepo.publishListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+        publishedAt: new Date(),
+      });
+
+      const result = await service.publish('user-1', 'listing-1');
+
+      expect(regulatoryService.evaluate).toHaveBeenCalledWith({
+        catalogueItemId: 'cat-item-1',
+        vendorDailyListingId: 'listing-1',
+        seafoodLotId: 'lot-1',
+        atDate: expect.any(Date),
+      });
+      expect(dailyListingsRepo.publishListing).toHaveBeenCalledWith('listing-1', expect.any(Function));
+      // LEGACY_PRODUCT quantityAvailable must NOT be overwritten
+      expect(prisma.product.update).not.toHaveBeenCalled();
+      expect(prisma.product.updateMany).not.toHaveBeenCalled();
+      expect(result.status).toBe(ListingLifecycleStatus.PUBLISHED);
+      expect(result.derivedStatus).toBe(ListingLifecycleStatus.PUBLISHED);
+    });
+
+    it('rejects publication if listing has no approved non-withdrawn photos', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        photos: [],
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects publication if listing has only withdrawn photos', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        photos: [
+          {
+            ...mockPhoto,
+            withdrawnAt: new Date(),
+          },
+        ],
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects publication if listing is already expired', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        expiresAt: new Date(Date.now() - 10_000),
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects publication if regulatory eligibility check fails', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: false,
+        reasons: ['Species Parrotfish is legally prohibited'],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(BadRequestException);
+      expect(dailyListingsRepo.publishListing).not.toHaveBeenCalled();
+    });
+
+    it('rejects publication if regulatory safe-mode defaults to fail-closed', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: false,
+        reasons: ['Regulatory evaluation degraded fail-closed mode'],
+        evaluatedAt: new Date(),
+        mode: 'DEGRADED_FAIL_CLOSED',
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('update and ownership security', () => {
+    it('prevents non-owner vendor from updating listing', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        vendorId: 'other-vendor-id',
+      });
+
+      await expect(
+        service.update('user-1', 'listing-1', { listingTitle: 'Hacked' }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects updating withdrawn or suspended listing', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.WITHDRAWN,
+      });
+
+      await expect(
+        service.update('user-1', 'listing-1', { price: 900 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects modifying quantityUploaded on already published listing', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+
+      await expect(
+        service.update('user-1', 'listing-1', { quantityUploaded: 100 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('photos and withdrawal governance', () => {
+    it('adds a photo to listing', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      dailyListingsRepo.addPhoto.mockResolvedValue({
+        id: 'photo-2',
+        vendorDailyListingId: 'listing-1',
+        url: 'https://cdn.example.com/listings/catch2.jpg',
+        caption: 'Second angle',
+        isPrimary: false,
+        moderationStatus: ListingPhotoModerationStatus.APPROVED,
+        uploadedAt: new Date(),
+        captureDate: null,
+        withdrawnAt: null,
+        withdrawnByUserId: null,
+        withdrawnReason: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const photo = await service.addPhoto('user-1', 'listing-1', {
+        url: 'https://cdn.example.com/listings/catch2.jpg',
+        caption: 'Second angle',
+      });
+
+      expect(photo.id).toBe('photo-2');
+      expect(dailyListingsRepo.addPhoto).toHaveBeenCalled();
+    });
+
+    it('withdraws photo with reason and automatically withdraws published listing if 0 photos remain', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+      dailyListingsRepo.withdrawPhoto.mockResolvedValue({
+        ...mockPhoto,
+        withdrawnAt: new Date(),
+        withdrawnReason: 'Wrong batch photo',
+      });
+      (prisma.listingPhoto.count as jest.Mock).mockResolvedValue(0);
+
+      await service.withdrawPhoto('user-1', 'listing-1', 'photo-1', {
+        reason: 'Wrong batch photo',
+      });
+
+      expect(dailyListingsRepo.withdrawPhoto).toHaveBeenCalledWith('photo-1', 'user-1', 'Wrong batch photo');
+      expect(dailyListingsRepo.withdrawListing).toHaveBeenCalledWith(
+        'listing-1',
+        'Automatically withdrawn: all listing photographs withdrawn',
+      );
+    });
+  });
+
+  describe('repeat previous listing', () => {
+    it('creates an independent new DRAFT listing with fresh lot and fresh date, without copying photos', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      const freshLot = {
+        ...mockLot,
+        id: 'lot-2',
+        lotNumber: 'LOT-2026-000102',
+      };
+      seafoodLotsRepo.findById.mockResolvedValue(freshLot);
+
+      const createdRepeatListing: DailyListingWithDetails = {
+        ...mockListing,
+        id: 'listing-2',
+        lotId: 'lot-2',
+        status: ListingLifecycleStatus.DRAFT,
+        photos: [], // fresh listing has no photos copied over
+        createdAt: new Date(),
+      };
+      dailyListingsRepo.create.mockResolvedValue(createdRepeatListing);
+
+      const repeatDto: RepeatDailyListingDto = {
+        catchDate: new Date(Date.now() - 1800_000).toISOString(),
+        expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+        quantityUploaded: 40,
+        price: 880,
+        lotId: 'lot-2',
+      };
+
+      const result = await service.repeat('user-1', 'listing-1', repeatDto);
+
+      expect(result.id).toBe('listing-2');
+      expect(result.status).toBe(ListingLifecycleStatus.DRAFT);
+      expect(result.photos).toEqual([]);
+      expect(dailyListingsRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ListingLifecycleStatus.DRAFT,
+          lotId: 'lot-2',
+          price: 880,
+          quantityUploaded: 40,
+        }),
+        expect.any(Array),
+      );
+    });
+  });
+
+  describe('derived read-time lifecycle status', () => {
+    it('derives EXPIRED if expiresAt <= now even if stored status is PUBLISHED', () => {
+      const derived = service.computeDerivedStatus({
+        status: ListingLifecycleStatus.PUBLISHED,
+        expiresAt: new Date(Date.now() - 5000),
+        quantityAvailable: 25,
+      });
+      expect(derived).toBe('EXPIRED');
+    });
+
+    it('derives SOLD_OUT if quantityAvailable <= 0 when status is PUBLISHED and not expired', () => {
+      const derived = service.computeDerivedStatus({
+        status: ListingLifecycleStatus.PUBLISHED,
+        expiresAt: new Date(Date.now() + 100_000),
+        quantityAvailable: 0,
+      });
+      expect(derived).toBe('SOLD_OUT');
+    });
+
+    it('derives PUBLISHED when active, non-expired, and quantityAvailable > 0', () => {
+      const derived = service.computeDerivedStatus({
+        status: ListingLifecycleStatus.PUBLISHED,
+        expiresAt: new Date(Date.now() + 100_000),
+        quantityAvailable: 15,
+      });
+      expect(derived).toBe('PUBLISHED');
+    });
+
+    it('preserves actor-driven stored states (DRAFT, WITHDRAWN, SUSPENDED)', () => {
+      expect(
+        service.computeDerivedStatus({
+          status: ListingLifecycleStatus.DRAFT,
+          expiresAt: new Date(Date.now() + 100_000),
+          quantityAvailable: 10,
+        }),
+      ).toBe('DRAFT');
+
+      expect(
+        service.computeDerivedStatus({
+          status: ListingLifecycleStatus.WITHDRAWN,
+          expiresAt: new Date(Date.now() + 100_000),
+          quantityAvailable: 10,
+        }),
+      ).toBe('WITHDRAWN');
+
+      expect(
+        service.computeDerivedStatus({
+          status: ListingLifecycleStatus.SUSPENDED,
+          expiresAt: new Date(Date.now() + 100_000),
+          quantityAvailable: 10,
+        }),
+      ).toBe('SUSPENDED');
+    });
+  });
+
+  describe('admin suspension and reinstatement', () => {
+    it('suspends listing with audit reason', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      dailyListingsRepo.suspendListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.SUSPENDED,
+        suspendedAt: new Date(),
+        suspensionReason: 'Inspection defect',
+      });
+
+      const result = await service.suspend('admin-user', 'listing-1', {
+        reason: 'Inspection defect',
+      });
+
+      expect(result.status).toBe(ListingLifecycleStatus.SUSPENDED);
+      expect(dailyListingsRepo.suspendListing).toHaveBeenCalledWith('listing-1', 'Inspection defect');
+    });
+
+    it('reinstates listing after re-verifying regulatory eligibility', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.SUSPENDED,
+      });
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+      dailyListingsRepo.reinstateListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+
+      const result = await service.reinstate('admin-user', 'listing-1');
+
+      expect(regulatoryService.evaluate).toHaveBeenCalled();
+      expect(dailyListingsRepo.reinstateListing).toHaveBeenCalledWith('listing-1', expect.any(Function));
+      expect(result.status).toBe(ListingLifecycleStatus.PUBLISHED);
+    });
+
+    it('rejects reinstatement if regulatory eligibility fails', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.SUSPENDED,
+      });
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: false,
+        reasons: ['Species closed season active'],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      await expect(service.reinstate('admin-user', 'listing-1')).rejects.toThrow(BadRequestException);
+      expect(dailyListingsRepo.reinstateListing).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('inventory authority and projection boundaries (F-16B-01)', () => {
+    it('preserves LEGACY_PRODUCT quantityAvailable untouched upon listing publication', async () => {
+      // Product is in LEGACY_PRODUCT mode with 50 units of authoritative inventory
+      (prisma.product.findUnique as jest.Mock).mockResolvedValue({
+        id: 'prod-1',
+        inventoryMode: 'LEGACY_PRODUCT',
+        quantityAvailable: 50,
+      });
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+      dailyListingsRepo.publishListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+
+      await service.publish('user-1', 'listing-1');
+
+      // Crucial invariant: product.update and updateMany must NEVER be called to overwrite legacy stock
+      expect(prisma.product.updateMany).not.toHaveBeenCalled();
+      expect(prisma.product.update).not.toHaveBeenCalled();
+    });
+
+    it('preserves LEGACY_PRODUCT quantityAvailable untouched upon listing withdrawal', async () => {
+      (prisma.product.findUnique as jest.Mock).mockResolvedValue({
+        id: 'prod-1',
+        inventoryMode: 'LEGACY_PRODUCT',
+        quantityAvailable: 50,
+      });
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+      dailyListingsRepo.withdrawListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.WITHDRAWN,
+      });
+
+      await service.withdraw('user-1', 'listing-1', { reason: 'End of sales day' });
+
+      expect(prisma.product.updateMany).not.toHaveBeenCalled();
+      expect(prisma.product.update).not.toHaveBeenCalled();
+    });
+
+    it('preserves LEGACY_PRODUCT quantityAvailable untouched upon listing suspension and reinstatement', async () => {
+      (prisma.product.findUnique as jest.Mock).mockResolvedValue({
+        id: 'prod-1',
+        inventoryMode: 'LEGACY_PRODUCT',
+        quantityAvailable: 50,
+      });
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.PUBLISHED,
+      });
+      dailyListingsRepo.suspendListing.mockResolvedValue({
+        ...mockListing,
+        status: ListingLifecycleStatus.SUSPENDED,
+      });
+
+      await service.suspend('admin-user', 'listing-1', { reason: 'Administrative audit' });
+      expect(prisma.product.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('delegates refreshProductQuantityProjection to repository syncProductProjectionUnderLock', async () => {
+      await service.refreshProductQuantityProjection('prod-1');
+
+      expect(dailyListingsRepo.syncProductProjectionUnderLock).toHaveBeenCalledWith(
+        expect.anything(),
+        'prod-1',
+      );
+    });
+
+    it('does not silently change inventoryMode when creating a listing or backing product', async () => {
+      (productsRepo.findById as jest.Mock).mockResolvedValue(null);
+      (prisma.product.findFirst as jest.Mock).mockResolvedValue(null);
+      dailyListingsRepo.create.mockResolvedValue(mockListing);
+
+      await service.create('user-1', {
+        catalogueItemId: 'cat-item-1',
+        lotId: 'lot-1',
+        unit: ProductUnit.PER_POUND,
+        price: 800,
+        quantityUploaded: 30,
+        catchDate: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+      });
+
+      expect(prisma.product.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            inventoryMode: 'LEGACY_PRODUCT',
+            quantityAvailable: 0,
+          }),
+        }),
+      );
+    });
+  });
+});
