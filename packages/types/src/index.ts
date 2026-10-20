@@ -951,3 +951,174 @@ export interface RegisterRequest {
   phone?: string;
   role?: SelfRegisterableRole;
 }
+
+// --- Daily Listings & Available-Today Marketplace (Phase 16B & 16C) ---
+
+export enum ListingLifecycleStatus {
+  DRAFT = 'DRAFT',
+  PUBLISHED = 'PUBLISHED',
+  WITHDRAWN = 'WITHDRAWN',
+  SUSPENDED = 'SUSPENDED',
+}
+
+export enum ListingPhotoModerationStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+}
+
+export interface PreparationOption {
+  id: string;
+  name: string;
+  description?: string;
+  pricePerUnit: number;
+}
+
+export interface DailyListingPhotoResponse {
+  id: string;
+  vendorDailyListingId: string;
+  url: string;
+  caption: string | null;
+  isPrimary: boolean;
+  moderationStatus: ListingPhotoModerationStatus;
+  uploadedAt: string;
+  captureDate: string | null;
+  withdrawnAt: string | null;
+  withdrawnReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DailyListingSpeciesResponse {
+  id: string;
+  vendorDailyListingId: string;
+  speciesId: string;
+  proportion: number | null;
+  notes: string | null;
+  scientificName?: string;
+  commercialName?: string;
+  createdAt: string;
+}
+
+export interface DailyListingResponse {
+  id: string;
+  vendorId: string;
+  productId: string;
+  catalogueItemId: string;
+  lotId: string;
+  landingSiteId: string | null;
+  listingTitle: string | null;
+  description: string | null;
+  catchDate: string;
+  availableFrom: string;
+  expiresAt: string;
+  unit: ProductUnit;
+  price: number;
+  currency: string;
+  quantityUploaded: number;
+  quantityAvailable: number;
+  quantityReserved: number;
+  quantitySold: number;
+  preparationOptions?: PreparationOption[] | null;
+  deliveryAvailable: boolean;
+  pickupAvailable: boolean;
+  status: ListingLifecycleStatus;
+  derivedStatus: string;
+  publishedAt: string | null;
+  withdrawnAt: string | null;
+  withdrawnReason: string | null;
+  suspendedAt: string | null;
+  suspensionReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  primaryPhoto: DailyListingPhotoResponse | null;
+  photos: DailyListingPhotoResponse[];
+  speciesDeclarations: DailyListingSpeciesResponse[];
+  vendor?: {
+    id: string;
+    businessName: string;
+    tier: string;
+    parish?: string;
+  };
+  catalogueItem?: {
+    id: string;
+    name: string;
+    commonName: string;
+    categoryId: string;
+    compositionMode: string;
+    referenceImageUrl?: string | null;
+  };
+  lot?: {
+    id: string;
+    lotNumber: string;
+    publicTraceToken: string;
+    freshnessGrade?: string | null;
+    foodSafetyStatus: string;
+    originType?: string | null;
+    acquisitionType?: string | null;
+  };
+  landingSite?: {
+    id: string;
+    name: string;
+    parish: string;
+  } | null;
+}
+
+export interface PaginatedDailyListings {
+  items: DailyListingResponse[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface AvailableTodayItem {
+  catalogueItemId: string;
+  name: string;
+  commonName: string;
+  scientificName: string;
+  categoryId: string;
+  categoryName: string;
+  referenceImageUrl: string | null;
+  totalQuantityAvailable: number;
+  unit: ProductUnit;
+  sellerCount: number;
+  minPrice: number;
+  maxPrice: number;
+  currency: string;
+  earliestCatchDate: string;
+  activeListingsCount: number;
+  hasPreparationOptions: boolean;
+  deliveryAvailable: boolean;
+  pickupAvailable: boolean;
+  parishes: string[];
+  listingsPreview: DailyListingResponse[];
+}
+
+export interface PaginatedAvailableToday {
+  items: AvailableTodayItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface QueryDailyListings {
+  vendorId?: string;
+  catalogueItemId?: string;
+  categoryId?: string;
+  speciesId?: string;
+  landingSiteId?: string;
+  parish?: Parish;
+  minPrice?: number;
+  maxPrice?: number;
+  unit?: ProductUnit;
+  hasPreparationOptions?: boolean;
+  deliveryAvailable?: boolean;
+  pickupAvailable?: boolean;
+  status?: ListingLifecycleStatus;
+  activeOnly?: boolean;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+}

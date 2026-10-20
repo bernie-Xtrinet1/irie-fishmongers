@@ -291,4 +291,81 @@ describe('DailyListingsRepository Publication Concurrency & Guards (F-16B-02)', 
       expect(mockTx.vendorDailyListing.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('Phase 16C Discovery and Filtering (buildWhereClause)', () => {
+    it('applies comprehensive activeOnly fail-closed filters for public discovery', async () => {
+      (prisma.vendorDailyListing.findMany as jest.Mock).mockResolvedValue([]);
+
+      await repository.findMany({ page: 1, pageSize: 20, activeOnly: true });
+
+      expect(prisma.vendorDailyListing.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: ListingLifecycleStatus.PUBLISHED,
+            expiresAt: expect.any(Object),
+            availableFrom: expect.any(Object),
+            quantityAvailable: { gt: 0 },
+            vendor: expect.objectContaining({ status: 'APPROVED' }),
+            catalogueItem: expect.objectContaining({
+              lifecycleStatus: 'PUBLISHED',
+              speciesLinks: expect.objectContaining({
+                none: expect.objectContaining({
+                  species: expect.objectContaining({
+                    regulatoryStatus: 'PROHIBITED',
+                  }),
+                }),
+              }),
+            }),
+            lot: expect.objectContaining({ foodSafetyStatus: 'SAFE' }),
+            photos: expect.objectContaining({
+              some: expect.objectContaining({
+                withdrawnAt: null,
+                moderationStatus: ListingPhotoModerationStatus.APPROVED,
+              }),
+            }),
+          }),
+        }),
+      );
+    });
+
+    it('applies search, price range, category, species, and fulfillment filters', async () => {
+      (prisma.vendorDailyListing.findMany as jest.Mock).mockResolvedValue([]);
+
+      await repository.findMany({
+        page: 1,
+        pageSize: 20,
+        search: 'Snapper',
+        categoryId: 'cat-1',
+        speciesId: 'sp-1',
+        minPrice: 500,
+        maxPrice: 1200,
+        deliveryAvailable: true,
+        pickupAvailable: true,
+      });
+
+      expect(prisma.vendorDailyListing.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            catalogueItem: expect.objectContaining({ categoryId: 'cat-1' }),
+            speciesDeclarations: expect.objectContaining({
+              some: { speciesId: 'sp-1' },
+            }),
+            price: {
+              gte: new Prisma.Decimal(500),
+              lte: new Prisma.Decimal(1200),
+            },
+            deliveryAvailable: true,
+            pickupAvailable: true,
+            AND: expect.arrayContaining([
+              expect.objectContaining({
+                OR: expect.arrayContaining([
+                  { listingTitle: { contains: 'Snapper', mode: 'insensitive' } },
+                ]),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+  });
 });

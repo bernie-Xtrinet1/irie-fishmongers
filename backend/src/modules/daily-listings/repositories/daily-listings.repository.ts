@@ -1,10 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   CatalogueLifecycleStatus,
+  FoodSafetyStatus,
   ListingLifecycleStatus,
   ListingPhotoModerationStatus,
   Prisma,
   ProductUnit,
+  VendorStatus,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -27,6 +29,7 @@ export const listingIncludeDetails = (includeWithdrawnPhotos = false) =>
         select: {
           id: true,
           businessName: true,
+          status: true,
           tier: true,
           parish: true,
         },
@@ -38,6 +41,7 @@ export const listingIncludeDetails = (includeWithdrawnPhotos = false) =>
           commonName: true,
           categoryId: true,
           compositionMode: true,
+          lifecycleStatus: true,
           referenceImageUrl: true,
         },
       },
@@ -477,7 +481,7 @@ export class DailyListingsRepository {
       }
 
       // Guard 4: Backing seafood lot must have SAFE food safety status
-      if (!current.lot || current.lot.foodSafetyStatus !== 'SAFE') {
+      if (!current.lot || current.lot.foodSafetyStatus !== FoodSafetyStatus.SAFE) {
         throw new BadRequestException(
           `Cannot publish listing: seafood lot food safety status is ${current.lot?.foodSafetyStatus ?? 'UNKNOWN'} (must be SAFE)`,
         );
@@ -782,6 +786,50 @@ export class DailyListingsRepository {
     if (filters.catalogueItemId) {
       where.catalogueItemId = filters.catalogueItemId;
     }
+    if (filters.landingSiteId) {
+      where.landingSiteId = filters.landingSiteId;
+    }
+    if (filters.unit) {
+      where.unit = filters.unit;
+    }
+    if (filters.deliveryAvailable !== undefined) {
+      where.deliveryAvailable = filters.deliveryAvailable;
+    }
+    if (filters.pickupAvailable !== undefined) {
+      where.pickupAvailable = filters.pickupAvailable;
+    }
+
+    if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
+      where.price = {};
+      if (filters.minPrice !== undefined) {
+        where.price.gte = new Prisma.Decimal(filters.minPrice);
+      }
+      if (filters.maxPrice !== undefined) {
+        where.price.lte = new Prisma.Decimal(filters.maxPrice);
+      }
+    }
+
+    if (filters.categoryId) {
+      where.catalogueItem = {
+        ...((where.catalogueItem as Prisma.SeafoodCatalogueItemWhereInput) || {}),
+        categoryId: filters.categoryId,
+      };
+    }
+
+    if (filters.parish) {
+      where.vendor = {
+        ...((where.vendor as Prisma.VendorWhereInput) || {}),
+        parish: filters.parish,
+      };
+    }
+
+    if (filters.speciesId) {
+      where.speciesDeclarations = {
+        some: {
+          speciesId: filters.speciesId,
+        },
+      };
+    }
 
     if (filters.activeOnly) {
       const now = new Date();
@@ -789,14 +837,48 @@ export class DailyListingsRepository {
       where.expiresAt = { gt: now };
       where.availableFrom = { lte: now };
       where.quantityAvailable = { gt: 0 };
+      where.vendor = {
+        ...((where.vendor as Prisma.VendorWhereInput) || {}),
+        status: VendorStatus.APPROVED,
+      };
+      where.catalogueItem = {
+        ...((where.catalogueItem as Prisma.SeafoodCatalogueItemWhereInput) || {}),
+        lifecycleStatus: CatalogueLifecycleStatus.PUBLISHED,
+        speciesLinks: {
+          none: {
+            species: {
+              regulatoryStatus: 'PROHIBITED',
+            },
+          },
+        },
+      };
+      where.lot = {
+        foodSafetyStatus: FoodSafetyStatus.SAFE,
+      };
+      where.photos = {
+        some: {
+          withdrawnAt: null,
+          moderationStatus: ListingPhotoModerationStatus.APPROVED,
+        },
+      };
     } else if (filters.status) {
       where.status = filters.status;
     }
 
-    if (filters.search) {
-      where.OR = [
-        { listingTitle: { contains: filters.search.trim(), mode: 'insensitive' } },
-        { description: { contains: filters.search.trim(), mode: 'insensitive' } },
+    if (filters.search && filters.search.trim()) {
+      const term = filters.search.trim();
+      const searchOr: Prisma.VendorDailyListingWhereInput[] = [
+        { listingTitle: { contains: term, mode: 'insensitive' } },
+        { description: { contains: term, mode: 'insensitive' } },
+        { catalogueItem: { name: { contains: term, mode: 'insensitive' } } },
+        { catalogueItem: { commonName: { contains: term, mode: 'insensitive' } } },
+        { catalogueItem: { scientificName: { contains: term, mode: 'insensitive' } } },
+        { vendor: { businessName: { contains: term, mode: 'insensitive' } } },
+      ];
+
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        { OR: searchOr },
       ];
     }
 

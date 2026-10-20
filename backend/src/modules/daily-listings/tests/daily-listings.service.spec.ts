@@ -162,6 +162,7 @@ describe('DailyListingsService', () => {
       businessName: 'Port Royal Fish Co',
       tier: VendorTier.COMMUNITY_FISHER,
       parish: 'KINGSTON',
+      status: VendorStatus.APPROVED,
     },
     catalogueItem: {
       id: 'cat-item-1',
@@ -169,6 +170,7 @@ describe('DailyListingsService', () => {
       commonName: 'Yellowtail Snapper',
       categoryId: 'cat-1',
       compositionMode: CatalogueCompositionMode.SINGLE_SPECIES,
+      lifecycleStatus: CatalogueLifecycleStatus.PUBLISHED,
       referenceImageUrl: 'https://images.example.com/snapper.jpg',
     },
     lot: {
@@ -788,6 +790,285 @@ describe('DailyListingsService', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('Phase 16C Customer Available-Today Discovery & Gating', () => {
+    const activePublishedListing: DailyListingWithDetails = {
+      ...mockListing,
+      status: ListingLifecycleStatus.PUBLISHED,
+      availableFrom: new Date(Date.now() - 3600_000),
+      expiresAt: new Date(Date.now() + 86400_000),
+      quantityAvailable: new Prisma.Decimal(25),
+      publishedAt: new Date(),
+      vendor: {
+        id: 'vendor-1',
+        businessName: 'Port Royal Fish Co',
+        tier: VendorTier.COMMUNITY_FISHER,
+        parish: 'KINGSTON',
+        status: VendorStatus.APPROVED,
+      },
+      catalogueItem: {
+        id: 'cat-item-1',
+        name: 'Yellowtail Snapper',
+        commonName: 'Yellowtail Snapper',
+        categoryId: 'cat-1',
+        compositionMode: CatalogueCompositionMode.SINGLE_SPECIES,
+        lifecycleStatus: CatalogueLifecycleStatus.PUBLISHED,
+        referenceImageUrl: 'https://images.example.com/snapper.jpg',
+      },
+      lot: {
+        id: 'lot-1',
+        lotNumber: 'LOT-2026-000101',
+        publicTraceToken: 'trace-token-101',
+        freshnessGrade: 'GRADE_A',
+        foodSafetyStatus: FoodSafetyStatus.SAFE,
+        originType: 'WILD_CAUGHT',
+        acquisitionType: 'DIRECT_CATCH',
+      },
+      photos: [mockPhoto],
+    };
+
+    it('returns public listing detail when listing is active, published, and regulatory eligible', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(activePublishedListing);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      const result = await service.findPublicById('listing-1');
+
+      expect(result.id).toBe('listing-1');
+      expect(result.status).toBe(ListingLifecycleStatus.PUBLISHED);
+      expect(result.quantityAvailable).toBe(25);
+    });
+
+    it('fails closed (404) when listing is in DRAFT status', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        status: ListingLifecycleStatus.DRAFT,
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when listing is expired', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        expiresAt: new Date(Date.now() - 60_000),
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when listing has 0 available quantity', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        quantityAvailable: new Prisma.Decimal(0),
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when vendor is not APPROVED', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        vendor: {
+          ...activePublishedListing.vendor!,
+          status: VendorStatus.SUSPENDED,
+        },
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when backing seafood lot is RECALLED', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        lot: {
+          ...activePublishedListing.lot!,
+          foodSafetyStatus: 'RECALLED',
+        },
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when listing has no active approved photos', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...activePublishedListing,
+        photos: [
+          {
+            ...mockPhoto,
+            withdrawnAt: new Date(),
+            withdrawnReason: 'Violation',
+          },
+        ],
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('fails closed (404) when regulatory evaluation returns eligible: false', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(activePublishedListing);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: false,
+        reasons: ['Species closed season in effect'],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      await expect(service.findPublicById('listing-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('aggregates available today items by catalogue item with distinct sellers and price bounds', async () => {
+      const listing2: DailyListingWithDetails = {
+        ...activePublishedListing,
+        id: 'listing-2',
+        vendorId: 'vendor-2',
+        price: new Prisma.Decimal(950),
+        quantityAvailable: new Prisma.Decimal(40),
+        vendor: {
+          id: 'vendor-2',
+          businessName: 'Kingston Fishery',
+          tier: VendorTier.COMMUNITY_FISHER,
+          parish: 'KINGSTON',
+          status: VendorStatus.APPROVED,
+        },
+      };
+
+      dailyListingsRepo.findMany.mockResolvedValue([activePublishedListing, listing2]);
+      dailyListingsRepo.count.mockResolvedValue(2);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      const result = await service.getAvailableTodayMarketplace({ page: 1, pageSize: 20 });
+
+      expect(result.items).toHaveLength(1);
+      const item = result.items[0]!;
+      expect(item.catalogueItemId).toBe('cat-item-1');
+      expect(item.totalQuantityAvailable).toBe(65);
+      expect(item.sellerCount).toBe(2);
+      expect(item.minPrice).toBe(850);
+      expect(item.maxPrice).toBe(950);
+      expect(item.listingsPreview).toHaveLength(2);
+    });
+
+    it('excludes regulatory-ineligible listings from active public findMany discovery', async () => {
+      const listingIneligible: DailyListingWithDetails = {
+        ...activePublishedListing,
+        id: 'listing-ineligible',
+      };
+
+      dailyListingsRepo.findMany.mockResolvedValue([activePublishedListing, listingIneligible]);
+      dailyListingsRepo.count.mockResolvedValue(2);
+
+      regulatoryService.evaluate
+        .mockResolvedValueOnce({
+          eligible: true,
+          reasons: [],
+          evaluatedAt: new Date(),
+          mode: 'ENFORCING',
+        })
+        .mockResolvedValueOnce({
+          eligible: false,
+          reasons: ['Closed season'],
+          evaluatedAt: new Date(),
+          mode: 'ENFORCING',
+        });
+
+      const result = await service.findMany({ page: 1, pageSize: 20, activeOnly: true });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]!.id).toBe('listing-1');
+      expect(result.total).toBe(1);
+    });
+
+    it('segregates listings with different units (PER_POUND vs PER_ITEM) into separate aggregated items', async () => {
+      const listingPerItem: DailyListingWithDetails = {
+        ...activePublishedListing,
+        id: 'listing-item',
+        unit: ProductUnit.PER_ITEM,
+        price: new Prisma.Decimal(2500),
+        quantityAvailable: new Prisma.Decimal(15),
+      };
+
+      dailyListingsRepo.findMany.mockResolvedValue([activePublishedListing, listingPerItem]);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      const result = await service.getAvailableTodayMarketplace({ page: 1, pageSize: 20 });
+
+      expect(result.items).toHaveLength(2);
+      const poundItem = result.items.find((i) => i.unit === ProductUnit.PER_POUND)!;
+      const itemUnit = result.items.find((i) => i.unit === ProductUnit.PER_ITEM)!;
+
+      expect(poundItem).toBeDefined();
+      expect(poundItem.totalQuantityAvailable).toBe(25);
+      expect(poundItem.minPrice).toBe(850);
+      expect(poundItem.maxPrice).toBe(850);
+
+      expect(itemUnit).toBeDefined();
+      expect(itemUnit.totalQuantityAvailable).toBe(15);
+      expect(itemUnit.minPrice).toBe(2500);
+      expect(itemUnit.maxPrice).toBe(2500);
+    });
+
+    it('excludes listings with foodSafetyStatus !== SAFE from aggregation', async () => {
+      const recalledListing: DailyListingWithDetails = {
+        ...activePublishedListing,
+        id: 'listing-recalled',
+        lot: {
+          ...activePublishedListing.lot!,
+          foodSafetyStatus: FoodSafetyStatus.RECALLED,
+        },
+      };
+      const quarantineListing: DailyListingWithDetails = {
+        ...activePublishedListing,
+        id: 'listing-quarantine',
+        lot: {
+          ...activePublishedListing.lot!,
+          foodSafetyStatus: FoodSafetyStatus.QUARANTINED,
+        },
+      };
+
+      dailyListingsRepo.findMany.mockResolvedValue([
+        activePublishedListing,
+        recalledListing,
+        quarantineListing,
+      ]);
+      regulatoryService.evaluate.mockResolvedValue({
+        eligible: true,
+        reasons: [],
+        evaluatedAt: new Date(),
+        mode: 'ENFORCING',
+      });
+
+      const result = await service.getAvailableTodayMarketplace({ page: 1, pageSize: 20 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]!.totalQuantityAvailable).toBe(25);
+      expect(result.items[0]!.activeListingsCount).toBe(1);
+    });
+
+    it('fails closed when regulatory evaluation throws an exception', async () => {
+      dailyListingsRepo.findMany.mockResolvedValue([activePublishedListing]);
+      regulatoryService.evaluate.mockRejectedValue(new Error('PostgreSQL connection drop'));
+
+      const result = await service.getAvailableTodayMarketplace({ page: 1, pageSize: 20 });
+
+      expect(result.items).toHaveLength(0);
+      expect(result.total).toBe(0);
     });
   });
 });

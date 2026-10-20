@@ -75,6 +75,14 @@ describe('Daily Listings Controllers', () => {
         id: 'listing-2',
       }),
       findById: jest.fn().mockResolvedValue(sampleListingResponse),
+      findPublicById: jest.fn().mockResolvedValue(sampleListingResponse),
+      getAvailableTodayMarketplace: jest.fn().mockResolvedValue({
+        items: [],
+        total: 0,
+        page: 1,
+        limit: 12,
+        totalPages: 0,
+      }),
       findMany: jest.fn().mockResolvedValue({
         items: [sampleListingResponse],
         total: 1,
@@ -229,6 +237,23 @@ describe('Daily Listings Controllers', () => {
         activeOnly: true,
       });
       expect(result.items.length).toBe(1);
+    });
+
+    it('discovers aggregated Available-Today marketplace catalogue items', async () => {
+      const result = await publicController.getAvailableToday({ page: 1, pageSize: 12 });
+
+      expect(dailyListingsService.getAvailableTodayMarketplace).toHaveBeenCalledWith({
+        page: 1,
+        pageSize: 12,
+      });
+      expect(result.items).toBeDefined();
+    });
+
+    it('retrieves public listing detail through findPublicById (fail-closed)', async () => {
+      const result = await publicController.findOne('listing-1');
+
+      expect(dailyListingsService.findPublicById).toHaveBeenCalledWith('listing-1');
+      expect(result.id).toBe('listing-1');
     });
 
     it('finds active listings for a catalogue item', async () => {

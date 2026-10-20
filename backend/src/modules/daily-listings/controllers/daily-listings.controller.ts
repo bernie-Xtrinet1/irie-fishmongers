@@ -2,6 +2,7 @@ import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 
 import { QueryDailyListingsDto } from '../dto/query-daily-listings.dto';
+import { PaginatedAvailableTodayEntity } from '../entities/available-today-item.entity';
 import { DailyListingResponseEntity } from '../entities/daily-listing-response.entity';
 import { PaginatedDailyListingsEntity } from '../entities/paginated-daily-listings.entity';
 import { DailyListingsService } from '../services/daily-listings.service';
@@ -23,13 +24,13 @@ export class DailyListingsController {
     });
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get public details for a daily seafood listing' })
-  @ApiResponseDoc({ status: 200, type: DailyListingResponseEntity })
-  findOne(
-    @Param('id') id: string,
-  ): Promise<DailyListingResponseEntity> {
-    return this.dailyListingsService.findById(id, false);
+  @Get('available-today')
+  @ApiOperation({ summary: 'Discover Available-Today marketplace catalogue items aggregated across vendors' })
+  @ApiResponseDoc({ status: 200, type: PaginatedAvailableTodayEntity })
+  getAvailableToday(
+    @Query() query: QueryDailyListingsDto,
+  ): Promise<PaginatedAvailableTodayEntity> {
+    return this.dailyListingsService.getAvailableTodayMarketplace(query);
   }
 
   @Get('catalogue-item/:catalogueItemId')
@@ -39,5 +40,14 @@ export class DailyListingsController {
     @Param('catalogueItemId') catalogueItemId: string,
   ): Promise<DailyListingResponseEntity[]> {
     return this.dailyListingsService.findActiveByCatalogueItemId(catalogueItemId);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get public details for a daily seafood listing (fail-closed if not currently available)' })
+  @ApiResponseDoc({ status: 200, type: DailyListingResponseEntity })
+  findOne(
+    @Param('id') id: string,
+  ): Promise<DailyListingResponseEntity> {
+    return this.dailyListingsService.findPublicById(id);
   }
 }

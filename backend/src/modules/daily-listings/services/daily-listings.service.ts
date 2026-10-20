@@ -2,13 +2,17 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CatalogueLifecycleStatus,
+  FoodSafetyStatus,
   InventoryMode,
   ListingLifecycleStatus,
   ListingPhotoModerationStatus,
   Prisma,
+  VendorStatus,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -26,6 +30,10 @@ import { SuspendDailyListingDto } from '../dto/suspend-daily-listing.dto';
 import { UpdateDailyListingDto } from '../dto/update-daily-listing.dto';
 import { WithdrawDailyListingDto } from '../dto/withdraw-daily-listing.dto';
 import { WithdrawListingPhotoDto } from '../dto/withdraw-listing-photo.dto';
+import {
+  AvailableTodayItemEntity,
+  PaginatedAvailableTodayEntity,
+} from '../entities/available-today-item.entity';
 import { DailyListingResponseEntity } from '../entities/daily-listing-response.entity';
 import { ListingPhotoResponseEntity } from '../entities/listing-photo-response.entity';
 import { PaginatedDailyListingsEntity } from '../entities/paginated-daily-listings.entity';
@@ -36,6 +44,8 @@ import {
 
 @Injectable()
 export class DailyListingsService {
+  private readonly logger = new Logger(DailyListingsService.name);
+
   constructor(
     private readonly dailyListingsRepository: DailyListingsRepository,
     private readonly vendorsRepository: VendorsRepository,
@@ -52,7 +62,7 @@ export class DailyListingsService {
     if (!vendor) {
       throw new NotFoundException('No vendor profile exists for this account');
     }
-    if (vendor.status !== 'APPROVED') {
+    if (vendor.status !== VendorStatus.APPROVED) {
       throw new ForbiddenException('Only approved vendors may create daily seafood listings');
     }
     await this.vendorDocumentsService.assertCanSell(vendor.id, vendor.tier);
@@ -74,7 +84,7 @@ export class DailyListingsService {
     if (lot.vendorId !== vendor.id) {
       throw new ForbiddenException('Seafood lot does not belong to your vendor account');
     }
-    if (lot.foodSafetyStatus !== 'SAFE') {
+    if (lot.foodSafetyStatus !== FoodSafetyStatus.SAFE) {
       throw new BadRequestException(`Seafood lot food safety status is ${lot.foodSafetyStatus}; only SAFE lots may be listed`);
     }
 
@@ -409,7 +419,7 @@ export class DailyListingsService {
     if (newLot.vendorId !== vendor.id) {
       throw new ForbiddenException('Fresh seafood lot does not belong to your vendor account');
     }
-    if (newLot.foodSafetyStatus !== 'SAFE') {
+    if (newLot.foodSafetyStatus !== FoodSafetyStatus.SAFE) {
       throw new BadRequestException(`Fresh seafood lot food safety status is ${newLot.foodSafetyStatus}`);
     }
 
@@ -574,14 +584,115 @@ export class DailyListingsService {
     return this.mapToEntity(listing);
   }
 
+  async findPublicById(id: string): Promise<DailyListingResponseEntity> {
+    const listing = await this.dailyListingsRepository.findById(id, false);
+    if (!listing) {
+      throw new NotFoundException(`Listing not found: ${id}`);
+    }
+
+    const now = new Date();
+    const isAvailable =
+      listing.status === ListingLifecycleStatus.PUBLISHED &&
+      new Date(listing.expiresAt).getTime() > now.getTime() &&
+      new Date(listing.availableFrom).getTime() <= now.getTime() &&
+      Number(listing.quantityAvailable) > 0 &&
+      listing.vendor?.status === VendorStatus.APPROVED &&
+      listing.catalogueItem?.lifecycleStatus === CatalogueLifecycleStatus.PUBLISHED &&
+      listing.lot?.foodSafetyStatus === FoodSafetyStatus.SAFE;
+
+    const hasApprovedActivePhoto = listing.photos.some(
+      (p) => !p.withdrawnAt && p.moderationStatus === ListingPhotoModerationStatus.APPROVED,
+    );
+
+    if (!isAvailable || !hasApprovedActivePhoto) {
+      throw new NotFoundException(`Listing is not currently available: ${id}`);
+    }
+
+    let regEligible = false;
+    try {
+      const regEval = await this.regulatoryEligibilityService.evaluate({
+        catalogueItemId: listing.catalogueItemId,
+        vendorDailyListingId: listing.id,
+        seafoodLotId: listing.lotId,
+        atDate: now,
+      });
+      regEligible = Boolean(regEval?.eligible);
+    } catch (err) {
+      this.logger.error(`Regulatory evaluation failed for public listing ${id}: ${err}`);
+      regEligible = false;
+    }
+
+    if (!regEligible) {
+      throw new NotFoundException(`Listing is not currently available: ${id}`);
+    }
+
+    return this.mapToEntity(listing);
+  }
+
   async findMany(filters: QueryDailyListingsDto): Promise<PaginatedDailyListingsEntity> {
+    const limit = filters.pageSize ? Math.min(Math.max(filters.pageSize, 1), 100) : 20;
+    const page = filters.page ? Math.max(filters.page, 1) : 1;
+
+    if (filters.activeOnly) {
+      const candidates = await this.dailyListingsRepository.findMany({
+        ...filters,
+        page: 1,
+        pageSize: 250,
+      });
+
+      const now = new Date();
+      const eligible: typeof candidates = [];
+
+      for (const item of candidates) {
+        if (
+          item.status !== ListingLifecycleStatus.PUBLISHED ||
+          new Date(item.expiresAt).getTime() <= now.getTime() ||
+          new Date(item.availableFrom).getTime() > now.getTime() ||
+          Number(item.quantityAvailable) <= 0 ||
+          item.vendor?.status !== VendorStatus.APPROVED ||
+          item.lot?.foodSafetyStatus !== FoodSafetyStatus.SAFE ||
+          item.catalogueItem?.lifecycleStatus !== CatalogueLifecycleStatus.PUBLISHED ||
+          !item.photos.some((p) => !p.withdrawnAt && p.moderationStatus === ListingPhotoModerationStatus.APPROVED)
+        ) {
+          continue;
+        }
+
+        let isEligible = false;
+        try {
+          const evalResult = await this.regulatoryEligibilityService.evaluate({
+            catalogueItemId: item.catalogueItemId,
+            vendorDailyListingId: item.id,
+            seafoodLotId: item.lotId,
+            atDate: now,
+          });
+          isEligible = Boolean(evalResult?.eligible);
+        } catch (err) {
+          this.logger.error(`Regulatory evaluation failed for listing ${item.id}: ${err}`);
+          isEligible = false;
+        }
+
+        if (isEligible) {
+          eligible.push(item);
+        }
+      }
+
+      const total = eligible.length;
+      const start = (page - 1) * limit;
+      const pagedItems = eligible.slice(start, start + limit);
+
+      return {
+        items: pagedItems.map((i) => this.mapToEntity(i)),
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
+    }
+
     const [items, total] = await Promise.all([
       this.dailyListingsRepository.findMany(filters),
       this.dailyListingsRepository.count(filters),
     ]);
-
-    const limit = filters.pageSize ? Math.min(Math.max(filters.pageSize, 1), 100) : 20;
-    const page = filters.page ? Math.max(filters.page, 1) : 1;
 
     return {
       items: items.map((i) => this.mapToEntity(i)),
@@ -589,6 +700,126 @@ export class DailyListingsService {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getAvailableTodayMarketplace(
+    query: QueryDailyListingsDto,
+  ): Promise<PaginatedAvailableTodayEntity> {
+    // 1. Retrieve candidate listings with activeOnly database filter bounded to 500
+    const candidates = await this.dailyListingsRepository.findMany({
+      ...query,
+      activeOnly: true,
+      page: 1,
+      pageSize: 500,
+    });
+
+    // 2. Eligibility-first pipeline: verify mandatory checks and regulatory status before aggregation
+    const now = new Date();
+    const eligibleListings: DailyListingResponseEntity[] = [];
+
+    for (const item of candidates) {
+      if (
+        item.status !== ListingLifecycleStatus.PUBLISHED ||
+        new Date(item.expiresAt).getTime() <= now.getTime() ||
+        new Date(item.availableFrom).getTime() > now.getTime() ||
+        Number(item.quantityAvailable) <= 0 ||
+        item.vendor?.status !== VendorStatus.APPROVED ||
+        item.lot?.foodSafetyStatus !== FoodSafetyStatus.SAFE ||
+        item.catalogueItem?.lifecycleStatus !== CatalogueLifecycleStatus.PUBLISHED ||
+        !item.photos.some((p) => !p.withdrawnAt && p.moderationStatus === ListingPhotoModerationStatus.APPROVED)
+      ) {
+        continue;
+      }
+
+      let isEligible = false;
+      try {
+        const evalResult = await this.regulatoryEligibilityService.evaluate({
+          catalogueItemId: item.catalogueItemId,
+          vendorDailyListingId: item.id,
+          seafoodLotId: item.lotId,
+          atDate: now,
+        });
+        isEligible = Boolean(evalResult?.eligible);
+      } catch (err) {
+        this.logger.error(`Regulatory evaluation failed for item ${item.id}: ${err}`);
+        isEligible = false;
+      }
+
+      if (isEligible) {
+        eligibleListings.push(this.mapToEntity(item));
+      }
+    }
+
+    // 3. Group strictly by (catalogueItemId, unit) to guarantee quantities & prices are never summed across incompatible units
+    const grouped = new Map<string, DailyListingResponseEntity[]>();
+    for (const listing of eligibleListings) {
+      const groupKey = `${listing.catalogueItemId}:${listing.unit}`;
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, []);
+      }
+      grouped.get(groupKey)!.push(listing);
+    }
+
+    const aggregatedItems: AvailableTodayItemEntity[] = [];
+
+    for (const [, listings] of grouped.entries()) {
+      const first = listings[0];
+      if (!first) continue;
+      const catalogueItem = first.catalogueItem;
+      const totalQuantity = listings.reduce((sum, l) => sum + l.quantityAvailable, 0);
+      const uniqueVendors = new Set(listings.map((l) => l.vendorId));
+      const prices = listings.map((l) => l.price);
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      const catchDates = listings.map((l) => new Date(l.catchDate).getTime());
+      const earliestCatchDate = new Date(Math.min(...catchDates));
+      const parishes = Array.from(
+        new Set(
+          listings
+            .map((l) => l.vendor?.parish || l.landingSite?.parish)
+            .filter((p): p is string => Boolean(p)),
+        ),
+      );
+
+      aggregatedItems.push({
+        catalogueItemId: first.catalogueItemId,
+        name: catalogueItem?.name || first.listingTitle || 'Fresh Seafood',
+        commonName: catalogueItem?.commonName || first.listingTitle || 'Fresh Seafood',
+        scientificName: first.speciesDeclarations?.[0]?.scientificName || '',
+        categoryId: catalogueItem?.categoryId || '',
+        categoryName: first.listingTitle || (catalogueItem?.name ?? 'Fresh Seafood'),
+        referenceImageUrl: catalogueItem?.referenceImageUrl || null,
+        totalQuantityAvailable: totalQuantity,
+        unit: first.unit,
+        sellerCount: uniqueVendors.size,
+        minPrice,
+        maxPrice,
+        currency: first.currency,
+        earliestCatchDate,
+        activeListingsCount: listings.length,
+        hasPreparationOptions: listings.some(
+          (l) => Array.isArray(l.preparationOptions) && l.preparationOptions.length > 0,
+        ),
+        deliveryAvailable: listings.some((l) => l.deliveryAvailable),
+        pickupAvailable: listings.some((l) => l.pickupAvailable),
+        parishes,
+        listingsPreview: listings,
+      });
+    }
+
+    // 4. Paginate strictly on the eligible aggregated results
+    const limit = query.pageSize ? Math.min(Math.max(query.pageSize, 1), 50) : 12;
+    const page = query.page ? Math.max(query.page, 1) : 1;
+    const start = (page - 1) * limit;
+    const paginated = aggregatedItems.slice(start, start + limit);
+
+    return {
+      items: paginated,
+      total: aggregatedItems.length,
+      page,
+      limit,
+      totalPages: Math.ceil(aggregatedItems.length / limit),
     };
   }
 
@@ -610,7 +841,43 @@ export class DailyListingsService {
     catalogueItemId: string,
   ): Promise<DailyListingResponseEntity[]> {
     const listings = await this.dailyListingsRepository.findActiveByCatalogueItemId(catalogueItemId);
-    return listings.map((l) => this.mapToEntity(l));
+    const eligibleListings: DailyListingResponseEntity[] = [];
+    const now = new Date();
+
+    for (const listing of listings) {
+      if (
+        listing.vendor?.status !== VendorStatus.APPROVED ||
+        listing.lot?.foodSafetyStatus !== FoodSafetyStatus.SAFE ||
+        listing.status !== ListingLifecycleStatus.PUBLISHED ||
+        new Date(listing.expiresAt).getTime() <= now.getTime() ||
+        new Date(listing.availableFrom).getTime() > now.getTime() ||
+        Number(listing.quantityAvailable) <= 0
+      ) {
+        continue;
+      }
+      const hasApprovedPhoto = listing.photos.some(
+        (p) => !p.withdrawnAt && p.moderationStatus === ListingPhotoModerationStatus.APPROVED,
+      );
+      if (!hasApprovedPhoto) {
+        continue;
+      }
+
+      try {
+        const evalResult = await this.regulatoryEligibilityService.evaluate({
+          catalogueItemId: listing.catalogueItemId,
+          vendorDailyListingId: listing.id,
+          seafoodLotId: listing.lotId,
+          atDate: now,
+        });
+        if (evalResult?.eligible) {
+          eligibleListings.push(this.mapToEntity(listing));
+        }
+      } catch (err) {
+        this.logger.error(`Regulatory evaluation failed for listing ${listing.id}: ${err}`);
+      }
+    }
+
+    return eligibleListings;
   }
 
   computeDerivedStatus(listing: {
