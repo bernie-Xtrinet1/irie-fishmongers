@@ -82,6 +82,11 @@ model User {
   requestedRegulatoryOverrides RegulatoryOverride[]             @relation("RegulatoryOverrideRequester")
   approvedRegulatoryOverrides  RegulatoryOverride[]             @relation("RegulatoryOverrideApprover")
   withdrawnListingPhotos       ListingPhoto[]                   @relation("ListingPhotoWithdrawnBy")
+  recordedWeightMeasurements   SeafoodWeightMeasurementEvent[]  @relation("WeightMeasurementOperator")
+  recordedPreparationEvents    SeafoodPreparationFulfillmentEvent[] @relation("PreparationFulfillmentOperator")
+  checkoutCeilingConsents      CustomerCheckoutCeilingConsent[] @relation("CheckoutCeilingConsentCustomer")
+  weightApprovalRecords        CustomerWeightApprovalRecord[]   @relation("WeightApprovalCustomer")
+  settledWeightAdjustments     WeightAdjustmentSettlementRecord[] @relation("AdjustmentSettlementRecorder")
 
   @@map("users")
 }
@@ -817,6 +822,7 @@ model OrderItem {
 
   vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
   product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  weightAdjustment SeafoodOrderWeightAdjustment?
 
   @@map("order_items")
 }
@@ -3479,4 +3485,261 @@ model OrdinaryCommandBarrierBinding {
   command           OrdinaryReservationCommand @relation(fields: [commandId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@map("ordinary_command_barrier_bindings")
+}
+
+// ============================================================================
+// PHASE 16D: SEAFOOD WEIGHT ADJUSTMENT & FINAL-WEIGHT SETTLEMENT
+// ============================================================================
+
+enum SeafoodPricingBasis {
+  WHOLE_RAW
+  DRESSED
+  FINISHED_PRODUCT
+}
+
+enum WeightMeasurementStatus {
+  PENDING_MEASUREMENT
+  MEASURED_WITHIN_CEILING
+  MEASURED_EXCEEDS_CEILING
+  DISPUTED
+  SETTLED
+}
+
+enum CustomerWeightApprovalStatus {
+  NOT_REQUIRED
+  AWAITING_APPROVAL
+  APPROVED_BY_CUSTOMER
+  REJECTED_BY_CUSTOMER
+  AUTO_EXPIRED
+}
+
+enum CustomerApprovalAction {
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum PaymentObligationDirection {
+  NONE
+  CREDIT_DUE_CUSTOMER
+  SUPPLEMENTAL_PAYMENT_DUE
+}
+
+enum ObligationStatus {
+  PENDING
+  SETTLED
+  WAIVED
+  DISPUTED
+}
+
+enum SettlementChannel {
+  COD_DOORSTEP_RECEIPT
+  WIPAY_SECONDARY_PAYMENT_CONFIRMED
+  ADMIN_CREDIT_MEMO_ISSUED
+  VENDOR_ABSORPTION
+}
+
+enum UsablePartsPreference {
+  RETURN_USABLE_PARTS
+  DO_NOT_RETURN_USABLE_PARTS
+}
+
+enum UsablePartsFulfillmentOutcome {
+  RETURNED_AVAILABLE_PARTS
+  PARTIALLY_RETURNED
+  NO_SUITABLE_PARTS_AVAILABLE
+  CUSTOMER_DECLINED_PARTS
+}
+
+enum PreparationFeeStructure {
+  FLAT_FEE
+  PER_UNIT_WEIGHT
+  INCLUDED_IN_PRICE
+}
+
+model SeafoodOrderWeightAdjustment {
+  id                           String                        @id @default(uuid())
+  orderItemId                  String                        @unique
+  pricingBasis                 SeafoodPricingBasis
+  unit                         WeightUnit
+  unitPrice                    Decimal                       @db.Decimal(10, 2)
+  pieceCount                   Int                           @default(1)
+
+  estimatedBillableWeight      Decimal                       @db.Decimal(8, 3)
+  verifiedBillableWeight       Decimal?                      @db.Decimal(8, 3)
+  preparedNetWeight            Decimal?                      @db.Decimal(8, 3)
+  weightDifference             Decimal?                      @db.Decimal(8, 3)
+  yieldLossWeight              Decimal?                      @db.Decimal(8, 3)
+  yieldLossPercent             Decimal?                      @db.Decimal(5, 2)
+
+  preparationServiceName       String?
+  usablePartsPreference        UsablePartsPreference         @default(RETURN_USABLE_PARTS)
+  usablePartsOutcome           UsablePartsFulfillmentOutcome?
+  preparationFeeStructure      PreparationFeeStructure       @default(FLAT_FEE)
+  preparationFeeRate           Decimal                       @default(0) @db.Decimal(10, 2)
+  estimatedPreparationFee      Decimal                       @default(0) @db.Decimal(10, 2)
+  finalPreparationFee          Decimal?                      @db.Decimal(10, 2)
+  preparationFeeDifference     Decimal?                      @db.Decimal(10, 2)
+
+  estimatedProductSubtotal     Decimal                       @db.Decimal(10, 2)
+  finalProductSubtotal         Decimal?                      @db.Decimal(10, 2)
+  productSubtotalDifference    Decimal?                      @db.Decimal(10, 2)
+
+  estimatedItemTotal           Decimal                       @db.Decimal(10, 2)
+  finalItemTotal               Decimal?                      @db.Decimal(10, 2)
+  totalAdjustmentAmount        Decimal?                      @db.Decimal(10, 2)
+
+  customerAuthorizedCeilingJmd Decimal                       @db.Decimal(10, 2)
+  customerApprovalStatus       CustomerWeightApprovalStatus  @default(NOT_REQUIRED)
+  boundApprovalRevision        Int?
+  approvalReason               String?
+
+  measurementStatus            WeightMeasurementStatus       @default(PENDING_MEASUREMENT)
+  activeMeasurementRevision    Int?
+  activePreparationRevision    Int?
+  foodSafetyStatus             FoodSafetyStatus              @default(SAFE)
+
+  createdAt                    DateTime                      @default(now())
+  updatedAt                    DateTime                      @updatedAt
+
+  orderItem                    OrderItem                     @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  measurementEvents            SeafoodWeightMeasurementEvent[]
+  preparationEvents            SeafoodPreparationFulfillmentEvent[]
+  checkoutCeilingConsent       CustomerCheckoutCeilingConsent?
+  approvalRecords              CustomerWeightApprovalRecord[]
+  financialObligations         WeightAdjustmentObligation[]
+
+  @@index([measurementStatus], name: "idx_seafood_weight_adj_status")
+  @@index([customerApprovalStatus], name: "idx_seafood_weight_adj_approval")
+  @@index([foodSafetyStatus], name: "idx_seafood_weight_adj_safety")
+  @@map("seafood_order_weight_adjustments")
+}
+
+model SeafoodWeightMeasurementEvent {
+  id                    String                        @id @default(uuid())
+  weightAdjustmentId    String
+  revision              Int
+  idempotencyKey        String                        @unique
+  payloadHash           String
+  pricingBasis          SeafoodPricingBasis
+  unit                  WeightUnit
+  measuredWeight        Decimal                       @db.Decimal(8, 3)
+  scalePhotoUrl         String
+  scaleDeviceIdentifier String?
+  scaleCalibrationDate  DateTime?
+  operatorUserId        String
+  correctionReason      String?
+  recordedAt            DateTime                      @default(now())
+
+  weightAdjustment      SeafoodOrderWeightAdjustment  @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  operator              User                          @relation("WeightMeasurementOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([weightAdjustmentId, revision], name: "uq_weight_adj_revision")
+  @@index([weightAdjustmentId, recordedAt], name: "idx_weight_event_time")
+  @@index([operatorUserId], name: "idx_weight_event_operator")
+  @@map("seafood_weight_measurement_events")
+}
+
+model SeafoodPreparationFulfillmentEvent {
+  id                    String                        @id @default(uuid())
+  weightAdjustmentId    String
+  revision              Int
+  idempotencyKey        String                        @unique
+  payloadHash           String
+  preparedNetWeight     Decimal?                      @db.Decimal(8, 3)
+  partsOutcome          UsablePartsFulfillmentOutcome
+  partsDisposalReason   String?
+  preparedPhotoUrl      String?
+  operatorUserId        String
+  correctionReason      String?
+  recordedAt            DateTime                      @default(now())
+
+  weightAdjustment      SeafoodOrderWeightAdjustment  @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  operator              User                          @relation("PreparationFulfillmentOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([weightAdjustmentId, revision], name: "uq_prep_adj_revision")
+  @@index([weightAdjustmentId, recordedAt], name: "idx_prep_event_time")
+  @@index([operatorUserId], name: "idx_prep_event_operator")
+  @@map("seafood_preparation_fulfillment_events")
+}
+
+model CustomerCheckoutCeilingConsent {
+  id                      String                       @id @default(uuid())
+  weightAdjustmentId      String                       @unique
+  authenticatedCustomerId String
+  initialEstimatedWeight  Decimal                      @db.Decimal(8, 3)
+  initialEstimatedTotal   Decimal                      @db.Decimal(10, 2)
+  authorizedCeilingJmd    Decimal                      @db.Decimal(10, 2)
+  termsVersion            String
+  payloadHash             String
+  consentedAt             DateTime                     @default(now())
+  ipAddress               String?
+  userAgent               String?
+
+  weightAdjustment        SeafoodOrderWeightAdjustment @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  customer                User                         @relation("CheckoutCeilingConsentCustomer", fields: [authenticatedCustomerId], references: [id], onDelete: Restrict)
+
+  @@map("customer_checkout_ceiling_consents")
+}
+
+model CustomerWeightApprovalRecord {
+  id                      String                       @id @default(uuid())
+  weightAdjustmentId      String
+  measurementRevision     Int
+  authenticatedCustomerId String
+  proposedTotalJmd        Decimal                      @db.Decimal(10, 2)
+  authorizedCeilingJmd    Decimal                      @db.Decimal(10, 2)
+  action                  CustomerApprovalAction
+  approvalTokenHash       String                       @unique
+  payloadHash             String
+  decidedAt               DateTime                     @default(now())
+  ipAddress               String?
+  userAgent               String?
+  rejectionReason         String?
+
+  weightAdjustment        SeafoodOrderWeightAdjustment @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  customer                User                         @relation("WeightApprovalCustomer", fields: [authenticatedCustomerId], references: [id], onDelete: Restrict)
+
+  @@unique([weightAdjustmentId, measurementRevision], name: "uq_approval_adj_revision")
+  @@index([weightAdjustmentId, decidedAt], name: "idx_approval_time")
+  @@map("customer_weight_approval_records")
+}
+
+model WeightAdjustmentObligation {
+  id                     String                       @id @default(uuid())
+  weightAdjustmentId     String
+  revision               Int
+  idempotencyKey         String                       @unique
+  payloadHash            String
+  direction              PaymentObligationDirection
+  amountJmd              Decimal                      @db.Decimal(10, 2)
+  status                 ObligationStatus             @default(PENDING)
+  createdAt              DateTime                     @default(now())
+
+  weightAdjustment       SeafoodOrderWeightAdjustment @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  settlementRecords      WeightAdjustmentSettlementRecord[]
+
+  @@unique([weightAdjustmentId, revision], name: "uq_obligation_adj_revision")
+  @@index([direction, status], name: "idx_obligation_dir_status")
+  @@map("weight_adjustment_obligations")
+}
+
+model WeightAdjustmentSettlementRecord {
+  id                  String                     @id @default(uuid())
+  obligationId        String
+  idempotencyKey      String                     @unique
+  payloadHash         String
+  settlementChannel   SettlementChannel
+  amountSettled       Decimal                    @db.Decimal(10, 2)
+  externalReference   String?
+  evidenceDocumentUrl String?
+  settledByUserId     String
+  settledAt           DateTime                   @default(now())
+
+  obligation          WeightAdjustmentObligation @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  settledByUser       User                       @relation("AdjustmentSettlementRecorder", fields: [settledByUserId], references: [id], onDelete: Restrict)
+
+  @@index([obligationId, settledAt], name: "idx_settlement_time")
+  @@index([settlementChannel], name: "idx_settlement_channel")
+  @@map("weight_adjustment_settlement_records")
 }
