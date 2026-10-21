@@ -86,6 +86,7 @@ model User {
   recordedPreparationEvents    SeafoodPreparationFulfillmentEvent[] @relation("PreparationFulfillmentOperator")
   checkoutCeilingConsents      CustomerCheckoutCeilingConsent[] @relation("CheckoutCeilingConsentCustomer")
   weightApprovalRecords        CustomerWeightApprovalRecord[]   @relation("WeightApprovalCustomer")
+  weightApprovalChallenges     CustomerWeightApprovalChallenge[] @relation("ApprovalChallengeCustomer")
   settledWeightAdjustments     WeightAdjustmentSettlementRecord[] @relation("AdjustmentSettlementRecorder")
 
   @@map("users")
@@ -3519,6 +3520,13 @@ enum CustomerApprovalAction {
   EXPIRED
 }
 
+enum ApprovalChallengeStatus {
+  OPEN
+  CONSUMED
+  REVOKED
+  EXPIRED
+}
+
 enum PaymentObligationDirection {
   NONE
   CREDIT_DUE_CUSTOMER
@@ -3607,6 +3615,7 @@ model SeafoodOrderWeightAdjustment {
   preparationEvents            SeafoodPreparationFulfillmentEvent[]
   checkoutCeilingConsent       CustomerCheckoutCeilingConsent?
   approvalRecords              CustomerWeightApprovalRecord[]
+  approvalChallenges           CustomerWeightApprovalChallenge[]
   financialObligations         WeightAdjustmentObligation[]
 
   @@index([measurementStatus], name: "idx_seafood_weight_adj_status")
@@ -3703,6 +3712,32 @@ model CustomerWeightApprovalRecord {
   @@unique([weightAdjustmentId, measurementRevision], name: "uq_approval_adj_revision")
   @@index([weightAdjustmentId, decidedAt], name: "idx_approval_time")
   @@map("customer_weight_approval_records")
+}
+
+model CustomerWeightApprovalChallenge {
+  id                      String                        @id @default(uuid())
+  weightAdjustmentId      String
+  measurementRevision     Int
+  challengeSequence       Int                           @default(1)
+  authenticatedCustomerId String
+  proposedTotalJmd        Decimal                       @db.Decimal(10, 2)
+  authorizedCeilingJmd    Decimal                       @db.Decimal(10, 2)
+  differenceAmountJmd     Decimal                       @db.Decimal(10, 2)
+  approvalTokenHash       String                        @unique
+  expiresAt               DateTime
+  status                  ApprovalChallengeStatus       @default(OPEN)
+  consumedAt              DateTime?
+  revokedAt               DateTime?
+  revocationReason        String?
+  createdAt               DateTime                      @default(now())
+
+  weightAdjustment        SeafoodOrderWeightAdjustment  @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
+  customer                User                          @relation("ApprovalChallengeCustomer", fields: [authenticatedCustomerId], references: [id], onDelete: Restrict)
+
+  @@unique([weightAdjustmentId, measurementRevision, challengeSequence], name: "uq_challenge_adj_rev_seq")
+  @@index([weightAdjustmentId, measurementRevision, status], name: "idx_challenge_adj_rev_status")
+  @@index([status, expiresAt], name: "idx_challenge_status_expiry")
+  @@map("customer_weight_approval_challenges")
 }
 
 model WeightAdjustmentObligation {

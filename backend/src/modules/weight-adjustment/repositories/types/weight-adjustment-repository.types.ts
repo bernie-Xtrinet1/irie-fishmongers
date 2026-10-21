@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import {
+  ApprovalChallengeStatus,
   CustomerApprovalAction,
   CustomerWeightApprovalStatus,
   FoodSafetyStatus,
@@ -79,6 +80,59 @@ export interface RecordCustomerApprovalInput {
   readonly ipAddress?: string;
   readonly userAgent?: string;
   readonly rejectionReason?: string;
+}
+
+export interface CreateApprovalChallengeInput {
+  readonly weightAdjustmentId: string;
+  readonly measurementRevision: number;
+  readonly authenticatedCustomerId: string;
+  readonly proposedTotalJmd: Decimal | string | number;
+  readonly authorizedCeilingJmd: Decimal | string | number;
+  readonly approvalTokenHash: string;
+  readonly expiresAt: Date;
+}
+
+export interface ConsumeApprovalChallengeInput {
+  readonly challengeId: string;
+  readonly expectedMeasurementRevision: number;
+  readonly authenticatedCustomerId: string;
+  readonly expectedProposedTotalJmd?: Decimal | string | number;
+  readonly expectedAuthorizedCeilingJmd?: Decimal | string | number;
+  readonly consumedAt?: Date;
+}
+
+export interface RenewApprovalChallengeInput {
+  readonly weightAdjustmentId: string;
+  readonly measurementRevision: number;
+  readonly authenticatedCustomerId: string;
+  readonly proposedTotalJmd: Decimal | string | number;
+  readonly authorizedCeilingJmd: Decimal | string | number;
+  readonly newApprovalTokenHash: string;
+  readonly newExpiresAt: Date;
+  readonly revocationReason?: string;
+}
+
+export interface ValidateChallengeContext {
+  readonly authenticatedCustomerId: string;
+  readonly activeMeasurementRevision: number;
+  readonly proposedTotalJmd: Decimal | string | number;
+  readonly authorizedCeilingJmd: Decimal | string | number;
+  readonly rawToken?: string;
+}
+
+export interface ChallengeValidationResult {
+  readonly isValid: boolean;
+  readonly reason?:
+    | 'VALID'
+    | 'CHALLENGE_ALREADY_CONSUMED'
+    | 'CHALLENGE_REVOKED'
+    | 'CHALLENGE_EXPIRED'
+    | 'STALE_MEASUREMENT_REVISION'
+    | 'CUSTOMER_MISMATCH'
+    | 'AMOUNT_MISMATCH'
+    | 'CEILING_MISMATCH'
+    | 'INVALID_TOKEN';
+  readonly message?: string;
 }
 
 export interface RecordObligationInput {

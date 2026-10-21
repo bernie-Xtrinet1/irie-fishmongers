@@ -9,4 +9,6 @@ export * from './repositories/seafood-order-weight-adjustment.repository';
 export * from './repositories/seafood-weight-measurement-event.repository';
 export * from './repositories/seafood-preparation-fulfillment-event.repository';
 export * from './repositories/customer-weight-consent.repository';
+export * from './repositories/customer-weight-approval-challenge.repository';
 export * from './repositories/weight-financial-obligation.repository';
+export * from './services/weight-adjustment-approval-token.service';

@@ -93,3 +93,54 @@ export class CustomerApprovalRevisionMismatchError extends WeightAdjustmentRepos
     );
   }
 }
+
+export class ChallengeNotFoundError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly identifier: string) {
+    super(`CustomerWeightApprovalChallenge "${identifier}" was not found.`);
+  }
+}
+
+export class ChallengeExpiredError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly challengeId: string, public readonly expiresAt: Date) {
+    super(`Approval challenge "${challengeId}" expired at ${expiresAt.toISOString()}.`);
+  }
+}
+
+export class ChallengeRevokedError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly challengeId: string, public readonly reason?: string) {
+    super(`Approval challenge "${challengeId}" has been revoked${reason ? `: ${reason}` : '.'}`);
+  }
+}
+
+export class ChallengeAlreadyConsumedError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly challengeId: string, public readonly consumedAt?: Date | null) {
+    super(
+      `Approval challenge "${challengeId}" was already consumed${consumedAt ? ` at ${consumedAt.toISOString()}` : ''}. Double-consumption prohibited.`,
+    );
+  }
+}
+
+export class InvalidApprovalTokenError extends WeightAdjustmentRepositoryError {
+  constructor(message = 'Provided approval token is invalid, malformed, or unverifiable.') {
+    super(message);
+  }
+}
+
+export class CustomerApprovalMismatchError extends WeightAdjustmentRepositoryError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export class CustomerApprovalChallengeConflictError extends WeightAdjustmentRepositoryError {
+  constructor(
+    public readonly weightAdjustmentId: string,
+    public readonly measurementRevision: number,
+    message?: string,
+  ) {
+    super(
+      message ??
+        `Concurrent challenge creation or renewal conflict for adjustment "${weightAdjustmentId}" revision ${measurementRevision}.`,
+    );
+  }
+}
