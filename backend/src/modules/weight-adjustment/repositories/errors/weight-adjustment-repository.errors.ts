@@ -144,3 +144,125 @@ export class CustomerApprovalChallengeConflictError extends WeightAdjustmentRepo
     );
   }
 }
+
+export class OrderItemNotFoundError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly orderItemId: string) {
+    super(`OrderItem "${orderItemId}" was not found.`);
+  }
+}
+
+export class UnlinkedSeafoodLotError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string) {
+    super(`Seafood lot "${lotId}" is unlinked, missing, or untraceable.`);
+  }
+}
+
+export class SeafoodSafetyHoldError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string, public readonly status?: string, message?: string) {
+    super(
+      message ??
+        `Seafood lot "${lotId}" is not SAFE for fulfillment${status ? ` (current status: ${status})` : ''}.`,
+    );
+  }
+}
+
+export class SeafoodLotRecalledError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string, public readonly recallReason?: string) {
+    super(`Seafood lot "${lotId}" is subject to an active commercial recall${recallReason ? `: ${recallReason}` : '.'}`);
+  }
+}
+
+export class ColdChainBreachError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string, message?: string) {
+    super(message ?? `Seafood lot "${lotId}" has unresolved critical cold-chain temperature violations.`);
+  }
+}
+
+export class FoodSafetyIncidentActiveError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string, message?: string) {
+    super(message ?? `Seafood lot "${lotId}" has unresolved serious food safety incident reports.`);
+  }
+}
+
+export class QualityInspectionFailedError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly lotId: string, public readonly inspectionResult: string) {
+    super(`Seafood lot "${lotId}" failed quality inspection with blocking result "${inspectionResult}".`);
+  }
+}
+
+export class ProvenanceMismatchError extends WeightAdjustmentRepositoryError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export class SeafoodListingExpiredError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly listingId: string, public readonly expiresAt: Date) {
+    super(`Daily listing "${listingId}" expired at ${expiresAt.toISOString()}.`);
+  }
+}
+
+export class VendorNotEligibleError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly vendorId: string, message?: string) {
+    super(message ?? `Vendor "${vendorId}" is not approved or licensed for commercial seafood distribution.`);
+  }
+}
+
+export class AmbiguousListingProvenanceError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly productId: string, public readonly candidateCount: number) {
+    super(
+      `Ambiguous listing provenance for product "${productId}": found ${candidateCount} candidate listings. Exact historical listing identity required.`,
+    );
+  }
+}
+
+export class MissingListingProvenanceError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly productId: string, message?: string) {
+    super(
+      message ??
+        `Listing-backed product "${productId}" lacks an authoritative active listing or traceable lot association.`,
+    );
+  }
+}
+
+export class MissingCheckoutConsentError extends WeightAdjustmentRepositoryError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export class ConflictingReplayError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly orderItemId: string, message?: string) {
+    super(
+      message ??
+        `Conflicting replay attempt for order item "${orderItemId}": provided parameters do not match existing immutable snapshot.`,
+    );
+  }
+}
+
+export class MissingAuthoritativeLotProvenanceError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly orderItemId: string, message?: string) {
+    super(
+      message ??
+        `OrderItem "${orderItemId}" lacks authoritative, immutable persisted order-time lot and listing evidence in database. Accepting unauthenticated caller-supplied evidence or inferring provenance from mutable product records is strictly prohibited.`,
+    );
+  }
+}
+
+export class InvalidPreparationOptionError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly optionName: string, message?: string) {
+    super(
+      message ??
+        `Selected preparation service "${optionName}" is invalid, unresolved, or malformed for the authoritative listing.`,
+    );
+  }
+}
+
+export class UnsupportedPreparationCurrencyError extends WeightAdjustmentRepositoryError {
+  constructor(public readonly currency: string, message?: string) {
+    super(
+      message ??
+        `Preparation fee currency "${currency}" is unsupported. Authoritative platform transactions require JMD.`,
+    );
+  }
+}
