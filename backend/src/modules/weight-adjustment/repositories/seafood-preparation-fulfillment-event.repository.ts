@@ -62,6 +62,21 @@ export class SeafoodPreparationFulfillmentEventRepository {
 
     // 3. Execution logic encapsulated for atomic interactive transaction
     const executeInTransaction = async (txClient: Prisma.TransactionClient) => {
+      // In-transaction check: query for existing idempotency key on current transaction client before attempting insert
+      const inTxExisting = await txClient.seafoodPreparationFulfillmentEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (inTxExisting) {
+        if (inTxExisting.payloadHash === payloadHash) {
+          return { event: inTxExisting, isReplay: true };
+        }
+        throw new IdempotencyPayloadConflictError(
+          input.idempotencyKey,
+          inTxExisting.payloadHash,
+          payloadHash,
+        );
+      }
+
       // Fencing check: Query parent adjustment
       const adjustment = await txClient.seafoodOrderWeightAdjustment.findUnique({
         where: { id: input.weightAdjustmentId },
@@ -125,15 +140,23 @@ export class SeafoodPreparationFulfillmentEventRepository {
       return { event, isReplay: false };
     };
 
+    // 4. If an external transaction was supplied:
+    // Execute directly inside the caller's transaction.
+    // On P2002 or any error, do NOT catch and query a fallback client.
+    // Propagate the error so the caller's transaction rolls back cleanly without issuing further SQL against an aborted transaction.
+    if (tx) {
+      return await executeInTransaction(tx);
+    }
+
+    // 5. Standalone repository transaction mode:
+    // Run inside its own isolated transaction.
+    // If P2002 occurs, $transaction rolls back first.
+    // Replay recovery is performed ONLY after the transaction has rolled back.
     try {
-      if (tx) {
-        return await executeInTransaction(tx);
-      } else {
-        return await this.prisma.$transaction(executeInTransaction);
-      }
+      return await this.prisma.$transaction(executeInTransaction);
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Recovery outside the failed transaction using fresh client
+        // Recovery outside the failed standalone transaction using fresh client ONLY after its transaction has rolled back
         const recovered = await this.prisma.seafoodPreparationFulfillmentEvent.findUnique({
           where: { idempotencyKey: input.idempotencyKey },
         });

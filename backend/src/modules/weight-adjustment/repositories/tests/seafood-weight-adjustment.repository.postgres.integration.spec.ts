@@ -100,4 +100,19 @@ describe('Phase 16D WP2: PostgreSQL Schema Integration & Migration Verification'
     expect(sql).toContain('uq_approval_adj_revision');
     expect(sql).toContain('uq_obligation_adj_revision');
   });
+
+  it('proves PostgreSQL idempotency key uniqueness constraints on event tables', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const migrationSqlPath = path.resolve(
+      __dirname,
+      '../../../../../prisma/migrations/20261021140000_phase_16d_weight_adjustment_schema/migration.sql',
+    );
+    expect(fs.existsSync(migrationSqlPath)).toBe(true);
+
+    const sql = fs.readFileSync(migrationSqlPath, 'utf8');
+    // Verifies measurement and preparation event tables declare UNIQUE on idempotencyKey
+    expect(sql).toMatch(/CREATE TABLE (?:IF NOT EXISTS )?"seafood_weight_measurement_events"[\s\S]*?"idempotencyKey" TEXT NOT NULL UNIQUE/);
+    expect(sql).toMatch(/CREATE TABLE (?:IF NOT EXISTS )?"seafood_preparation_fulfillment_events"[\s\S]*?"idempotencyKey" TEXT NOT NULL UNIQUE/);
+  });
 });

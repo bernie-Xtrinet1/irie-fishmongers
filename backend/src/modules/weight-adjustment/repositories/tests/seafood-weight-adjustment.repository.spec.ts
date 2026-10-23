@@ -226,9 +226,10 @@ describe('Phase 16D WP2: Weight Adjustment Repositories (Unit & Concurrency Guar
       };
       const hash = computeCanonicalPayloadHash(payload);
 
-      // First preliminary findUnique misses (simulating race)
+      // Preliminary and in-tx findUnique miss (simulating race)
       prismaMock.seafoodWeightMeasurementEvent.findUnique
         .mockResolvedValueOnce(null) // Step 2 preliminary check
+        .mockResolvedValueOnce(null) // In-tx check
         .mockResolvedValueOnce({ id: 'committed-event-1', payloadHash: hash }); // Post-crash recovery query
 
       prismaMock.seafoodOrderWeightAdjustment.findUnique.mockResolvedValue({
@@ -259,8 +260,9 @@ describe('Phase 16D WP2: Weight Adjustment Repositories (Unit & Concurrency Guar
     });
 
     it('throws IdempotencyPayloadConflictError when concurrent P2002 collision has conflicting payload', async () => {
-      // Preliminary findUnique misses
+      // Preliminary and in-tx findUnique miss
       prismaMock.seafoodWeightMeasurementEvent.findUnique
+        .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce({ id: 'committed-event-1', payloadHash: 'completely-different-hash' });
 
@@ -287,6 +289,118 @@ describe('Phase 16D WP2: Weight Adjustment Repositories (Unit & Concurrency Guar
           operatorUserId: 'user-fishmonger-1',
         }),
       ).rejects.toThrow(IdempotencyPayloadConflictError);
+    });
+
+    it('propagates P2002 error under an externally supplied transaction without returning fallback success', async () => {
+      const txMock: any = {
+        seafoodWeightMeasurementEvent: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockRejectedValue(
+            new Prisma.PrismaClientKnownRequestError('Unique constraint failed on idempotencyKey', {
+              code: 'P2002',
+              clientVersion: '6.19.3',
+            }),
+          ),
+        },
+        seafoodOrderWeightAdjustment: {
+          findUnique: jest.fn().mockResolvedValue({ id: 'adj-1', activeMeasurementRevision: 0 }),
+          updateMany: jest.fn(),
+        },
+      };
+
+      await expect(
+        measurementRepo.appendMeasurementEvent(
+          {
+            weightAdjustmentId: 'adj-1',
+            expectedRevision: 1,
+            idempotencyKey: 'idem-external-race',
+            pricingBasis: SeafoodPricingBasis.WHOLE_RAW,
+            unit: WeightUnit.POUNDS,
+            measuredWeight: '5.250',
+            scalePhotoUrl: 'https://photos.example.com/scale1.jpg',
+            operatorUserId: 'user-fishmonger-1',
+          },
+          txMock,
+        ),
+      ).rejects.toThrow(Prisma.PrismaClientKnownRequestError);
+
+      // Verify that this.prisma was NOT queried for a fallback success on the aborted transaction
+      expect(prismaMock.seafoodWeightMeasurementEvent.findUnique).not.toHaveBeenCalled();
+      expect(txMock.seafoodOrderWeightAdjustment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns verified replay under external transaction when idempotency key exists without causing P2002', async () => {
+      const payload = {
+        weightAdjustmentId: 'adj-1',
+        expectedRevision: 1,
+        pricingBasis: SeafoodPricingBasis.WHOLE_RAW,
+        unit: WeightUnit.POUNDS,
+        measuredWeight: '5.250',
+        scalePhotoUrl: 'https://photos.example.com/scale1.jpg',
+        scaleDeviceIdentifier: null,
+        scaleCalibrationDate: null,
+        operatorUserId: 'user-fishmonger-1',
+        correctionReason: null,
+      };
+      const hash = computeCanonicalPayloadHash(payload);
+
+      const txMock: any = {
+        seafoodWeightMeasurementEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'event-existing-in-tx',
+            payloadHash: hash,
+            idempotencyKey: 'idem-existing-in-tx',
+          }),
+          create: jest.fn(),
+        },
+        seafoodOrderWeightAdjustment: {
+          findUnique: jest.fn(),
+          updateMany: jest.fn(),
+        },
+      };
+
+      const result = await measurementRepo.appendMeasurementEvent(
+        {
+          weightAdjustmentId: 'adj-1',
+          expectedRevision: 1,
+          idempotencyKey: 'idem-existing-in-tx',
+          pricingBasis: SeafoodPricingBasis.WHOLE_RAW,
+          unit: WeightUnit.POUNDS,
+          measuredWeight: '5.250',
+          scalePhotoUrl: 'https://photos.example.com/scale1.jpg',
+          operatorUserId: 'user-fishmonger-1',
+        },
+        txMock,
+      );
+
+      expect(result.isReplay).toBe(true);
+      expect(result.event.id).toBe('event-existing-in-tx');
+      expect(txMock.seafoodWeightMeasurementEvent.create).not.toHaveBeenCalled();
+      expect(txMock.seafoodOrderWeightAdjustment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('propagates unrelated Prisma and database errors unchanged without swallowing', async () => {
+      const txMock: any = {
+        seafoodWeightMeasurementEvent: {
+          findUnique: jest.fn().mockRejectedValue(new Error('Connection terminated unexpectedly')),
+        },
+      };
+
+      await expect(
+        measurementRepo.appendMeasurementEvent(
+          {
+            weightAdjustmentId: 'adj-1',
+            expectedRevision: 1,
+            idempotencyKey: 'idem-db-err',
+            pricingBasis: SeafoodPricingBasis.WHOLE_RAW,
+            unit: WeightUnit.POUNDS,
+            measuredWeight: '5.250',
+            scalePhotoUrl: 'https://photos.example.com/scale1.jpg',
+            operatorUserId: 'user-fishmonger-1',
+          },
+          txMock,
+        ),
+      ).rejects.toThrow('Connection terminated unexpectedly');
     });
 
     it('prohibits update and delete methods on measurement audit repository', () => {
@@ -328,6 +442,85 @@ describe('Phase 16D WP2: Weight Adjustment Repositories (Unit & Concurrency Guar
           }),
         }),
       );
+    });
+
+    it('propagates P2002 error under an externally supplied transaction without returning fallback success', async () => {
+      const txMock: any = {
+        seafoodPreparationFulfillmentEvent: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockRejectedValue(
+            new Prisma.PrismaClientKnownRequestError('Unique constraint failed on idempotencyKey', {
+              code: 'P2002',
+              clientVersion: '6.19.3',
+            }),
+          ),
+        },
+        seafoodOrderWeightAdjustment: {
+          findUnique: jest.fn().mockResolvedValue({ id: 'adj-1', activePreparationRevision: 0 }),
+          updateMany: jest.fn(),
+        },
+      };
+
+      await expect(
+        prepRepo.appendPreparationEvent(
+          {
+            weightAdjustmentId: 'adj-1',
+            expectedRevision: 1,
+            idempotencyKey: 'prep-external-race',
+            partsOutcome: UsablePartsFulfillmentOutcome.RETURNED_AVAILABLE_PARTS,
+            operatorUserId: 'user-fishmonger-1',
+          },
+          txMock,
+        ),
+      ).rejects.toThrow(Prisma.PrismaClientKnownRequestError);
+
+      expect(prismaMock.seafoodPreparationFulfillmentEvent.findUnique).not.toHaveBeenCalled();
+      expect(txMock.seafoodOrderWeightAdjustment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns verified replay under external transaction when idempotency key exists without causing P2002', async () => {
+      const payload = {
+        weightAdjustmentId: 'adj-1',
+        expectedRevision: 1,
+        preparedNetWeight: null,
+        partsOutcome: UsablePartsFulfillmentOutcome.RETURNED_AVAILABLE_PARTS,
+        partsDisposalReason: null,
+        preparedPhotoUrl: null,
+        operatorUserId: 'user-fishmonger-1',
+        correctionReason: null,
+      };
+      const hash = computeCanonicalPayloadHash(payload);
+
+      const txMock: any = {
+        seafoodPreparationFulfillmentEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'prep-existing-in-tx',
+            payloadHash: hash,
+            idempotencyKey: 'prep-existing-in-tx',
+          }),
+          create: jest.fn(),
+        },
+        seafoodOrderWeightAdjustment: {
+          findUnique: jest.fn(),
+          updateMany: jest.fn(),
+        },
+      };
+
+      const result = await prepRepo.appendPreparationEvent(
+        {
+          weightAdjustmentId: 'adj-1',
+          expectedRevision: 1,
+          idempotencyKey: 'prep-existing-in-tx',
+          partsOutcome: UsablePartsFulfillmentOutcome.RETURNED_AVAILABLE_PARTS,
+          operatorUserId: 'user-fishmonger-1',
+        },
+        txMock,
+      );
+
+      expect(result.isReplay).toBe(true);
+      expect(result.event.id).toBe('prep-existing-in-tx');
+      expect(txMock.seafoodPreparationFulfillmentEvent.create).not.toHaveBeenCalled();
+      expect(txMock.seafoodOrderWeightAdjustment.updateMany).not.toHaveBeenCalled();
     });
 
     it('prohibits update and delete methods on preparation audit repository', () => {

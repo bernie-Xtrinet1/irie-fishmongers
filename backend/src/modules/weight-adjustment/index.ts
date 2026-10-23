@@ -14,5 +14,8 @@ export * from './repositories/weight-financial-obligation.repository';
 export * from './services/weight-adjustment-approval-token.service';
 export * from './services/types/weight-adjustment-safety.types';
 export * from './services/types/weight-adjustment-snapshot.types';
+export * from './services/types/weight-measurement-fulfillment.types';
 export * from './services/weight-adjustment-safety-gate.service';
 export * from './services/weight-adjustment-snapshot-initialization.service';
+export * from './services/seafood-weight-measurement.service';
+export * from './services/seafood-preparation-fulfillment.service';

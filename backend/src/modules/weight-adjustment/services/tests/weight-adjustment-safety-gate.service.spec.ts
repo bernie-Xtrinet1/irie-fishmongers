@@ -53,7 +53,7 @@ describe('WeightAdjustmentSafetyGateService', () => {
     foodSafetyStatus: FoodSafetyStatus.SAFE,
     freshnessGrade: FreshnessGrade.GRADE_A,
     qualityScore: 92,
-    catchDate: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
+    catchDate: new Date(now.getTime() - 24 * 60 * 60 * 1000), // 1 day before evaluation time
     vendor: {
       id: validVendorId,
       status: VendorStatus.APPROVED,
@@ -71,7 +71,7 @@ describe('WeightAdjustmentSafetyGateService', () => {
         result: InspectionResult.PASSED,
         freshnessGrade: FreshnessGrade.GRADE_A,
         qualityScore: 95,
-        inspectedAt: new Date(Date.now() - 12 * 60 * 60 * 1000),
+        inspectedAt: new Date(now.getTime() - 12 * 60 * 60 * 1000),
       },
     ],
     ...overrides,
@@ -81,7 +81,7 @@ describe('WeightAdjustmentSafetyGateService', () => {
     id: validListingId,
     lotId: validLotId,
     vendorId: validVendorId,
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
+    expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48 hours from current test run
     status: 'ACTIVE',
     ...overrides,
   });
