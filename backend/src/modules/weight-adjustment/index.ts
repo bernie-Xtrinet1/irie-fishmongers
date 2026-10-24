@@ -19,3 +19,7 @@ export * from './services/weight-adjustment-safety-gate.service';
 export * from './services/weight-adjustment-snapshot-initialization.service';
 export * from './services/seafood-weight-measurement.service';
 export * from './services/seafood-preparation-fulfillment.service';
+export * from './services/types/weight-adjustment-coordination.types';
+export * from './services/customer-weight-approval-coordination.service';
+export * from './services/weight-adjustment-settlement.service';
+export * from './services/weight-adjustment-release-readiness.service';
