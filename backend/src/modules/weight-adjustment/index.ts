@@ -23,3 +23,4 @@ export * from './services/types/weight-adjustment-coordination.types';
 export * from './services/customer-weight-approval-coordination.service';
 export * from './services/weight-adjustment-settlement.service';
 export * from './services/weight-adjustment-release-readiness.service';
+export * from './weight-adjustment.module';
