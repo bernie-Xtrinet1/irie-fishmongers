@@ -65,6 +65,9 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
     quantity: 2,
     subtotal: { toString: () => '1000' } as unknown as Prisma.Decimal,
     currency: null,
+    originalLotId: null,
+    originalListingId: null,
+    purchaseSnapshot: null,
     createdAt: new Date(),
     product: {
       id: 'product-1',

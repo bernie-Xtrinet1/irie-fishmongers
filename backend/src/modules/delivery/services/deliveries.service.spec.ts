@@ -104,6 +104,9 @@ function buildItem(overrides: Partial<OrderItem> = {}): OrderItem {
     quantity: 2,
     subtotal: { toString: () => '1000' } as OrderItem['subtotal'],
     currency: null,
+    originalLotId: null,
+    originalListingId: null,
+    purchaseSnapshot: null,
     createdAt: new Date(),
     ...overrides,
   };

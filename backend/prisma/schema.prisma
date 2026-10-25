@@ -387,6 +387,7 @@ model VendorDailyListing {
   landingSite         LandingSite?                @relation(fields: [landingSiteId], references: [id], onDelete: SetNull)
   photos              ListingPhoto[]
   speciesDeclarations VendorDailyListingSpecies[]
+  orderItems          OrderItem[]
 
   @@index([vendorId, status])
   @@index([catalogueItemId, status])
@@ -810,21 +811,28 @@ model VendorOrder {
 }
 
 model OrderItem {
-  id            String      @id @default(uuid())
-  vendorOrderId String
-  productId            String
-  productName   String
-  unitPrice     Decimal     @db.Decimal(10, 2)
-  unit          ProductUnit
-  quantity      Int
-  subtotal      Decimal     @db.Decimal(10, 2)
-  currency      String?
-  createdAt     DateTime    @default(now())
+  id                 String                        @id @default(uuid())
+  vendorOrderId      String
+  productId          String
+  productName        String
+  unitPrice          Decimal                       @db.Decimal(10, 2)
+  unit               ProductUnit
+  quantity           Int
+  subtotal           Decimal                       @db.Decimal(10, 2)
+  currency           String?
+  originalLotId      String?
+  originalListingId  String?
+  purchaseSnapshot   Json?
+  createdAt          DateTime                      @default(now())
 
-  vendorOrder VendorOrder @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
-  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
-  weightAdjustment SeafoodOrderWeightAdjustment?
+  vendorOrder        VendorOrder                   @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  product            Product                       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  originalLot        SeafoodLot?                   @relation(fields: [originalLotId], references: [id], onDelete: Restrict)
+  originalListing    VendorDailyListing?           @relation(fields: [originalListingId], references: [id], onDelete: Restrict)
+  weightAdjustment   SeafoodOrderWeightAdjustment?
 
+  @@index([originalLotId])
+  @@index([originalListingId])
   @@map("order_items")
 }
 
@@ -1402,6 +1410,7 @@ model SeafoodLot {
   documents            ComplianceDocument[]
   custodyEvents        ChainOfCustodyEvent[]
   wasteDisposalRecords WasteDisposalRecord[]
+  orderItems           OrderItem[]
 
   @@index([vendorId])
   @@index([catchItemId])
