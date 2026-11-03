@@ -10,6 +10,7 @@ import Decimal from 'decimal.js';
 
 import { PrismaService } from '../../../database/prisma.service';
 import {
+  InvalidConsentInputError,
   RecordCheckoutConsentInput,
   RecordCustomerApprovalInput,
 } from './types/weight-adjustment-repository.types';
@@ -25,12 +26,58 @@ export class CustomerWeightConsentRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Performs structural pairing and format validation on optional V2 checkout consent fields.
+   *
+   * RESPONSIBILITY NOTE:
+   * Repository validation checks complete quote field pairs and hex digest formatting only.
+   * It DOES NOT verify cryptographic HMAC signature, token expiration, or customer identity,
+   * which are strictly the domain and application responsibility of CheckoutQuoteService and
+   * the checkout placement transaction boundary.
+   * Historical V1 behavior is strictly preserved when quote fields are omitted.
+   */
+  private validateV2ConsentInput(input: RecordCheckoutConsentInput): void {
+    const isQuoteIdProvided = input.quoteId !== undefined && input.quoteId !== null;
+    const isQuotePayloadHashProvided =
+      input.quotePayloadHash !== undefined && input.quotePayloadHash !== null;
+
+    // Reject blank or whitespace-only strings
+    if (isQuoteIdProvided && input.quoteId!.trim() === '') {
+      throw new InvalidConsentInputError('quoteId cannot be blank or whitespace-only.');
+    }
+    if (isQuotePayloadHashProvided && input.quotePayloadHash!.trim() === '') {
+      throw new InvalidConsentInputError('quotePayloadHash cannot be blank or whitespace-only.');
+    }
+
+    const hasQuoteId = isQuoteIdProvided && input.quoteId!.trim() !== '';
+    const hasQuotePayloadHash =
+      isQuotePayloadHashProvided && input.quotePayloadHash!.trim() !== '';
+
+    // Enforce complete quote-field pairs
+    if ((hasQuoteId && !hasQuotePayloadHash) || (!hasQuoteId && hasQuotePayloadHash)) {
+      throw new InvalidConsentInputError(
+        'Incomplete quote evidence: quoteId and quotePayloadHash must both be present together, or both omitted.',
+      );
+    }
+
+    if (hasQuoteId && hasQuotePayloadHash) {
+      // Must be a 64-character hexadecimal string; supports mixed-case for domain compatibility
+      const hexPattern = /^[0-9a-fA-F]{64}$/;
+      if (!hexPattern.test(input.quotePayloadHash!)) {
+        throw new InvalidConsentInputError(
+          `quotePayloadHash must be a 64-character hexadecimal SHA-256 digest, got "${input.quotePayloadHash}".`,
+        );
+      }
+    }
+  }
+
+  /**
    * Records immutable checkout ceiling consent captured at initial order placement.
    */
   async recordCheckoutCeilingConsent(
     input: RecordCheckoutConsentInput,
     tx?: Prisma.TransactionClient,
   ): Promise<CustomerCheckoutCeilingConsent> {
+    this.validateV2ConsentInput(input);
     const client = tx ?? this.prisma;
 
     const payloadForHashing = {
@@ -52,6 +99,8 @@ export class CustomerWeightConsentRepository {
         authorizedCeilingJmd: new Prisma.Decimal(new Decimal(input.authorizedCeilingJmd).toFixed(2)),
         termsVersion: input.termsVersion,
         payloadHash,
+        quoteId: input.quoteId ?? null,
+        quotePayloadHash: input.quotePayloadHash ?? null,
         ipAddress: input.ipAddress,
         userAgent: input.userAgent,
       },
@@ -65,6 +114,41 @@ export class CustomerWeightConsentRepository {
     const client = tx ?? this.prisma;
     return client.customerCheckoutCeilingConsent.findUnique({
       where: { weightAdjustmentId },
+    });
+  }
+
+  /**
+   * Retrieves all checkout ceiling consent records bound to a given quoteId.
+   *
+   * A single checkout quote legitimately supports multiple adjustment-consent records
+   * when an order contains multiple seafood items. This collection query returns all
+   * associated consent records ordered deterministically by creation timestamp.
+   */
+  async findCheckoutConsentsByQuoteId(
+    quoteId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<CustomerCheckoutCeilingConsent[]> {
+    const client = tx ?? this.prisma;
+    return client.customerCheckoutCeilingConsent.findMany({
+      where: { quoteId },
+      orderBy: [{ consentedAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  /**
+   * Scoped query: retrieves the unique consent record for a specific weightAdjustmentId and quoteId.
+   */
+  async findCheckoutConsentByAdjustmentAndQuoteId(
+    weightAdjustmentId: string,
+    quoteId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<CustomerCheckoutCeilingConsent | null> {
+    const client = tx ?? this.prisma;
+    return client.customerCheckoutCeilingConsent.findFirst({
+      where: {
+        weightAdjustmentId,
+        quoteId,
+      },
     });
   }
 

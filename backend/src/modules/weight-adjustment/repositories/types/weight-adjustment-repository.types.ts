@@ -6,6 +6,7 @@ import {
   FoodSafetyStatus,
   ObligationStatus,
   PaymentObligationDirection,
+  PreparationChargeMethod,
   PreparationFeeStructure,
   SeafoodPricingBasis,
   SettlementChannel,
@@ -15,6 +16,42 @@ import {
   WeightUnit,
 } from '@prisma/client';
 
+/**
+ * Thrown when CreateAdjustmentSnapshotInput fails structural or domain consistency validation.
+ */
+export class InvalidAdjustmentInputError extends Error {
+  constructor(message: string) {
+    super(`[INVALID ADJUSTMENT INPUT] ${message}`);
+    this.name = 'InvalidAdjustmentInputError';
+  }
+}
+
+/**
+ * Thrown when RecordCheckoutConsentInput fails structural pairing or format validation.
+ */
+export class InvalidConsentInputError extends Error {
+  constructor(message: string) {
+    super(`[INVALID CONSENT INPUT] ${message}`);
+    this.name = 'InvalidConsentInputError';
+  }
+}
+
+/**
+ * Input for creating an immutable purchase-time seafood order weight adjustment snapshot.
+ *
+ * NOTE ON VALIDATION RESPONSIBILITY:
+ * Repository-level validation verifies strictly local structural consistency:
+ * - Method-to-parameter matching (e.g., FIXED_PER_FISH requires positive integer fishCount;
+ *   FIXED_PER_POUND requires positive originalWholeWeightLbs and unit).
+ * - Positivity and numeric finiteness of weights and counts.
+ *
+ * It DOES NOT establish or verify authenticated customer consent, pricing authority,
+ * or cryptographic quote validity. Those domain guarantees are strictly enforced
+ * upstream by CheckoutQuoteService and the checkout placement transaction boundary
+ * (WP4.3B.4A / WP4.3B.4B / WP4.3B.4E).
+ *
+ * Preserves 100% of historical V1 behavior when V2 fields are omitted.
+ */
 export interface CreateAdjustmentSnapshotInput {
   readonly orderItemId: string;
   readonly pricingBasis: SeafoodPricingBasis;
@@ -30,6 +67,12 @@ export interface CreateAdjustmentSnapshotInput {
   readonly estimatedProductSubtotal: Decimal | string | number;
   readonly estimatedItemTotal: Decimal | string | number;
   readonly customerAuthorizedCeilingJmd: Decimal | string | number;
+
+  // Additive V2 preparation & physical measures (Phase 16D WP4.3B.4C)
+  readonly preparationChargeMethod?: PreparationChargeMethod;
+  readonly fishCount?: number;
+  readonly originalWholeWeightLbs?: Decimal | string | number;
+  readonly originalWholeWeightUnit?: WeightUnit;
 }
 
 export interface AppendMeasurementEventInput {
@@ -58,6 +101,26 @@ export interface AppendPreparationEventInput {
   readonly correctionReason?: string;
 }
 
+/**
+ * Input for recording customer checkout ceiling consent at initial order placement.
+ *
+ * NOTE ON VALIDATION RESPONSIBILITY:
+ * Repository-level validation verifies strictly structural integrity:
+ * - Complete quote-field pairs: quoteId and quotePayloadHash must both be present together,
+ *   or both omitted.
+ * - Format validity: quotePayloadHash must be a 64-character lowercase hexadecimal SHA-256 digest.
+ *
+ * Repository validation DOES NOT verify:
+ * - Cryptographic HMAC signature or token authenticity.
+ * - Customer identity matching or quote expiration.
+ * - Authenticated customer consent.
+ *
+ * Cryptographic quote verification and customer consent authorization are strictly
+ * enforced upstream by CheckoutQuoteService (WP4.3B.4A) and the checkout transaction
+ * boundary (WP4.3B.4E).
+ *
+ * Preserves 100% of historical V1 behavior when quoteId and quotePayloadHash are omitted.
+ */
 export interface RecordCheckoutConsentInput {
   readonly weightAdjustmentId: string;
   readonly authenticatedCustomerId: string;
@@ -67,6 +130,10 @@ export interface RecordCheckoutConsentInput {
   readonly termsVersion: string;
   readonly ipAddress?: string;
   readonly userAgent?: string;
+
+  // Additive V2 checkout quote identity & payload hash (Phase 16D WP4.3B.4C)
+  readonly quoteId?: string;
+  readonly quotePayloadHash?: string;
 }
 
 export interface RecordCustomerApprovalInput {

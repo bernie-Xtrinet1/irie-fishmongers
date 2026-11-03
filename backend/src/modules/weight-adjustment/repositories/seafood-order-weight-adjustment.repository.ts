@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, SeafoodOrderWeightAdjustment } from '@prisma/client';
+import { PreparationChargeMethod, Prisma, SeafoodOrderWeightAdjustment } from '@prisma/client';
 import Decimal from 'decimal.js';
 
 import { PrismaService } from '../../../database/prisma.service';
 import {
   CreateAdjustmentSnapshotInput,
+  InvalidAdjustmentInputError,
   UpdateAdjustmentStateInput,
 } from './types/weight-adjustment-repository.types';
 import { AdjustmentNotFoundError } from './errors/weight-adjustment-repository.errors';
@@ -27,10 +28,111 @@ export type AdjustmentWithRelations = Prisma.SeafoodOrderWeightAdjustmentGetPayl
 export class SeafoodOrderWeightAdjustmentRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Performs structural validation on optional V2 adjustment input fields.
+   *
+   * RESPONSIBILITY NOTE:
+   * Repository validation checks method-parameter consistency and numeric positivity.
+   * It DOES NOT establish customer consent authorization or cryptographic quote authenticity,
+   * which are verified upstream by CheckoutQuoteService and the checkout transaction boundary.
+   * Historical V1 behavior is strictly preserved when V2 fields are omitted.
+   */
+  private validateV2AdjustmentInput(input: CreateAdjustmentSnapshotInput): void {
+    // 1. If method is FIXED_PER_FISH, fishCount is strictly required, integer >= 1
+    if (input.preparationChargeMethod === PreparationChargeMethod.FIXED_PER_FISH) {
+      if (input.fishCount === undefined || input.fishCount === null) {
+        throw new InvalidAdjustmentInputError(
+          'FIXED_PER_FISH preparation method requires a positive integer fishCount (>= 1).',
+        );
+      }
+    }
+
+    // 2. If fishCount is provided, must be a finite integer >= 1
+    if (input.fishCount !== undefined && input.fishCount !== null) {
+      if (
+        typeof input.fishCount !== 'number' ||
+        !Number.isInteger(input.fishCount) ||
+        input.fishCount < 1
+      ) {
+        throw new InvalidAdjustmentInputError(
+          `fishCount must be a positive integer (>= 1), got ${input.fishCount}.`,
+        );
+      }
+    }
+
+    // 3. If method is FIXED_PER_POUND, originalWholeWeightLbs and originalWholeWeightUnit are strictly required
+    if (input.preparationChargeMethod === PreparationChargeMethod.FIXED_PER_POUND) {
+      if (
+        input.originalWholeWeightLbs === undefined ||
+        input.originalWholeWeightLbs === null
+      ) {
+        throw new InvalidAdjustmentInputError(
+          'FIXED_PER_POUND preparation method requires originalWholeWeightLbs to be provided.',
+        );
+      }
+      if (!input.originalWholeWeightUnit) {
+        throw new InvalidAdjustmentInputError(
+          'FIXED_PER_POUND preparation method requires originalWholeWeightUnit to be provided.',
+        );
+      }
+    }
+
+    // 4. If originalWholeWeightLbs is provided, must be a finite positive Decimal/number (> 0)
+    // and must satisfy the lossless representability contract for PostgreSQL DECIMAL(16,8)
+    if (
+      input.originalWholeWeightLbs !== undefined &&
+      input.originalWholeWeightLbs !== null
+    ) {
+      let weightDec: Decimal;
+      try {
+        weightDec = new Decimal(input.originalWholeWeightLbs);
+      } catch {
+        throw new InvalidAdjustmentInputError(
+          `originalWholeWeightLbs "${input.originalWholeWeightLbs}" cannot be parsed as a valid decimal number.`,
+        );
+      }
+      if (!weightDec.isFinite() || weightDec.lte(0)) {
+        throw new InvalidAdjustmentInputError(
+          `originalWholeWeightLbs must be a finite positive number (> 0), got ${input.originalWholeWeightLbs}.`,
+        );
+      }
+      // Lossless representability contract: DECIMAL(16,8) enforces scale <= 8
+      if (weightDec.decimalPlaces() > 8) {
+        throw new InvalidAdjustmentInputError(
+          `originalWholeWeightLbs cannot exceed 8 decimal places for exact lossless DECIMAL(16,8) persistence (got ${input.originalWholeWeightLbs}).`,
+        );
+      }
+      // Lossless representability contract: DECIMAL(16,8) enforces precision 16, scale 8 (max integer digits = 8, strictly < 10^8)
+      if (weightDec.gte(new Decimal('100000000'))) {
+        throw new InvalidAdjustmentInputError(
+          `originalWholeWeightLbs exceeds maximum integer capacity for DECIMAL(16,8) (must be strictly less than 100,000,000, got ${input.originalWholeWeightLbs}).`,
+        );
+      }
+      if (!input.originalWholeWeightUnit) {
+        throw new InvalidAdjustmentInputError(
+          'originalWholeWeightUnit must be specified when originalWholeWeightLbs is provided.',
+        );
+      }
+    }
+
+    // 5. If method is NO_PREPARATION, preparation fee must be 0
+    if (input.preparationChargeMethod === PreparationChargeMethod.NO_PREPARATION) {
+      if (input.estimatedPreparationFee !== undefined && input.estimatedPreparationFee !== null) {
+        const fee = new Decimal(input.estimatedPreparationFee);
+        if (!fee.isZero()) {
+          throw new InvalidAdjustmentInputError(
+            `NO_PREPARATION method requires estimatedPreparationFee to be 0.00, got ${fee.toFixed(2)}.`,
+          );
+        }
+      }
+    }
+  }
+
   async createAdjustmentSnapshot(
     input: CreateAdjustmentSnapshotInput,
     tx?: Prisma.TransactionClient,
   ): Promise<SeafoodOrderWeightAdjustment> {
+    this.validateV2AdjustmentInput(input);
     const client = tx ?? this.prisma;
 
     return client.seafoodOrderWeightAdjustment.create({
@@ -49,6 +151,14 @@ export class SeafoodOrderWeightAdjustmentRepository {
         estimatedProductSubtotal: new Prisma.Decimal(new Decimal(input.estimatedProductSubtotal).toFixed(2)),
         estimatedItemTotal: new Prisma.Decimal(new Decimal(input.estimatedItemTotal).toFixed(2)),
         customerAuthorizedCeilingJmd: new Prisma.Decimal(new Decimal(input.customerAuthorizedCeilingJmd).toFixed(2)),
+        // Phase 16D WP4.3B.4C Additions: Additive V2 preparation & physical measures
+        preparationChargeMethod: input.preparationChargeMethod ?? null,
+        fishCount: input.fishCount ?? null,
+        originalWholeWeightLbs:
+          input.originalWholeWeightLbs !== undefined && input.originalWholeWeightLbs !== null
+            ? new Prisma.Decimal(new Decimal(input.originalWholeWeightLbs).toString())
+            : null,
+        originalWholeWeightUnit: input.originalWholeWeightUnit ?? null,
       },
     });
   }

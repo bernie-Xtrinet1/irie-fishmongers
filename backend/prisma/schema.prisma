@@ -3574,6 +3574,12 @@ enum PreparationFeeStructure {
   INCLUDED_IN_PRICE
 }
 
+enum PreparationChargeMethod {
+  FIXED_PER_FISH
+  FIXED_PER_POUND
+  NO_PREPARATION
+}
+
 model SeafoodOrderWeightAdjustment {
   id                           String                        @id @default(uuid())
   orderItemId                  String                        @unique
@@ -3597,6 +3603,12 @@ model SeafoodOrderWeightAdjustment {
   estimatedPreparationFee      Decimal                       @default(0) @db.Decimal(10, 2)
   finalPreparationFee          Decimal?                      @db.Decimal(10, 2)
   preparationFeeDifference     Decimal?                      @db.Decimal(10, 2)
+
+  // Phase 16D WP4.3B.4C: Additive V2 preparation & physical measures
+  preparationChargeMethod      PreparationChargeMethod?
+  fishCount                    Int?
+  originalWholeWeightLbs       Decimal?                      @db.Decimal(16, 8)
+  originalWholeWeightUnit      WeightUnit?
 
   estimatedProductSubtotal     Decimal                       @db.Decimal(10, 2)
   finalProductSubtotal         Decimal?                      @db.Decimal(10, 2)
@@ -3690,6 +3702,11 @@ model CustomerCheckoutCeilingConsent {
   authorizedCeilingJmd    Decimal                      @db.Decimal(10, 2)
   termsVersion            String
   payloadHash             String
+  // Additive V2 checkout quote identity & payload hash (Phase 16D WP4.3B.4C).
+  // quoteId is indexed but NOT unique: a single checkout quote covers an order that may
+  // contain multiple seafood line items, each with its own adjustment and consent row.
+  quoteId                 String?
+  quotePayloadHash        String?
   consentedAt             DateTime                     @default(now())
   ipAddress               String?
   userAgent               String?
@@ -3697,6 +3714,8 @@ model CustomerCheckoutCeilingConsent {
   weightAdjustment        SeafoodOrderWeightAdjustment @relation(fields: [weightAdjustmentId], references: [id], onDelete: Restrict)
   customer                User                         @relation("CheckoutCeilingConsentCustomer", fields: [authenticatedCustomerId], references: [id], onDelete: Restrict)
 
+  // Non-unique B-tree index supports collection queries for multi-item quotes (WP4.3B.4C.1A)
+  @@index([quoteId], name: "idx_ceiling_consents_quote_id")
   @@map("customer_checkout_ceiling_consents")
 }
 
