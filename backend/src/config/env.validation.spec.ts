@@ -11,6 +11,7 @@ describe('validateEnv', () => {
     JWT_ACCESS_EXPIRES_IN: '15m',
     JWT_REFRESH_SECRET: 'b'.repeat(32),
     JWT_REFRESH_EXPIRES_IN: '7d',
+    CHECKOUT_QUOTE_SIGNING_SECRET: 'c'.repeat(32),
     APP_BASE_URL: 'http://localhost:3001',
     CORS_ORIGIN: 'http://localhost:3000',
     WIPAY_API_URL: 'https://jmsb.wipayfinancial.com/plugins/payments',
@@ -130,6 +131,13 @@ describe('validateEnv', () => {
       FIREBASE_PRIVATE_KEY: 'replace-with-firebase-private-key',
     });
 
+    expect(() =>
+      validateEnv({
+        ...validConfig,
+        CHECKOUT_QUOTE_SIGNING_SECRET:
+          'replace-with-at-least-32-char-checkout-quote-signing-secret',
+      }),
+    ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
     expect(result.SENDGRID_API_KEY).toBe('replace-with-sendgrid-api-key');
     expect(result.SENDGRID_FROM_EMAIL).toBe('notifications@iriefishmongers.com');
     expect(result.FIREBASE_PROJECT_ID).toBe('replace-with-firebase-project-id');
@@ -171,6 +179,104 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...withoutFirebaseKey, EMAIL_ENABLED: 'false' })).toThrow(
       /Environment validation failed/,
     );
+  });
+
+  describe('CHECKOUT_QUOTE_SIGNING_SECRET validation', () => {
+    it('accepts a valid dedicated CHECKOUT_QUOTE_SIGNING_SECRET', () => {
+      const secret = 'valid-checkout-quote-secret-at-least-32-chars';
+      const result = validateEnv({
+        ...validConfig,
+        CHECKOUT_QUOTE_SIGNING_SECRET: secret,
+      });
+      expect(result.CHECKOUT_QUOTE_SIGNING_SECRET).toBe(secret);
+    });
+
+    it('throws when CHECKOUT_QUOTE_SIGNING_SECRET is missing', () => {
+      const { CHECKOUT_QUOTE_SIGNING_SECRET: _secret, ...withoutSecret } = validConfig;
+      expect(() => validateEnv(withoutSecret)).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+    });
+
+    it('throws when CHECKOUT_QUOTE_SIGNING_SECRET is empty', () => {
+      expect(() =>
+        validateEnv({ ...validConfig, CHECKOUT_QUOTE_SIGNING_SECRET: '' }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+    });
+
+    it('throws when CHECKOUT_QUOTE_SIGNING_SECRET is shorter than 32 characters', () => {
+      expect(() =>
+        validateEnv({ ...validConfig, CHECKOUT_QUOTE_SIGNING_SECRET: 'short-secret-under-32-chars' }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+    });
+
+    it('accepts valid optional CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS', () => {
+      const previousSecret = 'd'.repeat(32);
+      const result = validateEnv({
+        ...validConfig,
+        CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS: previousSecret,
+      });
+      expect(result.CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS).toBe(previousSecret);
+    });
+
+    it('throws when CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS is shorter than 32 characters or empty', () => {
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS: 'short-previous-secret',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS/);
+
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS: '',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS/);
+    });
+
+    it('proves JWT_ACCESS_SECRET cannot substitute for a missing CHECKOUT_QUOTE_SIGNING_SECRET', () => {
+      const { CHECKOUT_QUOTE_SIGNING_SECRET: _secret, ...withoutSecret } = validConfig;
+      expect(withoutSecret.JWT_ACCESS_SECRET).toBeDefined();
+      expect(withoutSecret.JWT_ACCESS_SECRET.length).toBeGreaterThanOrEqual(32);
+      expect(() => validateEnv(withoutSecret)).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+    });
+
+    it('rejects the documented placeholder value for CHECKOUT_QUOTE_SIGNING_SECRET', () => {
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET:
+            'replace-with-at-least-32-char-checkout-quote-signing-secret',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+    });
+
+    it('rejects the documented placeholder value for CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS', () => {
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS:
+            'replace-with-at-least-32-char-previous-signing-secret',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS/);
+    });
+
+    it('rejects any known quote secret placeholder on either current or previous secret variable', () => {
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET:
+            'replace-with-at-least-32-char-previous-signing-secret',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET/);
+
+      expect(() =>
+        validateEnv({
+          ...validConfig,
+          CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS:
+            'replace-with-at-least-32-char-checkout-quote-signing-secret',
+        }),
+      ).toThrow(/CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS/);
+    });
   });
 
   it('rejects an EMAIL_ENABLED value other than true/false', () => {

@@ -1,10 +1,15 @@
-import { IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength, ValidateIf } from 'class-validator';
+import { IsIn, IsInt, IsNotIn, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength, ValidateIf } from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
   Test = 'test',
   Production = 'production',
 }
+
+export const FORBIDDEN_CHECKOUT_QUOTE_SIGNING_SECRETS: string[] = [
+  'replace-with-at-least-32-char-checkout-quote-signing-secret',
+  'replace-with-at-least-32-char-previous-signing-secret',
+];
 
 export class EnvironmentVariables {
   @IsIn([NodeEnv.Development, NodeEnv.Test, NodeEnv.Production])
@@ -62,6 +67,21 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   JWT_REFRESH_EXPIRES_IN!: string;
+
+  @IsString()
+  @MinLength(32)
+  @IsNotIn(FORBIDDEN_CHECKOUT_QUOTE_SIGNING_SECRETS, {
+    message: 'CHECKOUT_QUOTE_SIGNING_SECRET must not use documented placeholder values',
+  })
+  CHECKOUT_QUOTE_SIGNING_SECRET!: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(32)
+  @IsNotIn(FORBIDDEN_CHECKOUT_QUOTE_SIGNING_SECRETS, {
+    message: 'CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS must not use documented placeholder values',
+  })
+  CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS?: string;
 
   @IsUrl({ require_tld: false })
   APP_BASE_URL!: string;

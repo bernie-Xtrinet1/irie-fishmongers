@@ -12,18 +12,24 @@ const orderWithDetails = Prisma.validator<Prisma.OrderDefaultArgs>()({
 
 export type OrderWithDetails = Prisma.OrderGetPayload<typeof orderWithDetails>;
 
+export interface VendorOrderItemInput {
+  id?: string;
+  productId: string;
+  productName: string;
+  unitPrice: number;
+  unit: ProductUnit;
+  quantity: number;
+  subtotal: number;
+  currency: string | null;
+  originalLotId?: string | null;
+  originalListingId?: string | null;
+  purchaseSnapshot?: Prisma.InputJsonValue;
+}
+
 export interface VendorOrderInput {
   vendorId: string;
   subtotal: number;
-  items: {
-    productId: string;
-    productName: string;
-    unitPrice: number;
-    unit: ProductUnit;
-    quantity: number;
-    subtotal: number;
-    currency: string | null;
-  }[];
+  items: VendorOrderItemInput[];
 }
 
 export interface CreateOrderInput {

@@ -24,4 +24,13 @@ export class CheckoutDto {
   @ApiProperty({ enum: PaymentProviderName })
   @IsEnum(PaymentProviderName)
   paymentMethod!: PaymentProviderName;
+
+  @ApiProperty({
+    required: false,
+    description: 'Signed quote token for catch-weight seafood purchases',
+    example: 'eyJhbGciOi...',
+  })
+  @IsOptional()
+  @IsString()
+  quoteToken?: string;
 }
