@@ -149,22 +149,44 @@ export function computePreparationFee(params: {
   readonly chargeMethod: PreparationChargeMethod;
   readonly rate: string | Decimal;
   readonly fishCount?: number | null;
-  readonly originalWholeWeight?: number | Decimal | null;
+  readonly originalWholeWeight?: number | Decimal | string | null;
   readonly originalWholeWeightUnit?: WeightUnit;
 }): Decimal {
+  let rateDec: Decimal;
+
+  if (params.rate instanceof Decimal) {
+    if (!params.rate.isFinite() || params.rate.isNaN()) {
+      throw new PreparationPricingError('preparationOption.rate must be a finite Decimal');
+    }
+    if (params.rate.lessThan(0)) {
+      throw new PreparationPricingError('preparationOption.rate cannot be negative');
+    }
+    if (params.rate.decimalPlaces() > 2) {
+      throw new PreparationPricingError(
+        `preparationOption.rate cannot have more than 2 decimal places (got: ${params.rate.toString()})`,
+      );
+    }
+    rateDec = params.rate;
+  } else {
+    try {
+      rateDec = validateMonetaryDecimalString(
+        params.rate === undefined || params.rate === null || params.rate === ''
+          ? params.chargeMethod === PreparationChargeMethod.NO_PREPARATION ? '0.00' : ''
+          : params.rate,
+        'preparationOption.rate',
+        params.chargeMethod === PreparationChargeMethod.NO_PREPARATION,
+      );
+    } catch (err: any) {
+      throw new PreparationPricingError(err.message);
+    }
+  }
+
   if (params.chargeMethod === PreparationChargeMethod.NO_PREPARATION) {
-    const rateDec = params.rate instanceof Decimal ? params.rate : new Decimal(params.rate || 0);
     if (!rateDec.isZero()) {
       throw new PreparationPricingError('NO_PREPARATION must have a rate of 0.00');
     }
     return new Decimal('0.00');
   }
-
-  const rateDec = validateMonetaryDecimalString(
-    params.rate instanceof Decimal ? params.rate.toFixed(2) : params.rate,
-    'preparationOption.rate',
-    false,
-  );
 
   if (params.chargeMethod === PreparationChargeMethod.FIXED_PER_FISH) {
     if (
@@ -413,6 +435,7 @@ export function validateQuotePayloadStructure(payload: unknown): SeafoodCheckout
 
   let accumulatedSeafoodTotal = new Decimal(0);
   let accumulatedCustomerCeilings = new Decimal(0);
+  const seenCartItemIds = new Set<string>();
 
   for (let i = 0; i < p.items.length; i++) {
     const item = p.items[i];
@@ -439,6 +462,20 @@ export function validateQuotePayloadStructure(payload: unknown): SeafoodCheckout
       if (typeof item[field] !== 'string' || item[field].trim() === '') {
         throw new MalformedQuoteTokenError(`Item at index ${i} missing required string field "${field}"`);
       }
+    }
+
+    // SEC: Each line item must have an unambiguous, unique cartItemId and deterministic order
+    if (seenCartItemIds.has(item.cartItemId)) {
+      throw new MalformedQuoteTokenError(
+        `Duplicate cart item ID "${item.cartItemId}" detected in quote payload items`,
+      );
+    }
+    seenCartItemIds.add(item.cartItemId);
+
+    if (i > 0 && p.items[i - 1].cartItemId.localeCompare(item.cartItemId) > 0) {
+      throw new MalformedQuoteTokenError(
+        `Items array must be deterministically sorted by cartItemId (found "${p.items[i - 1].cartItemId}" before "${item.cartItemId}")`,
+      );
     }
 
     // Integers and numbers
@@ -752,7 +789,23 @@ export function issueQuote(params: IssueQuoteParams, secret: string): SignedSeaf
   let seafoodEstimatedSubtotalDec = new Decimal(0);
   let seafoodCeilingSubtotalDec = new Decimal(0);
 
-  const validatedItems: QuotedSeafoodItem[] = params.items.map((item) => {
+  // SEC: Validate unambiguous identity and reject duplicate cart item IDs
+  const seenCartItemIds = new Set<string>();
+  for (let i = 0; i < params.items.length; i++) {
+    const item = params.items[i];
+    if (!item.cartItemId || typeof item.cartItemId !== 'string' || item.cartItemId.trim() === '') {
+      throw new MalformedQuoteTokenError(`Item at index ${i} missing required string field "cartItemId"`);
+    }
+    if (seenCartItemIds.has(item.cartItemId)) {
+      throw new MalformedQuoteTokenError(`Duplicate cart item ID "${item.cartItemId}" detected in quote items`);
+    }
+    seenCartItemIds.add(item.cartItemId);
+  }
+
+  // Deterministically sort items by cartItemId to guarantee canonical stability
+  const sortedInputItems = [...params.items].sort((a, b) => a.cartItemId.localeCompare(b.cartItemId));
+
+  const validatedItems: QuotedSeafoodItem[] = sortedInputItems.map((item) => {
     // Monetary validations
     const unitPriceDec = validateMonetaryDecimalString(item.unitPrice, 'unitPrice', false);
     const itemSubtotalDec = validateMonetaryDecimalString(
@@ -1081,4 +1134,17 @@ export class CheckoutQuoteService {
   }): Decimal {
     return computePreparationFee(params);
   }
+
+  computeQuotePayloadHash(payload: SeafoodCheckoutQuotePayload): string {
+    return computeQuotePayloadHash(payload);
+  }
+}
+
+/**
+ * Computes the 64-character lowercase hexadecimal SHA-256 digest of a quote payload.
+ * Canonicalizes keys alphabetically to ensure deterministic hashing.
+ */
+export function computeQuotePayloadHash(payload: SeafoodCheckoutQuotePayload): string {
+  const canonical = canonicalJsonStringify(payload);
+  return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
 }

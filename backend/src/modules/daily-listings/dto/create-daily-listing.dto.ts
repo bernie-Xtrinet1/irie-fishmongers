@@ -1,17 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ProductUnit } from '@prisma/client';
+import { ProductUnit, WeightUnit } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
   IsEnum,
   IsISO8601,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
   IsUUID,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -89,6 +91,23 @@ export class CreateDailyListingDto {
   @ValidateNested({ each: true })
   @Type(() => PreparationOptionDto)
   preparationOptions?: PreparationOptionDto[];
+
+  @ApiPropertyOptional({ description: 'Optional vendor-declared fish count for this listing catch', example: 5 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  fishCount?: number;
+
+  @ApiPropertyOptional({ description: 'Optional vendor-declared advisory whole weight for this listing catch', example: 2.75 })
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  originalWholeWeight?: number;
+
+  @ApiPropertyOptional({ enum: WeightUnit, description: 'Measurement unit of vendor-declared whole weight', default: WeightUnit.POUNDS })
+  @IsOptional()
+  @IsEnum(WeightUnit)
+  originalWholeWeightUnit?: WeightUnit;
 
   @ApiPropertyOptional({ description: 'Whether delivery fulfillment is available for this listing', default: true })
   @IsOptional()

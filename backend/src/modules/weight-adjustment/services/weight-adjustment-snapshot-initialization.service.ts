@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   CustomerCheckoutCeilingConsent,
+  PreparationChargeMethod,
   PreparationFeeStructure,
   Prisma,
   ProductUnit,
@@ -194,6 +195,60 @@ export class WeightAdjustmentSnapshotInitializationService {
         input.orderItemId,
         `Provided lot ID "${input.verifiedOrderTimeEvidence.lotId}" conflicts with persisted order lot "${persistedLotId}".`,
       );
+    }
+
+    // 13. V2 preparation charge method verification
+    if (input.preparationChargeMethod !== undefined && input.preparationChargeMethod !== null) {
+      if (existing.preparationChargeMethod !== input.preparationChargeMethod) {
+        throw new ConflictingReplayError(
+          input.orderItemId,
+          `Provided preparationChargeMethod "${input.preparationChargeMethod}" conflicts with persisted method "${existing.preparationChargeMethod}".`,
+        );
+      }
+    }
+
+    // 14. V2 fish count verification
+    if (input.fishCount !== undefined && input.fishCount !== null) {
+      if (existing.fishCount !== input.fishCount) {
+        throw new ConflictingReplayError(
+          input.orderItemId,
+          `Provided fishCount ${input.fishCount} conflicts with persisted fishCount ${existing.fishCount}.`,
+        );
+      }
+    }
+
+    // 15. V2 original whole weight verification
+    if (input.originalWholeWeightLbs !== undefined && input.originalWholeWeightLbs !== null) {
+      const inputWeight = new Decimal(input.originalWholeWeightLbs.toString());
+      if (
+        !existing.originalWholeWeightLbs ||
+        !new Decimal(existing.originalWholeWeightLbs.toString()).equals(inputWeight)
+      ) {
+        throw new ConflictingReplayError(
+          input.orderItemId,
+          `Provided originalWholeWeightLbs ${inputWeight.toString()} conflicts with persisted weight ${String(existing.originalWholeWeightLbs)}.`,
+        );
+      }
+    }
+
+    // 16. V2 quote ID verification
+    if (input.quoteId !== undefined && input.quoteId !== null) {
+      if (consent.quoteId !== input.quoteId) {
+        throw new ConflictingReplayError(
+          input.orderItemId,
+          `Provided quoteId "${input.quoteId}" conflicts with persisted quoteId "${consent.quoteId}".`,
+        );
+      }
+    }
+
+    // 17. V2 quote payload hash verification
+    if (input.quotePayloadHash !== undefined && input.quotePayloadHash !== null) {
+      if (consent.quotePayloadHash !== input.quotePayloadHash.toLowerCase()) {
+        throw new ConflictingReplayError(
+          input.orderItemId,
+          `Provided quotePayloadHash "${input.quotePayloadHash}" conflicts with persisted quotePayloadHash "${consent.quotePayloadHash}".`,
+        );
+      }
     }
   }
 
@@ -404,97 +459,284 @@ export class WeightAdjustmentSnapshotInitializationService {
       // 9. Preparation fee calculation strictly against PreparationOptionDto[] contract
       let preparationFeeStructure: PreparationFeeStructure = PreparationFeeStructure.FLAT_FEE;
       let preparationFeeRate = new Decimal(0);
+      let estimatedPreparationFee: Decimal;
+      let estimatedProductSubtotal: Decimal;
+      let estimatedItemTotal: Decimal;
 
-      if (input.selectedPreparationServiceName) {
-        const selectedName = input.selectedPreparationServiceName.trim();
-        const prepOptions = listing.preparationOptions;
-
-        if (!Array.isArray(prepOptions)) {
+      if (input.preparationChargeMethod !== undefined && input.preparationChargeMethod !== null) {
+        // V2 preparation calculation and validation path
+        if (!Object.values(PreparationChargeMethod).includes(input.preparationChargeMethod)) {
           throw new InvalidPreparationOptionError(
-            selectedName,
-            `Listing does not have a valid preparation options array for selected service "${selectedName}".`,
+            String(input.preparationChargeMethod),
+            `Unrecognized preparationChargeMethod "${input.preparationChargeMethod}".`,
           );
         }
 
-        const selectedLower = selectedName.toLowerCase();
-        const matchedOption = prepOptions.find(
-          (opt: any) =>
-            opt &&
-            typeof opt === 'object' &&
-            ((typeof opt.id === 'string' && opt.id.trim().toLowerCase() === selectedLower) ||
-              (typeof opt.label === 'string' && opt.label.trim().toLowerCase() === selectedLower)),
-        );
+        if (input.preparationChargeMethod === PreparationChargeMethod.NO_PREPARATION) {
+          // Preserve NO_PREPARATION as a zero-charge method
+          preparationFeeRate = new Decimal(0);
+          estimatedPreparationFee = new Decimal('0.00');
 
-        if (!matchedOption) {
-          throw new InvalidPreparationOptionError(
-            selectedName,
-            `Selected preparation service "${selectedName}" is not offered on authoritative listing "${listing.id}".`,
-          );
-        }
-
-        const option = matchedOption as Record<string, any>;
-
-        // Validate that fee is present, numeric, finite and nonnegative
-        if (
-          option.fee === undefined ||
-          option.fee === null ||
-          typeof option.fee !== 'number' ||
-          isNaN(option.fee) ||
-          !isFinite(option.fee) ||
-          option.fee < 0
-        ) {
-          throw new InvalidPreparationOptionError(
-            selectedName,
-            `Preparation option "${selectedName}" has an invalid, negative, or missing fee: ${option.fee}.`,
-          );
-        }
-
-        // Validate currency (must be JMD)
-        if (option.currency !== undefined && option.currency !== null) {
-          if (
-            typeof option.currency !== 'string' ||
-            option.currency.trim().toUpperCase() !== 'JMD'
-          ) {
-            throw new UnsupportedPreparationCurrencyError(
-              String(option.currency),
-              `Preparation fee currency "${option.currency}" is unsupported for service "${selectedName}". Only JMD is permitted.`,
+          if (input.selectedPreparationServiceName) {
+            const selectedName = input.selectedPreparationServiceName.trim();
+            const prepOptions = listing.preparationOptions;
+            if (!Array.isArray(prepOptions)) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `Listing does not have a valid preparation options array for selected service "${selectedName}".`,
+              );
+            }
+            const selectedLower = selectedName.toLowerCase();
+            const matchedOption = prepOptions.find(
+              (opt: any) =>
+                opt &&
+                typeof opt === 'object' &&
+                ((typeof opt.id === 'string' && opt.id.trim().toLowerCase() === selectedLower) ||
+                  (typeof opt.label === 'string' && opt.label.trim().toLowerCase() === selectedLower)),
             );
+            if (!matchedOption) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `Selected preparation service "${selectedName}" is not offered on authoritative listing "${listing.id}".`,
+              );
+            }
+            const option = matchedOption as Record<string, any>;
+            if (option.chargeMethod && option.chargeMethod !== PreparationChargeMethod.NO_PREPARATION) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `Requested preparation method "NO_PREPARATION" conflicts with configured option method "${option.chargeMethod}".`,
+              );
+            }
+            if (option.rate !== undefined && option.rate !== null) {
+              const rateDec = new Decimal(option.rate.toString());
+              if (!rateDec.isZero()) {
+                throw new InvalidPreparationOptionError(
+                  selectedName,
+                  `NO_PREPARATION option requires zero rate (got: ${option.rate}).`,
+                );
+              }
+            }
+          }
+        } else {
+          // Chargeable V2 method: FIXED_PER_FISH or FIXED_PER_POUND
+          if (!input.selectedPreparationServiceName || input.selectedPreparationServiceName.trim() === '') {
+            throw new InvalidPreparationOptionError(
+              String(input.preparationChargeMethod),
+              `Selected preparation service name is required for chargeable method "${input.preparationChargeMethod}".`,
+            );
+          }
+
+          const selectedName = input.selectedPreparationServiceName.trim();
+          const prepOptions = listing.preparationOptions;
+
+          if (!Array.isArray(prepOptions)) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Listing does not have a valid preparation options array for selected service "${selectedName}".`,
+            );
+          }
+
+          const selectedLower = selectedName.toLowerCase();
+          const matchedOption = prepOptions.find(
+            (opt: any) =>
+              opt &&
+              typeof opt === 'object' &&
+              ((typeof opt.id === 'string' && opt.id.trim().toLowerCase() === selectedLower) ||
+                (typeof opt.label === 'string' && opt.label.trim().toLowerCase() === selectedLower)),
+          );
+
+          if (!matchedOption) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Selected preparation service "${selectedName}" is not offered on authoritative listing "${listing.id}".`,
+            );
+          }
+
+          const option = matchedOption as Record<string, any>;
+
+          // 1. Verify requested method matches authoritative listing option's configured method
+          if (!option.chargeMethod || option.chargeMethod !== input.preparationChargeMethod) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Requested preparation method "${input.preparationChargeMethod}" does not match configured option method "${option.chargeMethod ?? 'undefined'}".`,
+            );
+          }
+
+          // 2. Do not interpret legacy fee as a V2 per-pound or per-fish rate
+          if (option.rate === undefined || option.rate === null || typeof option.rate !== 'string' || option.rate.trim() === '') {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Preparation option "${selectedName}" is missing mandatory V2 rate string. Interpreting legacy fee as a V2 rate is strictly prohibited.`,
+            );
+          }
+
+          preparationFeeRate = new Decimal(option.rate.toString());
+          if (!preparationFeeRate.isFinite() || preparationFeeRate.lte(0)) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Preparation option "${selectedName}" rate must be a positive finite value (got: "${option.rate}").`,
+            );
+          }
+
+          // 3. Enforce required fish count and whole-weight inputs & reject invalid combinations
+          if (input.preparationChargeMethod === PreparationChargeMethod.FIXED_PER_FISH) {
+            if (
+              input.fishCount === undefined ||
+              input.fishCount === null ||
+              typeof input.fishCount !== 'number' ||
+              !Number.isInteger(input.fishCount) ||
+              input.fishCount <= 0
+            ) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `FIXED_PER_FISH requires positive integer fishCount (got: ${String(input.fishCount)}).`,
+              );
+            }
+            estimatedPreparationFee = new Decimal(input.fishCount)
+              .times(preparationFeeRate)
+              .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+          } else {
+            // FIXED_PER_POUND
+            if (input.originalWholeWeightLbs === undefined || input.originalWholeWeightLbs === null) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                'FIXED_PER_POUND requires originalWholeWeightLbs.',
+              );
+            }
+            let wholeWeightDec: Decimal;
+            try {
+              wholeWeightDec = new Decimal(input.originalWholeWeightLbs.toString());
+            } catch {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `originalWholeWeightLbs could not be parsed as Decimal (got: "${String(input.originalWholeWeightLbs)}").`,
+              );
+            }
+            if (!wholeWeightDec.isFinite() || wholeWeightDec.lte(0)) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `FIXED_PER_POUND requires positive finite originalWholeWeightLbs (got: ${wholeWeightDec.toString()}).`,
+              );
+            }
+            if (wholeWeightDec.decimalPlaces() > 8) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `originalWholeWeightLbs "${wholeWeightDec.toString()}" cannot exceed 8 decimal places for exact lossless DECIMAL(16,8) representability.`,
+              );
+            }
+            if (wholeWeightDec.gte(new Decimal('100000000'))) {
+              throw new InvalidPreparationOptionError(
+                selectedName,
+                `originalWholeWeightLbs exceeds maximum capacity (< 10^8): "${wholeWeightDec.toString()}".`,
+              );
+            }
+            estimatedPreparationFee = wholeWeightDec
+              .times(preparationFeeRate)
+              .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
           }
         }
 
-        preparationFeeStructure = PreparationFeeStructure.FLAT_FEE;
-        preparationFeeRate = new Decimal(option.fee.toString());
-      } else {
-        // Absent preparation selection: zero preparation fee
-        preparationFeeStructure = PreparationFeeStructure.FLAT_FEE;
-        preparationFeeRate = new Decimal(0);
-      }
+        estimatedProductSubtotal = estimatedWeight.times(unitPrice).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        estimatedItemTotal = estimatedProductSubtotal.plus(estimatedPreparationFee);
 
-      let pricingResult;
-      try {
-        pricingResult = SeafoodPricingEngine.calculate({
-          pricingBasis: pricingBasis as any,
-          unit: unit === WeightUnit.KILOGRAMS ? 'PER_KILOGRAM' : 'PER_POUND',
-          unitPrice,
-          estimatedWeight,
-          customerAuthorizedCeilingJmd: authorizedCeiling,
-          preparation: {
-            feeStructure: preparationFeeStructure as any,
-            feeRate: preparationFeeRate,
-          },
-        });
-      } catch (err) {
-        if (err instanceof CeilingBelowEstimateError) {
+        if (authorizedCeiling.lessThan(estimatedItemTotal)) {
           throw new MissingCheckoutConsentError(
-            `Authorized ceiling JMD ${authorizedCeiling.toFixed(2)} cannot be lower than initial estimated total.`,
+            `Authorized ceiling JMD ${authorizedCeiling.toFixed(2)} cannot be lower than initial estimated total JMD ${estimatedItemTotal.toFixed(2)}.`,
           );
         }
-        throw err;
-      }
+      } else {
+        // V1 legacy calculation path via SeafoodPricingEngine
+        if (input.selectedPreparationServiceName) {
+          const selectedName = input.selectedPreparationServiceName.trim();
+          const prepOptions = listing.preparationOptions;
 
-      const estimatedPreparationFee = pricingResult.estimatedPreparationFee;
-      const estimatedProductSubtotal = pricingResult.estimatedProductSubtotal;
-      const estimatedItemTotal = pricingResult.estimatedItemTotal;
+          if (!Array.isArray(prepOptions)) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Listing does not have a valid preparation options array for selected service "${selectedName}".`,
+            );
+          }
+
+          const selectedLower = selectedName.toLowerCase();
+          const matchedOption = prepOptions.find(
+            (opt: any) =>
+              opt &&
+              typeof opt === 'object' &&
+              ((typeof opt.id === 'string' && opt.id.trim().toLowerCase() === selectedLower) ||
+                (typeof opt.label === 'string' && opt.label.trim().toLowerCase() === selectedLower)),
+          );
+
+          if (!matchedOption) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Selected preparation service "${selectedName}" is not offered on authoritative listing "${listing.id}".`,
+            );
+          }
+
+          const option = matchedOption as Record<string, any>;
+
+          // Validate that fee is present, numeric, finite and nonnegative
+          if (
+            option.fee === undefined ||
+            option.fee === null ||
+            typeof option.fee !== 'number' ||
+            isNaN(option.fee) ||
+            !isFinite(option.fee) ||
+            option.fee < 0
+          ) {
+            throw new InvalidPreparationOptionError(
+              selectedName,
+              `Preparation option "${selectedName}" has an invalid, negative, or missing fee: ${option.fee}.`,
+            );
+          }
+
+          // Validate currency (must be JMD)
+          if (option.currency !== undefined && option.currency !== null) {
+            if (
+              typeof option.currency !== 'string' ||
+              option.currency.trim().toUpperCase() !== 'JMD'
+            ) {
+              throw new UnsupportedPreparationCurrencyError(
+                String(option.currency),
+                `Preparation fee currency "${option.currency}" is unsupported for service "${selectedName}". Only JMD is permitted.`,
+              );
+            }
+          }
+
+          preparationFeeStructure = PreparationFeeStructure.FLAT_FEE;
+          preparationFeeRate = new Decimal(option.fee.toString());
+        } else {
+          // Absent preparation selection: zero preparation fee
+          preparationFeeStructure = PreparationFeeStructure.FLAT_FEE;
+          preparationFeeRate = new Decimal(0);
+        }
+
+        let pricingResult;
+        try {
+          pricingResult = SeafoodPricingEngine.calculate({
+            pricingBasis: pricingBasis as any,
+            unit: unit === WeightUnit.KILOGRAMS ? 'PER_KILOGRAM' : 'PER_POUND',
+            unitPrice,
+            estimatedWeight,
+            customerAuthorizedCeilingJmd: authorizedCeiling,
+            preparation: {
+              feeStructure: preparationFeeStructure as any,
+              feeRate: preparationFeeRate,
+            },
+          });
+        } catch (err) {
+          if (err instanceof CeilingBelowEstimateError) {
+            throw new MissingCheckoutConsentError(
+              `Authorized ceiling JMD ${authorizedCeiling.toFixed(2)} cannot be lower than initial estimated total.`,
+            );
+          }
+          throw err;
+        }
+
+        estimatedPreparationFee = pricingResult.estimatedPreparationFee;
+        estimatedProductSubtotal = pricingResult.estimatedProductSubtotal;
+        estimatedItemTotal = pricingResult.estimatedItemTotal;
+      }
 
       // 10. Persist SeafoodOrderWeightAdjustment Snapshot
       const snapshot = await this.adjustmentRepo.createAdjustmentSnapshot(
@@ -514,6 +756,13 @@ export class WeightAdjustmentSnapshotInitializationService {
           estimatedProductSubtotal,
           estimatedItemTotal,
           customerAuthorizedCeilingJmd: authorizedCeiling,
+          preparationChargeMethod: input.preparationChargeMethod,
+          fishCount: input.fishCount,
+          originalWholeWeightLbs:
+            input.originalWholeWeightLbs !== undefined && input.originalWholeWeightLbs !== null
+              ? new Decimal(input.originalWholeWeightLbs.toString())
+              : undefined,
+          originalWholeWeightUnit: input.originalWholeWeightUnit,
         },
         txClient,
       );
@@ -529,6 +778,8 @@ export class WeightAdjustmentSnapshotInitializationService {
           termsVersion: input.termsVersion,
           ipAddress: input.ipAddress,
           userAgent: input.userAgent,
+          quoteId: input.quoteId,
+          quotePayloadHash: input.quotePayloadHash,
         },
         txClient,
       );

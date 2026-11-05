@@ -4,7 +4,11 @@ import {
   UsablePartsPreference,
   WeightUnit,
 } from '@prisma/client';
-import { SeafoodPurchaseSnapshotV1 } from '../../weight-adjustment/domain/seafood-purchase-provenance.types';
+import {
+  SeafoodPurchaseSnapshot,
+  SeafoodPurchaseSnapshotV1,
+  SeafoodPurchaseSnapshotV2,
+} from '../../weight-adjustment/domain/seafood-purchase-provenance.types';
 
 export const CHECKOUT_QUOTE_SCHEMA_VERSION = 1;
 
@@ -77,7 +81,7 @@ export interface QuotedSeafoodItem {
 
   // Explicit fish count and original whole-fish weight (WP4.3B.2F.1)
   readonly fishCount?: number;
-  readonly originalWholeWeightLbs?: number;
+  readonly originalWholeWeightLbs?: number | string;
   readonly originalWholeWeightUnit?: WeightUnit;
 
   // Preparation & usable parts
@@ -159,6 +163,7 @@ export interface VerifyQuoteOptions {
  * Parameters for building a purchase provenance snapshot.
  */
 export interface BuildProvenanceSnapshotParams {
+  readonly schemaVersion?: 1 | 2;
   readonly orderItemId: string;
   readonly listing: {
     readonly id: string;
@@ -169,7 +174,7 @@ export interface BuildProvenanceSnapshotParams {
   readonly lot: {
     readonly id: string;
     readonly vendorId: string;
-    readonly species: string;
+    readonly species?: string;
     readonly foodSafetyStatus: string;
   };
   readonly product: {
@@ -184,7 +189,7 @@ export interface BuildProvenanceSnapshotParams {
   readonly pieceCount: number;
   readonly estimatedWeightLbs?: number;
   readonly fishCount?: number;
-  readonly originalWholeWeightLbs?: number;
+  readonly originalWholeWeightLbs?: number | string;
   readonly originalWholeWeightUnit?: WeightUnit;
   readonly pricingBasis: SeafoodPricingBasis;
   readonly selectedPreparationOption?: {
@@ -201,6 +206,55 @@ export interface BuildProvenanceSnapshotParams {
   readonly quoteId?: string;
   readonly payloadHash?: string;
   readonly consentedAt?: string;
+  readonly purchasedAt: string;
+}
+
+/**
+ * Parameters for building a version 2 purchase provenance snapshot with mandatory quote evidence.
+ */
+export interface BuildProvenanceSnapshotV2Params {
+  readonly orderItemId: string;
+  readonly listing: {
+    readonly id: string;
+    readonly vendorId: string;
+    readonly lotId: string;
+    readonly productId: string;
+  };
+  readonly lot: {
+    readonly id: string;
+    readonly vendorId: string;
+    readonly species?: string;
+    readonly foodSafetyStatus: string;
+  };
+  readonly product: {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string | null;
+    readonly weightLbs?: unknown;
+  };
+  readonly unit: ProductUnit;
+  readonly unitPrice: string;
+  readonly currency?: string;
+  readonly pieceCount: number;
+  readonly estimatedWeightLbs?: number;
+  readonly fishCount?: number;
+  readonly originalWholeWeightLbs?: number | string;
+  readonly originalWholeWeightUnit?: WeightUnit;
+  readonly pricingBasis: SeafoodPricingBasis;
+  readonly selectedPreparationOption?: {
+    readonly id: string;
+    readonly name: string;
+    readonly chargeMethod: PreparationChargeMethod;
+    readonly rate: string;
+    readonly fee: string;
+    readonly currency?: 'JMD';
+  };
+  readonly usablePartsPreference?: UsablePartsPreference;
+  readonly authorizedCeilingJmd: string;
+  readonly termsVersion: string;
+  readonly quoteId: string;
+  readonly payloadHash: string;
+  readonly consentedAt: string;
   readonly purchasedAt: string;
 }
 

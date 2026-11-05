@@ -10,6 +10,7 @@ import {
   WeightUnit,
 } from '@prisma/client';
 import Decimal from 'decimal.js';
+import { PreparationChargeMethod } from '../../../orders/types/checkout-provenance.types';
 
 import { PrismaService } from '../../../../database/prisma.service';
 import { CustomerWeightConsentRepository } from '../../repositories/customer-weight-consent.repository';
@@ -830,6 +831,147 @@ describe('WeightAdjustmentSnapshotInitializationService', () => {
       expect(result.status).toBe('INITIALIZED');
       expect(prismaMock.$transaction).not.toHaveBeenCalled();
       expect(callerTx.orderItem.findUnique).toHaveBeenCalled();
+    });
+  });
+
+  describe('Correction B: Preparation-Method Integrity (WP4.3B.4D.1)', () => {
+    it('1. should reject mismatch when requested method differs from configured listing option method', async () => {
+      const orderItem = createMockOrderItemWithProvenance();
+      const listing = createMockListing({
+        preparationOptions: [
+          {
+            id: 'prep-scaled',
+            label: 'Scaled & Gutted',
+            chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+            rate: '50.00',
+          },
+        ],
+      });
+
+      prismaMock.orderItem.findUnique.mockResolvedValue(orderItem);
+      prismaMock.vendorDailyListing.findUnique.mockResolvedValue(listing);
+
+      await expect(
+        service.initializeSnapshot({
+          orderItemId: validOrderItemId,
+          selectedPreparationServiceName: 'Scaled & Gutted',
+          preparationChargeMethod: PreparationChargeMethod.FIXED_PER_FISH, // Mismatch!
+          fishCount: 1,
+          customerAuthorizedCeilingJmd: '15000.00',
+          termsVersion: 'terms-2026-v2',
+        }),
+      ).rejects.toThrow(InvalidPreparationOptionError);
+    });
+
+    it('2. should prohibit interpreting legacy fee as V2 rate when rate string is absent', async () => {
+      const orderItem = createMockOrderItemWithProvenance();
+      const listing = createMockListing({
+        preparationOptions: [
+          {
+            id: 'prep-gutted',
+            label: 'Gutted',
+            chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+            fee: 100, // Legacy fee only, rate is missing!
+          },
+        ],
+      });
+
+      prismaMock.orderItem.findUnique.mockResolvedValue(orderItem);
+      prismaMock.vendorDailyListing.findUnique.mockResolvedValue(listing);
+
+      await expect(
+        service.initializeSnapshot({
+          orderItemId: validOrderItemId,
+          selectedPreparationServiceName: 'Gutted',
+          preparationChargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          fishCount: 1,
+          customerAuthorizedCeilingJmd: '15000.00',
+          termsVersion: 'terms-2026-v2',
+        }),
+      ).rejects.toThrow(/Interpreting legacy fee as a V2 rate is strictly prohibited/);
+    });
+
+    it('3. should reject FIXED_PER_FISH when fishCount is missing or non-positive', async () => {
+      const orderItem = createMockOrderItemWithProvenance();
+      const listing = createMockListing({
+        preparationOptions: [
+          {
+            id: 'prep-filleted',
+            label: 'Filleted',
+            chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+            rate: '200.00',
+          },
+        ],
+      });
+
+      prismaMock.orderItem.findUnique.mockResolvedValue(orderItem);
+      prismaMock.vendorDailyListing.findUnique.mockResolvedValue(listing);
+
+      await expect(
+        service.initializeSnapshot({
+          orderItemId: validOrderItemId,
+          selectedPreparationServiceName: 'Filleted',
+          preparationChargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          // fishCount missing!
+          customerAuthorizedCeilingJmd: '15000.00',
+          termsVersion: 'terms-2026-v2',
+        }),
+      ).rejects.toThrow(/FIXED_PER_FISH requires positive integer fishCount/);
+    });
+
+    it('4. should reject FIXED_PER_POUND when originalWholeWeightLbs exceeds 8 decimal places', async () => {
+      const orderItem = createMockOrderItemWithProvenance();
+      const listing = createMockListing({
+        preparationOptions: [
+          {
+            id: 'prep-cleaned',
+            label: 'Cleaned',
+            chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+            rate: '75.00',
+          },
+        ],
+      });
+
+      prismaMock.orderItem.findUnique.mockResolvedValue(orderItem);
+      prismaMock.vendorDailyListing.findUnique.mockResolvedValue(listing);
+
+      await expect(
+        service.initializeSnapshot({
+          orderItemId: validOrderItemId,
+          selectedPreparationServiceName: 'Cleaned',
+          preparationChargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+          originalWholeWeightLbs: '2.123456789', // 9 decimals!
+          customerAuthorizedCeilingJmd: '15000.00',
+          termsVersion: 'terms-2026-v2',
+        }),
+      ).rejects.toThrow(/cannot exceed 8 decimal places/);
+    });
+
+    it('5. should preserve NO_PREPARATION as zero-charge method and reject non-zero rate', async () => {
+      const orderItem = createMockOrderItemWithProvenance();
+      const listing = createMockListing({
+        preparationOptions: [
+          {
+            id: 'prep-none',
+            label: 'Whole Raw (No Prep)',
+            chargeMethod: PreparationChargeMethod.NO_PREPARATION,
+            rate: '50.00', // Non-zero rate!
+          },
+        ],
+      });
+
+      prismaMock.orderItem.findUnique.mockResolvedValue(orderItem);
+      prismaMock.vendorDailyListing.findUnique.mockResolvedValue(listing);
+
+      await expect(
+        service.initializeSnapshot({
+          orderItemId: validOrderItemId,
+          selectedPreparationServiceName: 'Whole Raw (No Prep)',
+          preparationChargeMethod: PreparationChargeMethod.NO_PREPARATION,
+          customerAuthorizedCeilingJmd: '15000.00',
+          termsVersion: 'terms-2026-v2',
+        }),
+      ).rejects.toThrow(/NO_PREPARATION option requires zero rate/);
     });
   });
 });

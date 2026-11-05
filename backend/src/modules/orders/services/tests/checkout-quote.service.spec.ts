@@ -29,6 +29,7 @@ import {
   computeCartRevisionHash,
   computeEstimatedProductSubtotal,
   computePreparationFee,
+  computeQuotePayloadHash,
   computeQuoteSignature,
   decodeQuoteToken,
   encodeQuoteToken,
@@ -44,6 +45,11 @@ import {
   UsablePartsPreference,
   WeightUnit,
 } from '@prisma/client';
+import Decimal from 'decimal.js';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { BadRequestException } from '@nestjs/common';
+import { PreparationOptionDto } from '../../../daily-listings/dto/preparation-option.dto';
 
 describe('CheckoutQuoteService (Pure Primitives & Security Corrections)', () => {
   const TEST_SECRET = 'test-signing-secret-super-secure-key-12345';
@@ -293,6 +299,28 @@ describe('CheckoutQuoteService (Pure Primitives & Security Corrections)', () => 
       expect(fee.toFixed(2)).toEqual('440.92');
     });
 
+    it('should calculate fixed fee per pound with exact decimal string original whole weight (FIXED_PER_POUND)', () => {
+      const fee = computePreparationFee({
+        chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+        rate: '75.00',
+        originalWholeWeight: '4.50000000',
+        originalWholeWeightUnit: WeightUnit.POUNDS,
+      });
+      // 4.5 * 75.00 = 337.50
+      expect(fee.toFixed(2)).toEqual('337.50');
+    });
+
+    it('should calculate fixed fee per pound converting string kilograms via 2.20462 (FIXED_PER_POUND)', () => {
+      // 1.25 kg * 2.20462 = 2.755775 lbs; 2.755775 * 100.00 = 275.5775 -> rounded to 275.58
+      const fee = computePreparationFee({
+        chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+        rate: '100.00',
+        originalWholeWeight: '1.250',
+        originalWholeWeightUnit: WeightUnit.KILOGRAMS,
+      });
+      expect(fee.toFixed(2)).toEqual('275.58');
+    });
+
     it('should calculate zero fee for NO_PREPARATION selection with 0.00 rate', () => {
       const fee = computePreparationFee({
         chargeMethod: PreparationChargeMethod.NO_PREPARATION,
@@ -398,6 +426,189 @@ describe('CheckoutQuoteService (Pure Primitives & Security Corrections)', () => 
           fishCount: 2,
         }),
       ).toThrow();
+    });
+
+    it('should calculate preparation fee with valid exact Decimal rate (e.g. 150.00)', () => {
+      const fee = computePreparationFee({
+        chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+        rate: new Decimal('150.00'),
+        fishCount: 2,
+      });
+      expect(fee.toFixed(2)).toEqual('300.00');
+    });
+
+    it('should reject Decimal rate with >2 decimal places (e.g. 150.005) without silent rounding', () => {
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          rate: new Decimal('150.005'),
+          fishCount: 2,
+        }),
+      ).toThrow(PreparationPricingError);
+    });
+
+    it('should reject NO_PREPARATION when Decimal rate has >2 decimal places (e.g. 150.005 or 0.005)', () => {
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.NO_PREPARATION,
+          rate: new Decimal('150.005'),
+        }),
+      ).toThrow(PreparationPricingError);
+
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.NO_PREPARATION,
+          rate: new Decimal('0.005'),
+        }),
+      ).toThrow(PreparationPricingError);
+    });
+
+    it('should accept NO_PREPARATION with valid Decimal 0.00', () => {
+      const fee = computePreparationFee({
+        chargeMethod: PreparationChargeMethod.NO_PREPARATION,
+        rate: new Decimal('0.00'),
+      });
+      expect(fee.toFixed(2)).toEqual('0.00');
+    });
+
+    it('should reject non-finite, negative, or scientific notation Decimal rates', () => {
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          rate: new Decimal(Infinity),
+          fishCount: 1,
+        }),
+      ).toThrow(PreparationPricingError);
+
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          rate: new Decimal(-50),
+          fishCount: 1,
+        }),
+      ).toThrow(PreparationPricingError);
+
+      expect(() =>
+        computePreparationFee({
+          chargeMethod: PreparationChargeMethod.FIXED_PER_FISH,
+          rate: new Decimal('1e-7'),
+          fishCount: 1,
+        }),
+      ).toThrow(PreparationPricingError);
+    });
+  });
+
+  describe('PreparationOptionDto Validation (Defect F01 — Monetary Ingress Precision)', () => {
+    it('should reject numeric input in scientific notation (1e-7) preventing silent conversion to 0.00', () => {
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: 1e-7,
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('should reject string in scientific notation ("1e-7")', () => {
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: '1e-7',
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('should reject numeric inputs with more than 2 decimal places (e.g. 150.005, 0.001)', () => {
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: 150.005,
+        }),
+      ).toThrow(BadRequestException);
+
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: 0.001,
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('should reject strings with more than 2 decimal places (e.g. "150.005")', () => {
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: '150.005',
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('should reject negative, NaN, or non-finite numeric rates', () => {
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: -10,
+        }),
+      ).toThrow(BadRequestException);
+
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: NaN,
+        }),
+      ).toThrow(BadRequestException);
+
+      expect(() =>
+        plainToInstance(PreparationOptionDto, {
+          id: 'scaled',
+          label: 'Scaled',
+          rate: Infinity,
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('should accept valid exact monetary strings and format compatible numeric inputs to 2 decimals', async () => {
+      const fromNumber = plainToInstance(PreparationOptionDto, {
+        id: 'scaled',
+        label: 'Scaled',
+        rate: 150.5,
+      });
+      expect(fromNumber.rate).toBe('150.50');
+      const errorsNum = await validate(fromNumber);
+      expect(errorsNum.length).toBe(0);
+
+      const fromExactString = plainToInstance(PreparationOptionDto, {
+        id: 'scaled',
+        label: 'Scaled',
+        rate: '150.00',
+      });
+      expect(fromExactString.rate).toBe('150.00');
+      const errorsStr = await validate(fromExactString);
+      expect(errorsStr.length).toBe(0);
+
+      const fromZero = plainToInstance(PreparationOptionDto, {
+        id: 'scaled',
+        label: 'Scaled',
+        rate: 0,
+      });
+      expect(fromZero.rate).toBe('0.00');
+      const errorsZero = await validate(fromZero);
+      expect(errorsZero.length).toBe(0);
+
+      const fromInteger = plainToInstance(PreparationOptionDto, {
+        id: 'scaled',
+        label: 'Scaled',
+        rate: 150,
+      });
+      expect(fromInteger.rate).toBe('150.00');
+      const errorsInt = await validate(fromInteger);
+      expect(errorsInt.length).toBe(0);
     });
   });
 
@@ -839,6 +1050,108 @@ describe('CheckoutQuoteService (Pure Primitives & Security Corrections)', () => 
       const verified = service.verifyQuote(token, { secret: TEST_SECRET });
 
       expect(verified.authenticatedCustomerId).toEqual('cust-123');
+    });
+  });
+
+  describe('Correction C: Complete-Cart Quote Binding (WP4.3B.4D.1)', () => {
+    const makeItem = (cartItemId: string, productId: string, ceiling: string): QuotedSeafoodItem => ({
+      ...sampleItem,
+      cartItemId,
+      productId,
+      customerAuthorizedCeilingJmd: ceiling,
+    });
+
+    it('1. should order cart items deterministically by cartItemId regardless of caller input order', () => {
+      const itemA = makeItem('cart-item-a', 'prod-1', '4500.00');
+      const itemB = makeItem('cart-item-b', 'prod-2', '5000.00');
+
+      const quote1 = issueQuote(
+        {
+          ...sampleIssueParams,
+          quoteId: 'fixed-quote-id',
+          issuedAt: new Date('2026-11-04T12:00:00.000Z'),
+          items: [itemA, itemB],
+        },
+        TEST_SECRET,
+      );
+
+      const quote2 = issueQuote(
+        {
+          ...sampleIssueParams,
+          quoteId: 'fixed-quote-id',
+          issuedAt: new Date('2026-11-04T12:00:00.000Z'),
+          items: [itemB, itemA], // Reversed order!
+        },
+        TEST_SECRET,
+      );
+
+      expect(quote1.payload.items[0]!.cartItemId).toBe('cart-item-a');
+      expect(quote1.payload.items[1]!.cartItemId).toBe('cart-item-b');
+      expect(quote2.payload.items[0]!.cartItemId).toBe('cart-item-a');
+      expect(quote2.payload.items[1]!.cartItemId).toBe('cart-item-b');
+
+      expect(quote1.signature).toBe(quote2.signature);
+      expect(computeQuotePayloadHash(quote1.payload)).toBe(computeQuotePayloadHash(quote2.payload));
+    });
+
+    it('2. should reject quote issuance containing duplicate cartItemId', () => {
+      const itemA1 = makeItem('cart-item-dup', 'prod-1', '4500.00');
+      const itemA2 = makeItem('cart-item-dup', 'prod-2', '5000.00');
+
+      expect(() =>
+        issueQuote(
+          {
+            ...sampleIssueParams,
+            items: [itemA1, itemA2],
+          },
+          TEST_SECRET,
+        ),
+      ).toThrow(MalformedQuoteTokenError);
+    });
+
+    it('3. should accept duplicate product lines with distinct cartItemIds without authorization ambiguity', () => {
+      const line1 = makeItem('cart-item-1', 'prod-same', '4500.00');
+      const line2 = makeItem('cart-item-2', 'prod-same', '5000.00');
+
+      const quote = issueQuote(
+        {
+          ...sampleIssueParams,
+          items: [line1, line2],
+        },
+        TEST_SECRET,
+      );
+
+      expect(quote.payload.items.length).toBe(2);
+      expect(quote.payload.items[0]!.productId).toBe('prod-same');
+      expect(quote.payload.items[1]!.productId).toBe('prod-same');
+      expect(quote.payload.items[0]!.customerAuthorizedCeilingJmd).toBe('4500.00');
+      expect(quote.payload.items[1]!.customerAuthorizedCeilingJmd).toBe('5000.00');
+    });
+
+    it('4. should bind all authorized items and material terms into quote payload hash', () => {
+      const item = makeItem('cart-item-1', 'prod-1', '4500.00');
+      const quote = issueQuote(
+        {
+          ...sampleIssueParams,
+          items: [item],
+          issuedAt: new Date('2026-11-04T12:00:00.000Z'),
+        },
+        TEST_SECRET,
+      );
+
+      const originalHash = computeQuotePayloadHash(quote.payload);
+      expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
+
+      // Altering termsVersion alters hash
+      const alteredTerms: SeafoodCheckoutQuotePayload = { ...quote.payload, termsVersion: 'v2-tampered' };
+      expect(computeQuotePayloadHash(alteredTerms)).not.toBe(originalHash);
+
+      // Altering item ceiling alters hash
+      const alteredCeiling: SeafoodCheckoutQuotePayload = {
+        ...quote.payload,
+        items: [{ ...(quote.payload.items[0] as QuotedSeafoodItem), customerAuthorizedCeilingJmd: '9999.00' }],
+      };
+      expect(computeQuotePayloadHash(alteredCeiling)).not.toBe(originalHash);
     });
   });
 });

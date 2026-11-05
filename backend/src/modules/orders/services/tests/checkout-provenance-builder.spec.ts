@@ -8,21 +8,27 @@ import {
   InvalidPurchaseSnapshotError,
   ProvenanceConsistencyViolationError,
   SEAFOOD_PURCHASE_SNAPSHOT_SCHEMA_VERSION,
+  SEAFOOD_PURCHASE_SNAPSHOT_SCHEMA_VERSION_V2,
   SyntheticProvenanceForbiddenError,
 } from '../../../weight-adjustment/domain/seafood-purchase-provenance.types';
 import {
   BuildProvenanceSnapshotParams,
+  BuildProvenanceSnapshotV2Params,
   CeilingBelowMinimumError,
+  FinancialIntegrityError,
   PreparationChargeMethod,
   PreparationPricingError,
 } from '../../types/checkout-provenance.types';
 import {
   assertNoSyntheticProvenanceBackfill,
   buildProvenanceSnapshot,
+  buildProvenanceSnapshotV2,
   deepFreeze,
   isSeafoodListing,
+  normalizeWeightToCanonicalPounds,
   verifyWholeRawPricingRule,
 } from '../checkout-provenance-builder';
+import Decimal from 'decimal.js';
 
 describe('CheckoutProvenanceBuilder (Pure Primitives & Preparation Pricing)', () => {
   const baseParams: BuildProvenanceSnapshotParams = {
@@ -527,6 +533,248 @@ describe('CheckoutProvenanceBuilder (Pure Primitives & Preparation Pricing)', ()
         authorizedCeilingJmd: '4000.00',
       });
       expect(verifyWholeRawPricingRule(dressedSnapshot)).toBe(false);
+    });
+  });
+
+  describe('normalizeWeightToCanonicalPounds (Correction A — Lossless Weight Normalization)', () => {
+    it('1. should convert 1 kg to exactly 2.20462 lbs with 5 decimal places', () => {
+      const res = normalizeWeightToCanonicalPounds(1, WeightUnit.KILOGRAMS);
+      expect(res.toString()).toBe('2.20462');
+      expect(res.decimalPlaces()).toBe(5);
+    });
+
+    it('2. should convert 2.5 kg to exactly 5.51155 lbs', () => {
+      const res = normalizeWeightToCanonicalPounds('2.5', WeightUnit.KILOGRAMS);
+      expect(res.toString()).toBe('5.51155');
+      expect(res.decimalPlaces()).toBe(5);
+    });
+
+    it('3. should preserve 1.5 lbs in pounds as exactly 1.5 lbs', () => {
+      const res = normalizeWeightToCanonicalPounds('1.5', WeightUnit.POUNDS);
+      expect(res.toString()).toBe('1.5');
+      expect(res.decimalPlaces()).toBe(1);
+    });
+
+    it('4. should accept 8 fractional decimal places in pounds without truncation', () => {
+      const res = normalizeWeightToCanonicalPounds('1.12345678', WeightUnit.POUNDS);
+      expect(res.toString()).toBe('1.12345678');
+      expect(res.decimalPlaces()).toBe(8);
+    });
+
+    it('5. should reject weights with more than 8 decimal places in pounds (excessive precision)', () => {
+      expect(() =>
+        normalizeWeightToCanonicalPounds('1.123456789', WeightUnit.POUNDS),
+      ).toThrow(FinancialIntegrityError);
+    });
+
+    it('6. should reject kg weights whose converted pound value exceeds 8 decimal places', () => {
+      expect(() =>
+        normalizeWeightToCanonicalPounds('1.00000001', WeightUnit.KILOGRAMS),
+      ).toThrow(FinancialIntegrityError);
+    });
+
+    it('7. should reject weights exceeding maximum DECIMAL(16,8) capacity (>= 100,000,000 lbs)', () => {
+      expect(() =>
+        normalizeWeightToCanonicalPounds('100000000', WeightUnit.POUNDS),
+      ).toThrow(FinancialIntegrityError);
+    });
+
+    it('8. should reject non-finite inputs (Infinity, -Infinity, NaN)', () => {
+      expect(() => normalizeWeightToCanonicalPounds(Infinity)).toThrow(FinancialIntegrityError);
+      expect(() => normalizeWeightToCanonicalPounds(-Infinity)).toThrow(FinancialIntegrityError);
+      expect(() => normalizeWeightToCanonicalPounds(NaN)).toThrow(FinancialIntegrityError);
+    });
+
+    it('9. should reject zero and negative weights', () => {
+      expect(() => normalizeWeightToCanonicalPounds(0)).toThrow(FinancialIntegrityError);
+      expect(() => normalizeWeightToCanonicalPounds('-0.5')).toThrow(FinancialIntegrityError);
+    });
+  });
+
+  describe('buildProvenanceSnapshotV2 (Defect F03 — Canonical Weight Persistence & Conversion Integrity)', () => {
+    const validV2Params: BuildProvenanceSnapshotV2Params = {
+      orderItemId: 'order-item-v2-100',
+      listing: {
+        id: 'listing-snapper-today',
+        vendorId: 'vendor-port-royal-fisheries',
+        lotId: 'lot-snapper-001',
+        productId: 'product-snapper-1',
+      },
+      lot: {
+        id: 'lot-snapper-001',
+        vendorId: 'vendor-port-royal-fisheries',
+        species: 'Lutjanus campechanus',
+        foodSafetyStatus: 'APPROVED',
+      },
+      product: {
+        id: 'product-snapper-1',
+        name: 'Fresh Red Snapper',
+        description: 'Wild-caught Jamaican Red Snapper',
+      },
+      unit: ProductUnit.PER_POUND,
+      unitPrice: '1000.00',
+      currency: 'JMD',
+      pieceCount: 1,
+      estimatedWeightLbs: 2.755775,
+      fishCount: 1,
+      originalWholeWeightLbs: 1.25,
+      originalWholeWeightUnit: WeightUnit.KILOGRAMS,
+      pricingBasis: SeafoodPricingBasis.WHOLE_RAW,
+      selectedPreparationOption: {
+        id: 'prep-filleted',
+        name: 'Filleted',
+        chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+        rate: '100.00',
+        fee: '275.58', // 2.755775 * 100.00 = 275.5775 -> rounded to 275.58
+        currency: 'JMD',
+      },
+      usablePartsPreference: UsablePartsPreference.RETURN_USABLE_PARTS,
+      authorizedCeilingJmd: '3500.00',
+      termsVersion: 'v2026.11',
+      quoteId: 'quote-v2-abc-123',
+      payloadHash: 'a'.repeat(64),
+      consentedAt: '2026-11-04T12:00:00.000Z',
+      purchasedAt: '2026-11-04T12:01:00.000Z',
+    };
+
+    it('should normalize 1.25 kg input to canonical pounds 2.75577500 lbs and preserve declared unit as metadata', () => {
+      const snapshot = buildProvenanceSnapshotV2(validV2Params);
+
+      expect(snapshot.schemaVersion).toBe(SEAFOOD_PURCHASE_SNAPSHOT_SCHEMA_VERSION_V2);
+      expect(snapshot.originalWholeWeightLbs).toBe(2.755775);
+      expect(new Decimal(snapshot.originalWholeWeightLbs!).toFixed(8)).toBe('2.75577500');
+      expect(snapshot.originalWholeWeightUnit).toBe(WeightUnit.KILOGRAMS);
+      expect(snapshot.selectedPreparationOption?.fee).toBe('275.58');
+      expect(Object.isFrozen(snapshot)).toBe(true);
+    });
+
+    it('should prevent secondary kg-to-lbs conversion after canonical normalization', () => {
+      // If secondary conversion occurred, fee would have been 2.755775 * 2.20462 * 100 = 607.54
+      // Validating that 275.58 is accepted confirms single statutory conversion.
+      const snapshot = buildProvenanceSnapshotV2(validV2Params);
+      expect(snapshot.selectedPreparationOption?.fee).toBe('275.58');
+    });
+
+    it('should preserve original whole weight in pounds when unit is POUNDS', () => {
+      const paramsInPounds: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: 2.5,
+        originalWholeWeightUnit: WeightUnit.POUNDS,
+        estimatedWeightLbs: 2.5,
+        selectedPreparationOption: {
+          id: 'prep-filleted',
+          name: 'Filleted',
+          chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+          rate: '100.00',
+          fee: '250.00',
+          currency: 'JMD',
+        },
+      };
+
+      const snapshot = buildProvenanceSnapshotV2(paramsInPounds);
+      expect(snapshot.originalWholeWeightLbs).toBe(2.5);
+      expect(new Decimal(snapshot.originalWholeWeightLbs!).toFixed(8)).toBe('2.50000000');
+      expect(snapshot.originalWholeWeightUnit).toBe(WeightUnit.POUNDS);
+      expect(snapshot.selectedPreparationOption?.fee).toBe('250.00');
+    });
+
+    it('should reject kg weight input whose canonical pounds conversion exceeds 8 decimal places', () => {
+      const invalidWeightParams: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: 1.00000001, // 1.00000001 * 2.20462 has > 8 decimals
+        originalWholeWeightUnit: WeightUnit.KILOGRAMS,
+      };
+
+      expect(() => buildProvenanceSnapshotV2(invalidWeightParams)).toThrow(
+        InvalidPurchaseSnapshotError,
+      );
+    });
+
+    it('should accept exact 8-decimal-place weight string ingress without precision loss', () => {
+      const eightDecParams: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: '1.12345678',
+        originalWholeWeightUnit: WeightUnit.POUNDS,
+        estimatedWeightLbs: 1.12345678,
+        selectedPreparationOption: {
+          id: 'prep-filleted',
+          name: 'Filleted',
+          chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+          rate: '100.00',
+          fee: '112.35', // 1.12345678 * 100 = 112.345678 -> 112.35
+          currency: 'JMD',
+        },
+      };
+
+      const snapshot = buildProvenanceSnapshotV2(eightDecParams);
+      expect(snapshot.originalWholeWeightLbs).toBe(1.12345678);
+      expect(new Decimal(snapshot.originalWholeWeightLbs!).toFixed(8)).toBe('1.12345678');
+      expect(snapshot.selectedPreparationOption?.fee).toBe('112.35');
+    });
+
+    it('should accept large valid weights up to DECIMAL(16,8) boundary with exact round-trip', () => {
+      const largeWeightParams: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: '9999999.12345678',
+        originalWholeWeightUnit: WeightUnit.POUNDS,
+        estimatedWeightLbs: 9999999.12345678,
+        authorizedCeilingJmd: '15000000000.00',
+        selectedPreparationOption: {
+          id: 'prep-filleted',
+          name: 'Filleted',
+          chargeMethod: PreparationChargeMethod.FIXED_PER_POUND,
+          rate: '10.00',
+          fee: '99999991.23', // 9999999.12345678 * 10 = 99999991.2345678 -> 99999991.23
+          currency: 'JMD',
+        },
+      };
+
+      const snapshot = buildProvenanceSnapshotV2(largeWeightParams);
+      expect(snapshot.originalWholeWeightLbs).toBe(9999999.12345678);
+      expect(new Decimal(snapshot.originalWholeWeightLbs!).toFixed(8)).toBe('9999999.12345678');
+      expect(snapshot.selectedPreparationOption?.fee).toBe('99999991.23');
+    });
+
+    it('should accept string kilogram ingress "1.250" and normalize losslessly to 2.75577500 lbs', () => {
+      const kgStringParams: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: '1.250',
+        originalWholeWeightUnit: WeightUnit.KILOGRAMS,
+      };
+
+      const snapshot = buildProvenanceSnapshotV2(kgStringParams);
+      expect(snapshot.originalWholeWeightLbs).toBe(2.755775);
+      expect(new Decimal(snapshot.originalWholeWeightLbs!).toFixed(8)).toBe('2.75577500');
+      expect(snapshot.originalWholeWeightUnit).toBe(WeightUnit.KILOGRAMS);
+    });
+
+    it('should strictly reject canonical weights that cannot be represented losslessly in IEEE-754 double', () => {
+      const lossyWeightParams: BuildProvenanceSnapshotV2Params = {
+        ...validV2Params,
+        originalWholeWeightLbs: '98765432.77777771', // 16 digits, 54 bits mantissa -> loses precision in float
+        originalWholeWeightUnit: WeightUnit.POUNDS,
+        estimatedWeightLbs: 98765432.77777772,
+        authorizedCeilingJmd: '100000000000.00',
+        selectedPreparationOption: undefined,
+      };
+
+      expect(() => buildProvenanceSnapshotV2(lossyWeightParams)).toThrow(
+        /cannot be losslessly represented in IEEE-754 double precision/,
+      );
+    });
+
+    it('should preserve exact serialization and round-trip parsing boundary', () => {
+      const snapshot = buildProvenanceSnapshotV2(validV2Params);
+      const json = JSON.stringify(snapshot);
+      const parsed = JSON.parse(json);
+
+      expect(parsed.originalWholeWeightLbs).toBe(2.755775);
+      expect(new Decimal(parsed.originalWholeWeightLbs).toFixed(8)).toBe('2.75577500');
+      expect(parsed.originalWholeWeightUnit).toBe(WeightUnit.KILOGRAMS);
+
+      // Downstream weight-adjustment initialization simulation
+      const recoveredDecimal = new Decimal(parsed.originalWholeWeightLbs.toString());
+      expect(recoveredDecimal.toFixed(8)).toBe('2.75577500');
     });
   });
 });

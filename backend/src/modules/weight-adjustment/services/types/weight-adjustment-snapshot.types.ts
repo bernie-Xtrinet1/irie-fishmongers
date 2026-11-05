@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js';
 import {
   CustomerCheckoutCeilingConsent,
+  PreparationChargeMethod,
   PreparationFeeStructure,
   SeafoodOrderWeightAdjustment,
   SeafoodPricingBasis,
@@ -24,6 +25,15 @@ export interface InitializeSnapshotInput {
   readonly explicitPricingBasis?: SeafoodPricingBasis;
   readonly selectedPreparationServiceName?: string;
   readonly usablePartsPreference?: UsablePartsPreference;
+
+  // V2 Additive Fields for Provenance, Quoting & Catch-Weight Normalization
+  readonly preparationChargeMethod?: PreparationChargeMethod;
+  readonly fishCount?: number;
+  readonly originalWholeWeightLbs?: Decimal | string | number;
+  readonly originalWholeWeightUnit?: WeightUnit;
+  readonly quoteId?: string;
+  readonly quotePayloadHash?: string;
+  readonly consentedAt?: string;
 }
 
 export type SnapshotInitializationStatus =
