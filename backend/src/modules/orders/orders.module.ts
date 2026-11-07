@@ -4,16 +4,20 @@ import { AuthModule } from '../auth/auth.module';
 import { CartModule } from '../cart/cart.module';
 import { CartMutationBarrierModule } from '../cart-mutation-barrier/cart-mutation-barrier.module';
 import { CartReservationSyncModule } from '../cart-reservation-sync/cart-reservation-sync.module';
+import { CheckoutAttemptModule } from '../checkout-attempt/checkout-attempt.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { ProductsModule } from '../products/products.module';
 import { VendorTiersModule } from '../vendor-tiers/vendor-tiers.module';
 import { VendorsModule } from '../vendors/vendors.module';
+import { WeightAdjustmentModule } from '../weight-adjustment/weight-adjustment.module';
 import { OrdersController } from './controllers/orders.controller';
 import { VendorOrdersController } from './controllers/vendor-orders.controller';
 import { OrdersRepository } from './repositories/orders.repository';
 import { VendorOrdersRepository } from './repositories/vendor-orders.repository';
+import { CheckoutQuoteService } from './services/checkout-quote.service';
 import { OrdersService } from './services/orders.service';
+import { SeafoodCheckoutRecoveryService } from './services/seafood-checkout-recovery.service';
 import { VendorOrdersService } from './services/vendor-orders.service';
 
 // CART_SCOPED activation-boundary gate (see the gate design review).
@@ -26,12 +30,14 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     AuthModule,
     CartModule,
     CartReservationSyncModule,
+    CheckoutAttemptModule,
     ProductsModule,
     VendorsModule,
     PaymentsModule,
     VendorTiersModule,
     InventoryModule,
     CartMutationBarrierModule,
+    WeightAdjustmentModule,
   ],
   controllers: [OrdersController, VendorOrdersController],
   providers: [
@@ -39,10 +45,12 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     VendorOrdersService,
     OrdersRepository,
     VendorOrdersRepository,
+    CheckoutQuoteService,
+    SeafoodCheckoutRecoveryService,
   ],
   // OrdersService added to exports in Phase 16A.0-D, Unit D.4: the first
   // consumer outside this module (CheckoutModule) needs it through Nest DI.
   // Still owned and instantiated only here.
-  exports: [OrdersRepository, VendorOrdersRepository, OrdersService],
+  exports: [OrdersRepository, VendorOrdersRepository, OrdersService, SeafoodCheckoutRecoveryService],
 })
 export class OrdersModule {}

@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import {
   ListingLifecycleStatus,
   ListingPhotoModerationStatus,
@@ -76,6 +76,7 @@ describe('DailyListingsRepository Publication Concurrency & Guards (F-16B-02)', 
     mockTx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
       vendorDailyListing: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(validListing),
         findUniqueOrThrow: jest.fn().mockResolvedValue(validListing),
         findMany: jest.fn().mockResolvedValue([validListing]),
@@ -213,6 +214,24 @@ describe('DailyListingsRepository Publication Concurrency & Guards (F-16B-02)', 
       new BadRequestException('Regulatory prohibited species'),
     );
     expect(mockValidator).toHaveBeenCalledWith(mockTx, expect.objectContaining({ id: 'listing-1' }));
+    expect(mockTx.vendorDailyListing.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects publication if an active published listing already exists for the product', async () => {
+    mockTx.vendorDailyListing.findFirst.mockResolvedValueOnce({ id: 'existing-active-1' });
+
+    await expect(repository.publishListing('listing-1')).rejects.toThrow(ConflictException);
+    expect(mockTx.vendorDailyListing.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects reinstatement if an active published listing already exists for the product', async () => {
+    mockTx.vendorDailyListing.findUniqueOrThrow.mockResolvedValueOnce({
+      ...validListing,
+      status: ListingLifecycleStatus.SUSPENDED,
+    });
+    mockTx.vendorDailyListing.findFirst.mockResolvedValueOnce({ id: 'existing-active-1' });
+
+    await expect(repository.reinstateListing('listing-1')).rejects.toThrow(ConflictException);
     expect(mockTx.vendorDailyListing.update).not.toHaveBeenCalled();
   });
 

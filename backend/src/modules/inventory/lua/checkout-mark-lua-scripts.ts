@@ -155,18 +155,18 @@ for i = 1, n do
     })
   end
 
-  if entry.expiresAt <= now then
+  if entry.absoluteExpiresAt < now + initialLeaseMs then
     return cjson.encode({
       scriptVersion = CHECKOUT_MARK_SCRIPT_VERSION,
-      err = 'RESERVATION_EXPIRED',
+      err = 'RESERVATION_ABSOLUTE_EXPIRED',
       failedProductId = planProductIds[i],
     })
   end
 
-  if entry.absoluteExpiresAt <= now then
+  if entry.expiresAt < now + initialLeaseMs then
     return cjson.encode({
       scriptVersion = CHECKOUT_MARK_SCRIPT_VERSION,
-      err = 'RESERVATION_ABSOLUTE_EXPIRED',
+      err = 'RESERVATION_EXPIRED',
       failedProductId = planProductIds[i],
     })
   end

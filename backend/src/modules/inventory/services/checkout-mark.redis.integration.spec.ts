@@ -360,4 +360,68 @@ describe('CheckoutReservationStateService.checkoutMark (real Redis integration)'
     const fields = await getRawCheckoutFields(client, cartId, validId);
     expect(fields?.status).toBe('ACTIVE');
   });
+
+  it('fails with RESERVATION_EXPIRED when rolling expiry has less than initialLeaseMs headroom remaining', async () => {
+    const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
+    const validId = `product-${Math.random()}`;
+    const lowHeadroomId = `product-${Math.random()}`;
+    trackCheckoutKeysFor(createdKeys, cartId, [validId, lowHeadroomId]);
+
+    await seedActiveReservation(cartId, validId, customerId, 1);
+    const now = Date.now();
+    const lowHeadroomEntry = {
+      version: 1,
+      quantity: 1,
+      cartId,
+      customerId,
+      status: 'ACTIVE',
+      createdAt: now - 100_000,
+      lastRenewedAt: now - 100_000,
+      expiresAt: now + 60_000, // 60s < 180s lease
+      absoluteExpiresAt: now + 3_600_000,
+      checkoutIdempotencyKey: null,
+      checkoutPendingAt: null,
+      checkoutPendingExpiresAt: null,
+    };
+    await seedRawReservation(client, cartId, lowHeadroomId, JSON.stringify(lowHeadroomEntry));
+
+    const plan = buildPlan([validId, lowHeadroomId], { [validId]: 1, [lowHeadroomId]: 1 });
+    const result = await checkoutState.checkoutMark(cartId, customerId, checkoutIdempotencyKey, plan, now, 180);
+
+    expect(result).toEqual({ ok: false, code: 'RESERVATION_EXPIRED', failedProductId: lowHeadroomId });
+    const fields = await getRawCheckoutFields(client, cartId, validId);
+    expect(fields?.status).toBe('ACTIVE');
+  });
+
+  it('fails with RESERVATION_ABSOLUTE_EXPIRED when absolute expiry has less than initialLeaseMs headroom remaining', async () => {
+    const { cartId, customerId, checkoutIdempotencyKey } = checkoutIds();
+    const validId = `product-${Math.random()}`;
+    const lowAbsoluteId = `product-${Math.random()}`;
+    trackCheckoutKeysFor(createdKeys, cartId, [validId, lowAbsoluteId]);
+
+    await seedActiveReservation(cartId, validId, customerId, 1);
+    const now = Date.now();
+    const lowAbsoluteEntry = {
+      version: 1,
+      quantity: 1,
+      cartId,
+      customerId,
+      status: 'ACTIVE',
+      createdAt: now - 3_500_000,
+      lastRenewedAt: now,
+      expiresAt: now + 900_000,
+      absoluteExpiresAt: now + 60_000, // 60s < 180s lease
+      checkoutIdempotencyKey: null,
+      checkoutPendingAt: null,
+      checkoutPendingExpiresAt: null,
+    };
+    await seedRawReservation(client, cartId, lowAbsoluteId, JSON.stringify(lowAbsoluteEntry));
+
+    const plan = buildPlan([validId, lowAbsoluteId], { [validId]: 1, [lowAbsoluteId]: 1 });
+    const result = await checkoutState.checkoutMark(cartId, customerId, checkoutIdempotencyKey, plan, now, 180);
+
+    expect(result).toEqual({ ok: false, code: 'RESERVATION_ABSOLUTE_EXPIRED', failedProductId: lowAbsoluteId });
+    const fields = await getRawCheckoutFields(client, cartId, validId);
+    expect(fields?.status).toBe('ACTIVE');
+  });
 });

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   CatalogueLifecycleStatus,
   FoodSafetyStatus,
@@ -446,6 +446,19 @@ export class DailyListingsRepository {
       }
       if (preliminary.productId) {
         await tx.$queryRaw`SELECT id FROM products WHERE id = ${preliminary.productId} FOR UPDATE`;
+        const existingActive = await tx.vendorDailyListing.findFirst({
+          where: {
+            productId: preliminary.productId,
+            status: ListingLifecycleStatus.PUBLISHED,
+            id: { not: id },
+          },
+          select: { id: true },
+        });
+        if (existingActive) {
+          throw new ConflictException(
+            `Cannot publish listing: an active published listing "${existingActive.id}" already exists for product "${preliminary.productId}"`,
+          );
+        }
       }
       await tx.$queryRaw`SELECT id FROM vendor_daily_listings WHERE id = ${id} FOR UPDATE`;
       if (preliminary.lotId) {
@@ -628,6 +641,19 @@ export class DailyListingsRepository {
       }
       if (preliminary.productId) {
         await tx.$queryRaw`SELECT id FROM products WHERE id = ${preliminary.productId} FOR UPDATE`;
+        const existingActive = await tx.vendorDailyListing.findFirst({
+          where: {
+            productId: preliminary.productId,
+            status: ListingLifecycleStatus.PUBLISHED,
+            id: { not: id },
+          },
+          select: { id: true },
+        });
+        if (existingActive) {
+          throw new ConflictException(
+            `Cannot reinstate listing: an active published listing "${existingActive.id}" already exists for product "${preliminary.productId}"`,
+          );
+        }
       }
       await tx.$queryRaw`SELECT id FROM vendor_daily_listings WHERE id = ${id} FOR UPDATE`;
       if (preliminary.lotId) {

@@ -11,7 +11,10 @@ import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../database/prisma.service';
+import { WeightAdjustmentSnapshotInitializationService } from '../../weight-adjustment/services/weight-adjustment-snapshot-initialization.service';
+import { CheckoutQuoteService } from './checkout-quote.service';
 import { OrdersRepository, OrderWithDetails } from '../repositories/orders.repository';
 import { VendorOrdersRepository } from '../repositories/vendor-orders.repository';
 import { OrdersService } from './orders.service';
@@ -162,6 +165,9 @@ describe('OrdersService', () => {
   let inventoryReservations: jest.Mocked<Pick<InventoryReservationsService, 'release'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync'>>;
   let mutationBarrier: jest.Mocked<Pick<CartMutationBarrierService, 'assertNotActive'>>;
+  let checkoutQuoteService: jest.Mocked<Pick<CheckoutQuoteService, 'verifyQuote' | 'issueQuote' | 'computeCartRevisionHash'>>;
+  let weightAdjustmentSnapshotInitializationService: jest.Mocked<Pick<WeightAdjustmentSnapshotInitializationService, 'initializeSnapshot'>>;
+  let configService: jest.Mocked<Pick<ConfigService, 'get' | 'getOrThrow'>>;
   let service: OrdersService;
 
   beforeEach(() => {
@@ -186,6 +192,21 @@ describe('OrdersService', () => {
     inventoryReservations = { release: jest.fn().mockResolvedValue(undefined) };
     eventEmitter = { emitAsync: jest.fn().mockResolvedValue([]) };
     mutationBarrier = { assertNotActive: jest.fn().mockResolvedValue(undefined) };
+    checkoutQuoteService = {
+      verifyQuote: jest.fn(),
+      issueQuote: jest.fn(),
+      computeCartRevisionHash: jest.fn().mockReturnValue('mock-cart-revision-hash'),
+    };
+    weightAdjustmentSnapshotInitializationService = {
+      initializeSnapshot: jest.fn().mockResolvedValue(undefined as never),
+    };
+    configService = {
+      get: jest.fn().mockReturnValue(undefined),
+      getOrThrow: jest.fn().mockImplementation((key: string) => {
+        if (key === 'CHECKOUT_QUOTE_SIGNING_SECRET') return 'test-quote-signing-secret-minimum-32-chars-long';
+        return undefined;
+      }),
+    };
 
     service = new OrdersService(
       prisma as unknown as PrismaService,
@@ -201,6 +222,9 @@ describe('OrdersService', () => {
       eventEmitter as unknown as EventEmitter2,
       syncStateRepository as unknown as CartReservationSyncStateRepository,
       mutationBarrier as unknown as CartMutationBarrierService,
+      checkoutQuoteService as unknown as CheckoutQuoteService,
+      weightAdjustmentSnapshotInitializationService as unknown as WeightAdjustmentSnapshotInitializationService,
+      configService as unknown as ConfigService,
     );
   });
 
@@ -943,7 +967,7 @@ describe('OrdersService', () => {
       await service.cancelOrder('user-1', 'order-1');
 
       expect(productsRepository.adjustStock).toHaveBeenCalledWith('product-1', 2, {});
-      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED');
+      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED', expect.anything());
       expect(vendorOrdersRepository.updateStatus).not.toHaveBeenCalledWith('vo-2', 'CANCELLED');
       expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
         {
@@ -1012,7 +1036,7 @@ describe('OrdersService', () => {
 
       await service.cancelVendorOrder('user-1', 'order-1', 'vo-1');
 
-      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED');
+      expect(vendorOrdersRepository.updateStatus).toHaveBeenCalledWith('vo-1', 'CANCELLED', expect.anything());
       expect(inventoryEventsRepository.create).toHaveBeenCalledWith(
         {
           productId: 'product-1',

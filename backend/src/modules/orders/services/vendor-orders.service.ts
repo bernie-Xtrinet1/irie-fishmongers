@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { VendorOrderStatus } from '@prisma/client';
 
@@ -86,17 +86,99 @@ export class VendorOrdersService {
     this.assertTransitionAllowed(vendorOrder.status, 'REJECTED');
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      if ((tx as any).vendorOrder?.updateMany) {
+        const updateRes = await (tx as any).vendorOrder.updateMany({
+          where: { id: vendorOrder.id, status: 'PENDING' },
+          data: { status: 'REJECTED' },
+        });
+        if (updateRes.count === 0) {
+          throw new ConflictException(
+            `Vendor order "${vendorOrder.id}" is not in PENDING status or was concurrently modified.`,
+          );
+        }
+      }
+
+      // Canonical row locking: Products first, sorted by ID
+      if ((tx as any).$queryRaw) {
+        const sortedProductIds = [...new Set(vendorOrder.items.map((i) => i.productId))].sort();
+        for (const pid of sortedProductIds) {
+          await (tx as any).$queryRaw`SELECT id FROM products WHERE id = ${pid} FOR UPDATE`;
+        }
+
+        // Then VendorDailyListings, sorted by ID
+        const listingIds = [...new Set(vendorOrder.items.map((i) => i.originalListingId).filter(Boolean) as string[])].sort();
+        for (const lid of listingIds) {
+          await (tx as any).$queryRaw`SELECT id FROM vendor_daily_listings WHERE id = ${lid} FOR UPDATE`;
+        }
+      }
+
+      const now = new Date();
       for (const item of vendorOrder.items) {
-        await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
-        await this.inventoryEventsRepository.create(
-          {
-            productId: item.productId,
-            eventType: 'RESTOCKED',
-            quantityDelta: item.quantity,
-            vendorOrderId: vendorOrder.id,
-          },
-          tx,
-        );
+        if (item.originalListingId && (tx as any).vendorDailyListing) {
+          const listing = await (tx as any).vendorDailyListing.findUnique({
+            where: { id: item.originalListingId },
+            include: { lot: true },
+          });
+
+          const isExpired = listing ? new Date(listing.expiresAt).getTime() <= now.getTime() : true;
+          const isSafe = listing?.lot ? listing.lot.foodSafetyStatus === 'SAFE' : true;
+          const isPublished = listing?.status === 'PUBLISHED';
+
+          if (listing && !isExpired && isSafe && isPublished) {
+            if ((tx as any).$executeRaw) {
+              await (tx as any).$executeRaw`
+                UPDATE vendor_daily_listings
+                SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal,
+                    "quantityAvailable" = "quantityAvailable" + ${item.quantity}::decimal
+                WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
+              `;
+            }
+            await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
+            await this.inventoryEventsRepository.create(
+              {
+                productId: item.productId,
+                eventType: 'RESTOCKED',
+                quantityDelta: item.quantity,
+                vendorOrderId: vendorOrder.id,
+              },
+              tx,
+            );
+          } else {
+            if ((tx as any).$executeRaw) {
+              await (tx as any).$executeRaw`
+                UPDATE vendor_daily_listings
+                SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal
+                WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
+              `;
+            }
+            await this.inventoryEventsRepository.create(
+              {
+                productId: item.productId,
+                eventType: 'DISPOSED',
+                quantityDelta: -item.quantity,
+                vendorOrderId: vendorOrder.id,
+                notes: JSON.stringify({
+                  disposition: 'EXPIRED_ON_REJECT',
+                  listingId: item.originalListingId,
+                  orderItemId: item.id,
+                  quantityDisposed: item.quantity,
+                }),
+              },
+              tx,
+            );
+          }
+        } else {
+          await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
+          await this.inventoryEventsRepository.create(
+            {
+              productId: item.productId,
+              eventType: 'RESTOCKED',
+              quantityDelta: item.quantity,
+              vendorOrderId: vendorOrder.id,
+            },
+            tx,
+          );
+        }
       }
 
       return this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'REJECTED', tx);
