@@ -25,6 +25,7 @@ import {
   CartMutationBarrierService,
 } from '../../cart-mutation-barrier/services/cart-mutation-barrier.service';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
+import { sanitizeErrorMessage } from '../../../common/utils/sanitize-error-message.util';
 import { SeafoodLotsService } from '../../food-safety/services/seafood-lots.service';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
@@ -342,17 +343,61 @@ export class OrdersService {
       );
     }
 
-    const { payment, redirectUrl } = await this.paymentsService.initiatePayment({
-      orderId: order.id,
-      amount: total,
-      currency: 'JMD',
-      provider: dto.paymentMethod,
-    });
+    let payment: PaymentResponseEntity | undefined;
+    let paymentRedirectUrl: string | undefined;
+
+    try {
+      const initiation = await this.paymentsService.initiatePayment({
+        orderId: order.id,
+        amount: total,
+        currency: 'JMD',
+        provider: dto.paymentMethod,
+      });
+      payment = initiation.payment;
+      paymentRedirectUrl = initiation.redirectUrl;
+    } catch (paymentError) {
+      // Post-commit initiation failure. The order and inventory changes are committed and durable.
+      const storedPayment = await this.paymentsService.getByOrderId(order.id);
+
+      const maxErrorLength = 500;
+      // If payment-state persistence failed and the record is not in RECONCILE_REQUIRED,
+      // do not falsely claim that reconciliation state was saved. Rethrow to surface persistence failure.
+      if (storedPayment?.initiationStatus !== 'RECONCILE_REQUIRED') {
+        this.logger.error(
+          `Payment initiation failed and payment state could not be confirmed as RECONCILE_REQUIRED for order "${order.id}".`,
+          {
+            orderId: order.id,
+            paymentId: storedPayment?.id,
+            error: sanitizeErrorMessage(
+              paymentError instanceof Error ? paymentError.message : String(paymentError),
+              maxErrorLength,
+            ),
+          },
+        );
+        throw paymentError;
+      }
+
+      this.logger.warn(
+        `Payment initiation failed after committed checkout for order "${order.id}". ` +
+          `Order is durable and payment is in RECONCILE_REQUIRED status.`,
+        {
+          orderId: order.id,
+          paymentId: storedPayment.id,
+          error: sanitizeErrorMessage(
+            paymentError instanceof Error ? paymentError.message : String(paymentError),
+            maxErrorLength,
+          ),
+        },
+      );
+
+      payment = storedPayment;
+      paymentRedirectUrl = undefined;
+    }
 
     return {
       ...toOrderResponse(order),
       payment,
-      paymentRedirectUrl: redirectUrl,
+      paymentRedirectUrl,
     };
   }
 

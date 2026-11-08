@@ -7,6 +7,7 @@ import { CartMutationBarrierService } from '../../cart-mutation-barrier/services
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { PaymentResponseEntity } from '../../payments/entities/payment-response.entity';
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository, ProductWithLot } from '../../products/repositories/products.repository';
 import { VendorPermissionsService } from '../../vendor-tiers/services/vendor-permissions.service';
@@ -127,17 +128,7 @@ const checkoutDto = {
   paymentMethod: 'CASH_ON_DELIVERY' as const,
 };
 
-function buildPaymentResponse(): {
-  id: string;
-  orderId: string;
-  provider: 'CASH_ON_DELIVERY';
-  status: 'PENDING';
-  initiationStatus: 'ESTABLISHED';
-  amount: string;
-  currency: string;
-  paidAt: Date | null;
-  createdAt: Date;
-} {
+function buildPaymentResponse(overrides: Partial<PaymentResponseEntity> = {}): PaymentResponseEntity {
   return {
     id: 'payment-1',
     orderId: 'order-1',
@@ -148,6 +139,7 @@ function buildPaymentResponse(): {
     currency: 'JMD',
     paidAt: null,
     createdAt: new Date(),
+    ...overrides,
   };
 }
 
@@ -719,6 +711,76 @@ describe('OrdersService', () => {
 
       const createArg = ordersRepository.create.mock.calls[0]?.[0];
       expect(createArg?.deliveryZoneId).toBeNull();
+    });
+
+    function makeCartWithItem(): CartWithItems {
+      return buildCart({
+        items: [
+          {
+            id: 'item-1',
+            cartId: 'cart-1',
+            productId: 'product-1',
+            quantity: 2,
+            mutationVersion: 0,
+            lockedUnitPrice: null,
+            lockedCurrency: null,
+            priceLockedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            product: buildProduct(),
+          },
+        ],
+      });
+    }
+
+    it('preserves committed order and returns 201 with RECONCILE_REQUIRED when initiatePayment throws', async () => {
+      const cart = makeCartWithItem();
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      paymentsService.initiatePayment.mockRejectedValue(new Error('WiPay gateway timeout'));
+      paymentsService.getByOrderId.mockResolvedValue(
+        buildPaymentResponse({ initiationStatus: 'RECONCILE_REQUIRED' }),
+      );
+
+      const result = await service.checkout('user-1', checkoutDto);
+
+      expect(result.id).toBe('order-1');
+      expect(result.payment?.initiationStatus).toBe('RECONCILE_REQUIRED');
+      expect(result.paymentRedirectUrl).toBeUndefined();
+      expect(ordersRepository.create).toHaveBeenCalledTimes(1);
+      expect(cartRepository.clear).toHaveBeenCalledWith(cart.id, expect.anything());
+    });
+
+    it('rethrows when stored payment is not RECONCILE_REQUIRED after initiatePayment failure', async () => {
+      const cart = makeCartWithItem();
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      const gatewayError = new Error('WiPay gateway timeout');
+      paymentsService.initiatePayment.mockRejectedValue(gatewayError);
+      paymentsService.getByOrderId.mockResolvedValue(
+        buildPaymentResponse({ initiationStatus: 'INITIATING' }),
+      );
+
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toThrow(gatewayError);
+    });
+
+    it('rethrows when stored payment lookup fails after initiatePayment failure', async () => {
+      const cart = makeCartWithItem();
+      cartRepository.findOrCreateByCustomerId.mockResolvedValue(cart);
+      vendorsRepository.findById.mockResolvedValue(buildVendor());
+      productsRepository.adjustStock.mockResolvedValue(buildProduct());
+      ordersRepository.create.mockResolvedValue(buildOrder());
+
+      paymentsService.initiatePayment.mockRejectedValue(new Error('WiPay gateway timeout'));
+      paymentsService.getByOrderId.mockRejectedValue(new Error('Database read failure'));
+
+      await expect(service.checkout('user-1', checkoutDto)).rejects.toThrow('Database read failure');
     });
   });
 
