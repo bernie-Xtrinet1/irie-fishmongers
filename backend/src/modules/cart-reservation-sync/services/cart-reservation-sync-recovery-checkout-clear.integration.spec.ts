@@ -7,7 +7,10 @@ import { CartMutationBarrierService } from '../../cart-mutation-barrier/services
 import { reservationHashKey } from '../../inventory/constants/inventory.constants';
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { buildLegacyPricingSnapshot } from '../../orders/services/legacy-pricing-snapshot.builder';
+import { ConfigService } from '@nestjs/config';
+import { CheckoutQuoteService } from '../../orders/services/checkout-quote.service';
 import { OrdersService } from '../../orders/services/orders.service';
+import { WeightAdjustmentSnapshotInitializationService } from '../../weight-adjustment/services/weight-adjustment-snapshot-initialization.service';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { installDelayedReserveSpy } from './cart-reservation-sync-recovery-delay-spy-test-helpers';
@@ -69,6 +72,9 @@ describe('DA.1B repository-wide invariant: checkout clear vs. recovery worker (r
       new EventEmitter2(),
       fixture.syncStateRepository,
       mutationBarrier,
+      new CheckoutQuoteService(),
+      { initializeSnapshot: jest.fn().mockResolvedValue(undefined) } as unknown as WeightAdjustmentSnapshotInitializationService,
+      { get: jest.fn().mockReturnValue(undefined), getOrThrow: jest.fn().mockReturnValue('mock-signing-secret-minimum-32-chars-long') } as unknown as ConfigService,
     );
   });
 

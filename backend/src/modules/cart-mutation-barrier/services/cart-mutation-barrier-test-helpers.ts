@@ -16,7 +16,10 @@ import { InventoryEventsRepository } from '../../inventory/repositories/inventor
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
+import { ConfigService } from '@nestjs/config';
+import { CheckoutQuoteService } from '../../orders/services/checkout-quote.service';
 import { OrdersService } from '../../orders/services/orders.service';
+import { WeightAdjustmentSnapshotInitializationService } from '../../weight-adjustment/services/weight-adjustment-snapshot-initialization.service';
 import { CategoriesRepository } from '../../products/repositories/categories.repository';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -140,6 +143,14 @@ export async function setUpBarrierFixture(label: string): Promise<BarrierFixture
     getByOrderId: jest.fn().mockResolvedValue(null),
   };
   const vendorPermissionsService = { assertSalesLimitNotExceeded: jest.fn().mockResolvedValue(undefined) };
+  const checkoutQuoteService = new CheckoutQuoteService();
+  const weightAdjustmentSnapshotInitializationService = {
+    initializeSnapshot: jest.fn().mockResolvedValue(undefined),
+  } as unknown as WeightAdjustmentSnapshotInitializationService;
+  const configService = {
+    get: jest.fn().mockReturnValue(undefined),
+    getOrThrow: jest.fn().mockReturnValue('mock-signing-secret-minimum-32-chars-long'),
+  } as unknown as ConfigService;
   const ordersService = new OrdersService(
     prisma,
     new OrdersRepository(prisma),
@@ -154,6 +165,9 @@ export async function setUpBarrierFixture(label: string): Promise<BarrierFixture
     new EventEmitter2(),
     syncStateRepository,
     mutationBarrier,
+    checkoutQuoteService,
+    weightAdjustmentSnapshotInitializationService,
+    configService,
   );
 
   return {

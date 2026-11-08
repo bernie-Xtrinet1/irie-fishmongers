@@ -1,4 +1,7 @@
 import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
+import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
+import { MUTATION_HISTORY_KEY } from '../../reservation-fence/lua/reservation-mutation-common.lua';
+import { transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
 import { randomUUID } from 'crypto';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -23,6 +26,8 @@ import { CheckoutDto } from '../../orders/dto/checkout.dto';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { OrdersService } from '../../orders/services/orders.service';
+import { CheckoutQuoteService } from '../../orders/services/checkout-quote.service';
+import { WeightAdjustmentSnapshotInitializationService } from '../../weight-adjustment/services/weight-adjustment-snapshot-initialization.service';
 import { PaymentsRepository } from '../../payments/repositories/payments.repository';
 import { RefundsRepository } from '../../payments/repositories/refunds.repository';
 import { CashOnDeliveryAdapter } from '../../payments/providers/cash-on-delivery.adapter';
@@ -99,6 +104,9 @@ export async function tearDownCheckoutIntegrationFixture(fixture: CheckoutIntegr
   const { prisma, vendor, category, userIds } = fixture;
   const products = await prisma.product.findMany({ where: { vendorId: vendor.id }, select: { id: true } });
   const productIds = products.map((p) => p.id);
+  await prisma.reservationFenceTransition.deleteMany({ where: { actorId: { in: userIds } } });
+  await prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: { in: userIds } } });
+  await prisma.reservationEngineModeConfig.deleteMany({ where: { mode: 'CART_SCOPED', updatedById: null } });
   await prisma.checkoutAttempt.deleteMany({ where: { cart: { customerId: { in: userIds } } } });
   await prisma.orderItem.deleteMany({ where: { productId: { in: productIds } } });
   await prisma.vendorOrder.deleteMany({ where: { vendorId: vendor.id } });
@@ -132,6 +140,7 @@ export interface RealCoordinatorHandles {
   eventEmitter: EventEmitter2;
   paymentsService: PaymentsService;
   cashOnDeliveryAdapter: CashOnDeliveryAdapter;
+  redisClient?: Redis;
 }
 
 // Builds a fully real CheckoutCoordinatorService and its dependencies -
@@ -163,6 +172,14 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     new VendorSalesRepository(prisma),
   );
   const mutationBarrier = new CartMutationBarrierService(prisma, new CartMutationBarrierConfigRepository(prisma));
+  const checkoutQuoteService = new CheckoutQuoteService();
+  const weightAdjustmentSnapshotInitializationService = {
+    initializeSnapshot: jest.fn().mockResolvedValue(undefined),
+  } as unknown as WeightAdjustmentSnapshotInitializationService;
+  const configService = {
+    get: jest.fn().mockReturnValue(undefined),
+    getOrThrow: jest.fn().mockReturnValue('mock-signing-secret-minimum-32-chars-long'),
+  } as unknown as ConfigService;
   const ordersService = new OrdersService(
     prisma,
     new OrdersRepository(prisma),
@@ -177,6 +194,9 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     eventEmitter,
     syncStateRepository,
     mutationBarrier,
+    checkoutQuoteService,
+    weightAdjustmentSnapshotInitializationService,
+    configService,
   );
 
   const checkoutAttemptService = new CheckoutAttemptService(new CheckoutAttemptRepository(prisma));
@@ -213,6 +233,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     eventEmitter,
     paymentsService,
     cashOnDeliveryAdapter,
+    redisClient,
   };
 }
 
@@ -230,6 +251,53 @@ export interface ReadyCheckoutScenario {
   quantity: number;
   lockedUnitPrice: string;
   currency: string;
+}
+
+async function ensureFenceAuthority(prisma: PrismaService, redisClient: Redis, actorId: string): Promise<void> {
+  let mode = await prisma.reservationEngineModeConfig.findFirst({
+    orderBy: { revision: 'desc' },
+  });
+  if (!mode || mode.mode !== 'CART_SCOPED') {
+    mode = await prisma.reservationEngineModeConfig.create({
+      data: { mode: 'CART_SCOPED', updatedById: actorId },
+    });
+  }
+
+  let fence = await prisma.reservationFenceTransition.findFirst({
+    where: {
+      status: 'ACKNOWLEDGED',
+      phase: 'OPEN',
+      mode: 'CART_SCOPED',
+      modeRevision: mode.revision,
+    },
+    orderBy: { revision: 'desc' },
+  });
+
+  if (!fence) {
+    const maxFence = await prisma.reservationFenceTransition.findFirst({
+      orderBy: { revision: 'desc' },
+      select: { revision: true },
+    });
+    const nextRevision = (maxFence?.revision ?? 0) + 1;
+    fence = await prisma.reservationFenceTransition.create({
+      data: {
+        incarnation: randomUUID(),
+        epoch: 1,
+        revision: nextRevision,
+        phase: 'OPEN',
+        protocol: 1,
+        status: 'ACKNOWLEDGED',
+        acknowledgedAt: new Date(),
+        mode: 'CART_SCOPED',
+        modeRevision: mode.revision,
+        reason: 'OPEN',
+        actorId,
+      },
+    });
+  }
+
+  await redisClient.set(RESERVATION_FENCE_KEY, JSON.stringify(transitionTuple(fence)));
+  await redisClient.hset(MUTATION_HISTORY_KEY, 'incarnation', fence.incarnation);
 }
 
 // One-call happy-path seeding: a real customer, cart, product, cart item,
@@ -289,6 +357,15 @@ export async function seedReadyCheckout(
   await prisma.cartReservationSyncState.upsert({ where: { cartId_productId: { cartId: cart.id, productId: product.id } },
     create: { cartId: cart.id, productId: product.id, expectedQuantity: quantity, expectedMutationVersion: item.mutationVersion },
     update: { expectedQuantity: quantity } });
+
+  const redisClient: Redis | undefined =
+    (handles as unknown as { redisClient?: Redis }).redisClient ??
+    (handles.inventoryReservations as unknown as { redis?: { getClient?: () => Redis } })?.redis?.getClient?.();
+
+  if (redisClient) {
+    await ensureFenceAuthority(prisma, redisClient, fixture.userIds[0] ?? customer.id);
+  }
+
   const reserveResult = await handles.inventoryReservations.reserveOrRenew(
     cart.id,
     product.id,

@@ -16,10 +16,10 @@ export interface VendorOrderItemInput {
   id?: string;
   productId: string;
   productName: string;
-  unitPrice: number;
+  unitPrice: Prisma.Decimal | number | string;
   unit: ProductUnit;
   quantity: number;
-  subtotal: number;
+  subtotal: Prisma.Decimal | number | string;
   currency: string | null;
   originalLotId?: string | null;
   originalListingId?: string | null;
@@ -28,7 +28,7 @@ export interface VendorOrderItemInput {
 
 export interface VendorOrderInput {
   vendorId: string;
-  subtotal: number;
+  subtotal: Prisma.Decimal | number | string;
   items: VendorOrderItemInput[];
 }
 
