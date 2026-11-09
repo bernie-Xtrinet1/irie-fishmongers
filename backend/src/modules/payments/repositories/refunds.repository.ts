@@ -1,22 +1,36 @@
 import { Injectable } from '@nestjs/common';
-import { Refund, RefundStatus } from '@prisma/client';
+import { Prisma, Refund, RefundStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
 export interface CreateRefundInput {
   paymentId: string;
-  amount: number;
+  amount: number | Prisma.Decimal;
   reason: string;
   status: RefundStatus;
-  providerReference?: string;
+  providerReference?: string | null;
+  idempotencyKey?: string | null;
 }
 
 @Injectable()
 export class RefundsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(input: CreateRefundInput): Promise<Refund> {
-    return this.prisma.refund.create({ data: input });
+  create(input: CreateRefundInput, tx?: Prisma.TransactionClient): Promise<Refund> {
+    const client = tx ?? this.prisma;
+    return client.refund.create({ data: input });
+  }
+
+  createWithTx(input: CreateRefundInput, tx: Prisma.TransactionClient): Promise<Refund> {
+    return tx.refund.create({ data: input });
+  }
+
+  findByIdempotencyKey(
+    idempotencyKey: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<Refund | null> {
+    const client = tx ?? this.prisma;
+    return client.refund.findUnique({ where: { idempotencyKey } });
   }
 
   findByPaymentId(paymentId: string): Promise<Refund[]> {
