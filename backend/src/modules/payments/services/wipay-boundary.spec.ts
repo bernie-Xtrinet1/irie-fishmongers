@@ -39,6 +39,7 @@ describe('WiPay service boundary with the real adapter', () => {
       id: 'payment-1',
       orderId: 'order-1',
       provider: 'WIPAY',
+      merchantAccountId: 'default',
       status: 'PENDING',
       initiationStatus: 'NOT_STARTED',
       amount: new Prisma.Decimal('1000.00'),

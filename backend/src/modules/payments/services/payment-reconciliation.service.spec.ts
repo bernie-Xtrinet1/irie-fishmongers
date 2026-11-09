@@ -16,6 +16,7 @@ function buildPayment(
     id: 'payment-1',
     orderId: 'order-1',
     provider: 'WIPAY',
+    merchantAccountId: 'default',
     status: 'PENDING',
     initiationStatus: 'ESTABLISHED',
     amount: new Prisma.Decimal(1000),
