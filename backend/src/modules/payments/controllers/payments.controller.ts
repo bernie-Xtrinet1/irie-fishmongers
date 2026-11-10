@@ -23,12 +23,16 @@ import {
 import { RoleName } from '@prisma/client';
 import { Request } from 'express';
 
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
+import { PaymentRecoveryResponseEntity } from '../dto/payment-recovery-response.dto';
+import { PaymentStatusResponseEntity } from '../dto/payment-status-response.dto';
 import { RefundPaymentDto } from '../dto/refund-payment.dto';
 import { PaymentResponseEntity } from '../entities/payment-response.entity';
 import { RefundResponseEntity } from '../entities/refund-response.entity';
+import { PaymentRecoveryService } from '../services/payment-recovery.service';
 import { PaymentsService } from '../services/payments.service';
 
 const WIPAY_SIGNATURE_HEADER = 'x-wipay-signature';
@@ -36,7 +40,48 @@ const WIPAY_SIGNATURE_HEADER = 'x-wipay-signature';
 @ApiTags('payments')
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly paymentRecoveryService?: PaymentRecoveryService,
+  ) {}
+
+  @Get('orders/:orderId/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.CUSTOMER, RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Retrieve payment status for an owned order' })
+  @ApiResponseDoc({ status: 200, type: PaymentStatusResponseEntity })
+  @ApiResponseDoc({ status: 401, description: 'Unauthorized' })
+  @ApiResponseDoc({ status: 404, description: 'Order not found' })
+  getPaymentStatus(
+    @Param('orderId') orderId: string,
+    @CurrentUser() user: RequestUser,
+  ): Promise<PaymentStatusResponseEntity> {
+    if (!this.paymentRecoveryService) {
+      throw new Error('PaymentRecoveryService is not injected');
+    }
+    return this.paymentRecoveryService.getPaymentStatus(orderId, user);
+  }
+
+  @Post('orders/:orderId/recover')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleName.CUSTOMER, RoleName.ADMINISTRATOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Recover or retry payment initiation safely for an owned order' })
+  @ApiResponseDoc({ status: 200, type: PaymentRecoveryResponseEntity })
+  @ApiResponseDoc({ status: 401, description: 'Unauthorized' })
+  @ApiResponseDoc({ status: 404, description: 'Order not found' })
+  @ApiResponseDoc({ status: 409, description: 'Conflict: order cancelled or already paid' })
+  recoverPayment(
+    @Param('orderId') orderId: string,
+    @CurrentUser() user: RequestUser,
+  ): Promise<PaymentRecoveryResponseEntity> {
+    if (!this.paymentRecoveryService) {
+      throw new Error('PaymentRecoveryService is not injected');
+    }
+    return this.paymentRecoveryService.recoverPayment(orderId, user);
+  }
 
   @Post('webhooks/wipay')
   @HttpCode(HttpStatus.OK)
