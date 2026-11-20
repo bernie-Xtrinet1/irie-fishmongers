@@ -261,6 +261,70 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare revision verification helper
+        run: |
+          cat <<'HELPER' > "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision() {
+            local app="$1"
+            local rg="$2"
+            local expected_img="$3"
+
+            local latest_rev="" ready_rev="" rev_img="" rev_running="" rev_health="" ready_img=""
+            local app_fields rev_fields
+            for attempt in $(seq 1 24); do
+              mapfile -t app_fields < <(
+                az containerapp show -n "$app" -g "$rg" --only-show-errors \
+                  --query "[properties.latestRevisionName||'none',properties.latestReadyRevisionName||'none']" -o tsv | tr -d '\r'
+              )
+              latest_rev="${app_fields[0]:-none}"
+              ready_rev="${app_fields[1]:-none}"
+
+              if [ "${latest_rev}" != "none" ]; then
+                mapfile -t rev_fields < <(
+                  az containerapp revision show -n "$app" -g "$rg" --revision "$latest_rev" \
+                    --only-show-errors \
+                    --query "[properties.template.containers[0].image||'none',properties.runningState||'none',properties.healthState||'none']" -o tsv | tr -d '\r'
+                )
+                rev_img="${rev_fields[0]:-none}"
+                rev_running="${rev_fields[1]:-none}"
+                rev_health="${rev_fields[2]:-none}"
+
+                if [ "${rev_img}" = "${expected_img}" ]; then
+                  case "${rev_running}" in
+                    ActivationFailed|Failed)
+                      echo "::group::${app} revisions"
+                      az containerapp revision list -n "$app" -g "$rg" --only-show-errors \
+                        --query '[].{name:name,active:properties.active,running:properties.runningState,health:properties.healthState,created:properties.createdTime,image:properties.template.containers[0].image}' -o table || true
+                      echo "::endgroup::"
+                      echo "::error::${app} revision '${latest_rev}' (${rev_img}) entered runningState=${rev_running}, healthState=${rev_health}."
+                      return 1
+                      ;;
+                  esac
+
+                  if [ "${ready_rev}" = "${latest_rev}" ] && [ "${rev_health}" = "Healthy" ]; then
+                    echo "${app} ready revision '${ready_rev}': image=${rev_img}, runningState=${rev_running}, healthState=${rev_health}"
+                    return 0
+                  fi
+                fi
+              fi
+
+              echo "  attempt ${attempt}/24: ${app} latest=${latest_rev} (image=${rev_img:-none}, running=${rev_running:-none}, health=${rev_health:-none}), ready=${ready_rev}; waiting..."
+              sleep 5
+            done
+
+            if [ "${ready_rev}" != "none" ]; then
+              ready_img="$(az containerapp revision show -n "$app" -g "$rg" --revision "$ready_rev" \
+                --only-show-errors --query 'properties.template.containers[0].image' -o tsv | tr -d '\r' || true)"
+            fi
+            echo "::group::${app} revisions"
+            az containerapp revision list -n "$app" -g "$rg" --only-show-errors \
+              --query '[].{name:name,active:properties.active,running:properties.runningState,health:properties.healthState,created:properties.createdTime,image:properties.template.containers[0].image}' -o table || true
+            echo "::endgroup::"
+            echo "::error::${app} failed to roll out expected image '${expected_img}'. latestRevision='${latest_rev}' (image=${rev_img:-none}, running=${rev_running:-none}, health=${rev_health:-none}), latestReadyRevision='${ready_rev}' (image=${ready_img:-none})."
+            return 1
+          }
+          HELPER
+
       # ----------------------------------------------------------------------
       # 8. Deploy BACKEND first, then gate on /api/v1/health.
       # ----------------------------------------------------------------------
@@ -278,8 +342,11 @@ jobs:
         id: backend_health
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          BACKEND_IMAGE: ${{ steps.digests.outputs.backend }}
         run: |
           set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$BACKEND_APP" "$RG" "$BACKEND_IMAGE"
           fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
             --query properties.configuration.ingress.fqdn -o tsv)"
           echo "backend_fqdn=${fqdn}" >> "$GITHUB_OUTPUT"
@@ -315,8 +382,11 @@ jobs:
       - name: Verify web
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          WEB_IMAGE: ${{ steps.digests.outputs.web }}
         run: |
           set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$WEB_APP" "$RG" "$WEB_IMAGE"
           fqdn="$(az containerapp show -n "$WEB_APP" -g "$RG" --only-show-errors \
             --query properties.configuration.ingress.fqdn -o tsv)"
           bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${WEB_HEALTH_PATH}" web
@@ -342,6 +412,8 @@ jobs:
           APPROVED_RUNNER: ${{ vars.ADMIN_VERIFY_RUNNER }}
         run: |
           set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$ADMIN_APP" "$RG" "$ADMIN_IMAGE"
           fqdn="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
             --query properties.configuration.ingress.fqdn -o tsv)"
           echo "fqdn=${fqdn}" >> "$GITHUB_OUTPUT"
@@ -350,30 +422,6 @@ jobs:
           if [ "${restrictions_count}" -gt 0 ]; then
             echo "restricted=true" >> "$GITHUB_OUTPUT"
             echo "verified=false" >> "$GITHUB_OUTPUT"
-            latest_rev=""
-            rev_img=""
-            rev_health=""
-            rev_state=""
-            for attempt in $(seq 1 12); do
-              latest_rev="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
-                --query properties.latestReadyRevisionName -o tsv)"
-              rev_img="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
-                --only-show-errors --query 'properties.template.containers[0].image' -o tsv)"
-              rev_health="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
-                --only-show-errors --query 'properties.healthState' -o tsv)"
-              rev_state="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
-                --only-show-errors --query 'properties.runningState' -o tsv)"
-              if [ "${rev_img}" = "${ADMIN_IMAGE}" ]; then
-                break
-              fi
-              echo "  attempt ${attempt}/12: ready revision '${latest_rev}' still runs '${rev_img}', waiting..."
-              sleep 5
-            done
-            echo "Admin revision ${latest_rev}: image=${rev_img}, runningState=${rev_state}, healthState=${rev_health}"
-            if [ "${rev_img}" != "${ADMIN_IMAGE}" ]; then
-              echo "::error::ca-irie-admin ready revision '${latest_rev}' runs '${rev_img}', expected '${ADMIN_IMAGE}'."
-              exit 1
-            fi
             code=000
             for attempt in $(seq 1 6); do
               code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "https://${fqdn}${ADMIN_HEALTH_PATH}" || echo 000)"
