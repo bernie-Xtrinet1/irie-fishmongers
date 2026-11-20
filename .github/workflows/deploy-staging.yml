@@ -71,6 +71,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     timeout-minutes: 45
+    outputs:
+      admin_fqdn: ${{ steps.verify_admin.outputs.fqdn }}
+      admin_restricted: ${{ steps.verify_admin.outputs.restricted }}
+      admin_verified_from_runner: ${{ steps.verify_admin.outputs.verified }}
     steps:
       # ----------------------------------------------------------------------
       # 0. Guard the input: reject `latest`/empty; normalise the SHA.
@@ -331,13 +335,70 @@ jobs:
           echo "admin updated to ${ADMIN_IMAGE}"
 
       - name: Verify admin
+        id: verify_admin
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          ADMIN_IMAGE: ${{ steps.digests.outputs.admin }}
+          APPROVED_RUNNER: ${{ vars.ADMIN_VERIFY_RUNNER }}
         run: |
           set -euo pipefail
           fqdn="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
             --query properties.configuration.ingress.fqdn -o tsv)"
-          bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${ADMIN_HEALTH_PATH}" admin
+          echo "fqdn=${fqdn}" >> "$GITHUB_OUTPUT"
+          restrictions_count="$(az containerapp ingress access-restriction list -n "$ADMIN_APP" -g "$RG" \
+            --only-show-errors --query "length([?action=='Allow'])" -o tsv 2>/dev/null || echo 0)"
+          if [ "${restrictions_count}" -gt 0 ]; then
+            echo "restricted=true" >> "$GITHUB_OUTPUT"
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            latest_rev=""
+            rev_img=""
+            rev_health=""
+            rev_state=""
+            for attempt in $(seq 1 12); do
+              latest_rev="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
+                --query properties.latestReadyRevisionName -o tsv)"
+              rev_img="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
+                --only-show-errors --query 'properties.template.containers[0].image' -o tsv)"
+              rev_health="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
+                --only-show-errors --query 'properties.healthState' -o tsv)"
+              rev_state="$(az containerapp revision show -n "$ADMIN_APP" -g "$RG" --revision "$latest_rev" \
+                --only-show-errors --query 'properties.runningState' -o tsv)"
+              if [ "${rev_img}" = "${ADMIN_IMAGE}" ]; then
+                break
+              fi
+              echo "  attempt ${attempt}/12: ready revision '${latest_rev}' still runs '${rev_img}', waiting..."
+              sleep 5
+            done
+            echo "Admin revision ${latest_rev}: image=${rev_img}, runningState=${rev_state}, healthState=${rev_health}"
+            if [ "${rev_img}" != "${ADMIN_IMAGE}" ]; then
+              echo "::error::ca-irie-admin ready revision '${latest_rev}' runs '${rev_img}', expected '${ADMIN_IMAGE}'."
+              exit 1
+            fi
+            code=000
+            for attempt in $(seq 1 6); do
+              code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "https://${fqdn}${ADMIN_HEALTH_PATH}" || echo 000)"
+              if [ "${code}" = "403" ] || [ "${code}" = "200" ]; then
+                break
+              fi
+              sleep 5
+            done
+            if [ "${code}" = "200" ]; then
+              echo "::error::ca-irie-admin returned HTTP 200 to public runner despite Allow restriction (${restrictions_count} rules)."
+              exit 1
+            fi
+            if [ "${code}" != "403" ]; then
+              echo "::error::Expected HTTP 403 from ingress restriction on public runner, got HTTP ${code}."
+              exit 1
+            fi
+            echo "Confirmed admin IP ingress restriction on public runner (HTTP 403)."
+            if [ -z "${APPROVED_RUNNER}" ]; then
+              echo "::warning::Positive admin /login verification is PENDING WORKSTATION VERIFICATION (no vars.ADMIN_VERIFY_RUNNER configured)."
+            fi
+          else
+            echo "restricted=false" >> "$GITHUB_OUTPUT"
+            bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${ADMIN_HEALTH_PATH}" admin
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # ----------------------------------------------------------------------
       # 11. Final summary.
@@ -347,6 +408,10 @@ jobs:
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
           TAG: ${{ steps.input.outputs.tag }}
+          ADMIN_FQDN: ${{ steps.verify_admin.outputs.fqdn }}
+          ADMIN_RESTRICTED: ${{ steps.verify_admin.outputs.restricted }}
+          ADMIN_VERIFIED: ${{ steps.verify_admin.outputs.verified }}
+          APPROVED_RUNNER: ${{ vars.ADMIN_VERIFY_RUNNER }}
         run: |
           {
             echo ""
@@ -359,5 +424,23 @@ jobs:
             echo "| web      | \`${{ steps.digests.outputs.web }}\` |"
             echo "| admin    | \`${{ steps.digests.outputs.admin }}\` |"
             echo ""
+            if [ "${ADMIN_RESTRICTED}" = "true" ] && [ "${ADMIN_VERIFIED}" != "true" ] && [ -z "${APPROVED_RUNNER}" ]; then
+              echo "> **Admin \`${ADMIN_HEALTH_PATH}\` check:** IP restriction confirmed on public runner (\`HTTP 403\`). Positive health verification is **PENDING WORKSTATION VERIFICATION** — run \`bash scripts/verify-azure-staging.sh frontend https://${ADMIN_FQDN}${ADMIN_HEALTH_PATH} admin\` from an approved tester IP."
+              echo ""
+            fi
             echo "Rollback any app: \`az containerapp update -n <app> -g ${RG} --image <previous-image-from-rollback-state-above>\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  verify-admin-approved-network:
+    needs: deploy
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.admin_restricted == 'true' && vars.ADMIN_VERIFY_RUNNER != '' }}
+    runs-on: ${{ vars.ADMIN_VERIFY_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (read-only, for verify script)
+        uses: actions/checkout@v7
+
+      - name: Verify admin /login from approved network runner
+        run: |
+          set -euo pipefail
+          bash scripts/verify-azure-staging.sh frontend "https://${{ needs.deploy.outputs.admin_fqdn }}${{ env.ADMIN_HEALTH_PATH }}" admin
