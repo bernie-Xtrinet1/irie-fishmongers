@@ -107,28 +107,42 @@ end
 `;
 
 export const ORDINARY_PHYSICAL_REGISTER = COMMON + `
+local function grantFieldCount(v)
+  return 6 + (v and v.barrierBinding~=nil and 1 or 0) + (v and v.releasePublication~=nil and 1 or 0) + (v and v.controlRevision~=nil and 1 or 0)
+end
 local g=decode(ARGV[1])
-if not fields(g,(g and g.releasePublication) and 8 or ((g and g.barrierBinding) and 7 or 6)) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
-  (g.purpose~='GENESIS' and g.purpose~='EXECUTE') or KEYS[4]~='reservation:fence:ordinary-command-grant:'..g.grantId then return deny() end
+if not fields(g,grantFieldCount(g)) or g.version~=1 or not uuid(g.grantId) or type(g.identity)~='string' or g.expiresAt~=0 or
+  (g.purpose~='GENESIS' and g.purpose~='EXECUTE') or KEYS[4]~='reservation:fence:ordinary-command-grant:'..g.grantId or
+  (g.controlRevision~=nil and (not integer(g.controlRevision) or g.controlRevision<0 or (g.controlRevision%2)~=0)) then return deny() end
 local i=decode(g.identity)
 if not identityValid(i) or not scope(i) or not (i.action=='RELEASE' and releaseBarrierAllowed(i,g.barrierBinding,g.releasePublication) or i.action~='RELEASE' and ordinaryBarrierAllowed(i,g.barrierBinding)) then return deny() end
+if i.action=='W1' and (not integer(g.controlRevision) or g.controlRevision<0 or (g.controlRevision%2)~=0) then return deny() end
+if i.action~='W1' and g.controlRevision~=nil then return deny() end
 if i.action=='RELEASE' and (g.purpose~='EXECUTE' or not g.releasePublication) then return deny() end
 local current,err=control(g.tuple)
 if err or (current.phase~='OPEN' and not (i.action=='RELEASE' and current.phase=='DRAINING')) or current.incarnation~=i.incarnation or current.epoch~=i.epoch or
   redis.call('EXISTS',KEYS[4])~=0 then return deny() end
+if i.action=='W1' and not productAllowed(i.target.productId,g.tuple,g.controlRevision) then return deny() end
 g.expiresAt=nowMs()+5000
 redis.call('SET',KEYS[4],cjson.encode(g),'PX',5000,'NX')
 return cjson.encode({code='REGISTERED'})
 `;
 
 const GRANT = COMMON + `
+local function grantFieldCount(v)
+  return 6 + (v and v.barrierBinding~=nil and 1 or 0) + (v and v.releasePublication~=nil and 1 or 0) + (v and v.controlRevision~=nil and 1 or 0)
+end
 local request=decode(ARGV[1])
-if not fields(request,(request and request.releasePublication) and 8 or ((request and request.barrierBinding) and 7 or 6)) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId then return deny() end
+if not fields(request,grantFieldCount(request)) or not uuid(request.grantId) or KEYS[4]~='reservation:fence:ordinary-command-grant:'..request.grantId or
+  (request.controlRevision~=nil and (not integer(request.controlRevision) or request.controlRevision<0 or (request.controlRevision%2)~=0)) then return deny() end
 local g,ge=read(KEYS[4])
-if ge or not fields(g,(g and g.releasePublication) and 8 or ((g and g.barrierBinding) and 7 or 6)) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
+if ge or not fields(g,grantFieldCount(g)) or g.version~=1 or g.grantId~=request.grantId or g.identity~=request.identity or
   g.purpose~=request.purpose or compareTuple(g.tuple,request.tuple) or type(g.expiresAt)~='number' or
-  g.expiresAt<=nowMs() or g.expiresAt>nowMs()+5000 then return deny() end
+  g.expiresAt<=nowMs() or g.expiresAt>nowMs()+5000 or
+  (g.controlRevision~=nil)~=(request.controlRevision~=nil) or g.controlRevision~=request.controlRevision then return deny() end
 local i=decode(g.identity)
+if i.action=='W1' and (not integer(g.controlRevision) or g.controlRevision<0 or (g.controlRevision%2)~=0) then return deny() end
+if i.action~='W1' and g.controlRevision~=nil then return deny() end
 if not identityValid(i) or not scope(i) or not (i.action=='RELEASE' and releaseBarrierAllowed(i,g.barrierBinding,g.releasePublication) or i.action~='RELEASE' and ordinaryBarrierAllowed(i,g.barrierBinding)) or
  (g.barrierBinding~=nil)~=(request.barrierBinding~=nil) then return deny() end
 if (g.releasePublication~=nil)~=(request.releasePublication~=nil) then return deny() end
@@ -151,7 +165,7 @@ local suspectKey='inv:reserved:product-total-suspect:{'..r.productId..'}'
 `;
 
 export const ORDINARY_PHYSICAL_GENESIS = GRANT + `
-if i.action=='W1' and not productAllowed(i.target.productId,g.tuple) then return deny() end
+if i.action=='W1' and not productAllowed(i.target.productId,g.tuple,g.controlRevision) then return deny() end
 if g.purpose~='GENESIS' then return deny() end
 local root=i.action=='W1' and i or decode(i.parent)
 if not identityValid(root) or root.action~='W1' or root.transition~='INITIAL' or root.expectedSequence~=0 or
@@ -193,7 +207,7 @@ return deny()
 `;
 
 export const ORDINARY_PHYSICAL_EXECUTE = GRANT + `
-if i.action=='W1' and not productAllowed(i.target.productId,g.tuple) then return deny() end
+if i.action=='W1' and not productAllowed(i.target.productId,g.tuple,g.controlRevision) then return deny() end
 if g.purpose~='EXECUTE' then return deny() end
 local c=cursor(i)
 if not c then return deny() end

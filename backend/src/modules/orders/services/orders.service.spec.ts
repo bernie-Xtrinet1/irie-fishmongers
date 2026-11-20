@@ -680,7 +680,7 @@ describe('OrdersService', () => {
       const createArg = ordersRepository.create.mock.calls[0]?.[0];
       expect(createArg?.vendorOrders).toHaveLength(1);
       expect(createArg?.vendorOrders[0]?.items).toHaveLength(2);
-      expect(createArg?.vendorOrders[0]?.subtotal).toBe(1300);
+      expect(createArg?.vendorOrders[0]?.subtotal?.toString()).toBe('1300');
     });
 
     it('stores a null deliveryZoneId when the parish has no zone mapping', async () => {

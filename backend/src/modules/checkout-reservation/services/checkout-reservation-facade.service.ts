@@ -114,11 +114,9 @@ export class CheckoutReservationFacade implements ReservationGateway {
         desiredQuantity,
       );
       if (!outcome.ok) {
-        const reasonCode: MirrorFailureReasonCode =
-          outcome.code === 'RESERVATION_PRODUCT_SUSPENDED' ? 'PRODUCT_SUSPENDED' :
-            outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? 'CHECKOUT_IN_PROGRESS' : 'UNKNOWN_INFRA_FAILURE';
+        const { reasonCode, lastError } = CheckoutReservationFacade.classifyMirrorReserveFailure(outcome.code);
         this.logMirrorFailure(cartId, productId, 'RESERVE', reasonCode);
-        await this.recordDivergence('RESERVE_MIRROR', cartId, productId, customerId, desiredQuantity, reasonCode, null);
+        await this.recordDivergence('RESERVE_MIRROR', cartId, productId, customerId, desiredQuantity, reasonCode, lastError);
         return { status: 'FAILED', operation: 'RESERVE', reasonCode };
       }
       if (outcome.result.underflow !== null) {
@@ -256,6 +254,24 @@ export class CheckoutReservationFacade implements ReservationGateway {
         reasonCode,
         error: sanitizeErrorMessage(CheckoutReservationFacade.errorMessage(error), MAX_LAST_ERROR_LENGTH),
       });
+    }
+  }
+
+  private static classifyMirrorReserveFailure(
+    code: Extract<ReserveForCartResult, { ok: false }>['code'] | 'FENCE_REJECTED' | 'UNCERTAIN_INFRASTRUCTURE',
+  ): { reasonCode: MirrorFailureReasonCode; lastError: string | null } {
+    switch (code) {
+      case 'RESERVATION_PRODUCT_SUSPENDED':
+        return { reasonCode: 'PRODUCT_SUSPENDED', lastError: null };
+      case 'RESERVATION_CHECKOUT_IN_PROGRESS':
+        return { reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null };
+      case 'RESERVATION_ACCOUNTING_UNDERFLOW':
+        return { reasonCode: 'ACCOUNTING_UNDERFLOW', lastError: null };
+      case 'RESERVATION_ACCOUNTING_CORRUPTION':
+      case 'RESERVATION_MALFORMED_RESOURCE':
+        return { reasonCode: 'ACCOUNTING_UNDERFLOW', lastError: code };
+      default:
+        return { reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: code };
     }
   }
 

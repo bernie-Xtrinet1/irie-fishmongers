@@ -3,7 +3,11 @@ import { Redis } from 'ioredis';
 import { RedisService } from '../../../common/redis/redis.service';
 import { productSuspectKey } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
-import { connectRealRedis, ids } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import {
+  connectRealRedis,
+  ids,
+  seedHistoricalActiveReservation,
+} from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { ReservationEngineModeService } from './reservation-engine-mode.service';
 import { ReservationAvailabilityService } from './reservation-availability.service';
 
@@ -97,7 +101,7 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
     // quantity is present in both the legacy hash and the cart-scoped
     // model.
     await inventoryReservations.reserve(productId, 'cart-other', 3);
-    await inventoryReservations.reserveOrRenew('cart-other', productId, customerId, 3);
+    await seedHistoricalActiveReservation(client, 'cart-other', productId, customerId, 3);
 
     const result = await service.getGeneralAvailability(productId, 10);
 
@@ -110,7 +114,7 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
   it('3. MIRROR: comparison reports AVAILABLE with the real new-engine number', async () => {
     const { productId, customerId } = ids();
     setMode('MIRROR');
-    await inventoryReservations.reserveOrRenew('cart-a', productId, customerId, 5);
+    await seedHistoricalActiveReservation(client, 'cart-a', productId, customerId, 5);
 
     const result = await service.getGeneralAvailability(productId, 10);
 
@@ -155,7 +159,7 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
   it('6. CART_SCOPED: uses a real new-engine-only hold, never legacy', async () => {
     const { productId, customerId } = ids();
     setMode('CART_SCOPED');
-    await inventoryReservations.reserveOrRenew('cart-other', productId, customerId, 4);
+    await seedHistoricalActiveReservation(client, 'cart-other', productId, customerId, 4);
 
     const result = await service.getGeneralAvailability(productId, 10);
 
@@ -165,8 +169,8 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
   it('7. CART_SCOPED: applies the requesting cart’s own-cart add-back', async () => {
     const { cartId, productId, customerId } = ids();
     setMode('CART_SCOPED');
-    await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 3);
-    await inventoryReservations.reserveOrRenew('cart-other', productId, customerId, 2);
+    await seedHistoricalActiveReservation(client, cartId, productId, customerId, 3);
+    await seedHistoricalActiveReservation(client, 'cart-other', productId, customerId, 2);
 
     const result = await service.getCartAdmissionAvailability(productId, 10, cartId);
 
@@ -178,7 +182,7 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
   it('8. CART_SCOPED: a real suspect flag fails closed with RESERVATION_STRUCTURE_DRIFT', async () => {
     const { productId, customerId } = ids();
     setMode('CART_SCOPED');
-    await inventoryReservations.reserveOrRenew('cart-other', productId, customerId, 4);
+    await seedHistoricalActiveReservation(client, 'cart-other', productId, customerId, 4);
     await client.set(productSuspectKey(productId), '1');
 
     const result = await service.getGeneralAvailability(productId, 10);
@@ -202,7 +206,7 @@ describe('ReservationAvailabilityService (real Redis integration)', () => {
   it('10. produces no Redis writes across any mode - before/after keyspace snapshot is identical', async () => {
     const { cartId, productId, customerId } = ids();
     await inventoryReservations.reserve(productId, 'cart-other', 4);
-    await inventoryReservations.reserveOrRenew('cart-other', productId, customerId, 3);
+    await seedHistoricalActiveReservation(client, 'cart-other', productId, customerId, 3);
 
     const before = await snapshotKeyspace(client);
 

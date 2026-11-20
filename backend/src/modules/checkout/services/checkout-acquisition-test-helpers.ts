@@ -34,11 +34,10 @@ export async function openAcquisitionSchema() {
   let resolveReady!: (db: PrismaService) => void;
   let rejectReady!: (error: unknown) => void;
   const ready = new Promise<PrismaService>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-  const lifetime = withSettlementSchema(async (db, upgrade) => {
-    upgrade();
+  const lifetime = withSettlementSchema(async (db) => {
     resolveReady(db);
     await finished;
-  });
+  }, 68);
   void lifetime.catch(rejectReady);
   const prisma = await ready;
   try {

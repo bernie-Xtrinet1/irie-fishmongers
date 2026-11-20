@@ -4,6 +4,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 
+import { isActiveAdminUser, type RefreshedSessionUser } from '@/lib/auth/admin-access';
 import { apiPost, configureApiClient } from '@/lib/api-client';
 
 export type UserRole = 'CUSTOMER' | 'VENDOR' | 'DRIVER' | 'ADMINISTRATOR';
@@ -13,6 +14,7 @@ export interface AuthUser {
   email: string;
   firstName: string;
   lastName: string;
+  status?: 'PENDING_VERIFICATION' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
   roles: UserRole[];
 }
 
@@ -34,10 +36,8 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 // Revokes a just-issued refresh token when the signed-in account turns out
-// not to be an administrator, so this dashboard never leaves a live session
-// behind for an account it refuses to admit. Also clears the query cache -
-// belt-and-suspenders, since no protected query should have fired yet on
-// this path, but a non-admin session must never leave anything behind.
+// not to be an active administrator, and clears cached queries so no session
+// data survives for an account the dashboard refuses to admit.
 async function revokeCurrentSession(queryClient: QueryClient): Promise<void> {
   await apiPost('/auth/logout', {}).catch(() => undefined);
   queryClient.clear();
@@ -64,18 +64,39 @@ export function AuthProvider({
     setStatus('unauthenticated');
   }, []);
 
+  const clearSessionAndCache = useCallback(() => {
+    queryClient.clear();
+    clearSession();
+  }, [queryClient, clearSession]);
+
   useEffect(() => {
     configureApiClient({
       getAccessToken: () => accessTokenRef.current,
-      onTokenRefreshed: (accessToken) => {
+      onTokenRefreshed: (accessToken: string, refreshedUser?: RefreshedSessionUser) => {
+        if (!isActiveAdminUser(refreshedUser)) {
+          clearSessionAndCache();
+          router.replace('/login');
+          return;
+        }
         accessTokenRef.current = accessToken;
+        if (refreshedUser?.id) {
+          setUser((prev) => ({
+            ...(prev ?? {}),
+            id: refreshedUser.id,
+            email: refreshedUser.email ?? prev?.email ?? '',
+            firstName: refreshedUser.firstName ?? prev?.firstName ?? '',
+            lastName: refreshedUser.lastName ?? prev?.lastName ?? '',
+            status: refreshedUser.status ?? prev?.status,
+            roles: refreshedUser.roles as UserRole[],
+          }));
+        }
       },
       onUnauthorized: () => {
-        clearSession();
+        clearSessionAndCache();
         router.replace('/login');
       },
     });
-  }, [clearSession, router]);
+  }, [clearSessionAndCache, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +109,9 @@ export function AuthProvider({
         const session = await apiPost<AuthTokensResponse>('/auth/refresh', {});
         if (cancelled) return;
 
-        if (!session.user.roles.includes('ADMINISTRATOR')) {
+        if (!isActiveAdminUser(session.user)) {
+          accessTokenRef.current = null;
+          setUser(null);
           await revokeCurrentSession(queryClient);
           if (!cancelled) setStatus('unauthenticated');
           return;
@@ -98,7 +121,9 @@ export function AuthProvider({
         setUser(session.user);
         setStatus('authenticated');
       } catch {
-        if (!cancelled) setStatus('unauthenticated');
+        if (!cancelled) {
+          clearSessionAndCache();
+        }
       }
     }
 
@@ -109,13 +134,14 @@ export function AuthProvider({
     // queryClient is stable for the lifetime of the app, so this still
     // behaves as a mount-time silent-refresh check while declaring the
     // dependency used by the non-admin session cleanup path.
-  }, [queryClient]);
+  }, [clearSessionAndCache, queryClient]);
 
   const login = useCallback(
     async (email: string, password: string): Promise<void> => {
       const session = await apiPost<AuthTokensResponse>('/auth/login', { email, password });
 
-      if (!session.user.roles.includes('ADMINISTRATOR')) {
+      if (!isActiveAdminUser(session.user)) {
+        clearSession();
         await revokeCurrentSession(queryClient);
         throw new Error('This account does not have admin access.');
       }
@@ -124,7 +150,7 @@ export function AuthProvider({
       setUser(session.user);
       setStatus('authenticated');
     },
-    [queryClient],
+    [clearSession, queryClient],
   );
 
   const logout = useCallback(async (): Promise<void> => {
@@ -133,11 +159,10 @@ export function AuthProvider({
     } finally {
       // Cache must be cleared before another user can ever log in on the
       // same browser, so no stale admin data survives a session handoff.
-      queryClient.clear();
-      clearSession();
+      clearSessionAndCache();
       router.replace('/login');
     }
-  }, [queryClient, clearSession, router]);
+  }, [clearSessionAndCache, router]);
 
   return <AuthContext.Provider value={{ status, user, login, logout }}>{children}</AuthContext.Provider>;
 }

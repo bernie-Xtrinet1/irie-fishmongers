@@ -122,11 +122,16 @@ describe('VendorOrdersRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('finds a vendor order by id with items and the parent order', async () => {

@@ -89,24 +89,11 @@ describe('Orders (e2e)', () => {
   });
 
   afterAll(async () => {
-    // Delete customers first: Order.customer cascades away Order/VendorOrder/
-    // OrderItem rows. Only once those are gone is it safe to delete the vendor
-    // users (VendorOrder.vendor is onDelete: Restrict).
+    // Retained orders/payments are protected by ON DELETE RESTRICT and database
+    // immutability triggers (D.4B.4 / Migration #66). Clean only mutable cart
+    // artifacts here and close Nest/Prisma so disposable-DB teardown drops the schema.
     if (customerEmails.length > 0) {
       await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      // InventoryEvent.product is onDelete: Restrict, so the checkout/
-      // cancellation/rejection events these tests create must be cleared
-      // before the vendors' products can cascade-delete with the users.
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
     if (app) {
       await app.close();

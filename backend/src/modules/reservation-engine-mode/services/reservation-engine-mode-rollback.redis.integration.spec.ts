@@ -7,7 +7,11 @@ import {
   reservationKey,
 } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
-import { connectRealRedis, ids } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import {
+  connectRealRedis,
+  ids,
+  seedHistoricalActiveReservation,
+} from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { RedisService } from '../../../common/redis/redis.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { ReservationEngineModeConfigRepository } from '../repositories/reservation-engine-mode-config.repository';
@@ -129,8 +133,7 @@ describe('ReservationEngineModeService (real Redis integration - rollback gate)'
     const { cartId, productId, customerId } = ids();
     draining();
 
-    const reserveOutcome = await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 2);
-    expect(reserveOutcome.ok).toBe(true);
+    await seedHistoricalActiveReservation(client, cartId, productId, customerId, 2);
 
     const verification = await service.verifyRollbackSafe();
     expect(verification).toEqual({

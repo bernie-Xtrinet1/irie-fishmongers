@@ -19,6 +19,8 @@ import { OrdinaryRecoveryRegistryService } from './services/ordinary-recovery-re
 import { OrdinaryMarkerBootstrapService } from './services/ordinary-marker-bootstrap.service';
 import { OrdinaryInvalidationRecoveryService } from './services/ordinary-invalidation-recovery.service';
 import { OrdinaryRecoverySweepWorker } from './workers/ordinary-recovery-sweep.worker';
+import { ProductSuspectCrashEvidenceService } from './services/product-suspect-crash-evidence.service';
+import { ProductSuspectClearanceService } from './services/product-suspect-clearance.service';
 
 // Inactive dispatcher infrastructure; not imported by production AppModule.
 @Module({
@@ -54,6 +56,8 @@ import { OrdinaryRecoverySweepWorker } from './workers/ordinary-recovery-sweep.w
     OrdinaryMarkerBootstrapService,
     OrdinaryInvalidationRecoveryService,
     OrdinaryRecoverySweepWorker,
+    ProductSuspectCrashEvidenceService,
+    ProductSuspectClearanceService,
   ],
   exports: [
     ReservationFenceService,
@@ -70,6 +74,8 @@ import { OrdinaryRecoverySweepWorker } from './workers/ordinary-recovery-sweep.w
     OrdinaryMarkerBootstrapService,
     OrdinaryInvalidationRecoveryService,
     OrdinaryRecoverySweepWorker,
+    ProductSuspectCrashEvidenceService,
+    ProductSuspectClearanceService,
   ],
 })
 export class ReservationFenceModule {}

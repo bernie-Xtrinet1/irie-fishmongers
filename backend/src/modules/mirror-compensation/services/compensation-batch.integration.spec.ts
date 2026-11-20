@@ -1,3 +1,5 @@
+import { ensureOpenReservationFence } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
 import { cartIndexKey, productIndexKey, productSuspectKey, reservationKey } from '../../inventory/constants/inventory.constants';
 import { Redis } from 'ioredis';
 
@@ -73,18 +75,32 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
   });
 
   afterAll(async () => {
-    await tearDownCompensationFixture(fixture);
-    await prisma.onModuleDestroy();
-    await redisClient.flushdb();
-    await redisClient.quit();
+    try {
+      await tearDownCompensationFixture(fixture);
+    } finally {
+      await prisma.onModuleDestroy();
+      await redisClient.flushdb();
+      await redisClient.quit();
+    }
   });
+
+  async function seedCartItemWithSync(cartId: string, productId: string, qty: number): Promise<void> {
+    await cartRepository.addOrIncrementItem(cartId, productId, qty);
+    await prisma.cartReservationSyncState.upsert({
+      where: { cartId_productId: { cartId, productId } },
+      create: { cartId, productId, expectedQuantity: qty, expectedMutationVersion: 1, generation: 1 },
+      update: { expectedQuantity: qty, expectedMutationVersion: 1, generation: 1 },
+    });
+  }
 
   beforeEach(async () => {
     await redisClient.flushdb();
+    await ensureOpenReservationFence(prisma, redisClient, 'MIRROR', fixture.userIds[0]!);
     compensationRepository = new CompensationRepository(prisma);
     cartRepository = new CartRepository(prisma);
     const redisService = new RedisService(redisClient);
     inventoryReservations = new InventoryReservationsService(redisService);
+    Object.assign(inventoryReservations, { ordinary: new OrdinaryReservationService(prisma, redisService) });
     modeService = { getCurrentMode: jest.fn().mockResolvedValue('MIRROR') };
     reconciliationService = new CompensationReconciliationService(
       compensationRepository,
@@ -103,13 +119,13 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
 
   it('1. end-to-end: converges PENDING, reclaims stale PROCESSING, and preserves PRODUCT_SUSPECT blocking', async () => {
     const pending = await seedCartAndProduct(fixture);
-    await cartRepository.addOrIncrementItem(pending.cartId, pending.productId, 4);
+    await seedCartItemWithSync(pending.cartId, pending.productId, 4);
     const pendingRow = await compensationRepository.create(
       baseCreateInput({ ...pending, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
 
     const stale = await seedCartAndProduct(fixture);
-    await cartRepository.addOrIncrementItem(stale.cartId, stale.productId, 2);
+    await seedCartItemWithSync(stale.cartId, stale.productId, 2);
     const staleRow = await compensationRepository.create(
       baseCreateInput({ ...stale, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -119,7 +135,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
     });
 
     const blocked = await seedCartAndProduct(fixture);
-    await cartRepository.addOrIncrementItem(blocked.cartId, blocked.productId, 3);
+    await seedCartItemWithSync(blocked.cartId, blocked.productId, 3);
     const blockedRow = await compensationRepository.create(
       baseCreateInput({ ...blocked, reasonCode: 'PRODUCT_SUSPENDED' }),
     );
@@ -177,7 +193,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
   describe('PENDING atomic-claim exclusion under concurrent workers', () => {
     it('2. two concurrent batch runs selecting the same due PENDING row: exactly one converges it, the other finds nothing left to do', async () => {
       const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
-      await cartRepository.addOrIncrementItem(cartId, productId, 6);
+      await seedCartItemWithSync(cartId, productId, 6);
       const row = await compensationRepository.create(
         baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
       );
@@ -209,7 +225,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
   describe('stale PROCESSING atomic-claim exclusion under concurrent workers', () => {
     it('3. two concurrent batch runs selecting the same stale PROCESSING row: exactly one reclaims and converges it', async () => {
       const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
-      await cartRepository.addOrIncrementItem(cartId, productId, 5);
+      await seedCartItemWithSync(cartId, productId, 5);
       const row = await compensationRepository.create(
         baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
       );
@@ -282,7 +298,7 @@ describe('CompensationBatchService.runBatch (real Postgres + Redis)', () => {
     const rows = [];
     for (let i = 0; i < 3; i += 1) {
       const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
-      await cartRepository.addOrIncrementItem(cartId, productId, 1);
+      await seedCartItemWithSync(cartId, productId, 1);
       const row = await compensationRepository.create(
         baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
       );

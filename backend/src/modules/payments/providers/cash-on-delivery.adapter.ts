@@ -7,6 +7,7 @@ import {
   PaymentCreateInput,
   PaymentCreateResult,
   PaymentProviderAdapter,
+  PaymentRefundDispatchContext,
   PaymentRefundResult,
   PaymentVerifyResult,
 } from '../interfaces/payment-provider.interface';
@@ -32,9 +33,15 @@ export class CashOnDeliveryAdapter implements PaymentProviderAdapter {
     return Promise.resolve({ providerReference, status: 'PENDING' });
   }
 
-  refundPayment(_providerReference: string, _amount: number): Promise<PaymentRefundResult> {
+  refundPayment(
+    _providerReference: string,
+    _amount: number,
+    _reason?: string,
+    context?: PaymentRefundDispatchContext,
+  ): Promise<PaymentRefundResult> {
+    const suffix = context?.attemptId ?? randomUUID();
     return Promise.resolve({
-      providerReference: `cod-refund-${randomUUID()}`,
+      providerReference: `cod-refund-${suffix}`,
       status: 'COMPLETED',
     });
   }

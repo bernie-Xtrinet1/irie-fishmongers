@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { randomUUID } from 'crypto';
 
 import { PrismaService } from '../database/prisma.service';
 import { CartMutationBarrierService } from '../modules/cart-mutation-barrier/services/cart-mutation-barrier.service';
@@ -114,7 +115,13 @@ async function bootstrap(): Promise<void> {
     logger.log(`${orphans.length} orphan reservation(s) released`);
 
     logger.log('Step 6/7: running freshness sweep and building attestation');
-    const freshnessOutcomes = await backfill.freshnessSweep(targets);
+    const cutoverRunId = randomUUID();
+    const freshnessOutcomes = await backfill.freshnessSweep(targets, {
+      cutoverRunId,
+      operatorId: operatorUserId,
+      barrierRevision: barrierSnapshot.revision,
+      reason: 'CUTOVER_FRESHNESS_SWEEP',
+    });
     const freshnessFailures = freshnessOutcomes.filter((outcome) => outcome.outcome !== 'CONVERGED');
     if (freshnessFailures.length > 0) {
       throw new Error(`Freshness sweep did not fully converge: ${JSON.stringify(freshnessFailures)}`);

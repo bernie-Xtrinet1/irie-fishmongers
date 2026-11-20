@@ -1,3 +1,5 @@
+import { ensureOpenReservationFence } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
 import { randomUUID } from 'crypto';
 
 import { Category, Product, Role, RoleName, Vendor } from '@prisma/client';
@@ -70,6 +72,7 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
   const syncStateRepository = new CartReservationSyncStateRepository(prisma);
   const redisService = new RedisService(redisClient);
   const inventoryReservations = new InventoryReservationsService(redisService);
+  Object.assign(inventoryReservations, { ordinary: new OrdinaryReservationService(prisma, redisService) });
 
   const usersRepository = new UsersRepository(prisma);
   const vendorsRepository = new VendorsRepository(prisma);
@@ -194,26 +197,28 @@ export async function setUpRecoveryFixture(namePrefix: string): Promise<Recovery
 }
 
 export async function tearDownRecoveryFixture(fixture: RecoveryFixture): Promise<void> {
-  const cart = await fixture.cartRepository.findOrCreateByCustomerId(fixture.customerId);
-  await fixture.prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
-  await fixture.prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
-  // Phase 16A.0-DA, Unit DA.4B: any ReservationEngineModeConfig rows this
-  // fixture's own tests created via setMode() must be cleared before the
-  // admin user (their updatedById FK target) can be deleted - this table's
-  // append-only rows are never touched by any other fixture in this file,
-  // so a wholesale delete scoped to this fixture's own admin is safe.
-  await fixture.prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: fixture.adminUserId } });
-  // CART_SCOPED activation-boundary gate: transitionToCartScoped's own
-  // barrier activate/deactivate cycle leaves rows referencing this
-  // fixture's admin - same FK-before-user-delete precedent as above.
-  await fixture.prisma.cartMutationBarrierConfig.deleteMany({ where: { activatedById: fixture.adminUserId } });
-  await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
-  await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });
-  await fixture.prisma.user.delete({ where: { id: fixture.adminUserId } });
-  await fixture.prisma.category.delete({ where: { id: fixture.category.id } });
-  await fixture.prisma.onModuleDestroy();
-  await fixture.redisClient.flushdb();
-  await fixture.redisClient.quit();
+  try {
+    const cart = await fixture.cartRepository.findOrCreateByCustomerId(fixture.customerId);
+    await fixture.prisma.cartItemAddAttempt.deleteMany({ where: { cartId: cart.id } });
+    const [retainedCustomerOrders, retainedOwners] = await Promise.all([
+      fixture.prisma.order.count({ where: { customerId: fixture.customerId } }),
+      fixture.prisma.ordinaryReservationOwner.count({ where: { cartId: cart.id } }),
+    ]);
+    await fixture.prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: fixture.adminUserId } });
+    await fixture.prisma.reservationFenceTransition.deleteMany({ where: { actorId: fixture.adminUserId } });
+    await fixture.prisma.cartMutationBarrierConfig.deleteMany({ where: { activatedById: fixture.adminUserId } });
+    if (retainedCustomerOrders === 0 && retainedOwners === 0) {
+      await fixture.prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
+      await fixture.prisma.user.delete({ where: { id: fixture.customerId } });
+      await fixture.prisma.user.delete({ where: { id: fixture.vendorUserId } });
+      await fixture.prisma.category.delete({ where: { id: fixture.category.id } });
+    }
+    await fixture.prisma.user.delete({ where: { id: fixture.adminUserId } });
+  } finally {
+    await fixture.prisma.onModuleDestroy();
+    await fixture.redisClient.flushdb();
+    await fixture.redisClient.quit();
+  }
 }
 
 // Phase 16A.0-DA, Unit DA.4B. fixture.cartService is deliberately wired to
@@ -275,6 +280,13 @@ export function createProduct(fixture: RecoveryFixture, name: string): Promise<P
 // ACTUALLY current (never assumed), so DA.4B's mode-touching integration
 // specs can never leak a non-LEGACY mode into any other test file sharing
 // the same --runInBand process, regardless of execution order.
+async function clearReservationHoldKeys(fixture: RecoveryFixture): Promise<void> {
+  const keys = await fixture.redisClient.keys('inv:reserved:*');
+  if (keys.length > 0) {
+    await fixture.redisClient.del(...keys);
+  }
+}
+
 export async function forceLegacyMode(fixture: RecoveryFixture): Promise<void> {
   const current = await fixture.modeService.getCurrentMode();
   if (current === 'LEGACY') {
@@ -287,13 +299,15 @@ export async function forceLegacyMode(fixture: RecoveryFixture): Promise<void> {
   if (current === 'CART_SCOPED') {
     await fixture.modeService.setMode({ targetMode: 'DRAINING', updatedById: fixture.adminUserId });
   }
-  // Dedicated, exclusive Redis DB index for this fixture - safe to flush
-  // wholesale to guarantee verifyRollbackSafe's gate passes.
-  await fixture.redisClient.flushdb();
+  // Delete only reservation hold/index/total keys before DRAINING -> LEGACY so
+  // verifyRollbackSafe passes while keeping the active fence control intact until
+  // coordinated retirement finishes; flush the dedicated fixture DB afterwards.
+  await clearReservationHoldKeys(fixture);
   const rollback = await fixture.modeService.setMode({ targetMode: 'LEGACY', updatedById: fixture.adminUserId });
   if (!rollback.ok) {
     throw new Error(`Failed to force LEGACY mode in test setup/teardown: ${JSON.stringify(rollback)}`);
   }
+  await fixture.redisClient.flushdb();
 }
 
 // CART_SCOPED activation-boundary gate (see the gate design review's final,
@@ -342,10 +356,12 @@ export async function ensureMode(
   }
   await fixture.modeService.setMode({ targetMode: 'MIRROR', updatedById: fixture.adminUserId });
   if (target === 'MIRROR') {
+    await ensureOpenReservationFence(fixture.prisma, fixture.redisClient, 'MIRROR', fixture.adminUserId);
     return;
   }
   await transitionToCartScoped(fixture);
   if (target === 'CART_SCOPED') {
+    await ensureOpenReservationFence(fixture.prisma, fixture.redisClient, 'CART_SCOPED', fixture.adminUserId);
     return;
   }
   await fixture.modeService.setMode({ targetMode: 'DRAINING', updatedById: fixture.adminUserId });

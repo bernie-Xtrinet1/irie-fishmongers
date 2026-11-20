@@ -50,14 +50,16 @@ describe('Sandbox Payment Gateway Simulator & Failure Injection (real Postgres +
   });
 
   afterAll(async () => {
-    try {
+    const retainedItems = await prisma.orderItem.count({
+      where: { product: { vendorId: fixture.vendor.id } },
+    });
+    if (retainedItems === 0) {
       await prisma.vendorDailyListing.deleteMany({ where: { vendorId: fixture.vendor.id } });
-      await prisma.orderItem.deleteMany({ where: { product: { vendorId: fixture.vendor.id } } });
       await prisma.inventoryEvent.deleteMany({ where: { product: { vendorId: fixture.vendor.id } } });
       await prisma.product.deleteMany({ where: { vendorId: fixture.vendor.id } });
       await prisma.seafoodCatalogueItem.deleteMany();
       await prisma.seafoodLot.deleteMany({ where: { vendorId: fixture.vendor.id } });
-    } catch {}
+    }
     await tearDownCheckoutIntegrationFixture(fixture);
     await prisma.onModuleDestroy();
     await redisClient.flushdb();
@@ -360,14 +362,16 @@ describe('Sandbox Payment Gateway Simulator & Failure Injection (real Postgres +
       const scenario = await seedReadyCheckout(fixture, handles);
       simulator.setScenario(SimulatorScenario.GATEWAY_SUCCESS_LOST_RESPONSE);
 
-      const result = await handles.ordersService.checkout(scenario.customerId, checkoutDto);
+      const result = await handles.ordersService.checkout(scenario.customerId, {
+        ...checkoutDto,
+        paymentMethod: 'WIPAY',
+      });
 
       // Backdate updatedAt to simulate a stale crashed worker
       const staleTime = new Date(Date.now() - 10 * 60 * 1000);
       await prisma.payment.update({
         where: { orderId: result.id },
         data: {
-          provider: 'WIPAY',
           initiationStatus: 'INITIATING',
           updatedAt: staleTime,
         },

@@ -109,6 +109,11 @@ export class AuthService {
       throw new UnauthorizedException('Account no longer exists');
     }
 
+    if (user.status === 'SUSPENDED' || user.status === 'DEACTIVATED') {
+      await this.refreshTokensRepository.revokeAllForUser(user.id);
+      throw new ForbiddenException('This account is not permitted to sign in');
+    }
+
     const accessToken = this.tokenService.generateAccessToken({
       sub: user.id,
       email: user.email,

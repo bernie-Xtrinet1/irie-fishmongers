@@ -19,9 +19,45 @@ export interface PaymentVerifyResult {
   providerReference: string;
 }
 
+export interface PaymentRefundDispatchContext {
+  attemptId: string;
+  obligationId: string;
+  refundId: string;
+  providerIdempotencyKey: string;
+  attemptSequence: number;
+}
+
 export interface PaymentRefundResult {
   providerReference: string;
   status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  httpStatusCode?: number;
+  rawPayload?: unknown;
+}
+
+export interface RefundStatusLookupQuery {
+  attemptId: string;
+  providerIdempotencyKey: string;
+  providerRefundReference?: string | null;
+  parentPaymentReference?: string | null;
+  amount: number;
+  currency: string;
+  merchantAccountId?: string;
+}
+
+export interface PaymentRefundStatusResult {
+  outcome: 'PENDING' | 'COMPLETED' | 'FAILED';
+  attemptId?: string;
+  providerIdempotencyKey?: string;
+  providerRefundReference?: string | null;
+  parentPaymentReference?: string | null;
+  amount?: number | string;
+  currency?: string;
+  merchantAccountId?: string;
+  providerEventId?: string;
+  occurredAt?: Date;
+  verificationToken?: string;
+  httpStatusCode?: number;
+  rawPayload?: unknown;
 }
 
 /**
@@ -33,11 +69,14 @@ export interface PaymentRefundResult {
  */
 export interface PaymentProviderAdapter {
   readonly name: PaymentProviderName;
+  readonly supportsRefundStatusLookup?: boolean;
   createPayment(input: PaymentCreateInput): Promise<PaymentCreateResult>;
   verifyPayment(providerReference: string): Promise<PaymentVerifyResult>;
   refundPayment(
     providerReference: string,
     amount: number,
     reason: string,
+    context?: PaymentRefundDispatchContext,
   ): Promise<PaymentRefundResult>;
+  verifyRefundStatus?(query: RefundStatusLookupQuery): Promise<PaymentRefundStatusResult>;
 }

@@ -235,6 +235,24 @@ describe('AuthService', () => {
     });
   });
 
+  describe('refresh active-status enforcement', () => {
+    it.each([UserStatus.SUSPENDED, UserStatus.DEACTIVATED])(
+      'revokes all refresh tokens and throws ForbiddenException when user is %s',
+      async (status) => {
+        tokenService.rotateRefreshToken.mockResolvedValue({
+          raw: 'new-raw',
+          record: { id: 'rt-1', userId: 'user-1' } as never,
+        });
+        usersRepository.findById.mockResolvedValue(buildUser({ status }));
+
+        await expect(service.refresh('old-refresh-token')).rejects.toBeInstanceOf(
+          ForbiddenException,
+        );
+        expect(refreshTokensRepository.revokeAllForUser).toHaveBeenCalledWith('user-1');
+      },
+    );
+  });
+
   describe('forgotPassword', () => {
     it('sets a reset token when the user exists', async () => {
       usersRepository.findByEmail.mockResolvedValue(buildUser());

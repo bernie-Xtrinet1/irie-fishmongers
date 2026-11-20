@@ -48,7 +48,7 @@ export type ReservationRecoveryConvergenceResult =
     }
   | {
       outcome: 'RETRY';
-      reasonCode: 'CHECKOUT_IN_PROGRESS' | 'UNKNOWN_INFRA_FAILURE';
+      reasonCode: 'CHECKOUT_IN_PROGRESS' | 'FENCE_REJECTED' | 'UNKNOWN_INFRA_FAILURE';
       lastError: string | null;
       observedMode: ReservationEngineModeSnapshot;
     };

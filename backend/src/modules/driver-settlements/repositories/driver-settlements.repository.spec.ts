@@ -160,13 +160,18 @@ describe('DriverSettlementsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.driverSettlement.deleteMany({ where: { driverId } });
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.user.delete({ where: { id: driverUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.driverSettlement.deleteMany({ where: { driverId } });
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.user.delete({ where: { id: driverUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('finds delivered vendor orders in the period that have no settlement yet', async () => {

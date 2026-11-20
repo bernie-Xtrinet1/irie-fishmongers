@@ -123,6 +123,10 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   EMAIL_ENABLED?: string;
 
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  REFUND_RECONCILIATION_API_ENABLED?: string;
+
   // Required whenever email is not explicitly disabled (the production
   // default), so a real deployment can never silently run without a provider
   // key. Validation is skipped ONLY when EMAIL_ENABLED === 'false'.

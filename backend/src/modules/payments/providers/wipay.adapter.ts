@@ -14,7 +14,10 @@ import {
   PaymentCreateInput,
   PaymentCreateResult,
   PaymentProviderAdapter,
+  PaymentRefundDispatchContext,
   PaymentRefundResult,
+  PaymentRefundStatusResult,
+  RefundStatusLookupQuery,
   PaymentVerifyResult,
 } from '../interfaces/payment-provider.interface';
 
@@ -44,6 +47,7 @@ export function isWiPayCheckoutUrl(url: string, apiUrl: string): boolean {
 @Injectable()
 export class WiPayAdapter implements PaymentProviderAdapter {
   readonly name = PaymentProviderName.WIPAY;
+  readonly supportsRefundStatusLookup = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -128,9 +132,16 @@ export class WiPayAdapter implements PaymentProviderAdapter {
     _providerReference: string,
     _amount: number,
     _reason: string,
+    _context?: PaymentRefundDispatchContext,
   ): Promise<PaymentRefundResult> {
     return Promise.reject(
       new NotImplementedException('WiPay Payments API refunds are unsupported'),
+    );
+  }
+
+  verifyRefundStatus(_query: RefundStatusLookupQuery): Promise<PaymentRefundStatusResult> {
+    return Promise.reject(
+      new NotImplementedException('WiPay Payments API refund status lookup is unsupported'),
     );
   }
 

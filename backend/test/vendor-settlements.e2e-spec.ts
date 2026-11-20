@@ -92,26 +92,11 @@ describe('Vendor Settlements (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (vendorUserEmails.length > 0) {
-      await prisma.vendorSettlement.deleteMany({
-        where: { vendor: { user: { email: { in: vendorUserEmails } } } },
-      });
-    }
+    // VendorSettlement, Order, Payment, and related users are protected by
+    // financial immutability and ON DELETE RESTRICT (D.4B.4 / Migration #66).
+    // Clean only mutable cart artifacts and rely on disposable-DB disposal after app.close().
     if (customerEmails.length > 0) {
       await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (driverUserEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
     if (app) {
       await app.close();

@@ -147,15 +147,17 @@ describe('DeliveriesRepository', () => {
   });
 
   afterAll(async () => {
-    // Customer first: cascades Order -> VendorOrder -> OrderItem -> Delivery,
-    // freeing the Restrict constraint on Delivery.driverId before the driver's
-    // user row is deleted.
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.user.delete({ where: { id: driverUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.user.delete({ where: { id: driverUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('finds the vendor order awaiting pickup by id', async () => {

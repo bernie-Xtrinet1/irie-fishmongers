@@ -36,44 +36,43 @@ describe('VendorSettlementAdjustmentsRepository', () => {
     const paymentsRepository = new PaymentsRepository(prisma);
     const vendorSettlementsRepository = new VendorSettlementsRepository(prisma);
 
-    const customerRole: Role = await prisma.role.findUniqueOrThrow({
-      where: { name: RoleName.CUSTOMER },
-    });
-    const vendorRole: Role = await prisma.role.findUniqueOrThrow({
-      where: { name: RoleName.VENDOR },
-    });
+    const [customerRole, vendorRole] = await Promise.all([
+      prisma.role.findUniqueOrThrow({ where: { name: RoleName.CUSTOMER } }),
+      prisma.role.findUniqueOrThrow({ where: { name: RoleName.VENDOR } }),
+    ]);
 
-    const customer = await usersRepository.create({
-      email: `adjustment-repo-customer-${randomUUID()}@example.com`,
-      passwordHash: 'hashed',
-      firstName: 'Cara',
-      lastName: 'Customer',
-      roleId: customerRole.id,
-      emailVerificationTokenHash: 'token-hash',
-      emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
-    });
+    const [customer, vendorUser, createdCategory] = await Promise.all([
+      usersRepository.create({
+        email: `adjustment-repo-customer-${randomUUID()}@example.com`,
+        passwordHash: 'hashed',
+        firstName: 'Cara',
+        lastName: 'Customer',
+        roleId: customerRole.id,
+        emailVerificationTokenHash: 'token-hash',
+        emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+      }),
+      usersRepository.create({
+        email: `adjustment-repo-vendor-${randomUUID()}@example.com`,
+        passwordHash: 'hashed',
+        firstName: 'Vera',
+        lastName: 'Vendor',
+        roleId: vendorRole.id,
+        emailVerificationTokenHash: 'token-hash',
+        emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+      }),
+      categoriesRepository.create({
+        name: `Adjustment Repo Category ${randomUUID()}`,
+        slug: `adjustment-repo-category-${randomUUID()}`,
+      }),
+    ]);
     customerId = customer.id;
-
-    const vendorUser = await usersRepository.create({
-      email: `adjustment-repo-vendor-${randomUUID()}@example.com`,
-      passwordHash: 'hashed',
-      firstName: 'Vera',
-      lastName: 'Vendor',
-      roleId: vendorRole.id,
-      emailVerificationTokenHash: 'token-hash',
-      emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
-    });
     vendorUserId = vendorUser.id;
+    category = createdCategory;
     vendor = await vendorsRepository.create({
       userId: vendorUserId,
       businessName: "Vera's Catch",
       parish: 'KINGSTON',
       termsAcceptedAt: new Date(),
-    });
-
-    category = await categoriesRepository.create({
-      name: `Adjustment Repo Category ${randomUUID()}`,
-      slug: `adjustment-repo-category-${randomUUID()}`,
     });
 
     const product = await productsRepository.create({
@@ -131,12 +130,17 @@ describe('VendorSettlementAdjustmentsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.vendorSettlement.deleteMany({ where: { vendorId: vendor.id } });
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      await prisma.vendorSettlement.deleteMany({ where: { vendorId: vendor.id } });
+      await prisma.order.deleteMany({ where: { customerId } });
+      await prisma.user.delete({ where: { id: customerId } });
+      await prisma.user.delete({ where: { id: vendorUserId } });
+      await prisma.category.delete({ where: { id: category.id } });
+    } catch {
+      // Ignored on disposable test databases protected by financial immutability triggers
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('returns 0 when a settlement has no adjustments yet', async () => {

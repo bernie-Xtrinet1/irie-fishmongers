@@ -1,15 +1,25 @@
-import { Injectable } from '@nestjs/common';
-import { Prisma, VendorOrder, VendorSettlement, VendorSettlementStatus } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Prisma,
+  VendorOrder,
+  VendorReceivableRecoveryType,
+  VendorSettlement,
+  VendorSettlementDisbursementStatus,
+  VendorSettlementStatus,
+} from '@prisma/client';
 
 import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
+import { validateCommissionRate } from './commission-rate-configs.repository';
 
 export interface CreateSettlementInput {
   vendorId: string;
   vendorOrderId: string;
-  grossAmount: number;
-  platformFee: number;
-  netAmount: number;
+  grossAmount: Prisma.Decimal | number | string;
+  platformFee: Prisma.Decimal | number | string;
+  netAmount: Prisma.Decimal | number | string;
+  commissionConfigId?: string | null;
+  commissionRateSnapshot?: Prisma.Decimal | number | string | null;
 }
 
 export interface Page {
@@ -22,12 +32,34 @@ export interface SettlementFilters {
   status?: VendorSettlementStatus;
 }
 
+function toPrismaDecimal(value: Prisma.Decimal | number | string, fieldName: string): Prisma.Decimal {
+  if (value === null || value === undefined) {
+    throw new BadRequestException(`${fieldName} is required`);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Number.isNaN(value)) {
+      throw new BadRequestException(`${fieldName} must be a valid finite number`);
+    }
+    return new Prisma.Decimal(value).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  }
+  try {
+    const d = new Prisma.Decimal(value);
+    if (!d.isFinite()) {
+      throw new BadRequestException(`${fieldName} must be a valid finite decimal`);
+    }
+    return d.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  } catch {
+    throw new BadRequestException(`${fieldName} must be a valid decimal representation`);
+  }
+}
+
 @Injectable()
 export class VendorSettlementsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  findEligibleVendorOrders(): Promise<VendorOrder[]> {
-    return this.prisma.vendorOrder.findMany({
+  findEligibleVendorOrders(tx?: Prisma.TransactionClient): Promise<VendorOrder[]> {
+    const client = tx ?? this.prisma;
+    return client.vendorOrder.findMany({
       where: {
         status: 'DELIVERED',
         settlement: null,
@@ -37,20 +69,116 @@ export class VendorSettlementsRepository {
     });
   }
 
-  create(input: CreateSettlementInput): Promise<VendorSettlement> {
-    return this.prisma.vendorSettlement.create({ data: input });
+  async create(input: CreateSettlementInput, tx?: Prisma.TransactionClient): Promise<VendorSettlement> {
+    const client = tx ?? this.prisma;
+    const grossAmount = toPrismaDecimal(input.grossAmount, 'grossAmount');
+    const platformFee = toPrismaDecimal(input.platformFee, 'platformFee');
+    const netAmount = toPrismaDecimal(input.netAmount, 'netAmount');
+
+    if (grossAmount.lt(0) || platformFee.lt(0) || netAmount.lt(0)) {
+      throw new BadRequestException('Settlement monetary amounts cannot be negative');
+    }
+    if (!grossAmount.minus(platformFee).equals(netAmount)) {
+      throw new BadRequestException(
+        `Settlement netAmount (${netAmount}) must equal grossAmount (${grossAmount}) - platformFee (${platformFee})`,
+      );
+    }
+
+    const commissionRateSnapshot =
+      input.commissionRateSnapshot !== undefined && input.commissionRateSnapshot !== null
+        ? validateCommissionRate(input.commissionRateSnapshot, 'commissionRateSnapshot')
+        : null;
+
+    if (input.commissionConfigId && !commissionRateSnapshot) {
+      throw new BadRequestException(
+        'commissionRateSnapshot is required when commissionConfigId is supplied',
+      );
+    }
+
+    return client.vendorSettlement.create({
+      data: {
+        vendorId: input.vendorId,
+        vendorOrderId: input.vendorOrderId,
+        grossAmount,
+        platformFee,
+        netAmount,
+        commissionConfigId: input.commissionConfigId ?? null,
+        commissionRateSnapshot,
+      },
+    });
   }
 
   findById(id: string): Promise<VendorSettlement | null> {
     return this.prisma.vendorSettlement.findUnique({ where: { id } });
   }
 
-  updateStatus(
+  async updateStatus(
     id: string,
     status: VendorSettlementStatus,
     data: { paymentDate?: Date; notes?: string } = {},
   ): Promise<VendorSettlement> {
-    return this.prisma.vendorSettlement.update({ where: { id }, data: { status, ...data } });
+    const executeUpdate = async (client: Prisma.TransactionClient): Promise<VendorSettlement> => {
+      await client.$queryRaw`SELECT "id" FROM "vendor_settlements" WHERE "id" = ${id} FOR UPDATE`;
+      const existing = await client.vendorSettlement.findUnique({ where: { id } });
+      if (!existing) {
+        throw new NotFoundException(`VendorSettlement ${id} not found`);
+      }
+
+      if (status === VendorSettlementStatus.FAILED) {
+        const committedOffset = await client.vendorReceivableRecovery.findFirst({
+          where: {
+            recoveryType: VendorReceivableRecoveryType.SETTLEMENT_OFFSET,
+            targetAdjustment: { settlementId: id },
+          },
+          select: { id: true, receivableId: true },
+        });
+        if (committedOffset) {
+          throw new ConflictException(
+            `Cannot mark settlement ${id} as FAILED because SETTLEMENT_OFFSET recovery ${committedOffset.id} (receivable ${committedOffset.receivableId}) depends on it`,
+          );
+        }
+
+        const activeDisbursement = await client.vendorSettlementDisbursement.findFirst({
+          where: {
+            settlementId: id,
+            status: {
+              in: [
+                VendorSettlementDisbursementStatus.IN_FLIGHT,
+                VendorSettlementDisbursementStatus.CONFIRMED,
+              ],
+            },
+          },
+          select: { id: true, status: true },
+        });
+        if (activeDisbursement) {
+          throw new ConflictException(
+            `Cannot mark settlement ${id} as FAILED while disbursement ${activeDisbursement.id} is ${activeDisbursement.status}`,
+          );
+        }
+      }
+
+      if (status === VendorSettlementStatus.PAID) {
+        const adjSumAgg = await client.vendorSettlementAdjustment.aggregate({
+          where: { settlementId: id },
+          _sum: { amount: true },
+        });
+        const adjustedNet = new Prisma.Decimal(existing.netAmount).plus(
+          new Prisma.Decimal(adjSumAgg._sum.amount ?? 0),
+        );
+        if (adjustedNet.lt(0)) {
+          throw new BadRequestException(
+            `Cannot mark settlement ${id} as PAID with negative adjusted net (${adjustedNet})`,
+          );
+        }
+      }
+
+      return client.vendorSettlement.update({ where: { id }, data: { status, ...data } });
+    };
+
+    if (typeof (this.prisma as any).$transaction === 'function') {
+      return this.prisma.$transaction((tx) => executeUpdate(tx));
+    }
+    return executeUpdate(this.prisma);
   }
 
   async findManyByVendor(

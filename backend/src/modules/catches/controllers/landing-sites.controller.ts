@@ -12,7 +12,7 @@ import { LandingSitesService } from '../services/landing-sites.service';
 
 @ApiTags('landing-sites')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('landing-sites')
 export class LandingSitesController {
   constructor(private readonly landingSitesService: LandingSitesService) {}
@@ -25,7 +25,6 @@ export class LandingSitesController {
   }
 
   @Post()
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Register a landing site (admin only)' })
   @ApiResponseDoc({ status: 201, type: LandingSiteResponseEntity })
@@ -34,7 +33,6 @@ export class LandingSitesController {
   }
 
   @Patch(':id')
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Update a landing site (admin only)' })
   @ApiResponseDoc({ status: 200, type: LandingSiteResponseEntity })

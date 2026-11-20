@@ -92,7 +92,14 @@ describe('PaymentsController', () => {
 
   it('issues a refund', async () => {
     const dto = { amount: 500, reason: 'Admin adjustment' };
-    await expect(controller.refund('payment-1', dto)).resolves.toEqual(refund);
-    expect(paymentsService.refundByPaymentId).toHaveBeenCalledWith('payment-1', 500, 'Admin adjustment');
+    const idempotencyKey = '11111111-1111-4111-8111-111111111111';
+    await expect(controller.refund('payment-1', dto, idempotencyKey)).resolves.toEqual(refund);
+    expect(paymentsService.refundByPaymentId).toHaveBeenCalledWith(
+      'payment-1',
+      500,
+      'Admin adjustment',
+      idempotencyKey,
+    );
+
   });
 });

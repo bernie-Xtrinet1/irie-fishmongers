@@ -38,7 +38,10 @@ describe('G.PR0 durable path and stale fencing (Postgres)', () => {
   afterAll(async () => {
     await prisma.checkoutAttempt.deleteMany({ where: { customerId } });
     await prisma.checkoutRolloutParticipant.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
+    const retainedOrders = await prisma.order.count({ where: { customerId } });
+    if (retainedOrders === 0) {
+      await prisma.user.delete({ where: { id: customerId } });
+    }
     await Promise.all([prisma.$disconnect(), live.$disconnect()]);
   });
   async function create(selectedPath: CheckoutPath = 'CART_SCOPED') {

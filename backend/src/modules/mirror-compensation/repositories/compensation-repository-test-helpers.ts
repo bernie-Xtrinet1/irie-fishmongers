@@ -39,24 +39,26 @@ export async function setUpCompensationFixture(prisma: PrismaService): Promise<C
   const categoriesRepository = new CategoriesRepository(prisma);
 
   const vendorRole = await ensureRole(prisma, RoleName.VENDOR);
-  const vendorUser = await usersRepository.create({
-    email: `compensation-repo-vendor-${randomUUID()}@example.com`,
-    passwordHash: 'hashed',
-    firstName: 'Vera',
-    lastName: 'Vendor',
-    roleId: vendorRole.id,
-    emailVerificationTokenHash: 'token-hash',
-    emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
-  });
+  const [vendorUser, category] = await Promise.all([
+    usersRepository.create({
+      email: `compensation-repo-vendor-${randomUUID()}@example.com`,
+      passwordHash: 'hashed',
+      firstName: 'Vera',
+      lastName: 'Vendor',
+      roleId: vendorRole.id,
+      emailVerificationTokenHash: 'token-hash',
+      emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+    }),
+    categoriesRepository.create({
+      name: `Compensation Repo Category ${randomUUID()}`,
+      slug: `compensation-repo-category-${randomUUID()}`,
+    }),
+  ]);
   const vendor = await vendorsRepository.create({
     userId: vendorUser.id,
     businessName: "Vera's Catch",
     parish: 'KINGSTON',
     termsAcceptedAt: new Date(),
-  });
-  const category = await categoriesRepository.create({
-    name: `Compensation Repo Category ${randomUUID()}`,
-    slug: `compensation-repo-category-${randomUUID()}`,
   });
 
   return { prisma, vendor, category, userIds: [vendorUser.id] };
@@ -65,13 +67,30 @@ export async function setUpCompensationFixture(prisma: PrismaService): Promise<C
 export async function tearDownCompensationFixture(fixture: CompensationTestFixture): Promise<void> {
   const { prisma, vendor, category, userIds } = fixture;
   const products = await prisma.product.findMany({ where: { vendorId: vendor.id }, select: { id: true } });
+  const productIds = products.map((p) => p.id);
   await prisma.cartReservationCompensation.deleteMany({
-    where: { productId: { in: products.map((p) => p.id) } },
+    where: { productId: { in: productIds } },
   });
-  for (const id of userIds) {
-    await prisma.user.delete({ where: { id } });
+  const [retainedOrders, retainedOwners] = await Promise.all([
+    productIds.length > 0 ? prisma.orderItem.count({ where: { productId: { in: productIds } } }) : 0,
+    productIds.length > 0 ? prisma.ordinaryReservationOwner.count({ where: { productId: { in: productIds } } }) : 0,
+  ]);
+  if (retainedOrders === 0 && retainedOwners === 0) {
+    if (productIds.length > 0) {
+      await prisma.cartReservationSyncState.deleteMany({
+        where: { productId: { in: productIds } },
+      });
+    }
+    if (userIds.length > 0) {
+      await prisma.reservationEngineModeConfig.deleteMany({
+        where: { updatedById: { in: userIds } },
+      });
+    }
+    for (const id of userIds) {
+      await prisma.user.delete({ where: { id } });
+    }
+    await prisma.category.delete({ where: { id: category.id } });
   }
-  await prisma.category.delete({ where: { id: category.id } });
 }
 
 export async function seedCartAndProduct(

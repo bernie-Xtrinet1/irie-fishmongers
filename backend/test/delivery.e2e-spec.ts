@@ -12,7 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
-import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
+import { cleanupCustomerCartArtifacts, prepareCatchWeightCheckoutQuote } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
   return (res.body as ApiResponse<T>).data as T;
@@ -121,6 +121,7 @@ describe('Delivery (e2e)', () => {
   const vendorUserEmails: string[] = [];
   const driverUserEmails: string[] = [];
   const adminEmails: string[] = [];
+  const createdCatalogueIds: string[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -139,39 +140,46 @@ describe('Delivery (e2e)', () => {
   });
 
   afterAll(async () => {
-    // Cold-chain rejection tests raise a FoodSafetyIncident with
-    // reportedById = the customer; that FK is Restrict, so it must be
-    // cleared before the customer user rows are deleted.
-    if (customerEmails.length > 0) {
-      await prisma.foodSafetyIncident.deleteMany({
-        where: { reportedBy: { email: { in: customerEmails } } },
-      });
-    }
-    // Customers first: cascades Order -> VendorOrder -> OrderItem -> Delivery,
-    // freeing the Restrict constraint on Delivery.driverId and VendorOrder.vendorId
-    // before the vendor/driver user rows are deleted.
-    if (customerEmails.length > 0) {
-      await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      // Frees Product -> SeafoodLot's Restrict constraint, then SeafoodLot ->
-      // Vendor's, for the cold-chain products created in this file.
-      await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-      await prisma.seafoodLot.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (driverUserEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
-    }
-    if (app) {
-      await app.close();
+    try {
+      if (customerEmails.length > 0) {
+        await cleanupCustomerCartArtifacts(prisma, customerEmails);
+      }
+      const retainedOrders =
+        customerEmails.length > 0
+          ? await prisma.order.count({ where: { customer: { email: { in: customerEmails } } } })
+          : 0;
+      if (retainedOrders === 0) {
+        if (customerEmails.length > 0) {
+          await prisma.foodSafetyIncident.deleteMany({
+            where: { reportedBy: { email: { in: customerEmails } } },
+          });
+          await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
+        }
+        if (vendorUserEmails.length > 0) {
+          await prisma.vendorDailyListing.deleteMany({
+            where: { vendor: { user: { email: { in: vendorUserEmails } } } },
+          });
+          await prisma.inventoryEvent.deleteMany({
+            where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+          });
+          await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+          await prisma.seafoodLot.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+          await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
+        }
+        if (createdCatalogueIds.length > 0) {
+          await prisma.seafoodCatalogueItem.deleteMany({ where: { id: { in: createdCatalogueIds } } });
+        }
+        if (driverUserEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
+        }
+      }
+      if (adminEmails.length > 0) {
+        await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
+      }
+    } finally {
+      if (app) {
+        await app.close();
+      }
     }
   });
 
@@ -340,7 +348,7 @@ describe('Delivery (e2e)', () => {
       .send({
         species: 'Yellowfin Snapper',
         storageType: 'FROZEN',
-        catchDate: '2026-07-01',
+        catchDate: new Date().toISOString().slice(0, 10),
         weight: 20,
         weightUnit: 'POUNDS',
       });
@@ -374,6 +382,8 @@ describe('Delivery (e2e)', () => {
       .send({ productId, quantity: 1 })
       .expect(201);
 
+    const quoteToken = await prepareCatchWeightCheckoutQuote(app, productId, createdCatalogueIds);
+
     const checkoutRes = await request(server())
       .post('/api/v1/orders/checkout')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -382,6 +392,7 @@ describe('Delivery (e2e)', () => {
         deliveryParish: 'KINGSTON',
         deliveryPhone: '+18765551234',
         paymentMethod: 'CASH_ON_DELIVERY',
+        quoteToken,
       });
     const order = data<OrderData>(checkoutRes);
     const vendorOrderId = order.vendorOrders[0]!.id;

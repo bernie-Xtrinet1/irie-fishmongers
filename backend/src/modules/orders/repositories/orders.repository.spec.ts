@@ -114,12 +114,17 @@ describe('OrdersRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorAUserId } });
-    await prisma.user.delete({ where: { id: vendorBUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorAUserId } });
+        await prisma.user.delete({ where: { id: vendorBUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('creates an order with multiple vendor sub-orders and nested items', async () => {

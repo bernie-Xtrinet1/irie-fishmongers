@@ -6,5 +6,8 @@ export class RefundStatusChangedEvent {
     public readonly customerId: string,
     public readonly amount: string,
     public readonly status: string,
+    public readonly orderId?: string,
+    public readonly paymentId?: string,
+    public readonly refundId?: string,
   ) {}
 }

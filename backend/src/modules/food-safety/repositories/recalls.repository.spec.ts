@@ -149,15 +149,20 @@ describe('RecallsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.recall.deleteMany({ where: { createdById: adminUserId } });
-    await prisma.product.deleteMany({ where: { lotId: { in: [lotId, lotIdTwo] } } });
-    await prisma.seafoodLot.deleteMany({ where: { id: { in: [lotId, lotIdTwo] } } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.user.delete({ where: { id: adminUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.recall.deleteMany({ where: { createdById: adminUserId } });
+        await prisma.product.deleteMany({ where: { lotId: { in: [lotId, lotIdTwo] } } });
+        await prisma.seafoodLot.deleteMany({ where: { id: { in: [lotId, lotIdTwo] } } });
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.user.delete({ where: { id: adminUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('creates a recall with linked lots, in DRAFT status', async () => {

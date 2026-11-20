@@ -30,7 +30,7 @@ import { OrdinaryReservationOwnerRepository } from '../repositories/ordinary-res
 import { OrdinaryReservationCommandRepository } from '../repositories/ordinary-reservation-command.repository';
 
 // PostgreSQL only. This fixture never constructs a Redis client.
-export async function openOrdinarySchema(baseline: 45 | 46 | 47 | 48 | 49 = 49) {
+export async function openOrdinarySchema(baseline: 45 | 46 | 47 | 48 | 49 | 66 | 67 | 68 | 69 | 70 = 70) {
   const url = new URL(process.env.DATABASE_URL!);
   if (!['localhost', '127.0.0.1'].includes(url.hostname) || !/^\/g1_isolated_[0-9]+$/.test(url.pathname)
     || process.env.NODE_ENV !== 'test') throw new Error('Disposable local test database required');
@@ -61,21 +61,59 @@ export async function openOrdinarySchema(baseline: 45 | 46 | 47 | 48 | 49 = 49) 
     } catch { throw new Error('Ordinary disposable migration failed (connection details omitted)'); }
   };
   try {
-    if (names.length !== 49 || names[45] !== '20260915000000_ordinary_owner_provenance'
+    if (names.length !== 70 || names[45] !== '20260915000000_ordinary_owner_provenance'
       || names[46] !== '20260919000000_ordinary_invalidation_publication'
       || names[47] !== '20260925000000_publication_scoped_ordinary_release'
-      || names[48] !== '20260928000000_product_reservation_restriction') throw new Error('Expected exact 49-migration lineage');
+      || names[48] !== '20260928000000_product_reservation_restriction'
+      || names[65] !== '20261116000000_parent_mutation_integrity_hardening'
+      || names[66] !== '20261117000000_cutover_freshness_reset_audit'
+      || names[67] !== '20261118000000_product_suspect_recovery_foundation'
+      || names[68] !== '20261119000000_refund_attempt_ledger_foundation'
+      || names[69] !== '20261119120000_dual_control_refund_reconciliation_hardening') throw new Error('Expected exact 70-migration lineage');
     cpSync(join(source, 'schema.prisma'), join(dir, 'schema.prisma'));
     cpSync(join(source, 'migrations/migration_lock.toml'), join(dir, 'migrations/migration_lock.toml'));
     deploy(baseline);
     await db.$connect();
   } catch (error) { await close(); throw error; }
-  return { db, fresh, close, upgrade: () => deploy(baseline === 45 ? 46 : baseline === 46 ? 47 : baseline === 47 ? 48 : 49) };
+  return { db, fresh, close, upgrade: () => deploy(baseline === 45 ? 46 : baseline === 46 ? 47 : baseline === 47 ? 48 : baseline === 48 ? 49 : baseline === 49 ? 66 : baseline === 66 ? 67 : baseline === 67 ? 68 : baseline === 68 ? 69 : 70) };
+}
+
+export async function seedCartAndProductForSchema(
+  fixture: Awaited<ReturnType<typeof setUpCompensationFixture>>,
+): Promise<{ cartId: string; productId: string; customerId: string }> {
+  const { prisma } = fixture;
+  const hasCatalogueCol = await prisma.$queryRaw<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'products' AND column_name = 'catalogueItemId'
+    ) AS exists`;
+  if (hasCatalogueCol[0]?.exists) {
+    return seedCartAndProduct(fixture);
+  }
+  const customerRole = await prisma.role.upsert({ where: { name: 'CUSTOMER' }, update: {}, create: { name: 'CUSTOMER' } });
+  const customer = await prisma.user.create({
+    data: {
+      email: `compensation-repo-customer-${randomUUID()}@example.com`,
+      passwordHash: 'hashed',
+      firstName: 'Cara',
+      lastName: 'Customer',
+      roles: { create: { roleId: customerRole.id } },
+      emailVerificationTokenHash: 'token-hash',
+      emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+    },
+  });
+  fixture.userIds.push(customer.id);
+  const cart = await prisma.cart.create({ data: { customerId: customer.id } });
+  const productId = randomUUID();
+  await prisma.$executeRaw`
+    INSERT INTO products (id, "vendorId", "categoryId", name, description, unit, price, "quantityAvailable", "imageUrl", "updatedAt")
+    VALUES (${productId}, ${fixture.vendor.id}, ${fixture.category.id}, 'Fresh Snapper', 'Caught this morning off the north coast.', 'PER_POUND'::"ProductUnit", 850, 10, 'https://cdn.example.com/snapper.jpg', now())`;
+  return { cartId: cart.id, productId, customerId: customer.id };
 }
 
 export async function ordinaryFixture(db: PrismaService, markerId = randomUUID()) {
   const seed = await setUpCompensationFixture(db);
-  const ids = await seedCartAndProduct(seed);
+  const ids = await seedCartAndProductForSchema(seed);
   const mode = await db.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: ids.customerId } });
   const transition = await db.reservationFenceTransition.create({ data: { incarnation: randomUUID(), epoch: 1,
     revision: mode.revision, phase: 'OPEN', protocol: 1, mode: 'CART_SCOPED', modeRevision: mode.revision,

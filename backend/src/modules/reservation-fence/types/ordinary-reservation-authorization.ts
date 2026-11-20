@@ -10,4 +10,5 @@ export interface OrdinaryReservationAuthorization {
   quantity: number;
   requestId: string;
   expiresAt: number;
+  controlRevision: number;
 }

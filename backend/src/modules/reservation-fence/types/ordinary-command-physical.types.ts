@@ -31,6 +31,7 @@ export interface OrdinaryPhysicalGrant {
   expiresAt: number;
   barrierBinding?: OrdinaryBarrierBinding;
   releasePublication?: { global: string; marker: string; ownershipReceipt: string };
+  controlRevision?: number;
 }
 
 export type OrdinaryPhysicalResult =

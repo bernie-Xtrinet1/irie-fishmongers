@@ -1,4 +1,6 @@
+import { randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
+import { UPSERT_DESIRED_STATE_SQL } from './cart-reservation-sync-state.sql';
 import { CartReservationSyncBlockReason, CartReservationSyncState, CartReservationSyncStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -52,19 +54,16 @@ export class CartReservationSyncStateRepository {
     expectedQuantity: number | null,
     client: PrismaClientOrTx = this.prisma,
   ): Promise<{ generation: number }> {
-    const row = await client.cartReservationSyncState.upsert({
-      where: { cartId_productId: { cartId, productId } },
-      create: { cartId, productId, expectedMutationVersion, expectedQuantity },
-      update: {
-        expectedMutationVersion,
-        expectedQuantity,
-        status: 'PENDING',
-        generation: { increment: 1 },
-        resolvedAt: null,
-        lastError: null,
-      },
-    });
-    return { generation: row.generation };
+    const id = randomUUID();
+    const rows = await client.$queryRawUnsafe<Array<{ generation: number }>>(
+      UPSERT_DESIRED_STATE_SQL,
+      id,
+      cartId,
+      productId,
+      expectedMutationVersion,
+      expectedQuantity,
+    );
+    return { generation: rows[0]!.generation };
   }
 
   // The compensation-path gate (Phase 16A.0-DA, Unit DA.1A - see the DA.1
@@ -326,6 +325,16 @@ export class CartReservationSyncStateRepository {
     return client.cartReservationSyncState.updateMany({
       where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
       data: { status: 'BLOCKED', blockReason, nextAttemptAt, processingStartedAt: null },
+    });
+  }
+
+  escalateBlockedIfCurrent(
+    id: string, claimedGeneration: number, claimedAttemptCount: number,
+    nextAttemptAt: Date, sanitizedLastError: string, client: PrismaClientOrTx = this.prisma,
+  ): Promise<{ count: number }> {
+    return client.cartReservationSyncState.updateMany({
+      where: { id, generation: claimedGeneration, attemptCount: claimedAttemptCount, status: 'PROCESSING' },
+      data: { status: 'BLOCKED', blockReason: 'MODE_NOT_ADMITTING', nextAttemptAt, lastError: sanitizedLastError, processingStartedAt: null },
     });
   }
 

@@ -1,7 +1,19 @@
 import { PrismaService } from '../../../database/prisma.service';
 import { RESERVATION_OBSERVATION_SCRIPT } from '../lua/reservation-observation-lua';
-import { OBSERVATION_LIMIT, ReservationObservation, uncertainObservation, parseRedisObservation } from '../types/reservation-observation.types';
-import { productControlKey, controlBytes, restrictionDigest } from '../../reservation-fence/types/product-reservation-restriction.types';
+import {
+  OBSERVATION_LIMIT,
+  RESTRICTION_STATE_FINDINGS,
+  ReservationObservation,
+  parseObservedControlState,
+  parseRedisObservation,
+  uncertainObservation,
+} from '../types/reservation-observation.types';
+import {
+  BLOCKING_RECOVERY_STATES,
+  controlBytes,
+  productControlKey,
+  restrictionDigest,
+} from '../../reservation-fence/types/product-reservation-restriction.types';
 import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
 import { transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
 import { OrdinaryReservationService } from './ordinary-reservation.service';
@@ -28,6 +40,7 @@ import {
 } from './inventory-reservations-script-helpers';
 import { observeReservation, ReservationReadObservation, ReservedTotalObservation } from './reservation-read-observation';
 import { ReservationUnderflowDetails } from './reservation-accounting.types';
+import { isAvailabilityControlClear } from './inventory-availability-control.helper';
 
 interface ReservationEntry {
   quantity: number;
@@ -65,6 +78,10 @@ export type ReserveOrRenewOutcome =
   | { ok: true; result: ReserveOrRenewSuccess }
   | { ok: false; code: 'RESERVATION_CHECKOUT_IN_PROGRESS' }
   | { ok: false; code: 'RESERVATION_PRODUCT_SUSPENDED' }
+  | { ok: false; code: 'RESERVATION_ACCOUNTING_UNDERFLOW' }
+  | { ok: false; code: 'RESERVATION_ACCOUNTING_CORRUPTION' }
+  | { ok: false; code: 'RESERVATION_RESOURCE_GENERATION_MISMATCH' }
+  | { ok: false; code: 'RESERVATION_MALFORMED_RESOURCE' }
   | { ok: false; code: 'FENCE_REJECTED' | 'UNCERTAIN_INFRASTRUCTURE' };
 
 export interface ReleaseReservationResult {
@@ -168,9 +185,42 @@ export class InventoryReservationsService {
   async reserveOrRenew(cartId: string, productId: string, customerId: string, quantity: number): Promise<ReserveOrRenewOutcome> {
     const outcome = await this.ordinary.reserve(cartId, productId, customerId, quantity);
     if (outcome.code === 'ACCEPTED') return { ok: true, result: { entry: outcome.value, underflow: null } };
-    if (outcome.code === 'DOMAIN_FAILURE' && outcome.reason === 'RESERVATION_PRODUCT_SUSPENDED')
+    if (outcome.code === 'DOMAIN_FAILURE' && outcome.reason === 'RESERVATION_PRODUCT_SUSPENDED') {
       return { ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' };
-    return { ok: false, code: outcome.code === 'INFRASTRUCTURE_FAILURE' ? 'UNCERTAIN_INFRASTRUCTURE' : 'FENCE_REJECTED' };
+    }
+    if (outcome.code === 'INFRASTRUCTURE_FAILURE') {
+      return { ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' };
+    }
+    if (outcome.code === 'FENCE_REJECTED') {
+      switch (outcome.reason) {
+        case 'ACCOUNTING_UNDERFLOW':
+          this.logger.warn('RESERVATION_TOTAL_UNDERFLOW during reserveOrRenew', {
+            productId,
+            cartId,
+            reason: outcome.reason,
+          });
+          return { ok: false, code: 'RESERVATION_ACCOUNTING_UNDERFLOW' };
+        case 'ACCOUNTING_CORRUPTION':
+          this.logger.warn('RESERVATION_ACCOUNTING_CORRUPTION during reserveOrRenew', {
+            productId,
+            cartId,
+            reason: outcome.reason,
+          });
+          return { ok: false, code: 'RESERVATION_ACCOUNTING_CORRUPTION' };
+        case 'RESOURCE_GENERATION_MISMATCH':
+          return { ok: false, code: 'RESERVATION_RESOURCE_GENERATION_MISMATCH' };
+        case 'MALFORMED_RESOURCE':
+        case 'MALFORMED_RESOURCE_GUARD':
+          return { ok: false, code: 'RESERVATION_MALFORMED_RESOURCE' };
+        case 'CHECKOUT_IN_PROGRESS':
+          return { ok: false, code: 'RESERVATION_CHECKOUT_IN_PROGRESS' };
+        case 'CAPABILITY_REVOKED':
+          return { ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' };
+        default:
+          return { ok: false, code: 'FENCE_REJECTED' };
+      }
+    }
+    return { ok: false, code: 'FENCE_REJECTED' };
   }
 
   // Freshness resets require a separate authorization. Never bypass W1 fencing
@@ -258,11 +308,8 @@ export class InventoryReservationsService {
     quantityAvailable: number,
     excludingCartId: string,
   ): Promise<SuspectAwareAvailability> {
-    const suspended = await this.redis.get(productSuspectKey(productId));
-    if (suspended !== null) {
-      return { status: 'SUSPECT' };
-    }
-
+    if (!Number.isInteger(quantityAvailable) || quantityAvailable < 0) return { status: 'SUSPECT' };
+    if (!(await isAvailabilityControlClear(this.redis, this.observationPrisma, productId))) return { status: 'SUSPECT' };
     const observation = await this.getReservedTotalExcludingCart(productId, excludingCartId);
     if (observation.status === 'SUSPECT') return observation;
     return { status: 'OK', available: Math.max(0, quantityAvailable - observation.reservedByOthers) };
@@ -276,12 +323,22 @@ export class InventoryReservationsService {
     try {
       const read = async () => {
         const fence = await this.observationPrisma.reservationFenceTransition.findFirst({ orderBy: { revision: 'desc' } });
-        const restriction = await this.observationPrisma.productReservationRestriction.findUnique({ where: { productId } });
-        const installation = fence && restriction ? await this.observationPrisma.productReservationRestrictionInstallation.findUnique({
-          where: { restrictionId_incarnation_epoch_protocolVersion: { restrictionId: restriction.id,
-            incarnation: fence.incarnation, epoch: fence.epoch, protocolVersion: fence.protocol } },
-        }) : null;
-        return { fence, restriction, installation };
+        const restriction = await this.observationPrisma.productReservationRestriction.findFirst({
+          where: { productId }, orderBy: { restrictionRevision: 'desc' },
+        });
+        const blockingRecovery = await this.observationPrisma.productSuspectRecovery?.findFirst({
+          where: { productId, status: { in: [...BLOCKING_RECOVERY_STATES] } }, orderBy: { createdAt: 'desc' },
+        }) ?? null;
+        const completedRecovery = await this.observationPrisma.productSuspectRecovery?.findFirst({
+          where: { productId, status: 'COMPLETED' }, orderBy: { clearedControlRevision: 'desc' },
+        }) ?? null;
+        const activeRestriction = restriction && restriction.state !== 'CLEARED' ? restriction : null;
+        const installation = fence && activeRestriction && (activeRestriction.state === 'PREPARED' || activeRestriction.state === 'ENFORCED')
+          ? await this.observationPrisma.productReservationRestrictionInstallation.findUnique({
+            where: { restrictionId_incarnation_epoch_protocolVersion: { restrictionId: activeRestriction.id,
+              incarnation: fence.incarnation, epoch: fence.epoch, protocolVersion: fence.protocol } },
+          }) : null;
+        return { fence, restriction, activeRestriction, blockingRecovery, completedRecovery, installation };
       };
       const before = await read();
       const raw = await this.redis.eval(RESERVATION_OBSERVATION_SCRIPT,
@@ -296,25 +353,42 @@ export class InventoryReservationsService {
         result.findings = [...result.findings.filter(f => f !== 'CONSISTENT'), 'INFRASTRUCTURE_UNCERTAIN'];
         return result;
       }
-      const { fence, restriction, installation } = before;
+      const { fence, restriction, activeRestriction, blockingRecovery, completedRecovery, installation } = before;
+      const resolvedClearedRev = completedRecovery?.clearedControlRevision ?? 0;
       result.restriction.durableState = restriction?.state ?? 'ABSENT';
-      result.restriction.revision = restriction?.restrictionRevision ?? null;
+      result.restriction.revision = activeRestriction
+        ? activeRestriction.restrictionRevision
+        : restriction
+          ? Math.max(restriction.restrictionRevision, resolvedClearedRev)
+          : completedRecovery ? resolvedClearedRev : null;
       result.restriction.observationDigest = restriction?.observationDigest ?? null;
-      if (restriction) result.findings.push(restriction.state === 'PREPARED' ? 'RESTRICTION_PREPARED' : 'RESTRICTION_ENFORCED');
+      if (restriction && RESTRICTION_STATE_FINDINGS[restriction.state]) {
+        result.findings.push(RESTRICTION_STATE_FINDINGS[restriction.state]!);
+      }
+      if (blockingRecovery) {
+        result.findings.push(blockingRecovery.status === 'AMBIGUOUS_QUARANTINED' ? 'RECOVERY_QUARANTINED' : 'RECOVERY_ACTIVE');
+      }
+      const parsedControlState = parseObservedControlState(observed.control);
+      if (parsedControlState) result.restriction.physicalState = parsedControlState;
       const uncertain = () => { result.findings = [...new Set([...result.findings.filter(f => f !== 'CONSISTENT'), 'MEMBERSHIP_UNCERTAIN' as const])]; };
       if (observed.control === null) result.restriction.physicalState = 'ABSENT';
       if (!fence || fence.status !== 'ACKNOWLEDGED' || fence.protocol !== 1 ||
         observed.fence !== JSON.stringify(transitionTuple(fence))) { uncertain(); return result; }
-      const expected = controlBytes({ version: 1, productId, state: restriction ? 'RESTRICTED' : 'ALLOW',
-        restrictionId: restriction?.id ?? null, restrictionRevision: restriction ? 1 : 0,
+      if (parsedControlState === 'CLEARANCE_STAGED' || blockingRecovery || activeRestriction?.state === 'CLEARING') {
+        uncertain(); return result;
+      }
+      const enforceRestricted = activeRestriction && (activeRestriction.state === 'PREPARED' || activeRestriction.state === 'ENFORCED');
+      const expected = controlBytes({ version: 1, productId, state: enforceRestricted ? 'RESTRICTED' : 'ALLOW',
+        restrictionId: enforceRestricted ? activeRestriction.id : null,
+        restrictionRevision: enforceRestricted ? activeRestriction.restrictionRevision : resolvedClearedRev,
         incarnation: fence.incarnation, epoch: fence.epoch });
       if (observed.control !== expected) { uncertain(); return result; }
-      result.restriction.physicalState = restriction ? 'RESTRICTED' : 'ALLOW';
+      result.restriction.physicalState = enforceRestricted ? 'RESTRICTED' : 'ALLOW';
       // This is observed equality only; a concurrent change can occur after these reads.
       result.restriction.crossStoreConsistency = 'OBSERVED_MATCH';
-      if (restriction && installation?.acknowledgement === expected && installation.acknowledgementHash === restrictionDigest(expected))
+      if (enforceRestricted && installation?.acknowledgement === expected && installation.acknowledgementHash === restrictionDigest(expected))
         result.restriction.installation = 'MATCHES_OBSERVED_TUPLE';
-      else if (restriction) uncertain();
+      else if (enforceRestricted) uncertain();
       return result;
     } catch { return uncertainObservation(); }
   }

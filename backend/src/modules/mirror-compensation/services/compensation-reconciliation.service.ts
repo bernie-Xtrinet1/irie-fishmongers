@@ -133,14 +133,32 @@ export class CompensationReconciliationService {
         if (outcome.code === 'RESERVATION_PRODUCT_SUSPENDED') {
           return this.enterBlocked(compensationId, generation, 'PRODUCT_SUSPECT', 'PRODUCT_SUSPENDED', null, now);
         }
-        // RESERVATION_CHECKOUT_IN_PROGRESS - never routed through the
-        // product-suspect BLOCKED checker.
+        if (outcome.code === 'RESERVATION_ACCOUNTING_UNDERFLOW') {
+          return this.enterBlocked(compensationId, generation, 'PRODUCT_SUSPECT', 'ACCOUNTING_UNDERFLOW', null, now);
+        }
+        if (
+          outcome.code === 'RESERVATION_ACCOUNTING_CORRUPTION' ||
+          outcome.code === 'RESERVATION_MALFORMED_RESOURCE'
+        ) {
+          return this.enterBlocked(
+            compensationId,
+            generation,
+            'PRODUCT_SUSPECT',
+            'ACCOUNTING_UNDERFLOW',
+            outcome.code,
+            now,
+          );
+        }
+        if (outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS') {
+          return this.scheduleRetryOrFail(compensationId, generation, attemptCount, 'CHECKOUT_IN_PROGRESS', null, now);
+        }
+        // RESERVATION_RESOURCE_GENERATION_MISMATCH, FENCE_REJECTED, UNCERTAIN_INFRASTRUCTURE
         return this.scheduleRetryOrFail(
           compensationId,
           generation,
           attemptCount,
-          outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? 'CHECKOUT_IN_PROGRESS' : 'UNKNOWN_INFRA_FAILURE',
-          outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS' ? null : outcome.code,
+          'UNKNOWN_INFRA_FAILURE',
+          outcome.code,
           now,
         );
       }

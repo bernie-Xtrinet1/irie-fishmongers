@@ -209,6 +209,36 @@ describe('ReservationRecoveryConvergenceService', () => {
       });
     });
 
+    it('distinguishes FENCE_REJECTED from UNCERTAIN_INFRASTRUCTURE in reserve-shaped convergence', async () => {
+      inventoryReservations.reserveOrRenew.mockResolvedValueOnce({ ok: false, code: 'FENCE_REJECTED' });
+      const fenced = await service.converge({
+        cartId: 'cart-1',
+        productId: 'product-1',
+        customerId: 'customer-1',
+        desiredQuantity: 5,
+      });
+      expect(fenced).toEqual({
+        outcome: 'RETRY',
+        reasonCode: 'FENCE_REJECTED',
+        lastError: 'FENCE_REJECTED',
+        observedMode: snapshot,
+      });
+
+      inventoryReservations.reserveOrRenew.mockResolvedValueOnce({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
+      const infra = await service.converge({
+        cartId: 'cart-1',
+        productId: 'product-1',
+        customerId: 'customer-1',
+        desiredQuantity: 5,
+      });
+      expect(infra).toEqual({
+        outcome: 'RETRY',
+        reasonCode: 'UNKNOWN_INFRA_FAILURE',
+        lastError: 'UNCERTAIN_INFRASTRUCTURE',
+        observedMode: snapshot,
+      });
+    });
+
     it('a reserve-shaped target with a null customerId throws an invariant violation rather than silently proceeding', async () => {
       await expect(
         service.converge({ cartId: 'cart-1', productId: 'product-1', customerId: null, desiredQuantity: 5 }),

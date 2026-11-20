@@ -3,14 +3,15 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   NotImplementedException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { PaymentProviderName, Refund } from '@prisma/client';
+import { PaymentProviderName, Prisma, Refund } from '@prisma/client';
 
 import { PaymentConfirmedEvent } from '../../../common/events/payment-confirmed.event';
-import { RefundStatusChangedEvent } from '../../../common/events/refund-status-changed.event';
 import { PaymentInitiationResponseEntity } from '../entities/payment-initiation-response.entity';
 import { PaymentResponseEntity } from '../entities/payment-response.entity';
 import { RefundResponseEntity } from '../entities/refund-response.entity';
@@ -22,16 +23,28 @@ import {
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
 import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
+import { RefundAttemptsRepository } from '../repositories/refund-attempts.repository';
+import { normalizeManualIdempotencyKey } from '../repositories/refund-locks.helper';
 import { RefundsRepository } from '../repositories/refunds.repository';
+import {
+  executeTwoPhaseRefundDispatch,
+  RefundExecutionOptions,
+  resolveAttemptsRepository,
+} from './payments-refund-dispatch.helper';
+
+export { RefundExecutionOptions };
 
 @Injectable()
 export class PaymentsService {
+  private fallbackAttemptsRepository?: RefundAttemptsRepository;
+
   constructor(
     private readonly paymentsRepository: PaymentsRepository,
     private readonly refundsRepository: RefundsRepository,
     private readonly wiPayAdapter: WiPayAdapter,
     private readonly cashOnDeliveryAdapter: CashOnDeliveryAdapter,
     private readonly eventEmitter: EventEmitter2,
+    @Optional() private readonly refundAttemptsRepository?: RefundAttemptsRepository,
   ) {}
 
   async initiatePayment(
@@ -47,11 +60,9 @@ export class PaymentsService {
     if (payment.status === 'PAID') {
       throw new ConflictException('This order has already been paid');
     }
-
     if (payment.provider !== input.provider) {
       throw new ConflictException('This order already has a payment using a different provider');
     }
-
     if (payment.initiationStatus !== 'NOT_STARTED') {
       return { payment: PaymentsService.toPaymentResponse(payment) };
     }
@@ -130,7 +141,6 @@ export class PaymentsService {
     if (!payment) {
       throw new BadRequestException('Payment not found');
     }
-
     if (payment.provider !== 'CASH_ON_DELIVERY') {
       throw new BadRequestException('Only cash-on-delivery payments can be confirmed manually');
     }
@@ -143,7 +153,6 @@ export class PaymentsService {
         `Internal consistency error: payment "${paymentId}" disappeared after PAID transition`,
       );
     }
-
     if (transitioned) {
       await this.emitPaymentConfirmed(updated);
     }
@@ -152,7 +161,6 @@ export class PaymentsService {
   }
 
   handleWiPayWebhook(_rawBody: string, _signature: string): Promise<void> {
-    // The former x-wipay-signature/API-key HMAC scheme is not WiPay's webhook contract.
     return Promise.reject(
       new NotImplementedException('WiPay webhook integration is not implemented'),
     );
@@ -176,8 +184,6 @@ export class PaymentsService {
     ) {
       throw new UnauthorizedException('Unverifiable WiPay transaction response');
     }
-
-    // Failure/error returns carry no authenticated hash. They cannot mutate payment state.
     if (payload.status !== 'success') return { status: 'UNVERIFIED' };
     if (
       !this.wiPayAdapter.verifyTransactionResponse(
@@ -192,32 +198,39 @@ export class PaymentsService {
     const { payment: updated, transitioned } = await this.paymentsRepository.transitionToPaid(
       payment.id,
     );
-
     if (!updated) {
       throw new Error(
         `Internal consistency error: payment "${payment.id}" disappeared after PAID transition`,
       );
     }
-
     if (transitioned) {
       await this.emitPaymentConfirmed(updated);
     }
     return { status: 'VERIFIED' };
   }
 
-  async refundForOrder(orderId: string, amount: number, reason: string): Promise<Refund | null> {
+  async refundForOrder(
+    orderId: string,
+    amount: number | Prisma.Decimal,
+    reason: string,
+    idempotencyKey?: string,
+    options?: RefundExecutionOptions,
+  ): Promise<Refund | null> {
     const payment = await this.paymentsRepository.findByOrderId(orderId);
     if (!payment || (payment.status !== 'PAID' && payment.status !== 'PARTIALLY_REFUNDED')) {
       return null;
     }
-    return this.executeRefund(payment, amount, reason);
+    return this.executeRefund(payment, amount, reason, idempotencyKey, options);
   }
 
   async refundByPaymentId(
     paymentId: string,
-    amount: number,
+    amount: number | Prisma.Decimal,
     reason: string,
+    idempotencyKey?: string,
+    options?: RefundExecutionOptions,
   ): Promise<RefundResponseEntity> {
+    const validatedKey = normalizeManualIdempotencyKey(idempotencyKey);
     const payment = await this.paymentsRepository.findById(paymentId);
     if (!payment) {
       throw new BadRequestException('Payment not found');
@@ -226,7 +239,7 @@ export class PaymentsService {
       throw new BadRequestException('Only a paid payment can be refunded');
     }
 
-    const refund = await this.executeRefund(payment, amount, reason);
+    const refund = await this.executeRefund(payment, amount, reason, validatedKey, options);
     if (!refund) {
       throw new BadRequestException('Refund amount exceeds the remaining refundable balance');
     }
@@ -240,46 +253,46 @@ export class PaymentsService {
     return this.getAdapter(provider).verifyPayment(providerReference);
   }
 
-  async emitRecoveredPaymentConfirmed(
-    payment: PaymentWithOrder,
-  ): Promise<void> {
+  async emitRecoveredPaymentConfirmed(payment: PaymentWithOrder): Promise<void> {
     await this.emitPaymentConfirmed(payment);
   }
 
   private async executeRefund(
     payment: PaymentWithOrder,
-    amount: number,
+    amount: number | Prisma.Decimal,
     reason: string,
+    idempotencyKey?: string,
+    options?: RefundExecutionOptions,
   ): Promise<Refund | null> {
-    const alreadyRefunded = await this.refundsRepository.sumCompletedByPaymentId(payment.id);
-    const remaining = payment.amount.toNumber() - alreadyRefunded;
-    if (amount <= 0 || amount > remaining) {
-      return null;
+    const attemptsRepo =
+      this.refundAttemptsRepository ??
+      (this.fallbackAttemptsRepository ??= resolveAttemptsRepository(
+        this.refundAttemptsRepository,
+        this.refundsRepository,
+      ));
+    if (!attemptsRepo) {
+      throw new InternalServerErrorException(
+        'RefundAttemptsRepository is required for durable two-transaction refund dispatch',
+      );
     }
 
-    const adapter = this.getAdapter(payment.provider);
-    const result = await adapter.refundPayment(payment.providerReference ?? payment.id, amount, reason);
-
-    const refund = await this.refundsRepository.create({
-      paymentId: payment.id,
-      amount,
-      reason,
-      status: result.status,
-      providerReference: result.providerReference,
-    });
-
-    if (result.status === 'COMPLETED') {
-      const totalRefunded = alreadyRefunded + amount;
-      const newStatus = totalRefunded >= payment.amount.toNumber() ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
-      await this.paymentsRepository.update(payment.id, { status: newStatus });
+    try {
+      return await executeTwoPhaseRefundDispatch({
+        payment,
+        amount,
+        reason,
+        idempotencyKey,
+        options,
+        attemptsRepo,
+        adapter: this.getAdapter(payment.provider),
+        eventEmitter: this.eventEmitter,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('TERMINAL_FAILED:')) {
+        throw new BadRequestException(error.message.slice('TERMINAL_FAILED:'.length));
+      }
+      throw error;
     }
-
-    await this.eventEmitter.emitAsync(
-      RefundStatusChangedEvent.eventName,
-      new RefundStatusChangedEvent(payment.order.customerId, refund.amount.toString(), refund.status),
-    );
-
-    return refund;
   }
 
   private async emitPaymentConfirmed(payment: PaymentWithOrder): Promise<void> {

@@ -59,7 +59,19 @@ export type SetReservationEngineModeResult =
   | { ok: false; code: 'CUTOVER_SYNC_BACKLOG'; unresolvedCount: number }
   | { ok: false; code: 'CUTOVER_COMPENSATION_BACKLOG'; unresolvedCount: number }
   | { ok: false; code: 'CUTOVER_TARGET_COUNT_MISMATCH'; expected: number; actual: number }
-  | { ok: false; code: 'CUTOVER_BACKFILL_STALE' };
+  | { ok: false; code: 'CUTOVER_BACKFILL_STALE' }
+  | { ok: false; code: 'FENCE_DISAGREEMENT'; reason: string }
+  | { ok: false; code: 'FENCE_ACTOR_INVALID' };
+
+export type ReconcileModeFenceResult =
+  | {
+      ok: true;
+      mode: ReservationEngineMode;
+      modeRevision: number | null;
+      phase: 'FROZEN' | 'OPEN' | 'DRAINING' | 'RETIRED' | null;
+      reconciled: boolean;
+    }
+  | { ok: false; code: 'FENCE_DISAGREEMENT'; reason: string };
 
 // Verifies rollback safety using two independent Redis signals - the
 // aggregated product-total keys (inv:reserved:product-total:{*}) and the

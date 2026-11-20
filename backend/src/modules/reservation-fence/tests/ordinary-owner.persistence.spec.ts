@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { Prisma } from '@prisma/client';
 import { ordinaryHoldInstanceId } from '../ordinary-hold-instance-id';
-import { activeOrdinary, openOrdinarySchema, ordinaryFixture, transferredOrdinary } from './ordinary-provenance-test-helpers';
+import { activeOrdinary, openOrdinarySchema, ordinaryFixture, seedCartAndProductForSchema, transferredOrdinary } from './ordinary-provenance-test-helpers';
 
 describe('ordinary owner inert persistence', () => {
   jest.setTimeout(120000);
@@ -11,16 +11,17 @@ describe('ordinary owner inert persistence', () => {
   beforeAll(async () => { fixture = await openOrdinarySchema(); });
   afterAll(async () => { if (fixture) await fixture.close(); });
 
-  it('fresh deployment applies all 49 migrations', async () => {
+  it('fresh deployment applies all 70 migrations', async () => {
     const rows = await fixture.db.$queryRaw<{ count: bigint }[]>`SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL`;
-    expect(Number(rows[0]!.count)).toBe(49);
+    expect(Number(rows[0]!.count)).toBe(70);
   });
 
   it('45 -> 46 preserves historical markers and old-code insert defaults with zero counters', async () => {
     const old = await openOrdinarySchema(45);
     try {
-      const { seedCartAndProduct, setUpCompensationFixture } = await import('../../mirror-compensation/repositories/compensation-repository-test-helpers');
-      const ids = await seedCartAndProduct(await setUpCompensationFixture(old.db));
+      const { setUpCompensationFixture } = await import('../../mirror-compensation/repositories/compensation-repository-test-helpers');
+      const compFixture = await setUpCompensationFixture(old.db);
+      const ids = await seedCartAndProductForSchema(compFixture);
       const id = randomUUID();
       await old.db.$executeRaw`INSERT INTO cart_reservation_sync_states
         (id,"cartId","productId","expectedMutationVersion","expectedQuantity","updatedAt")
@@ -29,7 +30,7 @@ describe('ordinary owner inert persistence', () => {
       const expected = { ordinaryProvenanceState: 'HISTORICAL_UNVERIFIED', ordinaryEnqueueSequence: 0,
         ordinaryCommandSequence: 0, ordinaryAcknowledgedSequence: 0 };
       expect(await old.db.cartReservationSyncState.findUniqueOrThrow({ where: { id } })).toMatchObject(expected);
-      const next = await seedCartAndProduct(await setUpCompensationFixture(old.db));
+      const next = await seedCartAndProductForSchema(compFixture);
       expect(await old.db.cartReservationSyncState.create({ data: { cartId: next.cartId, productId: next.productId,
         expectedMutationVersion: 0 } })).toMatchObject(expected);
       expect(await old.db.ordinaryReservationOwner.count()).toBe(0);

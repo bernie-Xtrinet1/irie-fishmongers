@@ -108,10 +108,6 @@ export async function tearDownCheckoutIntegrationFixture(fixture: CheckoutIntegr
   await prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: { in: userIds } } });
   await prisma.reservationEngineModeConfig.deleteMany({ where: { mode: 'CART_SCOPED', updatedById: null } });
   await prisma.checkoutAttempt.deleteMany({ where: { cart: { customerId: { in: userIds } } } });
-  await prisma.orderItem.deleteMany({ where: { productId: { in: productIds } } });
-  await prisma.vendorOrder.deleteMany({ where: { vendorId: vendor.id } });
-  await prisma.order.deleteMany({ where: { customerId: { in: userIds } } });
-  await prisma.inventoryEvent.deleteMany({ where: { productId: { in: productIds } } });
   // CartReservationSyncState rows are never deleted by production code
   // (generation must be permanent - see the DA.1 architecture review) and
   // use onDelete: Restrict on their Cart relation - checkout now creates
@@ -120,11 +116,20 @@ export async function tearDownCheckoutIntegrationFixture(fixture: CheckoutIntegr
   await prisma.cartReservationSyncState.deleteMany({ where: { productId: { in: productIds } } });
   await prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
   await prisma.cart.deleteMany({ where: { customerId: { in: userIds } } });
-  await prisma.product.deleteMany({ where: { vendorId: vendor.id } });
-  for (const id of userIds) {
-    await prisma.user.delete({ where: { id } });
+
+  const retainedOrderCount = await prisma.order.count({ where: { customerId: { in: userIds } } });
+  const retainedVendorOrderCount = await prisma.vendorOrder.count({ where: { vendorId: vendor.id } });
+  if (retainedOrderCount === 0 && retainedVendorOrderCount === 0) {
+    await prisma.orderItem.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.vendorOrder.deleteMany({ where: { vendorId: vendor.id } });
+    await prisma.order.deleteMany({ where: { customerId: { in: userIds } } });
+    await prisma.inventoryEvent.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.product.deleteMany({ where: { vendorId: vendor.id } });
+    for (const id of userIds) {
+      await prisma.user.delete({ where: { id } });
+    }
+    await prisma.category.delete({ where: { id: category.id } });
   }
-  await prisma.category.delete({ where: { id: category.id } });
 }
 
 export interface RealCoordinatorHandles {
@@ -140,6 +145,7 @@ export interface RealCoordinatorHandles {
   eventEmitter: EventEmitter2;
   paymentsService: PaymentsService;
   cashOnDeliveryAdapter: CashOnDeliveryAdapter;
+  wiPayAdapter: WiPayAdapter;
   redisClient?: Redis;
 }
 
@@ -159,10 +165,11 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
   const syncStateRepository = new CartReservationSyncStateRepository(prisma);
 
   const cashOnDeliveryAdapter = new CashOnDeliveryAdapter();
+  const wiPayAdapter = new WiPayAdapter({ get: () => undefined } as unknown as ConfigService);
   const paymentsService = new PaymentsService(
     new PaymentsRepository(prisma),
     new RefundsRepository(prisma),
-    new WiPayAdapter({ get: () => undefined } as unknown as ConfigService),
+    wiPayAdapter,
     cashOnDeliveryAdapter,
     eventEmitter,
   );
@@ -233,6 +240,7 @@ export function buildRealCoordinator(prisma: PrismaService, redisClient: Redis):
     eventEmitter,
     paymentsService,
     cashOnDeliveryAdapter,
+    wiPayAdapter,
     redisClient,
   };
 }

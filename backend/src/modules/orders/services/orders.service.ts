@@ -13,11 +13,20 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { CheckoutAttempt, CheckoutPath, OrderItem, Prisma, VendorOrder } from '@prisma/client';
+import {
+  CheckoutAttempt,
+  CheckoutPath,
+  OrderItem,
+  PaymentStatus,
+  Prisma,
+  ReservationEngineMode,
+  VendorOrder,
+} from '@prisma/client';
 import { CheckoutAttemptRepository } from '../../checkout-attempt/repositories/checkout-attempt.repository';
 import { CheckoutReservationStateService } from '../../inventory/services/checkout-reservation-state.service';
 import { CheckoutReservationRecoveryService } from '../../inventory/services/checkout-reservation-recovery.service';
 import { CHECKOUT_PENDING_INITIAL_LEASE_SECONDS } from '../../inventory/constants/inventory.constants';
+import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 
 import { CartRepository, CartWithItems } from '../../cart/repositories/cart.repository';
 import {
@@ -62,6 +71,10 @@ import { mapPrepareFailureToHttpException } from './checkout-preparation-http-ma
 import { buildLegacyPricingSnapshot } from './legacy-pricing-snapshot.builder';
 import { validatePricingSnapshot } from './order-pricing-snapshot.validator';
 import { toOrderResponse } from './order-response.mapper';
+import {
+  createOrPreserveRefundObligation,
+  restoreVendorOrderStockAndTransition,
+} from '../utils/order-cancellation-refund.util';
 
 const CANCELLABLE_STATUS = 'PENDING';
 
@@ -96,6 +109,7 @@ export class OrdersService {
     @Optional() private readonly checkoutAttemptRepository?: CheckoutAttemptRepository,
     @Optional() private readonly checkoutReservationState?: CheckoutReservationStateService,
     @Optional() private readonly checkoutReservationRecovery?: CheckoutReservationRecoveryService,
+    @Optional() private readonly reservationEngineModeService?: ReservationEngineModeService,
   ) {}
 
   private isCatchWeightSeafoodProduct(product: any): boolean {
@@ -220,9 +234,170 @@ export class OrdersService {
     return verifiedQuote;
   }
 
+  private async resolveCheckoutModePlan(): Promise<{
+    runtimeMode: ReservationEngineMode;
+    selectedPath: CheckoutPath;
+    requiresCartScopedMark: boolean;
+    isMirrorMode: boolean;
+  }> {
+    let runtimeMode: ReservationEngineMode;
+    if (this.reservationEngineModeService) {
+      runtimeMode = await this.reservationEngineModeService.getCurrentMode();
+    } else if (
+      this.checkoutAttemptRepository ||
+      this.checkoutReservationState ||
+      this.checkoutReservationRecovery
+    ) {
+      runtimeMode = ReservationEngineMode.CART_SCOPED;
+    } else {
+      runtimeMode = ReservationEngineMode.LEGACY;
+    }
+
+    switch (runtimeMode) {
+      case ReservationEngineMode.LEGACY:
+        return {
+          runtimeMode,
+          selectedPath: CheckoutPath.LEGACY,
+          requiresCartScopedMark: false,
+          isMirrorMode: false,
+        };
+      case ReservationEngineMode.MIRROR:
+        return {
+          runtimeMode,
+          selectedPath: CheckoutPath.LEGACY,
+          requiresCartScopedMark: false,
+          isMirrorMode: true,
+        };
+      case ReservationEngineMode.CART_SCOPED:
+      case ReservationEngineMode.DRAINING:
+        return {
+          runtimeMode,
+          selectedPath: CheckoutPath.CART_SCOPED,
+          requiresCartScopedMark: true,
+          isMirrorMode: false,
+        };
+    }
+  }
+
+  private computeCheckoutIdempotencyKey(
+    cart: CartWithItems,
+    verifiedQuote?: SeafoodCheckoutQuotePayload,
+  ): string {
+    if (verifiedQuote?.quoteId) {
+      return verifiedQuote.quoteId;
+    }
+    const itemsSignature = cart.items
+      .map((item) => `${item.id}:${item.productId}:${item.quantity}:${item.mutationVersion ?? 0}`)
+      .sort()
+      .join('|');
+    const revisionHash = crypto.createHash('sha256').update(itemsSignature).digest('hex').slice(0, 24);
+    return `${cart.id}:${revisionHash}`;
+  }
+
+  private async tryReplayQuoteAttemptAfterCartClear(
+    userId: string,
+    quoteToken: string,
+  ): Promise<OrderResponseEntity | null> {
+    if (!this.checkoutAttemptRepository || !this.checkoutQuoteService) {
+      return null;
+    }
+    const secret = this.configService.get<string>('CHECKOUT_QUOTE_SIGNING_SECRET');
+    if (!secret || typeof secret !== 'string' || secret.trim() === '') {
+      return null;
+    }
+    const previousSecret = this.configService.get<string>('CHECKOUT_QUOTE_SIGNING_SECRET_PREVIOUS');
+
+    let verified: SeafoodCheckoutQuotePayload;
+    try {
+      verified = this.checkoutQuoteService.verifyQuote(quoteToken, {
+        secret,
+        expectedCustomerId: userId,
+      });
+    } catch (error) {
+      if (error instanceof InvalidQuoteSignatureError && previousSecret) {
+        try {
+          verified = this.checkoutQuoteService.verifyQuote(quoteToken, {
+            secret: previousSecret,
+            expectedCustomerId: userId,
+          });
+        } catch {
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+
+    const attempt = await this.checkoutAttemptRepository.findByIdempotencyKey(verified.quoteId);
+    if (!attempt) {
+      return null;
+    }
+    if (attempt.customerId !== userId) {
+      throw new ConflictException('Checkout attempt idempotency key belongs to another customer.');
+    }
+    if (attempt.cartId !== undefined && attempt.cartId !== verified.cartId) {
+      throw new ConflictException('Checkout attempt idempotency key belongs to another cart.');
+    }
+    if (attempt.selectedPath === null) {
+      throw new ConflictException('Checkout attempt has unknown path ownership and cannot proceed.');
+    }
+    if (attempt.status === 'COMMITTED') {
+      if (attempt.orderId) {
+        return this.getCustomerOrderById(userId, attempt.orderId);
+      }
+      throw new ConflictException('Checkout attempt is COMMITTED without an orderId.');
+    }
+    if (attempt.status === 'FAILED') {
+      throw new ConflictException(
+        `Checkout attempt has previously failed: ${attempt.failureCode ?? 'FAILED'}`,
+      );
+    }
+    throw new ConflictException('Checkout is already in progress for this attempt.');
+  }
+
+  private async markCreatedAttemptFailed(
+    attempt: CheckoutAttempt | undefined,
+    customerId: string,
+    failureCode: string,
+    failureMessage: string,
+  ): Promise<void> {
+    if (
+      !attempt ||
+      !this.checkoutAttemptRepository ||
+      typeof this.checkoutAttemptRepository.markFailed !== 'function'
+    ) {
+      return;
+    }
+    try {
+      await this.checkoutAttemptRepository.markFailed(
+        attempt.id,
+        customerId,
+        failureCode,
+        sanitizeErrorMessage(failureMessage, 400),
+        new Date(),
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Non-fatal failure recording CheckoutAttempt FAILED state for attempt "${attempt.id}": ${err?.message ?? err}`,
+      );
+    }
+  }
+
   async checkout(userId: string, dto: CheckoutDto): Promise<OrderResponseEntity> {
     const prepareResult = await this.prepareCheckout(userId, dto);
     if (!prepareResult.ok) {
+      if (
+        prepareResult.code === 'CART_EMPTY' &&
+        dto.quoteToken &&
+        typeof dto.quoteToken === 'string' &&
+        dto.quoteToken.trim() !== '' &&
+        this.checkoutAttemptRepository
+      ) {
+        const replayed = await this.tryReplayQuoteAttemptAfterCartClear(userId, dto.quoteToken);
+        if (replayed) {
+          return replayed;
+        }
+      }
       throw mapPrepareFailureToHttpException(prepareResult);
     }
     const { prepared } = prepareResult;
@@ -236,49 +411,95 @@ export class OrdersService {
       verifiedQuote = this.verifySeafoodQuote(userId, prepared.cart, dto);
     }
 
-    const idempotencyKey = verifiedQuote?.quoteId ?? prepared.cart.id;
+    const modePlan = await this.resolveCheckoutModePlan();
+    const idempotencyKey = this.computeCheckoutIdempotencyKey(prepared.cart, verifiedQuote);
     let attempt: CheckoutAttempt | undefined;
+    let createdAttemptByUs = false;
 
     if (this.checkoutAttemptRepository) {
       const attemptRes = await this.checkoutAttemptRepository.createOrGetByIdempotencyKey({
-        selectedPath: CheckoutPath.CART_SCOPED,
+        selectedPath: modePlan.selectedPath,
         idempotencyKey,
         cartId: prepared.cart.id,
         customerId: userId,
         now: new Date(),
       });
       attempt = attemptRes.attempt;
+      createdAttemptByUs = attemptRes.created;
 
       if (attempt.customerId !== userId) {
         throw new ConflictException('Checkout attempt idempotency key belongs to another customer.');
       }
+      if (attempt.cartId !== undefined && attempt.cartId !== prepared.cart.id) {
+        throw new ConflictException('Checkout attempt idempotency key belongs to another cart.');
+      }
+      if (attempt.selectedPath === null) {
+        throw new ConflictException('Checkout attempt has unknown path ownership and cannot proceed.');
+      }
       if (attempt.status === 'COMMITTED') {
         if (attempt.orderId) {
-          const existingOrder = await this.getCustomerOrderById(userId, attempt.orderId);
-          return existingOrder;
+          return this.getCustomerOrderById(userId, attempt.orderId);
         }
+        throw new ConflictException('Checkout attempt is COMMITTED without an orderId.');
+      }
+      if (attempt.selectedPath !== undefined && attempt.selectedPath !== modePlan.selectedPath) {
+        throw new ConflictException(
+          `Checkout attempt path mismatch: existing attempt uses "${attempt.selectedPath}" while current mode requires "${modePlan.selectedPath}".`,
+        );
       }
       if (attempt.status === 'FAILED') {
         throw new ConflictException(
           `Checkout attempt has previously failed: ${attempt.failureCode ?? 'FAILED'}`,
         );
       }
+      if (!createdAttemptByUs && attempt.status === 'PROCESSING') {
+        throw new ConflictException('Checkout is already in progress for this attempt.');
+      }
     }
 
-    if (this.checkoutReservationState) {
+    if (modePlan.requiresCartScopedMark) {
+      if (!this.checkoutReservationState) {
+        await this.markCreatedAttemptFailed(
+          createdAttemptByUs ? attempt : undefined,
+          userId,
+          'CHECKOUT_RESERVATION_UNAVAILABLE',
+          'Cart-scoped reservation state service is unavailable.',
+        );
+        throw new ConflictException(
+          'Checkout admission rejected: cart-scoped reservation engine is unavailable.',
+        );
+      }
+
       const plan = prepared.cart.items.map((item) => ({
         productId: item.productId,
         expectedQuantity: item.quantity,
       }));
-      const markResult = await this.checkoutReservationState.checkoutMark(
-        prepared.cart.id,
-        userId,
-        idempotencyKey,
-        plan,
-        Date.now(),
-        CHECKOUT_PENDING_INITIAL_LEASE_SECONDS,
-      );
+      let markResult: Awaited<ReturnType<CheckoutReservationStateService['checkoutMark']>>;
+      try {
+        markResult = await this.checkoutReservationState.checkoutMark(
+          prepared.cart.id,
+          userId,
+          idempotencyKey,
+          plan,
+          Date.now(),
+          CHECKOUT_PENDING_INITIAL_LEASE_SECONDS,
+        );
+      } catch (markErr) {
+        await this.markCreatedAttemptFailed(
+          createdAttemptByUs ? attempt : undefined,
+          userId,
+          'CHECKOUT_MARK_ERROR',
+          markErr instanceof Error ? markErr.message : String(markErr),
+        );
+        throw markErr;
+      }
       if (!markResult.ok) {
+        await this.markCreatedAttemptFailed(
+          createdAttemptByUs ? attempt : undefined,
+          userId,
+          markResult.code ?? 'CHECKOUT_MARK_REJECTED',
+          `Checkout admission rejected by reservation engine: ${markResult.code}`,
+        );
         throw new ConflictException(`Checkout admission rejected by reservation engine: ${markResult.code}`);
       }
     }
@@ -295,13 +516,21 @@ export class OrdersService {
         ),
       );
     } catch (error) {
+      await this.markCreatedAttemptFailed(
+        createdAttemptByUs ? attempt : undefined,
+        userId,
+        error instanceof CartMutationBarrierActiveError
+          ? 'CART_MUTATION_BARRIER_ACTIVE'
+          : 'ORDER_TRANSACTION_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
       if (error instanceof CartMutationBarrierActiveError) {
         throw new ServiceUnavailableException(CART_MUTATION_BARRIER_ACTIVE_MESSAGE);
       }
       throw error;
     }
 
-    if (this.checkoutReservationRecovery) {
+    if (modePlan.requiresCartScopedMark && this.checkoutReservationRecovery) {
       try {
         await this.checkoutReservationRecovery.finalizeCheckoutConsumption(prepared.cart.id, idempotencyKey);
       } catch (err: any) {
@@ -311,7 +540,7 @@ export class OrdersService {
       }
     }
 
-    // Release legacy soft holds
+    // Release legacy soft holds (authoritative in LEGACY/MIRROR; defensive sweep otherwise)
     const purchasedProductIds = new Set(prepared.cart.items.map((item) => item.productId));
     for (const productId of purchasedProductIds) {
       try {
@@ -320,6 +549,27 @@ export class OrdersService {
         this.logger.warn(
           `Non-fatal soft reservation release failure for product "${productId}" on cart "${prepared.cart.id}". Soft hold will expire via Redis TTL.`,
         );
+      }
+
+      if (
+        modePlan.isMirrorMode &&
+        typeof this.inventoryReservations?.releaseReservation === 'function'
+      ) {
+        try {
+          const mirrorRelease = await this.inventoryReservations.releaseReservation(
+            prepared.cart.id,
+            productId,
+          );
+          if (mirrorRelease?.underflow) {
+            this.logger.warn(
+              `Non-fatal MIRROR C3 release observed underflow for product "${productId}" on cart "${prepared.cart.id}".`,
+            );
+          }
+        } catch (err: any) {
+          this.logger.warn(
+            `Non-fatal MIRROR C3 release failure for product "${productId}" on cart "${prepared.cart.id}": ${err?.message ?? err}`,
+          );
+        }
       }
     }
 
@@ -790,7 +1040,7 @@ export class OrdersService {
         currency: pricing.currency,
         vendorOrders: Array.from(vendorGroups.values()).map((g) => ({
           vendorId: g.vendorId,
-          subtotal: g.hasSeafood ? g.subtotal : g.subtotal.toNumber(),
+          subtotal: g.subtotal,
           items: g.items,
         })),
       },
@@ -896,9 +1146,73 @@ export class OrdersService {
       );
     }
 
+    // Sort cancellable vendor orders by id ASC for canonical lock hierarchy
+    const sortedCancellable = [...cancellable].sort((a, b) => a.id.localeCompare(b.id));
+
     await this.prisma.$transaction(async (tx) => {
-      for (const vendorOrder of cancellable) {
+      // Canonical row locking: Order -> VendorOrders (id ASC) -> Payment -> Products (id ASC) -> Listings (id ASC)
+      let paymentRow: { id: string; status: PaymentStatus; amount: Prisma.Decimal } | null = null;
+
+      if ((tx as any).$queryRaw) {
+        // 1. Lock Order parent row
+        await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id" FROM "orders" WHERE "id" = ${orderId} FOR UPDATE`,
+        );
+
+        // 2. Lock VendorOrders child rows in deterministic ascending ID order
+        await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id", "status" FROM "vendor_orders" WHERE "orderId" = ${orderId} ORDER BY "id" ASC FOR UPDATE`,
+        );
+
+        // 3. Lock Payment row
+        const paymentRows = (await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id", "status", "amount" FROM "payments" WHERE "orderId" = ${orderId} FOR UPDATE`,
+        )) as Array<{ id: string; status: PaymentStatus; amount: Prisma.Decimal }>;
+        paymentRow = paymentRows[0] ?? null;
+
+        // 4. Lock Products across all cancellable items in deterministic ascending ID order
+        const allProductIds = Array.from(
+          new Set(sortedCancellable.flatMap((vo) => vo.items.map((i) => i.productId))),
+        ).sort();
+        for (const pid of allProductIds) {
+          await (tx as any).$queryRaw(
+            Prisma.sql`SELECT "id" FROM "products" WHERE "id" = ${pid} FOR UPDATE`,
+          );
+        }
+
+        // 5. Lock VendorDailyListings across all cancellable items in deterministic ascending ID order
+        const allListingIds = Array.from(
+          new Set(
+            sortedCancellable
+              .flatMap((vo) => vo.items.map((i) => i.originalListingId))
+              .filter(Boolean) as string[],
+          ),
+        ).sort();
+        for (const lid of allListingIds) {
+          await (tx as any).$queryRaw(
+            Prisma.sql`SELECT "id" FROM "vendor_daily_listings" WHERE "id" = ${lid} FOR UPDATE`,
+          );
+        }
+      } else if ((tx as any).payment?.findUnique) {
+        paymentRow = await (tx as any).payment.findUnique({ where: { orderId } });
+      }
+
+      for (const vendorOrder of sortedCancellable) {
         await this.restoreStockAndCancel(vendorOrder, tx);
+      }
+
+      if (
+        paymentRow &&
+        (paymentRow.status === PaymentStatus.PAID ||
+          paymentRow.status === PaymentStatus.PARTIALLY_REFUNDED)
+      ) {
+        await this.createRefundObligation(
+          tx,
+          paymentRow,
+          sortedCancellable,
+          `refund_order_cancel_${paymentRow.id}`,
+          'Customer order cancellation',
+        );
       }
     });
 
@@ -923,116 +1237,102 @@ export class OrdersService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      // Canonical row locking: Order -> VendorOrders (id ASC) -> Payment -> Products (id ASC) -> Listings (id ASC)
+      let paymentRow: { id: string; status: PaymentStatus; amount: Prisma.Decimal } | null = null;
+
+      if ((tx as any).$queryRaw) {
+        // 1. Lock Order parent row
+        await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id" FROM "orders" WHERE "id" = ${orderId} FOR UPDATE`,
+        );
+
+        // 2. Lock VendorOrders child rows in deterministic ascending ID order
+        await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id", "status" FROM "vendor_orders" WHERE "orderId" = ${orderId} ORDER BY "id" ASC FOR UPDATE`,
+        );
+
+        // 3. Lock Payment row
+        const paymentRows = (await (tx as any).$queryRaw(
+          Prisma.sql`SELECT "id", "status", "amount" FROM "payments" WHERE "orderId" = ${orderId} FOR UPDATE`,
+        )) as Array<{ id: string; status: PaymentStatus; amount: Prisma.Decimal }>;
+        paymentRow = paymentRows[0] ?? null;
+
+        // 4. Lock Products of this vendor order in deterministic ascending ID order
+        const sortedProductIds = Array.from(
+          new Set(vendorOrder.items.map((i) => i.productId)),
+        ).sort();
+        for (const pid of sortedProductIds) {
+          await (tx as any).$queryRaw(
+            Prisma.sql`SELECT "id" FROM "products" WHERE "id" = ${pid} FOR UPDATE`,
+          );
+        }
+
+        // 5. Lock VendorDailyListings of this vendor order in deterministic ascending ID order
+        const listingIds = Array.from(
+          new Set(
+            vendorOrder.items.map((i) => i.originalListingId).filter(Boolean) as string[],
+          ),
+        ).sort();
+        for (const lid of listingIds) {
+          await (tx as any).$queryRaw(
+            Prisma.sql`SELECT "id" FROM "vendor_daily_listings" WHERE "id" = ${lid} FOR UPDATE`,
+          );
+        }
+      } else if ((tx as any).payment?.findUnique) {
+        paymentRow = await (tx as any).payment.findUnique({ where: { orderId } });
+      }
+
       await this.restoreStockAndCancel(vendorOrder, tx);
+
+      if (
+        paymentRow &&
+        (paymentRow.status === PaymentStatus.PAID ||
+          paymentRow.status === PaymentStatus.PARTIALLY_REFUNDED)
+      ) {
+        await this.createRefundObligation(
+          tx,
+          paymentRow,
+          [vendorOrder],
+          `refund_vendor_order_cancel_${paymentRow.id}_${vendorOrder.id}`,
+          'Customer vendor order cancellation',
+        );
+      }
     });
 
     const updated = await this.getOwnedOrder(userId, orderId);
     return this.toResponseWithPayment(updated);
   }
 
+  private async createRefundObligation(
+    tx: Prisma.TransactionClient,
+    payment: { id: string; status: PaymentStatus; amount: Prisma.Decimal | number | string },
+    cancelledVendorOrders: Array<{ subtotal: Prisma.Decimal | number | string }>,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<void> {
+    await createOrPreserveRefundObligation(
+      tx,
+      payment,
+      cancelledVendorOrders,
+      idempotencyKey,
+      reason,
+    );
+  }
+
   private async restoreStockAndCancel(
     vendorOrder: VendorOrder & { items: OrderItem[] },
     tx: Prisma.TransactionClient,
   ): Promise<void> {
-    if ((tx as any).vendorOrder?.updateMany) {
-      const updateResult = await (tx as any).vendorOrder.updateMany({
-        where: { id: vendorOrder.id, status: 'PENDING' },
-        data: { status: 'CANCELLED' },
-      });
-      if (updateResult.count === 0) {
-        throw new ConflictException(
-          `Vendor order "${vendorOrder.id}" is not in PENDING status or was concurrently modified.`,
-        );
-      }
-    }
-
-    if ((tx as any).$queryRaw) {
-      // Canonical row locking: Products first, sorted by ID
-      const sortedProductIds = Array.from(new Set(vendorOrder.items.map((i) => i.productId))).sort();
-      for (const pid of sortedProductIds) {
-        await (tx as any).$queryRaw`SELECT id FROM products WHERE id = ${pid} FOR UPDATE`;
-      }
-
-      // Then VendorDailyListings, sorted by ID
-      const listingIds = Array.from(
-        new Set(vendorOrder.items.map((i) => i.originalListingId).filter(Boolean) as string[]),
-      ).sort();
-      for (const lid of listingIds) {
-        await (tx as any).$queryRaw`SELECT id FROM vendor_daily_listings WHERE id = ${lid} FOR UPDATE`;
-      }
-    }
-
-    const now = new Date();
-    for (const item of vendorOrder.items) {
-      if (item.originalListingId && (tx as any).vendorDailyListing) {
-        const listing = await (tx as any).vendorDailyListing.findUnique({
-          where: { id: item.originalListingId },
-          include: { lot: true },
-        });
-
-        const isExpired = listing ? new Date(listing.expiresAt).getTime() <= now.getTime() : true;
-        const isSafe = listing?.lot ? listing.lot.foodSafetyStatus === 'SAFE' : true;
-        const isPublished = listing?.status === 'PUBLISHED';
-
-        if (listing && !isExpired && isSafe && isPublished) {
-          if ((tx as any).$executeRaw) {
-            await (tx as any).$executeRaw`
-              UPDATE vendor_daily_listings
-              SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal,
-                  "quantityAvailable" = "quantityAvailable" + ${item.quantity}::decimal
-              WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
-            `;
-          }
-          await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
-          await this.inventoryEventsRepository.create(
-            {
-              productId: item.productId,
-              eventType: 'RESTOCKED',
-              quantityDelta: item.quantity,
-              vendorOrderId: vendorOrder.id,
-            },
-            tx,
-          );
-        } else {
-          if ((tx as any).$executeRaw) {
-            await (tx as any).$executeRaw`
-              UPDATE vendor_daily_listings
-              SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal
-              WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
-            `;
-          }
-          await this.inventoryEventsRepository.create(
-            {
-              productId: item.productId,
-              eventType: 'DISPOSED',
-              quantityDelta: -item.quantity,
-              vendorOrderId: vendorOrder.id,
-              notes: JSON.stringify({
-                disposition: 'EXPIRED_ON_CANCEL',
-                listingId: item.originalListingId,
-                orderItemId: item.id,
-                quantityDisposed: item.quantity,
-              }),
-            },
-            tx,
-          );
-        }
-      } else {
-        await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
-        await this.inventoryEventsRepository.create(
-          {
-            productId: item.productId,
-            eventType: 'RESTOCKED',
-            quantityDelta: item.quantity,
-            vendorOrderId: vendorOrder.id,
-          },
-          tx,
-        );
-      }
-    }
-    await this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'CANCELLED', tx);
+    await restoreVendorOrderStockAndTransition({
+      vendorOrder,
+      targetStatus: 'CANCELLED',
+      dispositionLabel: 'EXPIRED_ON_CANCEL',
+      tx,
+      productsRepository: this.productsRepository,
+      inventoryEventsRepository: this.inventoryEventsRepository,
+      vendorOrdersRepository: this.vendorOrdersRepository,
+    });
   }
-
   private async getOwnedOrder(userId: string, orderId: string): Promise<OrderWithDetails> {
     const order = await this.ordersRepository.findById(orderId);
     if (!order || order.customerId !== userId) {

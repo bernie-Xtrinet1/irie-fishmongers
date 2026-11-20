@@ -8,7 +8,7 @@ import { assertDisposableEnvironment, withCleanup } from '../../checkout-rollbac
 
 // Test reset mechanism: a uniquely named disposable schema, never shared tables.
 // Entire schema is removed after disconnect, including retained evidence rows.
-export async function withSettlementSchema(work: (db: PrismaService, upgrade: (target?: 47 | 48) => void) => Promise<void>, baseline: 43 | 44 = 43) {
+export async function withSettlementSchema(work: (db: PrismaService, upgrade: (target?: 45 | 47 | 48 | 66 | 67 | 68 | 69 | 70) => void) => Promise<void>, baseline: 43 | 44 | 66 | 67 | 68 | 69 | 70 = 43) {
   assertDisposableEnvironment();
   const schema = `settlement_test_${randomUUID().replace(/-/g, '')}`;
   const url = new URL(process.env.DATABASE_URL!);
@@ -18,8 +18,14 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: (t
   const dir = mkdtempSync(join(tmpdir(), 'settlement-migrations-'));
   const source = resolve(__dirname, '../../../../prisma');
   const migrations = readdirSync(join(source, 'migrations')).filter(x => /^\d/.test(x)).sort();
-  if (migrations.length !== 49) throw new Error('Expected 49 migrations including product reservation restriction');
+  if (migrations.length !== 70 || migrations[48] !== '20260928000000_product_reservation_restriction'
+    || migrations[65] !== '20261116000000_parent_mutation_integrity_hardening'
+    || migrations[66] !== '20261117000000_cutover_freshness_reset_audit'
+    || migrations[67] !== '20261118000000_product_suspect_recovery_foundation'
+    || migrations[68] !== '20261119000000_refund_attempt_ledger_foundation'
+    || migrations[69] !== '20261119120000_dual_control_refund_reconciliation_hardening') throw new Error('Expected exact 70-migration lineage');
   cpSync(join(source, 'schema.prisma'), join(dir, 'schema.prisma'));
+  let applied: number = baseline;
   for (const name of migrations.slice(0, baseline)) cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
   cpSync(join(source, 'migrations/migration_lock.toml'), join(dir, 'migrations/migration_lock.toml'));
   const deploy = () => {
@@ -31,8 +37,9 @@ export async function withSettlementSchema(work: (db: PrismaService, upgrade: (t
   return withCleanup(async () => {
     deploy();
     await work(db, (target = 48) => {
-      for (const name of migrations.slice(baseline, target))
+      for (const name of migrations.slice(applied, target))
         cpSync(join(source, 'migrations', name), join(dir, 'migrations', name), { recursive: true });
+      applied = Math.max(applied, target);
       deploy();
     });
   }, [async () => {

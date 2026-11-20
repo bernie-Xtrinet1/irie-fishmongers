@@ -12,7 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
-import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
+import { cleanupCustomerCartArtifacts, prepareCatchWeightCheckoutQuote } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
   return (res.body as ApiResponse<T>).data as T;
@@ -97,6 +97,7 @@ describe('Food Safety / Compliance (e2e)', () => {
   const customerEmails: string[] = [];
   const vendorUserEmails: string[] = [];
   const adminEmails: string[] = [];
+  const createdCatalogueIds: string[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -115,39 +116,46 @@ describe('Food Safety / Compliance (e2e)', () => {
   });
 
   afterAll(async () => {
-    // Customers first: cascades Order -> VendorOrder -> OrderItem, freeing
-    // the Restrict constraint on Product before products are deleted.
-    if (customerEmails.length > 0) {
-      await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      // Frees Product -> InventoryEvent's Restrict constraint.
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      // Frees Product -> SeafoodLot's Restrict constraint.
-      await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-    }
-    if (adminEmails.length > 0) {
-      // Frees Recall -> createdBy's Restrict constraint on the admin user.
-      await prisma.recall.deleteMany({ where: { createdBy: { email: { in: adminEmails } } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      // Cascades away TemperatureReading/Alert/QualityInspection/Incident/RecallLot,
-      // and frees SeafoodLot -> Vendor's Restrict constraint.
-      await prisma.seafoodLot.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      // Frees ComplianceAuditLog -> userId's Restrict constraint - every
-      // admin-driven status update (lot/recall/incident/inspection) now
-      // writes an audit log entry keyed to the acting user.
-      await prisma.complianceAuditLog.deleteMany({ where: { user: { email: { in: adminEmails } } } });
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
-    }
-    if (app) {
-      await app.close();
+    try {
+      if (customerEmails.length > 0) {
+        await cleanupCustomerCartArtifacts(prisma, customerEmails);
+      }
+      const retainedOrders =
+        customerEmails.length > 0
+          ? await prisma.order.count({ where: { customer: { email: { in: customerEmails } } } })
+          : 0;
+      if (retainedOrders === 0) {
+        if (customerEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
+        }
+        if (vendorUserEmails.length > 0) {
+          await prisma.vendorDailyListing.deleteMany({
+            where: { vendor: { user: { email: { in: vendorUserEmails } } } },
+          });
+          await prisma.inventoryEvent.deleteMany({
+            where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+          });
+          await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+        }
+        if (adminEmails.length > 0) {
+          await prisma.recall.deleteMany({ where: { createdBy: { email: { in: adminEmails } } } });
+        }
+        if (vendorUserEmails.length > 0) {
+          await prisma.seafoodLot.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+          await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
+        }
+        if (createdCatalogueIds.length > 0) {
+          await prisma.seafoodCatalogueItem.deleteMany({ where: { id: { in: createdCatalogueIds } } });
+        }
+        if (adminEmails.length > 0) {
+          await prisma.complianceAuditLog.deleteMany({ where: { user: { email: { in: adminEmails } } } });
+          await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
+        }
+      }
+    } finally {
+      if (app) {
+        await app.close();
+      }
     }
   });
 
@@ -253,7 +261,7 @@ describe('Food Safety / Compliance (e2e)', () => {
       .send({
         species,
         storageType: 'FRESH',
-        catchDate: '2026-07-01',
+        catchDate: new Date().toISOString().slice(0, 10),
         catchLocation: 'North Coast, Trelawny',
         landingSite: 'Falmouth Landing Site',
         weight: 40,
@@ -489,6 +497,7 @@ describe('Food Safety / Compliance (e2e)', () => {
       .set('Authorization', `Bearer ${customerToken}`)
       .send({ productId: product.id, quantity: 1 })
       .expect(201);
+    const quoteToken = await prepareCatchWeightCheckoutQuote(app, product.id, createdCatalogueIds);
     const checkoutRes = await request(server())
       .post('/api/v1/orders/checkout')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -497,6 +506,7 @@ describe('Food Safety / Compliance (e2e)', () => {
         deliveryParish: 'KINGSTON',
         deliveryPhone: '+18765551234',
         paymentMethod: 'CASH_ON_DELIVERY',
+        quoteToken,
       });
     expect(checkoutRes.status).toBe(201);
     const order = data<OrderData>(checkoutRes);

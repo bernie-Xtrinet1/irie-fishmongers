@@ -140,14 +140,19 @@ describe('DeliveryRunsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.driver.deleteMany({ where: { userId: driverUserId } });
-    await prisma.vendor.deleteMany({ where: { userId: vendorUserId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.user.delete({ where: { id: driverUserId } });
-    await prisma.category.delete({ where: { id: categoryId } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.driver.deleteMany({ where: { userId: driverUserId } });
+        await prisma.vendor.deleteMany({ where: { userId: vendorUserId } });
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.user.delete({ where: { id: driverUserId } });
+        await prisma.category.delete({ where: { id: categoryId } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('creates a delivery run with ordered stops', async () => {

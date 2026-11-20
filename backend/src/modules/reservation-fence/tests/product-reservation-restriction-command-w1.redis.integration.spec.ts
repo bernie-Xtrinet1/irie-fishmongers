@@ -117,7 +117,7 @@ describe('W3-P command W1 mutation-time restriction', () => {
     const ledger = ordinaryPhysicalLedgerKey(f.resource.markerId); f.keys.add(ledger); f.fields.add(ledger);
     const register = async (purpose: 'GENESIS' | 'EXECUTE') => {
       const grant: OrdinaryPhysicalGrant = { version: 1, grantId: randomUUID(), identity: JSON.stringify(identity),
-        tuple: f.tuple, purpose, expiresAt: 0 };
+        tuple: f.tuple, purpose, expiresAt: 0, controlRevision: 0 };
       const keys = [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger, 'reservation:fence:ordinary-command-grant:' + grant.grantId];
       const args = [JSON.stringify(grant)];
       expect((await f.evaluate(ORDINARY_PHYSICAL_REGISTER, keys, args)).code).toBe('REGISTERED');

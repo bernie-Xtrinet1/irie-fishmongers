@@ -12,11 +12,12 @@ import { fetchHealthStatus } from '@/lib/api/health';
 export const HEALTH_STATUS_QUERY_KEY = ['health-status'] as const;
 const REFETCH_INTERVAL_MS = 5_000;
 
-export function useHealthStatus(): UseQueryResult<DashboardSystemHealth> {
+export function useHealthStatus(enabled = true): UseQueryResult<DashboardSystemHealth> {
   return useQuery({
     queryKey: HEALTH_STATUS_QUERY_KEY,
     queryFn: () => fetchHealthStatus(),
     staleTime: REFETCH_INTERVAL_MS,
     refetchInterval: REFETCH_INTERVAL_MS,
+    enabled,
   });
 }

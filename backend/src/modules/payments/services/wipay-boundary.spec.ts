@@ -3,11 +3,12 @@ import { createHash } from 'crypto';
 import { NotImplementedException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { PaymentProviderName, Prisma } from '@prisma/client';
 
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter, WIPAY_SANDBOX_API_URL } from '../providers/wipay.adapter';
 import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
+import { RefundAttemptsRepository } from '../repositories/refund-attempts.repository';
 import { RefundsRepository } from '../repositories/refunds.repository';
 import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { PaymentsService } from './payments.service';
@@ -30,6 +31,12 @@ describe('WiPay service boundary with the real adapter', () => {
     applyRecoveryVerificationIfCurrent: jest.Mock;
   };
   let refunds: { create: jest.Mock; sumCompletedByPaymentId: jest.Mock };
+  let refundAttempts: {
+    prepareAndClaimAttempt: jest.Mock;
+    recordPreSendAbort: jest.Mock;
+    recordSyncOutcomeAndOutbox: jest.Mock;
+    quarantineAttemptOutcome: jest.Mock;
+  };
   let events: { emitAsync: jest.Mock };
   let service: PaymentsService;
   let fetchMock: jest.Mock;
@@ -73,6 +80,25 @@ describe('WiPay service boundary with the real adapter', () => {
       applyRecoveryVerificationIfCurrent: jest.fn(),
     };
     refunds = { create: jest.fn(), sumCompletedByPaymentId: jest.fn().mockResolvedValue(0) };
+    refundAttempts = {
+      prepareAndClaimAttempt: jest.fn().mockResolvedValue({
+        action: 'DISPATCH',
+        obligation: { id: 'obl-1', authorizedAmount: new Prisma.Decimal('500.00') },
+        refund: { id: 'ref-1', amount: new Prisma.Decimal('500.00'), status: 'PROCESSING' },
+        attempt: {
+          id: 'att-1',
+          providerIdempotencyKey: 'refund:obl-1:att:1',
+          attemptSequence: 1,
+        },
+        parentPaymentReference: 'txn-1',
+        provider: PaymentProviderName.WIPAY,
+        merchantAccountId: 'default',
+        remainingBalance: new Prisma.Decimal('500.00'),
+      }),
+      recordPreSendAbort: jest.fn().mockResolvedValue({}),
+      recordSyncOutcomeAndOutbox: jest.fn(),
+      quarantineAttemptOutcome: jest.fn(),
+    };
     events = { emitAsync: jest.fn().mockResolvedValue([]) };
     const config = new ConfigService({
       WIPAY_API_URL: WIPAY_SANDBOX_API_URL,
@@ -88,6 +114,7 @@ describe('WiPay service boundary with the real adapter', () => {
       new WiPayAdapter(config),
       new CashOnDeliveryAdapter(),
       events as unknown as EventEmitter2,
+      refundAttempts as unknown as RefundAttemptsRepository,
     );
     fetchMock = jest.fn();
     global.fetch = fetchMock;
@@ -146,12 +173,19 @@ describe('WiPay service boundary with the real adapter', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('does not persist a refund or change a paid payment when refunds are unsupported', async () => {
+  it('records pre-send abort without completing refund or charging network when WiPay refunds are unsupported', async () => {
     payment.status = 'PAID';
     payment.providerReference = 'txn-1';
-    await expect(service.refundByPaymentId('payment-1', 500, 'reason')).rejects.toBeInstanceOf(
-      NotImplementedException,
-    );
+    await expect(
+      service.refundByPaymentId(
+        'payment-1',
+        500,
+        'reason',
+        '11111111-1111-4111-8111-111111111111',
+      ),
+    ).rejects.toBeInstanceOf(NotImplementedException);
+    expect(refundAttempts.recordPreSendAbort).toHaveBeenCalledTimes(1);
+    expect(refundAttempts.recordSyncOutcomeAndOutbox).not.toHaveBeenCalled();
     expect(refunds.create).not.toHaveBeenCalled();
     expect(repository.update).not.toHaveBeenCalled();
     expect(events.emitAsync).not.toHaveBeenCalled();

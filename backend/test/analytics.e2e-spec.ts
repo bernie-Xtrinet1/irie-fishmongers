@@ -112,24 +112,35 @@ describe('Analytics (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (customerEmails.length > 0) {
-      await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (driverUserEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
-    }
-    if (app) {
-      await app.close();
+    try {
+      if (customerEmails.length > 0) {
+        await cleanupCustomerCartArtifacts(prisma, customerEmails);
+      }
+      const retainedOrders =
+        customerEmails.length > 0
+          ? await prisma.order.count({ where: { customer: { email: { in: customerEmails } } } })
+          : 0;
+      if (retainedOrders === 0) {
+        if (customerEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
+        }
+        if (vendorUserEmails.length > 0) {
+          await prisma.inventoryEvent.deleteMany({
+            where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+          });
+          await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
+        }
+        if (driverUserEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
+        }
+      }
+      if (adminEmails.length > 0) {
+        await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
+      }
+    } finally {
+      if (app) {
+        await app.close();
+      }
     }
   });
 

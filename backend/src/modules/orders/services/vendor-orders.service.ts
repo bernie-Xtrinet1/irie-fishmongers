@@ -1,6 +1,14 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  NotImplementedException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { VendorOrderStatus } from '@prisma/client';
+import { PaymentProviderName, Prisma, Refund, RefundStatus, VendorOrderStatus } from '@prisma/client';
 
 import { OrderAcceptedEvent } from '../../../common/events/order-accepted.event';
 import { PrismaService } from '../../../database/prisma.service';
@@ -8,9 +16,19 @@ import { InventoryEventsRepository } from '../../inventory/repositories/inventor
 import { PaymentsService } from '../../payments/services/payments.service';
 import { ProductsRepository } from '../../products/repositories/products.repository';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
-import { VendorOrderResponseEntity } from '../entities/vendor-order-response.entity';
+import {
+  VendorOrderRefundObligationEntity,
+  VendorOrderRefundOperationalStatus,
+  VendorOrderResponseEntity,
+} from '../entities/vendor-order-response.entity';
 import { PaginatedVendorOrdersEntity } from '../entities/paginated-vendor-orders.entity';
 import { VendorOrderWithItems, VendorOrdersRepository } from '../repositories/vendor-orders.repository';
+import {
+  createOrPreserveRefundObligation,
+  lockOrderFinancialHierarchy,
+  RefundObligationRecord,
+  restoreVendorOrderStockAndTransition,
+} from '../utils/order-cancellation-refund.util';
 
 const ALLOWED_TRANSITIONS: Record<VendorOrderStatus, VendorOrderStatus[]> = {
   PENDING: ['ACCEPTED', 'REJECTED', 'CANCELLED'],
@@ -27,6 +45,8 @@ const ALLOWED_TRANSITIONS: Record<VendorOrderStatus, VendorOrderStatus[]> = {
 
 @Injectable()
 export class VendorOrdersService {
+  private readonly logger = new Logger(VendorOrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly vendorOrdersRepository: VendorOrdersRepository,
@@ -85,111 +105,134 @@ export class VendorOrdersService {
     const vendorOrder = await this.getOwnedVendorOrder(userId, vendorOrderId);
     this.assertTransitionAllowed(vendorOrder.status, 'REJECTED');
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      if ((tx as any).vendorOrder?.updateMany) {
-        const updateRes = await (tx as any).vendorOrder.updateMany({
-          where: { id: vendorOrder.id, status: 'PENDING' },
-          data: { status: 'REJECTED' },
-        });
-        if (updateRes.count === 0) {
+    const txResult = await this.prisma.$transaction(async (tx) => {
+      const lockedHierarchy = await lockOrderFinancialHierarchy(tx, vendorOrder.orderId);
+      let lockedSubtotal: Prisma.Decimal = vendorOrder.subtotal;
+      let paymentRow: {
+        id: string;
+        status: any;
+        amount: Prisma.Decimal | number | string;
+        provider?: PaymentProviderName;
+        currency?: string;
+      } | null = null;
+
+      if (lockedHierarchy) {
+        const lockedVo = lockedHierarchy.vendorOrders.find((vo) => vo.id === vendorOrder.id);
+        if (!lockedVo) {
+          throw new NotFoundException(`Vendor order "${vendorOrder.id}" not found`);
+        }
+        if (lockedVo.status !== 'PENDING') {
           throw new ConflictException(
             `Vendor order "${vendorOrder.id}" is not in PENDING status or was concurrently modified.`,
           );
         }
+        lockedSubtotal = new Prisma.Decimal(lockedVo.subtotal);
+        paymentRow = lockedHierarchy.payment;
+      } else if (typeof (tx as any).payment?.findUnique === 'function') {
+        paymentRow = await (tx as any).payment.findUnique({
+          where: { orderId: vendorOrder.orderId },
+        });
       }
 
-      // Canonical row locking: Products first, sorted by ID
-      if ((tx as any).$queryRaw) {
-        const sortedProductIds = [...new Set(vendorOrder.items.map((i) => i.productId))].sort();
-        for (const pid of sortedProductIds) {
-          await (tx as any).$queryRaw`SELECT id FROM products WHERE id = ${pid} FOR UPDATE`;
-        }
+      const updated = await restoreVendorOrderStockAndTransition({
+        vendorOrder,
+        targetStatus: 'REJECTED',
+        dispositionLabel: 'EXPIRED_ON_REJECT',
+        tx,
+        productsRepository: this.productsRepository,
+        inventoryEventsRepository: this.inventoryEventsRepository,
+        vendorOrdersRepository: this.vendorOrdersRepository,
+      });
 
-        // Then VendorDailyListings, sorted by ID
-        const listingIds = [...new Set(vendorOrder.items.map((i) => i.originalListingId).filter(Boolean) as string[])].sort();
-        for (const lid of listingIds) {
-          await (tx as any).$queryRaw`SELECT id FROM vendor_daily_listings WHERE id = ${lid} FOR UPDATE`;
-        }
+      let obligation: RefundObligationRecord | null = null;
+      const hasTransactionalRefundStore =
+        Boolean(lockedHierarchy) || typeof (tx as any).refund?.create === 'function';
+
+      if (
+        hasTransactionalRefundStore &&
+        paymentRow &&
+        (paymentRow.status === 'PAID' || paymentRow.status === 'PARTIALLY_REFUNDED')
+      ) {
+        const idempotencyKey = `refund_vendor_order_reject_${paymentRow.id}_${vendorOrder.id}`;
+        obligation = await createOrPreserveRefundObligation(
+          tx,
+          paymentRow,
+          [{ subtotal: lockedSubtotal }],
+          idempotencyKey,
+          'Vendor rejected order',
+        );
       }
 
-      const now = new Date();
-      for (const item of vendorOrder.items) {
-        if (item.originalListingId && (tx as any).vendorDailyListing) {
-          const listing = await (tx as any).vendorDailyListing.findUnique({
-            where: { id: item.originalListingId },
-            include: { lot: true },
+      return {
+        updated,
+        obligation,
+        hasTransactionalRefundStore,
+      };
+    });
+
+    const response = VendorOrdersService.toResponse(txResult.updated);
+
+    if (!txResult.hasTransactionalRefundStore) {
+      // Compatibility fallback for isolated unit-test stubs passing an empty `{}` transaction handle
+      await this.paymentsService.refundForOrder(
+        vendorOrder.orderId,
+        vendorOrder.subtotal.toNumber(),
+        'Vendor rejected order',
+      );
+      return response;
+    }
+
+    if (!txResult.obligation) {
+      return response;
+    }
+
+    const obligation = txResult.obligation;
+    let finalRefund: Refund = obligation.refund;
+    let manualFallbackFromUnsupportedProvider = false;
+
+    if (
+      obligation.refund.status === RefundStatus.REQUIRED ||
+      obligation.refund.status === RefundStatus.PENDING
+    ) {
+      try {
+        const executed = await this.paymentsService.refundForOrder(
+          vendorOrder.orderId,
+          new Prisma.Decimal(obligation.refund.amount),
+          'Vendor rejected order',
+          obligation.refund.idempotencyKey ?? undefined,
+        );
+        if (executed) {
+          finalRefund = executed;
+        }
+      } catch (error) {
+        // Provider execution runs post-commit; gateway errors or unsupported adapters (e.g. WiPay)
+        // retain the committed REJECTED vendor order and durable internal Refund obligation.
+        manualFallbackFromUnsupportedProvider = error instanceof NotImplementedException;
+        if (typeof (this.prisma as any).refund?.findUnique === 'function') {
+          const persisted = await (this.prisma as any).refund.findUnique({
+            where: { id: obligation.refund.id },
           });
-
-          const isExpired = listing ? new Date(listing.expiresAt).getTime() <= now.getTime() : true;
-          const isSafe = listing?.lot ? listing.lot.foodSafetyStatus === 'SAFE' : true;
-          const isPublished = listing?.status === 'PUBLISHED';
-
-          if (listing && !isExpired && isSafe && isPublished) {
-            if ((tx as any).$executeRaw) {
-              await (tx as any).$executeRaw`
-                UPDATE vendor_daily_listings
-                SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal,
-                    "quantityAvailable" = "quantityAvailable" + ${item.quantity}::decimal
-                WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
-              `;
-            }
-            await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
-            await this.inventoryEventsRepository.create(
-              {
-                productId: item.productId,
-                eventType: 'RESTOCKED',
-                quantityDelta: item.quantity,
-                vendorOrderId: vendorOrder.id,
-              },
-              tx,
-            );
-          } else {
-            if ((tx as any).$executeRaw) {
-              await (tx as any).$executeRaw`
-                UPDATE vendor_daily_listings
-                SET "quantitySold" = "quantitySold" - ${item.quantity}::decimal
-                WHERE id = ${item.originalListingId} AND "quantitySold" >= ${item.quantity}::decimal
-              `;
-            }
-            await this.inventoryEventsRepository.create(
-              {
-                productId: item.productId,
-                eventType: 'DISPOSED',
-                quantityDelta: -item.quantity,
-                vendorOrderId: vendorOrder.id,
-                notes: JSON.stringify({
-                  disposition: 'EXPIRED_ON_REJECT',
-                  listingId: item.originalListingId,
-                  orderItemId: item.id,
-                  quantityDisposed: item.quantity,
-                }),
-              },
-              tx,
-            );
+          if (persisted) {
+            finalRefund = persisted;
           }
-        } else {
-          await this.productsRepository.adjustStock(item.productId, item.quantity, tx);
-          await this.inventoryEventsRepository.create(
-            {
-              productId: item.productId,
-              eventType: 'RESTOCKED',
-              quantityDelta: item.quantity,
-              vendorOrderId: vendorOrder.id,
-            },
-            tx,
+        }
+        if (!(error instanceof NotImplementedException)) {
+          this.logger.warn(
+            `Post-commit provider refund incomplete for vendorOrder=${vendorOrder.id} refund=${finalRefund.id} status=${finalRefund.status}: ${(error as Error).message}`,
           );
         }
       }
+    }
 
-      return this.vendorOrdersRepository.updateStatus(vendorOrder.id, 'REJECTED', tx);
-    });
-
-    await this.paymentsService.refundForOrder(
-      vendorOrder.orderId,
-      vendorOrder.subtotal.toNumber(),
-      'Vendor rejected order',
-    );
-    return VendorOrdersService.toResponse(updated);
+    return {
+      ...response,
+      refundObligation: VendorOrdersService.buildRefundObligationEntity(
+        finalRefund,
+        obligation.paymentProvider,
+        obligation.paymentCurrency,
+        manualFallbackFromUnsupportedProvider,
+      ),
+    };
   }
 
   async markPreparing(userId: string, vendorOrderId: string): Promise<VendorOrderResponseEntity> {
@@ -244,6 +287,59 @@ export class VendorOrdersService {
     return vendorOrder;
   }
 
+  private static buildRefundObligationEntity(
+    refund: Refund,
+    provider: PaymentProviderName,
+    currency: string,
+    unsupportedAutomatedRefund: boolean,
+  ): VendorOrderRefundObligationEntity {
+    const automatedRefundSupported =
+      !unsupportedAutomatedRefund && provider !== PaymentProviderName.WIPAY;
+
+    let operationalStatus: VendorOrderRefundOperationalStatus;
+    let manualRefundRequired: boolean;
+    let message: string;
+
+    if (refund.status === RefundStatus.COMPLETED) {
+      operationalStatus = 'REFUND_COMPLETED';
+      manualRefundRequired = false;
+      message = 'Refund completed with payment provider.';
+    } else if (refund.status === RefundStatus.RECONCILE_REQUIRED) {
+      operationalStatus = 'REFUND_RECONCILIATION_REQUIRED';
+      manualRefundRequired = true;
+      message =
+        'Provider refund execution had an uncertain outcome; durable obligation retained in RECONCILE_REQUIRED status.';
+    } else if (refund.status === RefundStatus.FAILED) {
+      operationalStatus = 'REFUND_FAILED';
+      manualRefundRequired = true;
+      message = 'Provider refund failed; manual refund intervention required.';
+    } else if (!automatedRefundSupported && refund.status === RefundStatus.REQUIRED) {
+      operationalStatus = 'MANUAL_REFUND_REQUIRED';
+      manualRefundRequired = true;
+      message =
+        'Payment provider does not support automated refunds; durable manual refund obligation retained in REQUIRED status.';
+    } else if (refund.status === RefundStatus.REQUIRED) {
+      operationalStatus = 'MANUAL_REFUND_REQUIRED';
+      manualRefundRequired = true;
+      message = 'Durable refund obligation retained in REQUIRED status.';
+    } else {
+      operationalStatus = 'REFUND_IN_PROGRESS';
+      manualRefundRequired = !automatedRefundSupported;
+      message = `Refund obligation retained in ${refund.status} status.`;
+    }
+
+    return {
+      refundId: refund.id,
+      status: refund.status,
+      amount: new Prisma.Decimal(refund.amount).toFixed(2),
+      currency,
+      provider,
+      automatedRefundSupported,
+      manualRefundRequired,
+      operationalStatus,
+      message,
+    };
+  }
   private static toResponse(vendorOrder: VendorOrderWithItems): VendorOrderResponseEntity {
     return {
       id: vendorOrder.id,

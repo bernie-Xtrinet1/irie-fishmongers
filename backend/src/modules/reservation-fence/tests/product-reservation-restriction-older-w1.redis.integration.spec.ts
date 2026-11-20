@@ -73,7 +73,7 @@ describe('W3-P older W1 mutation-time deny', () => {
     expect((await f.install(f.record('ALLOW'))).code).toBe('ACCEPTED');
     const register = async (from: OrdinaryReservationAuthorization['from']) => {
       const a: OrdinaryReservationAuthorization = { version: 1, tuple: f.tuple, from, target: f.resource,
-        quantity: 2, requestId: randomUUID(), expiresAt: 1 };
+        quantity: 2, requestId: randomUUID(), expiresAt: 1, controlRevision: 0 };
       const keys = [RESERVATION_FENCE_KEY, 'reservation:fence:w1:' + a.requestId];
       const registered = await f.evaluate(REGISTER_ORDINARY_RESERVATION, keys, [JSON.stringify(a)]);
       expect(registered.code).toBe('ACCEPTED');
@@ -99,7 +99,7 @@ describe('W3-P older W1 mutation-time deny', () => {
   }));
   it('missing control denies new authority before registration', () => isolated(async f => {
     const a: OrdinaryReservationAuthorization = { version: 1, tuple: f.tuple, from: null, target: f.resource,
-      quantity: 2, requestId: randomUUID(), expiresAt: 1 };
+      quantity: 2, requestId: randomUUID(), expiresAt: 1, controlRevision: 0 };
     const key = 'reservation:fence:w1:' + a.requestId, before = await f.snapshot();
     expect((await f.evaluate(REGISTER_ORDINARY_RESERVATION, [RESERVATION_FENCE_KEY, key], [JSON.stringify(a)])).code).toBe('FENCE_REJECTED');
     expect(await f.client.get(key)).toBeNull(); expect(await f.snapshot()).toEqual(before);

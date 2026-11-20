@@ -1,6 +1,9 @@
 import { ordinaryCommandAuthority } from './ordinary-command-authority';
 import { OrdinaryCommandDispatchClaimRepository } from '../repositories/ordinary-command-dispatch-claim.repository';
-import { requireUnrestrictedProduct } from '../repositories/product-reservation-restriction.repository';
+import {
+  currentAllowedControlRevision,
+  requireUnrestrictedProduct,
+} from '../repositories/product-reservation-restriction.repository';
 import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
 import { controlBytes, productControlKey } from '../types/product-reservation-restriction.types';
 import { OrdinaryDispatchClaim, OrdinaryMutationCapability, OrdinaryMutationAdmission, OrdinaryInitializationResult } from '../types/ordinary-command-dispatch-claim.types';
@@ -156,23 +159,34 @@ export class OrdinaryCommandPhysicalService {
         || marker.ordinaryAcknowledgedSequence !== 0 || rows.some(row => row.state === 'ACKNOWLEDGED')))
         throw new Error('Genesis denied');
       const binding = purpose === 'OBSERVE' ? null : await requireOrdinaryBarrierReadiness(tx, marker.id, command.id);
+      let w1Control: { productId: string; controlRevision: number } | undefined;
       if (purpose !== 'OBSERVE' && command.effect === 'W1') {
         await requireUnrestrictedProduct(tx, marker.productId);
+        const controlRevision = await currentAllowedControlRevision(tx, marker.productId);
         const bytes = controlBytes({ version: 1, productId: marker.productId, state: 'ALLOW', restrictionId: null,
-          restrictionRevision: 0, incarnation: fence.incarnation, epoch: fence.epoch });
+          restrictionRevision: controlRevision, incarnation: fence.incarnation, epoch: fence.epoch });
         const raw = await this.redis.eval(PRODUCT_CONTROL_INSTALL,
           [RESERVATION_FENCE_KEY, productControlKey(marker.productId)], [JSON.stringify(transitionTuple(fence)), bytes]);
         const result: unknown = typeof raw === 'string' ? JSON.parse(raw) : null;
         if (!result || typeof result !== 'object' || !('code' in result) || result.code !== 'ACCEPTED' ||
           !('value' in result) || result.value !== bytes) throw new Error('Product readiness denied');
+        w1Control = { productId: marker.productId, controlRevision };
       }
-      return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id, binding };
+      return { identity: JSON.stringify(result), tuple: transitionTuple(fence), markerId: marker.id, binding, w1Control };
     });
+  }
+
+  private verifyW1ReadinessStillCurrent(w1Control: { productId: string; controlRevision: number }): Promise<boolean> {
+    return new ReservationFenceRepository(this.prisma).locked(async tx => {
+      await requireUnrestrictedProduct(tx, w1Control.productId);
+      return (await currentAllowedControlRevision(tx, w1Control.productId)) === w1Control.controlRevision;
+    }).catch(() => false);
   }
 
   async #run(commandId: string, purpose: 'GENESIS' | 'EXECUTE' | 'OBSERVE', releaseClaim?: string, admission?: OrdinaryMutationAdmission): Promise<OrdinaryPhysicalResult> {
     const authority = await this.#load(commandId, purpose, releaseClaim, admission).catch(() => null);
     if (!authority) return { code: 'REJECTED' };
+    const w1Control = 'w1Control' in authority ? authority.w1Control : undefined;
     // load() commits before command execution. Product readiness initialization
     // runs inside its durable lock and never creates reservation authority.
     try {
@@ -181,6 +195,7 @@ export class OrdinaryCommandPhysicalService {
         [RESERVATION_FENCE_KEY, MUTATION_HISTORY_KEY, ledger], [authority.identity]), authority.identity);
       const grant: OrdinaryPhysicalGrant = { version: 1, grantId: randomUUID(), tuple: authority.tuple,
         identity: authority.identity, purpose, expiresAt: 0 };
+      if (w1Control) grant.controlRevision = w1Control.controlRevision;
       if (authority.binding) grant.barrierBinding = { ...authority.binding, version: 1 };
       if (authority.releasePublication) {
         const parent = (JSON.parse(authority.identity) as OrdinaryPhysicalIdentity).parent!;
@@ -196,6 +211,7 @@ export class OrdinaryCommandPhysicalService {
       if (!registered || typeof registered !== 'object' || !('code' in registered)) return { code: 'UNCERTAIN' };
       if (registered.code === 'REJECTED') return { code: 'REJECTED' };
       if (registered.code !== 'REGISTERED') return { code: 'UNCERTAIN' };
+      if (w1Control && !(await this.verifyW1ReadinessStillCurrent(w1Control))) return { code: 'REJECTED' };
       return this.decode(await this.redis.eval(purpose === 'GENESIS' ? ORDINARY_PHYSICAL_GENESIS : ORDINARY_PHYSICAL_EXECUTE,
         keys, [JSON.stringify(grant)]), authority.identity, purpose === 'GENESIS');
     } catch { return { code: 'UNCERTAIN' }; }

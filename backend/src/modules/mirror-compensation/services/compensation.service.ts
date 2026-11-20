@@ -75,7 +75,11 @@ export class CompensationService {
         lastError: sanitizedLastError,
         now: input.now,
       };
-      const unblock = existing.status === 'BLOCKED' && input.reasonCode !== 'ACCOUNTING_UNDERFLOW';
+      const unblock =
+        existing.status === 'BLOCKED' &&
+        existing.blockReason !== 'PRODUCT_SUSPECT' &&
+        input.reasonCode !== 'ACCOUNTING_UNDERFLOW' &&
+        input.reasonCode !== 'PRODUCT_SUSPENDED';
       const { count } = unblock
         ? await this.repository.advanceGenerationAndUnblock(existing.id, updateInput)
         : await this.repository.advanceGenerationPreservingStatus(existing.id, updateInput);

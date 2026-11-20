@@ -101,15 +101,20 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
   });
 
   describe('desired state dropped to zero while blocked', () => {
-    it('PRODUCT_SUSPECT unblocks without consulting product accounting', async () => {
+    it('PRODUCT_SUSPECT remains blocked and does not unblock when CartItem quantity is zero', async () => {
       repository.findById.mockResolvedValue(blockedRow({ blockReason: 'PRODUCT_SUSPECT' }));
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
 
       const result = await service.recheckBlocked('comp-1', new Date());
 
-      expect(inventoryReservations.observeProductReservations).not.toHaveBeenCalled();
-      expect(repository.unblockIfGenerationMatches).toHaveBeenCalledWith('comp-1', 3, expect.any(Date));
-      expect(result).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: 'comp-1' });
+      expect(inventoryReservations.observeProductReservations).toHaveBeenCalledWith('product-1', ['cart-1']);
+      expect(repository.unblockIfGenerationMatches).not.toHaveBeenCalled();
+      expect(repository.rescheduleBlockedCheckIfGenerationMatches).toHaveBeenCalledWith(
+        'comp-1',
+        3,
+        expect.any(Date),
+      );
+      expect(result).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: 'comp-1' });
     });
 
     it('MODE_NOT_ADMITTING unblocks without consulting the current mode', async () => {
@@ -185,6 +190,7 @@ describe('CompensationBlockedRecheckService.recheckBlocked', () => {
 
   describe('generation mismatch (stale check)', () => {
     it('a stale unblock reports STALE_BLOCKED_CHECK', async () => {
+      repository.findById.mockResolvedValue(blockedRow({ blockReason: 'MODE_NOT_ADMITTING' }));
       cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
       repository.unblockIfGenerationMatches.mockResolvedValue({ count: 0 });
 

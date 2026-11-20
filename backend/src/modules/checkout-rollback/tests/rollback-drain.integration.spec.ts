@@ -99,7 +99,10 @@ describe('G.4a drain characterization (real PostgreSQL/Redis)', () => {
     }, [async () => { resume.release(); await writer; }]);
     expect(await writer).toEqual({ outcome: 'REQUEUED_MODE_CHANGED', markerId });
     const e = await snapshot(cartId, productId);
-    expect(e.mode?.mode).toBe('LEGACY'); expect(e.holds[0]).toMatchObject({ status: 'ACTIVE', total: '2', indexed: 1 });
+    // Under W1 fencing + Conflict-C coordination, a stale reserveOrRenew resuming after
+    // DRAINING -> LEGACY retirement is rejected pre-write (holds[0].status === 'ABSENT'),
+    // whereas pre-W1 G.4a had leaked an ACTIVE hold into Redis.
+    expect(e.mode?.mode).toBe('LEGACY'); expect(e.holds[0]).toMatchObject({ status: 'ABSENT', total: null, indexed: 0 });
     expect(await f.syncStateRepository.findById(markerId)).toMatchObject({ status: 'PENDING', resolvedAt: null });
     expect(e.attempts).toHaveLength(0); expect(e.orders).toHaveLength(0); expect(e.payments).toHaveLength(0);
   });

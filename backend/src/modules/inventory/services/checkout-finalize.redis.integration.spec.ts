@@ -248,7 +248,7 @@ describe('CheckoutReservationRecoveryService.finalizeCheckoutConsumption (real R
       'utf8',
     );
     const revertLuaSource = fs.readFileSync(
-      path.resolve(__dirname, '../lua/checkout-revert-lua-scripts.ts'),
+      path.resolve(__dirname, '../lua/checkout-settlement-revert-lua-scripts.ts'),
       'utf8',
     );
     const finalizeLuaSource = fs.readFileSync(

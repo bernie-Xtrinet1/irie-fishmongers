@@ -15,6 +15,50 @@ export interface CartScopedBackfillTarget {
   quantity: number;
 }
 
+// Explicit operator authorization context required for W1 FRESHNESS_SWEEP.
+export interface FreshnessSweepAuthorization {
+  cutoverRunId: string;
+  operatorId: string;
+  barrierRevision: number;
+  reason?: string;
+}
+
+export interface AuthorizedFreshnessResetInput extends FreshnessSweepAuthorization, CartScopedBackfillTarget {
+  requestId?: string;
+  expectedGeneration?: number;
+  nowMs?: number;
+}
+
+export type FreshnessFailureCategory =
+  | 'UNAUTHORIZED'
+  | 'SUSPECT'
+  | 'CHECKOUT_IN_PROGRESS'
+  | 'FENCE_REJECTED'
+  | 'ESCALATED'
+  | 'INFRA';
+
+export type AuthorizedFreshnessResetResult =
+  | {
+      ok: true;
+      status: 'COMPLETED';
+      auditId: string;
+      requestId: string;
+      markerId: string;
+      generation: number;
+      expiresAt: number;
+      absoluteExpiresAt: number;
+      replayed: boolean;
+    }
+  | {
+      ok: false;
+      category: FreshnessFailureCategory;
+      code: string;
+      detail: string;
+      auditId: string | null;
+      requestId: string | null;
+      escalated: boolean;
+    };
+
 // GENERATION_DRIFT is the defensive backstop this design review's own
 // point 6 calls for: given a correctly-implemented mutation barrier,
 // CartReservationSyncState.generation for a target cannot actually move
@@ -46,10 +90,14 @@ export interface CartScopedOrphanOutcome {
 // target set.
 export type CartScopedFreshnessOutcome =
   | { outcome: 'CONVERGED'; target: CartScopedBackfillTarget; expiresAt: number }
-  | { outcome: 'BLOCKED'; target: CartScopedBackfillTarget; blockReason: 'PRODUCT_SUSPECT' }
+  | {
+      outcome: 'BLOCKED';
+      target: CartScopedBackfillTarget;
+      blockReason: 'PRODUCT_SUSPECT' | 'FRESHNESS_UNAUTHORIZED' | 'FRESHNESS_ESCALATION_REQUIRED';
+    }
   | {
       outcome: 'RETRY';
       target: CartScopedBackfillTarget;
-      reasonCode: 'CHECKOUT_IN_PROGRESS' | 'UNKNOWN_INFRA_FAILURE';
+      reasonCode: 'CHECKOUT_IN_PROGRESS' | 'FENCE_REJECTED' | 'UNKNOWN_INFRA_FAILURE';
       lastError: string | null;
     };

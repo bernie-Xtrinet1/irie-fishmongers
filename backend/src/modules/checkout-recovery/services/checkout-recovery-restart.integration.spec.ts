@@ -73,9 +73,15 @@ describe('Historical G.PR1 attempts lack explicit stale settlement authority (Po
     keys.clear();
   });
   afterAll(async () => {
-    await prisma.user.delete({ where: { id: customerId } });
-    await redis.quit();
-    await Promise.all([prisma.$disconnect(), live.$disconnect()]);
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.user.delete({ where: { id: customerId } });
+      }
+    } finally {
+      if (redis && redis.status !== 'end') await redis.quit();
+      await Promise.all([prisma.$disconnect(), live.$disconnect()]);
+    }
   });
   async function create() {
     return (

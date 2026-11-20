@@ -1,3 +1,4 @@
+import { seedHistoricalActiveReservation } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { randomUUID } from 'crypto';
 
 import {
@@ -61,7 +62,7 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     const { cartId, productId, markerId } = await unresolvedReleaseMarker(fixture, 4);
     // Seed a genuine cart-scoped hold first, matching the marker's
     // "release" desired state against a real prior reservation.
-    await fixture.inventoryReservations.reserveOrRenew(cartId, productId, fixture.customerId, 4);
+    await seedHistoricalActiveReservation(fixture.redisClient, cartId, productId, fixture.customerId, 4);
 
     const outcome = await fixture.recoveryService.reconcileOne(markerId, new Date());
 
@@ -147,6 +148,7 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     expect(after?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
     expect(after?.resolvedAt).toBeNull();
     observe.mockRestore();
+    await fixture.prisma.cartReservationSyncState.deleteMany({ where: { id: markerId } });
   });
 
   it('6. a genuine RESERVATION_CHECKOUT_IN_PROGRESS is retried, not blocked, and succeeds once checkout clears', async () => {
@@ -155,7 +157,7 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     const customerId = fixture.customerId;
     // checkoutMark validates its plan against an already-ACTIVE cart-scoped
     // reservation - it never creates one itself.
-    await fixture.inventoryReservations.reserveOrRenew(cartId, productId, customerId, 7);
+    await seedHistoricalActiveReservation(fixture.redisClient, cartId, productId, customerId, 7, 1_800_000);
 
     const redisService = new RedisService(fixture.redisClient);
     const checkoutState = new CheckoutReservationStateService(redisService);
@@ -191,7 +193,7 @@ describe('CartReservationSyncRecoveryService CART_SCOPED/LEGACY/MIRROR/DRAINING 
     it('7. release-shaped recovery is always allowed while DRAINING', async () => {
       await ensureMode(fixture, 'CART_SCOPED');
       const { cartId, productId, markerId } = await unresolvedReleaseMarker(fixture, 2);
-      await fixture.inventoryReservations.reserveOrRenew(cartId, productId, fixture.customerId, 2);
+      await seedHistoricalActiveReservation(fixture.redisClient, cartId, productId, fixture.customerId, 2);
 
       await fixture.modeService.setMode({ targetMode: 'DRAINING', updatedById: fixture.adminUserId });
 

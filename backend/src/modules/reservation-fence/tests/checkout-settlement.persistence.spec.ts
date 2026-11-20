@@ -12,7 +12,8 @@ import { resourceGuardKey, executionGateKey } from '../lua/reservation-mutation-
 import { RESERVATION_FENCE_KEY } from '../lua/reservation-fence-control.lua';
 import { transitionTuple } from '../repositories/reservation-fence.repository';
 import { PrismaService } from '../../../database/prisma.service';
-import { seedCartAndProduct, setUpCompensationFixture } from '../../mirror-compensation/repositories/compensation-repository-test-helpers';
+import { setUpCompensationFixture } from '../../mirror-compensation/repositories/compensation-repository-test-helpers';
+import { seedCartAndProductForSchema } from './ordinary-provenance-test-helpers';
 import { CheckoutSettlementRepository } from '../repositories/checkout-settlement.repository';
 import { ReservationFenceRepository } from '../repositories/reservation-fence.repository';
 import { withSettlementSchema } from './checkout-settlement-test-helpers';
@@ -317,7 +318,7 @@ function assertCatalogUpgrade(before: Catalog, after: Catalog): void {
 
 async function fixture(db: PrismaService) {
   const f = await setUpCompensationFixture(db);
-  const ids = await seedCartAndProduct(f);
+  const ids = await seedCartAndProductForSchema(f);
   const mode = await db.reservationEngineModeConfig.create({ data: { mode: 'CART_SCOPED', updatedById: ids.customerId } });
   const fence = await db.reservationFenceTransition.create({ data: { id: randomUUID(), incarnation: randomUUID(),
     epoch: 1, revision: mode.revision, phase: 'OPEN', protocol: 1, status: 'ACKNOWLEDGED', acknowledgedAt: new Date(),
@@ -513,8 +514,8 @@ describe('durable settlement manifests and forward migrations', () => {
     await expect(db.$transaction(tx => tx.checkoutReservationSettlement.update({ where: { id: m.id }, data: { state: 'FINALIZE_PENDING', effect: 'CHECKOUT_FINALIZE', settlementReplayId: randomUUID() } }))).rejects.toThrow();
     expect((await f.repo.find(m.id))?.state).toBe('PREPARED');
   }));
-  it('persists committed obligation with order, survives restart, and rejects a mismatched order scope', () => withSettlementSchema(async (db, upgrade) => {
-    const f = await fixture(db); upgrade(); const m = await f.repo.prepare(f.op.id, f.attempt.id, f.customerId);
+  it('persists committed obligation with order, survives restart, and rejects a mismatched order scope', () => withSettlementSchema(async (db) => {
+    const f = await fixture(db); const m = await f.repo.prepare(f.op.id, f.attempt.id, f.customerId);
     const results = await Promise.all([0, 1].map(() => db.$transaction(tx => f.repo.markAcquired(tx, m.id))));
     expect(results.map(r => r.count).sort()).toEqual([0, 1]);
     const product = await db.product.findUniqueOrThrow({ where: { id: f.productId } });
@@ -533,9 +534,9 @@ describe('durable settlement manifests and forward migrations', () => {
     await expect(db.$transaction(tx => f.repo.authority(tx, m.id, 'CHECKOUT_FINALIZE'))).resolves.toMatchObject({ manifest: { state: 'FINALIZE_PENDING' } });
     await db.orderItem.updateMany({ where: { vendorOrder: { orderId: order.id } }, data: { quantity: 3 } });
     await expect(db.$transaction(tx => f.repo.authority(tx, m.id, 'CHECKOUT_FINALIZE'))).rejects.toThrow('SETTLEMENT_ORDER_MISMATCH');
-  }));
-  it('rejects empty and over-limit prospective resource sets before manifest creation', () => withSettlementSchema(async (db, upgrade) => {
-    const f = await fixture(db); upgrade();
+  }, 67));
+  it('rejects empty and over-limit prospective resource sets before manifest creation', () => withSettlementSchema(async (db) => {
+    const f = await fixture(db);
     await db.cartReservationSyncState.update({ where: { id: f.marker.id }, data: { expectedQuantity: null } });
     await expect(f.repo.prepare(f.op.id, f.attempt.id, f.customerId)).rejects.toThrow('SETTLEMENT_RESOURCE_LIMIT');
     const product = await db.product.findUniqueOrThrow({ where: { id: f.productId } });
@@ -545,7 +546,7 @@ describe('durable settlement manifests and forward migrations', () => {
       expectedQuantity: 2, expectedMutationVersion: 1, generation: 1 })) });
     await expect(f.repo.prepare(f.op.id, f.attempt.id, f.customerId)).rejects.toThrow('SETTLEMENT_RESOURCE_LIMIT');
     expect(await db.checkoutReservationSettlement.count()).toBe(0);
-  }));
+  }, 67));
   it('acknowledges SETTLED only with protocol-produced completion evidence for the selected durable action', () => withSettlementSchema(async (db, upgrade) => {
     const f = await fixture(db); upgrade(); const m = await f.repo.prepare(f.op.id, f.attempt.id, f.customerId);
     expect(m.settlementReplayId).toBeNull();

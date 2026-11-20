@@ -12,7 +12,7 @@ import { SpeciesService } from '../services/species.service';
 
 @ApiTags('species')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('species')
 export class SpeciesController {
   constructor(private readonly speciesService: SpeciesService) {}
@@ -25,7 +25,6 @@ export class SpeciesController {
   }
 
   @Post()
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Register a managed species (admin only)' })
   @ApiResponseDoc({ status: 201, type: SpeciesResponseEntity })
@@ -34,7 +33,6 @@ export class SpeciesController {
   }
 
   @Patch(':id')
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Update a managed species (admin only)' })
   @ApiResponseDoc({ status: 200, type: SpeciesResponseEntity })

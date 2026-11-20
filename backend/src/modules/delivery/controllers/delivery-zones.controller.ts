@@ -20,7 +20,7 @@ import { ZoneResolutionService } from '../services/zone-resolution.service';
 
 @ApiTags('delivery-zones')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('delivery-zones')
 export class DeliveryZonesController {
   constructor(
@@ -44,7 +44,6 @@ export class DeliveryZonesController {
   }
 
   @Post()
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Create a delivery zone (admin only)' })
   @ApiResponseDoc({ status: 201, type: DeliveryZoneResponseEntity })
@@ -53,7 +52,6 @@ export class DeliveryZonesController {
   }
 
   @Patch(':id')
-  @UseGuards(RolesGuard)
   @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({ summary: 'Update a delivery zone (admin only)' })
   @ApiResponseDoc({ status: 200, type: DeliveryZoneResponseEntity })

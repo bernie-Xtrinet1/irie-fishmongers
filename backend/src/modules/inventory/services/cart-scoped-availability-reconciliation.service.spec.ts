@@ -195,7 +195,8 @@ describe('InventoryReservationsService (cart-scoped model - availability/reconci
       fenceRead = jest.fn().mockResolvedValue(fence);
       installationRead = jest.fn().mockResolvedValue(null);
       Object.assign(service, { observationPrisma: { reservationFenceTransition: { findFirst: fenceRead },
-        productReservationRestriction: { findUnique: restrictionRead },
+        productReservationRestriction: { findFirst: restrictionRead },
+        productSuspectRecovery: { findFirst: jest.fn().mockResolvedValue(null) },
         productReservationRestrictionInstallation: { findUnique: installationRead } } });
       redis.eval.mockResolvedValue(reply());
     });

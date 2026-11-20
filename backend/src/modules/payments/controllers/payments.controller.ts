@@ -24,6 +24,7 @@ import { RoleName } from '@prisma/client';
 import { Request } from 'express';
 
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { IdempotencyKey } from '../../../common/decorators/idempotency-key.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -125,7 +126,14 @@ export class PaymentsController {
   refund(
     @Param('id') id: string,
     @Body() dto: RefundPaymentDto,
+    @IdempotencyKey() idempotencyKey: string,
+    @CurrentUser() user?: RequestUser,
   ): Promise<RefundResponseEntity> {
-    return this.paymentsService.refundByPaymentId(id, dto.amount, dto.reason);
+    if (user) {
+      return this.paymentsService.refundByPaymentId(id, dto.amount, dto.reason, idempotencyKey, {
+        actor: { actorId: user.id, actorRole: user.roles?.[0] ?? null },
+      });
+    }
+    return this.paymentsService.refundByPaymentId(id, dto.amount, dto.reason, idempotencyKey);
   }
 }

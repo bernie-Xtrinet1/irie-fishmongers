@@ -8,6 +8,7 @@ import { CheckoutAttemptModule } from '../checkout-attempt/checkout-attempt.modu
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { ProductsModule } from '../products/products.module';
+import { ReservationEngineModeModule } from '../reservation-engine-mode/reservation-engine-mode.module';
 import { VendorTiersModule } from '../vendor-tiers/vendor-tiers.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { WeightAdjustmentModule } from '../weight-adjustment/weight-adjustment.module';
@@ -38,6 +39,7 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     InventoryModule,
     CartMutationBarrierModule,
     WeightAdjustmentModule,
+    ReservationEngineModeModule,
   ],
   controllers: [OrdersController, VendorOrdersController],
   providers: [

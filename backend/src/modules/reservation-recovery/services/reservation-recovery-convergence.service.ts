@@ -31,6 +31,15 @@ import {
 // recovery is BLOCKED(MODE_NOT_ADMITTING), never written through - recovery
 // must never create a second admission path around DRAINING merely because
 // a CartItem already exists (frozen policy; see the DA.4B design review).
+type InternalCartScopedResult =
+  | { outcome: 'CONVERGED' }
+  | { outcome: 'BLOCKED'; blockReason: 'PRODUCT_SUSPECT' }
+  | {
+      outcome: 'RETRY';
+      reasonCode: 'CHECKOUT_IN_PROGRESS' | 'FENCE_REJECTED' | 'UNKNOWN_INFRA_FAILURE';
+      lastError: string | null;
+    };
+
 @Injectable()
 export class ReservationRecoveryConvergenceService implements ReservationRecoveryTarget {
   constructor(
@@ -95,12 +104,20 @@ export class ReservationRecoveryConvergenceService implements ReservationRecover
   async convergeCartScopedDirect(
     input: ReservationRecoveryConvergenceInput,
   ): Promise<DirectCartScopedConvergenceResult> {
-    return this.convergeCartScopedCore(input);
+    const core = await this.convergeCartScopedCore(input);
+    if (core.outcome === 'RETRY') {
+      return {
+        outcome: 'RETRY',
+        reasonCode: core.reasonCode === 'FENCE_REJECTED' ? 'UNKNOWN_INFRA_FAILURE' : core.reasonCode,
+        lastError: core.lastError,
+      };
+    }
+    return core;
   }
 
   private async convergeCartScopedCore(
     input: ReservationRecoveryConvergenceInput,
-  ): Promise<DirectCartScopedConvergenceResult> {
+  ): Promise<InternalCartScopedResult> {
     if (input.desiredQuantity === null) {
       try {
         const result = await this.inventoryReservations.releaseReservation(input.cartId, input.productId);
@@ -133,15 +150,26 @@ export class ReservationRecoveryConvergenceService implements ReservationRecover
         input.desiredQuantity,
       );
       if (!outcome.ok) {
-        if (outcome.code === 'RESERVATION_PRODUCT_SUSPENDED') {
+        if (
+          outcome.code === 'RESERVATION_PRODUCT_SUSPENDED' ||
+          outcome.code === 'RESERVATION_ACCOUNTING_UNDERFLOW' ||
+          outcome.code === 'RESERVATION_ACCOUNTING_CORRUPTION' ||
+          outcome.code === 'RESERVATION_MALFORMED_RESOURCE'
+        ) {
           return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };
         }
         // RESERVATION_CHECKOUT_IN_PROGRESS - an active checkout is
         // currently consuming this reservation; back off and retry rather
-        // than force-overwrite it.
-        return outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS'
-          ? { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null }
-          : { outcome: 'RETRY', reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: outcome.code };
+        // than force-overwrite it. FENCE_REJECTED distinguishes phase/fence
+        // rejection (for example mid-transition or disagreement) from generic
+        // infrastructure errors.
+        if (outcome.code === 'RESERVATION_CHECKOUT_IN_PROGRESS') {
+          return { outcome: 'RETRY', reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null };
+        }
+        if (outcome.code === 'FENCE_REJECTED') {
+          return { outcome: 'RETRY', reasonCode: 'FENCE_REJECTED', lastError: outcome.code };
+        }
+        return { outcome: 'RETRY', reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: outcome.code };
       }
       if (outcome.result.underflow !== null) {
         return { outcome: 'BLOCKED', blockReason: 'PRODUCT_SUSPECT' };

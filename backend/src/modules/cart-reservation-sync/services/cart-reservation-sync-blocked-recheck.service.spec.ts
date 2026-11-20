@@ -93,8 +93,21 @@ describe('CartReservationSyncBlockedRecheckService', () => {
     });
   });
 
-  it('unblocks immediately when the CartItem has disappeared - a release-shaped target is never blocked', async () => {
+  it('preserves BLOCKED(PRODUCT_SUSPECT) even when the CartItem has disappeared', async () => {
     syncState.findById.mockResolvedValue(buildBlockedMarker());
+    cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
+    syncState.rescheduleBlockedCheckIfGenerationMatches.mockResolvedValue({ count: 1 });
+
+    const outcome = await service.recheckBlocked('marker-1', new Date());
+
+    expect(syncState.unblockIfGenerationMatches).not.toHaveBeenCalled();
+    expect(inventoryReservations.observeProductReservations).toHaveBeenCalledWith('product-1', ['cart-1']);
+    expect(modeService.getCurrentMode).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', markerId: 'marker-1' });
+  });
+
+  it('unblocks MODE_NOT_ADMITTING when the CartItem has disappeared', async () => {
+    syncState.findById.mockResolvedValue(buildBlockedMarker({ blockReason: 'MODE_NOT_ADMITTING' }));
     cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
     syncState.unblockIfGenerationMatches.mockResolvedValue({ count: 1 });
 
@@ -186,7 +199,7 @@ describe('CartReservationSyncBlockedRecheckService', () => {
   });
 
   it('reports STALE_BLOCKED_CHECK when the generation-fenced unblock misses (customer mutation superseded)', async () => {
-    syncState.findById.mockResolvedValue(buildBlockedMarker());
+    syncState.findById.mockResolvedValue(buildBlockedMarker({ blockReason: 'MODE_NOT_ADMITTING' }));
     cartRepository.findItemByCartAndProduct.mockResolvedValue(null);
     syncState.unblockIfGenerationMatches.mockResolvedValue({ count: 0 });
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import * as dotenv from 'dotenv';
+import type { ReservationEngineMode } from '@prisma/client';
 import { Redis } from 'ioredis';
 
 import {
@@ -9,6 +10,9 @@ import {
   productTotalKey,
   reservationKey,
 } from '../constants/inventory.constants';
+import { RESERVATION_FENCE_KEY } from '../../reservation-fence/lua/reservation-fence-control.lua';
+import { MUTATION_HISTORY_KEY } from '../../reservation-fence/lua/reservation-mutation-common.lua';
+import { transitionTuple } from '../../reservation-fence/repositories/reservation-fence.repository';
 
 dotenv.config();
 
@@ -68,12 +72,12 @@ export async function cleanupKeys(client: Redis, createdKeys: Set<string>): Prom
 // Historical, pre-fence inventory for legacy checkout/recovery tests only.
 // This is fixture construction, not proof of current W1 authorization.
 export async function seedHistoricalActiveReservation(
-  client: Redis, cartId: string, productId: string, customerId: string, quantity: number,
+  client: Redis, cartId: string, productId: string, customerId: string, quantity: number, ttlMs = 900000,
 ): Promise<void> {
   const now = Date.now();
   if (await client.exists(reservationKey(cartId, productId))) throw new Error('Historical fixture already exists');
   await client.set(reservationKey(cartId, productId), JSON.stringify({ version: 1, cartId, customerId, quantity,
-    status: 'ACTIVE', createdAt: now, lastRenewedAt: now, expiresAt: now + 900000, absoluteExpiresAt: now + 3600000,
+    status: 'ACTIVE', createdAt: now, lastRenewedAt: now, expiresAt: now + ttlMs, absoluteExpiresAt: now + Math.max(3600000, ttlMs),
     checkoutIdempotencyKey: null, checkoutPendingAt: null, checkoutPendingExpiresAt: null }));
   await client.sadd(cartIndexKey(cartId), productId);
   await client.sadd(productIndexKey(productId), cartId);
@@ -102,4 +106,56 @@ export async function getStoredTotal(client: Redis, productId: string): Promise<
 
 export async function getSuspectFlag(client: Redis, productId: string): Promise<string | null> {
   return client.get(productSuspectKey(productId));
+}
+
+export async function ensureOpenReservationFence(
+  prisma: any,
+  redisClient: Redis,
+  targetMode: ReservationEngineMode,
+  actorId: string,
+): Promise<void> {
+  let mode = await prisma.reservationEngineModeConfig.findFirst({
+    orderBy: { revision: 'desc' },
+  });
+  if (!mode || mode.mode !== targetMode) {
+    mode = await prisma.reservationEngineModeConfig.create({
+      data: { mode: targetMode, updatedById: actorId },
+    });
+  }
+
+  let fence = await prisma.reservationFenceTransition.findFirst({
+    where: {
+      status: 'ACKNOWLEDGED',
+      phase: 'OPEN',
+      mode: targetMode,
+      modeRevision: mode.revision,
+    },
+    orderBy: { revision: 'desc' },
+  });
+
+  if (!fence) {
+    const maxFence = await prisma.reservationFenceTransition.findFirst({
+      orderBy: { revision: 'desc' },
+      select: { revision: true },
+    });
+    const nextRevision = (maxFence?.revision ?? 0) + 1;
+    fence = await prisma.reservationFenceTransition.create({
+      data: {
+        incarnation: randomUUID(),
+        epoch: 1,
+        revision: nextRevision,
+        phase: 'OPEN',
+        protocol: 1,
+        status: 'ACKNOWLEDGED',
+        acknowledgedAt: new Date(),
+        mode: targetMode,
+        modeRevision: mode.revision,
+        reason: 'OPEN',
+        actorId,
+      },
+    });
+  }
+
+  await redisClient.set(RESERVATION_FENCE_KEY, JSON.stringify(transitionTuple(fence)));
+  await redisClient.hset(MUTATION_HISTORY_KEY, 'incarnation', fence.incarnation);
 }

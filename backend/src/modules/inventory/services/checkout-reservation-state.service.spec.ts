@@ -251,29 +251,31 @@ describe('CheckoutReservationStateService', () => {
     });
   });
 
-  describe('no caller wiring', () => {
-    it('is never referenced by CartService, OrdersService, or ProductsService', () => {
+  describe('caller boundary (ADR-007 mode-aware wiring)', () => {
+    it('is only referenced in orders/cart/products production modules by OrdersService', () => {
       const fs = jest.requireActual<typeof import('fs')>('fs');
       const path = jest.requireActual<typeof import('path')>('path');
-      const roots = ['../../cart', '../../orders', '../../products'].map((rel) =>
-        path.resolve(__dirname, rel),
-      );
+      const modulesRoot = path.resolve(__dirname, '../..');
+      const roots = ['cart', 'orders', 'products'].map((rel) => path.join(modulesRoot, rel));
+      const allowedCallers = new Set(['orders/services/orders.service.ts']);
 
-      function collectTsFiles(dir: string): string[] {
+      function collectProdTsFiles(dir: string): string[] {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         return entries.flatMap((entry: import('fs').Dirent) => {
           const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) return collectTsFiles(full);
-          return entry.name.endsWith('.ts') ? [full] : [];
+          if (entry.isDirectory()) return collectProdTsFiles(full);
+          return entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts') ? [full] : [];
         });
       }
 
       const offenders: string[] = [];
       for (const root of roots) {
-        for (const file of collectTsFiles(root)) {
+        for (const file of collectProdTsFiles(root)) {
+          const rel = path.relative(modulesRoot, file).replace(/\\/g, '/');
+          if (allowedCallers.has(rel)) continue;
           const contents = fs.readFileSync(file, 'utf8');
           if (contents.includes('CheckoutReservationStateService')) {
-            offenders.push(file);
+            offenders.push(rel);
           }
         }
       }

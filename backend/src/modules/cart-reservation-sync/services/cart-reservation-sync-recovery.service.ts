@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+import { Prisma } from '@prisma/client';
+
 import { sanitizeErrorMessage } from '../../../common/utils/sanitize-error-message.util';
 import { PrismaService } from '../../../database/prisma.service';
 import { CartRepository } from '../../cart/repositories/cart.repository';
@@ -14,10 +16,26 @@ import {
   RunBatchResult,
 } from '../types/cart-reservation-sync-recovery.types';
 import { BLOCKED_RECHECK_INTERVAL_MS, CartReservationSyncBlockedRecheckService } from './cart-reservation-sync-blocked-recheck.service';
+import {
+  DEFAULT_RECOVERY_BATCH_SIZE,
+  MAX_FENCE_DISAGREEMENT_RETRY_ATTEMPTS,
+  MAX_LAST_ERROR_LENGTH,
+  MAX_RECOVERY_BATCH_SIZE,
+  MAX_RECOVERY_RETRY_ATTEMPTS,
+  classifyRetryFailure,
+  escalateMarkerRetryLimit,
+  releaseMarkerIfModeChanged,
+  tallyRecoveryOutcome,
+  validateBatchInput,
+} from './cart-reservation-sync-recovery-outcome.helper';
 
-export const MAX_LAST_ERROR_LENGTH = 500;
-export const DEFAULT_RECOVERY_BATCH_SIZE = 50;
-export const MAX_RECOVERY_BATCH_SIZE = 200;
+export {
+  DEFAULT_RECOVERY_BATCH_SIZE,
+  MAX_FENCE_DISAGREEMENT_RETRY_ATTEMPTS,
+  MAX_LAST_ERROR_LENGTH,
+  MAX_RECOVERY_BATCH_SIZE,
+  MAX_RECOVERY_RETRY_ATTEMPTS,
+};
 
 // Phase 16A.0-DA, Unit DA.1B (see the DA.1B claim-fencing review), extended
 // in Unit DA.4B (see the DA.4B frozen plan) to become mode-aware. The
@@ -94,36 +112,54 @@ export class CartReservationSyncRecoveryService {
     const converged = await this.recoveryTarget.converge({ cartId, productId, customerId, desiredQuantity });
 
     if (converged.outcome === 'BLOCKED') {
+      if (converged.blockReason === 'MODE_NOT_ADMITTING') {
+        const modeChanged = await this.releaseIfModeChanged(
+          markerId, cartId, productId, claimedGeneration, claimedAttemptCount, converged.observedMode, now,
+        );
+        if (modeChanged) return modeChanged;
+      }
       return this.enterBlocked(markerId, cartId, productId, claimedGeneration, claimedAttemptCount, converged.blockReason, now);
     }
 
     if (converged.outcome === 'RETRY') {
-      const message =
-        converged.reasonCode === 'CHECKOUT_IN_PROGRESS'
-          ? 'cart-scoped reservation has an active checkout in progress'
-          : sanitizeErrorMessage(converged.lastError, MAX_LAST_ERROR_LENGTH);
+      const modeChanged = await this.releaseIfModeChanged(
+        markerId, cartId, productId, claimedGeneration, claimedAttemptCount, converged.observedMode, now,
+      );
+      if (modeChanged) return modeChanged;
+
+      const { message, retryLimit } = classifyRetryFailure(converged.reasonCode, converged.lastError);
+      if (claimedAttemptCount >= retryLimit) {
+        return this.escalateRetryLimit(markerId, cartId, productId, claimedGeneration, claimedAttemptCount, message, now);
+      }
       return this.handleRetry(markerId, claimedGeneration, claimedAttemptCount, message);
     }
 
     // CONVERGED
-    const { modeChanged, resolvedCount } = await this.prisma.$transaction(async (tx) => {
+    const { modeChanged, escalatedOutcome, resolvedCount } = await this.prisma.$transaction(async (tx) => {
       const stillCurrent = await this.modeService.verifyModeRevisionUnchanged(tx, {
         revisionId: converged.observedMode.revisionId,
         revision: converged.observedMode.revision,
       });
       if (!stillCurrent) {
+        if (claimedAttemptCount >= MAX_RECOVERY_RETRY_ATTEMPTS) {
+          const escalated = await this.escalateRetryLimit(
+            markerId, cartId, productId, claimedGeneration, claimedAttemptCount,
+            'reservation-engine mode changed past retry bound during recovery', now, tx,
+          );
+          return { modeChanged: true, escalatedOutcome: escalated, resolvedCount: 0 };
+        }
         await this.syncState.releaseClaimIfCurrent(
-          markerId,
-          claimedGeneration,
-          claimedAttemptCount,
-          'reservation-engine mode identity changed during recovery',
-          tx,
+          markerId, claimedGeneration, claimedAttemptCount, 'reservation-engine mode identity changed during recovery', tx,
         );
-        return { modeChanged: true, resolvedCount: 0 };
+        return { modeChanged: true, escalatedOutcome: null, resolvedCount: 0 };
       }
       const resolved = await this.syncState.resolveClaimIfCurrent(markerId, claimedGeneration, claimedAttemptCount, now, tx);
-      return { modeChanged: false, resolvedCount: resolved.count };
+      return { modeChanged: false, escalatedOutcome: null, resolvedCount: resolved.count };
     });
+
+    if (escalatedOutcome) {
+      return escalatedOutcome;
+    }
 
     if (modeChanged) {
       this.logger.warn('Recovery converged but the reservation-engine mode changed before resolution could be confirmed', {
@@ -146,7 +182,7 @@ export class CartReservationSyncRecoveryService {
   // reconcileOne or the sibling blocked-recheck service by its own
   // just-read status - mirroring CompensationBatchService's own dispatch.
   async runBatch(input: RunBatchInput): Promise<RunBatchResult> {
-    const validationFailure = CartReservationSyncRecoveryService.validateInput(input);
+    const validationFailure = validateBatchInput(input);
     if (validationFailure) {
       return { ok: false, code: 'INVALID_INPUT', ...validationFailure };
     }
@@ -176,7 +212,7 @@ export class CartReservationSyncRecoveryService {
           candidate.status === 'BLOCKED'
             ? await this.blockedRecheck.recheckBlocked(candidate.id, input.now)
             : await this.reconcileOne(candidate.id, input.now);
-        CartReservationSyncRecoveryService.tallyOutcome(counters, outcome);
+        tallyRecoveryOutcome(counters, outcome);
       } catch (error) {
         const sanitizedMessage = sanitizeErrorMessage(
           CartReservationSyncRecoveryService.errorMessage(error),
@@ -297,59 +333,31 @@ export class CartReservationSyncRecoveryService {
     return { outcome: 'ALREADY_CLAIMED', markerId };
   }
 
-  private static validateInput(input: RunBatchInput): { field: string; reason: string } | null {
-    if (!(input.now instanceof Date) || Number.isNaN(input.now.getTime())) {
-      return { field: 'now', reason: 'now must be a valid Date' };
-    }
-    if (input.limit !== undefined) {
-      if (!Number.isInteger(input.limit) || input.limit <= 0) {
-        return { field: 'limit', reason: 'limit must be a positive integer' };
-      }
-      if (input.limit > MAX_RECOVERY_BATCH_SIZE) {
-        return { field: 'limit', reason: `limit must not exceed ${MAX_RECOVERY_BATCH_SIZE}` };
-      }
-    }
-    return null;
+  private releaseIfModeChanged(
+    markerId: string, cartId: string, productId: string,
+    claimedGeneration: number, claimedAttemptCount: number,
+    observedMode: { revisionId: string | null; revision: number | null }, now: Date,
+  ): Promise<ReconcileOneOutcome | null> {
+    return releaseMarkerIfModeChanged({
+      prisma: this.prisma, modeService: this.modeService, syncState: this.syncState, logger: this.logger,
+      markerId, cartId, productId, claimedGeneration, claimedAttemptCount, observedMode, now,
+      recheckIntervalMs: BLOCKED_RECHECK_INTERVAL_MS,
+      classifySuperseded: () => this.classifySupersededOrFenced(markerId, cartId, productId, claimedGeneration),
+    });
   }
 
-  private static tallyOutcome(counters: RunBatchCounters, outcome: ReconcileOneOutcome): void {
-    switch (outcome.outcome) {
-      case 'RESOLVED_CONVERGED':
-        counters.resolvedConverged += 1;
-        return;
-      case 'REQUEUED_RETRYABLE_FAILURE':
-        counters.requeuedRetryableFailure += 1;
-        return;
-      case 'REQUEUED_SUPERSEDED':
-        counters.requeuedSuperseded += 1;
-        return;
-      case 'REQUEUED_MODE_CHANGED':
-        counters.requeuedModeChanged += 1;
-        return;
-      case 'BLOCKED_PRODUCT_SUSPECT':
-      case 'BLOCKED_MODE_NOT_ADMITTING':
-        counters.blocked += 1;
-        return;
-      case 'UNBLOCKED_PENDING':
-        counters.unblocked += 1;
-        return;
-      case 'STALE_BLOCKED_CHECK':
-        counters.staleBlockedCheck += 1;
-        return;
-      case 'STALE_CLAIM':
-        counters.staleClaim += 1;
-        return;
-      case 'ALREADY_RESOLVED':
-      case 'ALREADY_CLAIMED':
-      case 'NOT_DUE':
-      case 'NOT_FOUND':
-        counters.skipped += 1;
-        return;
-      default: {
-        const exhaustiveCheck: never = outcome;
-        throw new Error(`Unhandled ReconcileOneOutcome outcome: ${JSON.stringify(exhaustiveCheck)}`);
-      }
-    }
+  private async escalateRetryLimit(
+    markerId: string, cartId: string, productId: string,
+    claimedGeneration: number, claimedAttemptCount: number,
+    detail: string | null, now: Date, tx?: Prisma.TransactionClient,
+  ): Promise<ReconcileOneOutcome> {
+    return escalateMarkerRetryLimit({
+      syncState: this.syncState, logger: this.logger,
+      markerId, cartId, productId, claimedGeneration, claimedAttemptCount, detail, now,
+      recheckIntervalMs: BLOCKED_RECHECK_INTERVAL_MS,
+      classifySuperseded: () => this.classifySupersededOrFenced(markerId, cartId, productId, claimedGeneration),
+      tx,
+    });
   }
 
   private static errorMessage(error: unknown): string {

@@ -44,14 +44,16 @@ describe('OrdersService Checkout Payment Initiation Resilience (real Postgres + 
   });
 
   afterAll(async () => {
-    try {
+    const retainedItems = await prisma.orderItem.count({
+      where: { product: { vendorId: fixture.vendor.id } },
+    });
+    if (retainedItems === 0) {
       await prisma.vendorDailyListing.deleteMany({ where: { vendorId: fixture.vendor.id } });
-      await prisma.orderItem.deleteMany({ where: { product: { vendorId: fixture.vendor.id } } });
       await prisma.inventoryEvent.deleteMany({ where: { product: { vendorId: fixture.vendor.id } } });
       await prisma.product.deleteMany({ where: { vendorId: fixture.vendor.id } });
       await prisma.seafoodCatalogueItem.deleteMany();
       await prisma.seafoodLot.deleteMany({ where: { vendorId: fixture.vendor.id } });
-    } catch {}
+    }
     await tearDownCheckoutIntegrationFixture(fixture);
     await prisma.onModuleDestroy();
     await redisClient.flushdb();
@@ -253,14 +255,29 @@ describe('OrdersService Checkout Payment Initiation Resilience (real Postgres + 
   it('TC-PAY-08: crashed process leaves INITIATING claim discoverable by recovery workers', async () => {
     const scenario = await seedReadyCheckout(fixture, handles);
 
-    const result = await handles.ordersService.checkout(scenario.customerId, checkoutDto);
+    const wiPaySpy = jest
+      .spyOn(handles.wiPayAdapter, 'createPayment')
+      .mockResolvedValueOnce({
+        providerReference: `wipay-tc-pay-08-${randomUUID()}`,
+        redirectUrl: 'https://jmsb.wipayfinancial.com/test-checkout/tc-pay-08',
+        status: 'PENDING',
+      });
+
+    let result;
+    try {
+      result = await handles.ordersService.checkout(scenario.customerId, {
+        ...checkoutDto,
+        paymentMethod: 'WIPAY',
+      });
+    } finally {
+      wiPaySpy.mockRestore();
+    }
 
     // Simulate process crash: payment was marked INITIATING, but worker died before adapter finished
     const staleTime = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
     await prisma.payment.update({
       where: { orderId: result.id },
       data: {
-        provider: 'WIPAY',
         initiationStatus: 'INITIATING',
         updatedAt: staleTime,
       },
@@ -518,12 +535,14 @@ describe('OrdersService Checkout Payment Initiation Resilience (real Postgres + 
     } finally {
       await prisma.cartReservationSyncState.deleteMany({ where: { cartId: cart.id } });
       await prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
-      await prisma.orderItem.deleteMany({ where: { product: { vendorId: vendor.id } } });
-      await prisma.vendorDailyListing.deleteMany({ where: { id: listing.id } });
-      await prisma.inventoryEvent.deleteMany({ where: { productId: product.id } });
-      await prisma.product.deleteMany({ where: { id: product.id } });
-      await prisma.seafoodCatalogueItem.deleteMany({ where: { id: catalogueItem.id } });
-      await prisma.seafoodLot.deleteMany({ where: { id: lot.id } });
+      const retainedItemCount = await prisma.orderItem.count({ where: { productId: product.id } });
+      if (retainedItemCount === 0) {
+        await prisma.vendorDailyListing.deleteMany({ where: { id: listing.id } });
+        await prisma.inventoryEvent.deleteMany({ where: { productId: product.id } });
+        await prisma.product.deleteMany({ where: { id: product.id } });
+        await prisma.seafoodCatalogueItem.deleteMany({ where: { id: catalogueItem.id } });
+        await prisma.seafoodLot.deleteMany({ where: { id: lot.id } });
+      }
     }
   });
 });

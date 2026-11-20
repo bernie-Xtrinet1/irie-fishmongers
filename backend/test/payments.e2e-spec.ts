@@ -12,6 +12,7 @@ import { AppModule } from '../src/app.module';
 import { ApiResponse } from '../src/common/http/api-response';
 import { HttpExceptionFilter } from '../src/common/http/http-exception.filter';
 import { PrismaService } from '../src/database/prisma.service';
+import { WiPayAdapter } from '../src/modules/payments/providers/wipay.adapter';
 import { cleanupCustomerCartArtifacts } from './e2e-cleanup.helpers';
 
 function data<T>(res: Response): T {
@@ -40,6 +41,7 @@ interface PaymentData {
   orderId: string;
   provider: string;
   status: string;
+  initiationStatus?: string;
   amount: string;
 }
 
@@ -96,18 +98,11 @@ describe('Payments (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Orders, payments, and refunds are protected by ON DELETE RESTRICT and
+    // database immutability triggers (D.4B.4 / Migration #66). Clean only mutable
+    // cart artifacts and rely on disposable-DB disposal after app.close().
     if (customerEmails.length > 0) {
       await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
     }
     if (app) {
       await app.close();
@@ -375,9 +370,16 @@ describe('Payments (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
 
+    const missingKeyRes = await request(server())
+      .post(`/api/v1/payments/${paymentId}/refund`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ amount: 100, reason: 'Missing idempotency key should fail' });
+    expect(missingKeyRes.status).toBe(400);
+
     const refundRes = await request(server())
       .post(`/api/v1/payments/${paymentId}/refund`)
       .set('Authorization', `Bearer ${adminToken}`)
+      .set('idempotency-key', randomUUID())
       .send({ amount: 400, reason: 'Administrator-approved exceptional circumstance' });
     expect(refundRes.status).toBe(201);
     expect(data<RefundData>(refundRes).status).toBe('COMPLETED');
@@ -385,6 +387,7 @@ describe('Payments (e2e)', () => {
     const overRefundRes = await request(server())
       .post(`/api/v1/payments/${paymentId}/refund`)
       .set('Authorization', `Bearer ${adminToken}`)
+      .set('idempotency-key', randomUUID())
       .send({ amount: 900, reason: 'Administrator-approved exceptional circumstance' });
     expect(overRefundRes.status).toBe(400);
   });
@@ -416,25 +419,73 @@ describe('Payments (e2e)', () => {
   it('blocks vendor acceptance until an online payment is confirmed paid, then unblocks it via the verified WiPay browser return', async () => {
     const adminToken = await createAdminAndLogin();
     const customerToken = await createCustomerAndLogin();
+    const otherCustomerToken = await createCustomerAndLogin();
     const vendor = await createApprovedVendorAndLogin(adminToken, 'WiPay Gate Vendor');
     const category = await getFishCategory();
 
-    // Checkout as cash-on-delivery (no live gateway available in this environment),
-    // then simulate that the order was actually paid for online via WiPay by
-    // updating the persisted payment record directly - this isolates the business
-    // rule under test (the acceptance gate + browser return handling) from the unrelated
-    // concern of reaching a live WiPay sandbox.
-    const order = await checkoutSingleVendorOrder(
-      customerToken,
-      vendor.accessToken,
-      category.id,
-      'CASH_ON_DELIVERY',
-    );
+    // Exercise legitimate WIPAY initiation at checkout while stubbing only
+    // WiPayAdapter.createPayment so no external gateway request is sent and
+    // immutable Payment identity columns never require post-commit SQL mutation.
     const providerReference = `txn-${randomUUID()}`;
-    await prisma.payment.update({
-      where: { id: order.payment!.id },
-      data: { provider: 'WIPAY', status: 'PENDING', providerReference },
+    const sandboxRedirectUrl = 'https://jmsb.wipayfinancial.com/plugins/payments/sandbox-checkout';
+    const wiPayAdapter = app.get(WiPayAdapter);
+    const wiPayCreateSpy = jest
+      .spyOn(wiPayAdapter, 'createPayment')
+      .mockResolvedValueOnce({
+        providerReference,
+        redirectUrl: sandboxRedirectUrl,
+        status: 'PENDING',
+      });
+
+    let order: OrderData;
+    try {
+      order = await checkoutSingleVendorOrder(
+        customerToken,
+        vendor.accessToken,
+        category.id,
+        'WIPAY',
+      );
+      expect(wiPayCreateSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      wiPayCreateSpy.mockRestore();
+    }
+
+    expect(order.payment).toMatchObject({
+      orderId: order.id,
+      provider: 'WIPAY',
+      status: 'PENDING',
+      initiationStatus: 'ESTABLISHED',
     });
+    expect(order.paymentRedirectUrl).toBe(sandboxRedirectUrl);
+
+    const ownerStatusBefore = await request(server())
+      .get(`/api/v1/payments/orders/${order.id}/status`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .expect(200);
+    expect(
+      data<{
+        orderId: string;
+        provider: string;
+        status: string;
+        initiationStatus: string;
+        isPendingConfirmation: boolean;
+        isConfirmed: boolean;
+        orderFulfillmentEligible: boolean;
+      }>(ownerStatusBefore),
+    ).toMatchObject({
+      orderId: order.id,
+      provider: 'WIPAY',
+      status: 'PENDING',
+      initiationStatus: 'ESTABLISHED',
+      isPendingConfirmation: true,
+      isConfirmed: false,
+      orderFulfillmentEligible: false,
+    });
+
+    await request(server())
+      .get(`/api/v1/payments/orders/${order.id}/status`)
+      .set('Authorization', `Bearer ${otherCustomerToken}`)
+      .expect(404);
 
     const vendorOrderId = order.vendorOrders[0]!.id;
     const blockedAcceptRes = await request(server())
@@ -443,6 +494,13 @@ describe('Payments (e2e)', () => {
     expect(blockedAcceptRes.status).toBe(403);
 
     const stored = await prisma.payment.findUniqueOrThrow({ where: { id: order.payment!.id } });
+    expect(stored).toMatchObject({
+      orderId: order.id,
+      provider: 'WIPAY',
+      status: 'PENDING',
+      initiationStatus: 'ESTABLISHED',
+      providerReference,
+    });
     const hash = createHash('md5')
       .update(providerReference + stored.amount.toFixed(2) + wiPayApiKey)
       .digest('hex');
@@ -479,6 +537,7 @@ describe('Payments (e2e)', () => {
       provider: 'WIPAY',
       currency: stored.currency,
       amount: stored.amount,
+      providerReference,
     });
     for (let attempt = 0; attempt < 2; attempt++) {
       await request(server())
@@ -487,6 +546,21 @@ describe('Payments (e2e)', () => {
         .expect(200);
     }
     expect(await prisma.payment.findUniqueOrThrow({ where: { id: stored.id } })).toEqual(paid);
+
+    const ownerStatusAfter = await request(server())
+      .get(`/api/v1/payments/orders/${order.id}/status`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .expect(200);
+    expect(
+      data<{ status: string; isConfirmed: boolean; orderFulfillmentEligible: boolean }>(
+        ownerStatusAfter,
+      ),
+    ).toMatchObject({
+      status: 'PAID',
+      isConfirmed: true,
+      orderFulfillmentEligible: true,
+    });
+
     const acceptRes = await request(server())
       .patch(`/api/v1/vendor-orders/${vendorOrderId}/accept`)
       .set('Authorization', `Bearer ${vendor.accessToken}`);

@@ -89,6 +89,42 @@ describe('DashboardShell', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Service issue');
   });
 
+  it.each([
+    { label: 'CUSTOMER', roles: ['CUSTOMER'], status: 'ACTIVE' },
+    { label: 'VENDOR', roles: ['VENDOR'], status: 'ACTIVE' },
+    { label: 'DRIVER', roles: ['DRIVER'], status: 'ACTIVE' },
+    { label: 'SUSPENDED ADMIN', roles: ['ADMINISTRATOR'], status: 'SUSPENDED' },
+  ] as const)(
+    'hides admin shell and disables health polling for $label sessions',
+    ({ roles, status }) => {
+      mockUseAuth.mockReturnValue({
+        status: 'authenticated',
+        user: {
+          id: 'u-denied',
+          email: 'denied@example.com',
+          firstName: 'Denied',
+          lastName: 'User',
+          status,
+          roles: [...roles],
+        },
+        login: jest.fn(),
+        logout,
+      });
+      mockHealth({ data: undefined, isPending: true });
+
+      render(
+        <DashboardShell>
+          <div>Protected Admin Body</div>
+        </DashboardShell>,
+      );
+
+      expect(screen.queryByText('Protected Admin Body')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /Overview/i })).not.toBeInTheDocument();
+      expect(screen.getByText('Loading…')).toBeInTheDocument();
+      expect(mockUseHealthStatus).toHaveBeenCalledWith(false);
+    },
+  );
+
   it('calls logout when the log out control is activated', async () => {
     mockHealth({ data: undefined, isPending: true });
     const user = userEvent.setup();

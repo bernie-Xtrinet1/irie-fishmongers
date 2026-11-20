@@ -331,11 +331,15 @@ export class CheckoutCoordinatorService {
     plan: CanonicalCheckoutPlan,
     order: OrderWithDetails,
   ): Promise<CheckoutCoordinatorResult> {
-    const total = order.vendorOrders.reduce((sum, vendorOrder) => sum + vendorOrder.subtotal.toNumber(), 0);
+    const totalDecimal = order.vendorOrders.reduce(
+      (sum, vendorOrder) => sum.add(new Prisma.Decimal(vendorOrder.subtotal)),
+      new Prisma.Decimal(0),
+    );
+    const total = totalDecimal.toNumber();
     const itemCount = order.vendorOrders.reduce((count, vendorOrder) => count + vendorOrder.items.length, 0);
     await this.eventEmitter.emitAsync(
       OrderPlacedEvent.eventName,
-      new OrderPlacedEvent(customerId, order.id, total.toFixed(2), itemCount),
+      new OrderPlacedEvent(customerId, order.id, totalDecimal.toFixed(2), itemCount),
     );
 
     try {

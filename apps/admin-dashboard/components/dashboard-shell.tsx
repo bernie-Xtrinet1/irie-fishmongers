@@ -20,6 +20,7 @@ import { usePathname } from 'next/navigation';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { isActiveAdminUser } from '@/lib/auth/admin-access';
 import { useAuth } from '@/lib/auth/auth-context';
 import { env } from '@/lib/env';
 import { useHealthStatus } from '@/lib/hooks/use-health-status';
@@ -47,8 +48,17 @@ const NAV_ITEMS = [
 
 export function DashboardShell({ children }: { children: React.ReactNode }): React.ReactElement {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
-  const health = useHealthStatus();
+  const { status, user, logout } = useAuth();
+  const hasAdminAccess = status === 'authenticated' && isActiveAdminUser(user);
+  const health = useHealthStatus(hasAdminAccess);
+
+  if (!hasAdminAccess) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-sm text-gray-500">Loading…</p>
+      </div>
+    );
+  }
 
   const isHealthy = health.data?.postgres === 'up' && health.data?.redis === 'up';
 

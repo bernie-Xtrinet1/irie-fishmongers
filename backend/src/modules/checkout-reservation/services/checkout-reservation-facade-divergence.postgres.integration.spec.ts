@@ -1,3 +1,5 @@
+import { ensureOpenReservationFence, seedHistoricalActiveReservation } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
 import { Redis } from 'ioredis';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -6,6 +8,13 @@ import { productSuspectKey, productTotalKey, reservationHashKey } from '../../in
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
 import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { CartRepository } from '../../cart/repositories/cart.repository';
+import { ReservationFenceRepository } from '../../reservation-fence/repositories/reservation-fence.repository';
+import { ProductReservationRestrictionAdmissionService } from '../../reservation-fence/services/product-reservation-restriction-admission.service';
+import { ProductReservationRestrictionService } from '../../reservation-fence/services/product-reservation-restriction.service';
+import { ProductSuspectClearanceService } from '../../reservation-fence/services/product-suspect-clearance.service';
+import { ProductSuspectCrashEvidenceService } from '../../reservation-fence/services/product-suspect-crash-evidence.service';
+import { seedActiveAdminUser } from '../../reservation-fence/tests/product-suspect-recovery-test-helpers';
+import { restrictionDigest } from '../../reservation-fence/types/product-reservation-restriction.types';
 import {
   CompensationTestFixture,
   seedCartAndProduct,
@@ -64,18 +73,23 @@ describe('CheckoutReservationFacade -> CompensationService -> C4.3 reconciliatio
   });
 
   afterAll(async () => {
-    await tearDownCompensationFixture(fixture);
-    await prisma.onModuleDestroy();
-    await redisClient.flushdb();
-    await redisClient.quit();
+    try {
+      await tearDownCompensationFixture(fixture);
+    } finally {
+      await prisma.onModuleDestroy();
+      await redisClient.flushdb();
+      await redisClient.quit();
+    }
   });
 
   beforeEach(async () => {
     await redisClient.flushdb();
+    await ensureOpenReservationFence(prisma, redisClient, 'MIRROR', fixture.userIds[0]!);
     cartRepository = new CartRepository(prisma);
     compensationRepository = new CompensationRepository(prisma);
     const redisService = new RedisService(redisClient);
     inventoryReservations = new InventoryReservationsService(redisService);
+    Object.assign(inventoryReservations, { ordinary: new OrdinaryReservationService(prisma, redisService) });
     modeService = { getCurrentMode: jest.fn().mockResolvedValue('MIRROR') };
     compensationService = new CompensationService(compensationRepository);
     reconciliationService = new CompensationReconciliationService(
@@ -100,8 +114,14 @@ describe('CheckoutReservationFacade -> CompensationService -> C4.3 reconciliatio
   });
 
   it('1. a genuine PRODUCT_SUSPENDED mirror-write failure reaches a durable compensation row, which the existing C4.3 reconciler resolves to RESOLVED', async () => {
-    const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    const isolatedTest1Fixture = await setUpCompensationFixture(prisma);
+    const { cartId, productId, customerId } = await seedCartAndProduct(isolatedTest1Fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 5);
+    await prisma.cartReservationSyncState.upsert({
+      where: { cartId_productId: { cartId, productId } },
+      create: { cartId, productId, expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+      update: { expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+    });
     await redisClient.set(productSuspectKey(productId), '1');
     setMode('MIRROR');
 
@@ -132,9 +152,58 @@ describe('CheckoutReservationFacade -> CompensationService -> C4.3 reconciliatio
     const stillBlocked = await reconciliationService.attemptRecovery(row!.id, new Date());
     expect(stillBlocked).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row!.id });
 
+    // Deleting Redis suspect flag alone never unblocks durable PRODUCT_SUSPECT.
+    const redisService = new RedisService(redisClient);
+    const restriction = await prisma.productReservationRestriction.create({
+      data: {
+        productId,
+        reasonCategory: 'ACCOUNTING_DRIFT',
+        observationDigest: restrictionDigest(productId),
+      },
+    });
+    const restrictionService = new ProductReservationRestrictionService(
+      prisma,
+      redisService,
+      new ProductReservationRestrictionAdmissionService(prisma, redisService),
+    );
+    expect(await restrictionService.install(restriction.id)).toBe('ENFORCED');
+
     await redisClient.del(productSuspectKey(productId));
-    const unblocked = await blockedRecheckService.recheckBlocked(row!.id, new Date());
-    expect(unblocked).toEqual({ outcome: 'UNBLOCKED_PENDING', compensationId: row!.id });
+    const blockedAfterDel = await blockedRecheckService.recheckBlocked(row!.id, new Date());
+    expect(blockedAfterDel).toEqual({ outcome: 'BLOCKED_PRODUCT_SUSPECT', compensationId: row!.id });
+
+    // Dual-control administrative clearance resolves PRODUCT_SUSPECT safely and unblocks attributed targets.
+    const adminA = await seedActiveAdminUser(prisma);
+    const adminB = await seedActiveAdminUser(prisma);
+    const clearanceService = new ProductSuspectClearanceService(
+      new ReservationFenceRepository(prisma),
+      redisService,
+      new ProductSuspectCrashEvidenceService(),
+    );
+    const requested = await clearanceService.requestClearance({
+      productId,
+      requestedById: adminA.id,
+      requestReason: 'FACADE_DIVERGENCE_CLEARANCE',
+    });
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+
+    const approved = await clearanceService.approveClearance({
+      recoveryId: requested.recoveryId,
+      approvedById: adminB.id,
+    });
+    expect(approved.ok).toBe(true);
+
+    const executed = await clearanceService.executeClearance({ recoveryId: requested.recoveryId });
+    expect(executed).toMatchObject({
+      ok: true,
+      status: 'COMPLETED',
+      clearedControlRevision: 2,
+      unblockedCompCount: 1,
+    });
+
+    const unblockedRow = await prisma.cartReservationCompensation.findUniqueOrThrow({ where: { id: row!.id } });
+    expect(unblockedRow).toMatchObject({ status: 'PENDING', blockReason: null });
 
     const converged = await reconciliationService.attemptRecovery(row!.id, new Date());
     expect(converged).toEqual({ outcome: 'RESOLVED_CONVERGED', compensationId: row!.id });
@@ -148,7 +217,7 @@ describe('CheckoutReservationFacade -> CompensationService -> C4.3 reconciliatio
     // Seed a genuine leftover cart-scoped hold with no matching CartItem,
     // then corrupt the product total so the mirror release underflows -
     // a real Lua-detected accounting condition, not a mocked one.
-    await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 4);
+    await seedHistoricalActiveReservation(redisClient, cartId, productId, customerId, 4);
     await facade.reserveForCart(cartId, productId, customerId, 4); // seed a matching legacy hold too
     setMode('MIRROR');
     await redisClient.set(productTotalKey(productId), '1');
@@ -179,6 +248,11 @@ describe('CheckoutReservationFacade -> CompensationService -> C4.3 reconciliatio
 
   it('3. a persistence failure while recording a genuine mirror divergence does not undo the successful LEGACY write, and leaves no compensation row', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    await prisma.cartReservationSyncState.upsert({
+      where: { cartId_productId: { cartId, productId } },
+      create: { cartId, productId, expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+      update: { expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+    });
     await redisClient.set(productSuspectKey(productId), '1'); // guarantees a genuine FAILED mirror diagnostic
     setMode('MIRROR');
     const persistSpy = jest

@@ -52,6 +52,18 @@ export class CartReservationSyncBlockedRecheckService {
     // with, never one read later.
     const observedGeneration = row.generation;
 
+    if (row.blockReason === 'PRODUCT_SUSPECT') {
+      await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
+      // Observation or zero-quantity bookkeeping cannot repair or clear durable PRODUCT_SUSPECT blocks.
+      return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
+    }
+
+    if (row.blockReason !== 'MODE_NOT_ADMITTING') {
+      // Structurally unreachable - blockIfGenerationMatches always sets
+      // blockReason in the same write that sets status to BLOCKED.
+      throw new Error(`Invariant violation: BLOCKED marker ${markerId} has no recognized blockReason`);
+    }
+
     const item = await this.cartRepository.findItemByCartAndProduct(row.cartId, row.productId);
     const desiredQuantity = item?.quantity ?? null;
 
@@ -59,23 +71,20 @@ export class CartReservationSyncBlockedRecheckService {
       return this.unblock(markerId, observedGeneration);
     }
 
-    if (row.blockReason === 'MODE_NOT_ADMITTING') {
-      const mode = await this.modeService.getCurrentMode();
-      if (mode === 'DRAINING') {
+    const mode = await this.modeService.getCurrentMode();
+    if (mode === 'DRAINING') {
+      return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_MODE_NOT_ADMITTING');
+    }
+    if (typeof (this.modeService as { checkModeFenceConsistency?: unknown }).checkModeFenceConsistency === 'function') {
+      const fenceConsistent = await this.modeService.checkModeFenceConsistency();
+      if (!fenceConsistent) {
         return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_MODE_NOT_ADMITTING');
       }
-      return this.unblock(markerId, observedGeneration);
     }
-
-    if (row.blockReason === 'PRODUCT_SUSPECT') {
-      await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
-      // Observation cannot authorize repair or clear a durable PRODUCT_SUSPECT block.
-      return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
+    if (row.lastError?.startsWith('OPERATOR_ESCALATION:') && !row.lastError.includes('mode/fence disagreement')) {
+      return this.rescheduleBlocked(markerId, observedGeneration, now, 'BLOCKED_MODE_NOT_ADMITTING');
     }
-
-    // Structurally unreachable - blockIfGenerationMatches always sets
-    // blockReason in the same write that sets status to BLOCKED.
-    throw new Error(`Invariant violation: BLOCKED marker ${markerId} has no recognized blockReason`);
+    return this.unblock(markerId, observedGeneration);
   }
 
   private async unblock(markerId: string, observedGeneration: number): Promise<ReconcileOneOutcome> {

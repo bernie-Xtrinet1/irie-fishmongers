@@ -68,7 +68,8 @@ describe('inactive exact RELEASE: standalone Redis', () => {
         await f.install(f.request, 'READY');
         const grant: OrdinaryPhysicalGrant = { version: 1, grantId: randomUUID(), tuple: f.tuple,
           identity: JSON.stringify(next), purpose: 'EXECUTE', expiresAt: 0,
-          barrierBinding: { ...delayed.barrierBinding, commandId: next.commandId, replayId: next.replayId } };
+          barrierBinding: { ...delayed.barrierBinding, commandId: next.commandId, replayId: next.replayId },
+          controlRevision: delayed.controlRevision ?? 0 };
         const nextKeys = [...keys.slice(0, 3), `reservation:fence:ordinary-command-grant:${grant.grantId}`];
         const nextArgs = [JSON.stringify(grant)];
         expect(object(String(await original(ORDINARY_PHYSICAL_REGISTER, nextKeys, nextArgs))).code).toBe('REGISTERED');

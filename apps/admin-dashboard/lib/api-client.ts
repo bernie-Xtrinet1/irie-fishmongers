@@ -1,4 +1,7 @@
+import { isActiveAdminUser, type RefreshedSessionUser } from './auth/admin-access';
 import { env } from './env';
+
+export { isActiveAdminUser, type RefreshedSessionUser };
 
 const API_BASE_URL = env.apiUrl;
 
@@ -23,14 +26,15 @@ export class ApiError extends Error {
 
 interface RefreshResult {
   accessToken: string;
+  user?: RefreshedSessionUser;
 }
 
 interface ApiClientConfig {
   getAccessToken: () => string | null;
-  onTokenRefreshed: (accessToken: string) => void;
-  // Called when a 401 could not be resolved by a silent refresh (expired/
-  // missing refresh cookie). The auth context wires this to clear its
-  // in-memory session and redirect to /login - see ADR-004.
+  onTokenRefreshed: (accessToken: string, user?: RefreshedSessionUser) => void;
+  // Called when a session fails authentication/role checks on silent refresh
+  // or receives a forbidden admin response. AuthProvider clears in-memory state
+  // + cached queries and redirects to /login - see ADR-004.
   onUnauthorized: () => void;
 }
 
@@ -54,6 +58,17 @@ async function unwrap<T>(response: Response): Promise<T> {
   return envelope.data;
 }
 
+function revokeCookieSessionBestEffort(): Promise<void> {
+  return fetch(`${API_BASE_URL}/auth/logout`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({}),
+  })
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
 // Concurrent-401 refresh lock (ADR-004): every request that hits a 401 while
 // a refresh is already in flight awaits this same promise instead of firing
 // its own /auth/refresh call. The refresh token itself is never touched by
@@ -70,9 +85,16 @@ function refreshAccessToken(): Promise<string> {
       body: JSON.stringify({}),
     })
       .then((response) => unwrap<RefreshResult>(response))
-      .then(({ accessToken }) => {
-        clientConfig?.onTokenRefreshed(accessToken);
-        return accessToken;
+      .then(async (session) => {
+        if (!isActiveAdminUser(session.user)) {
+          // Role missing or inactive after refresh: discard the refreshed
+          // access token, revoke the refresh session server-side, and abort
+          // without retrying the protected request.
+          await revokeCookieSessionBestEffort();
+          throw new ApiError('Administrator access is required', 403);
+        }
+        clientConfig?.onTokenRefreshed(session.accessToken, session.user);
+        return session.accessToken;
       })
       .finally(() => {
         refreshPromise = null;
@@ -101,12 +123,25 @@ async function request<T>(path: string, init: RequestInit, allowRetry = true): P
   if (response.status === 401 && allowRetry && !RETRY_EXEMPT_PATHS.some((exempt) => path.startsWith(exempt))) {
     try {
       await refreshAccessToken();
-    } catch {
+    } catch (error) {
       clientConfig?.onUnauthorized();
+      if (error instanceof ApiError && error.status === 403) {
+        throw error;
+      }
       throw new ApiError('Session expired', 401);
     }
 
     return request<T>(path, init, false);
+  }
+
+  if (
+    response.status === 403 &&
+    accessToken !== null &&
+    !RETRY_EXEMPT_PATHS.some((exempt) => path.startsWith(exempt)) &&
+    !path.startsWith('/auth/logout')
+  ) {
+    await revokeCookieSessionBestEffort();
+    clientConfig?.onUnauthorized();
   }
 
   return unwrap<T>(response);

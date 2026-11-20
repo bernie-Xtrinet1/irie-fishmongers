@@ -137,15 +137,20 @@ describe('SLABreachesRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.sLABreach.deleteMany({ where: { deliveryId: delivery.id } });
-    await prisma.delivery.deleteMany({ where: { id: delivery.id } });
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.driver.deleteMany({ where: { userId: driverUserId } });
-    await prisma.vendor.deleteMany({ where: { userId: vendorUserId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.user.delete({ where: { id: driverUserId } });
-    await prisma.onModuleDestroy();
+    try {
+      await prisma.sLABreach.deleteMany({ where: { deliveryId: delivery.id } });
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.delivery.deleteMany({ where: { id: delivery.id } });
+        await prisma.driver.deleteMany({ where: { userId: driverUserId } });
+        await prisma.vendor.deleteMany({ where: { userId: vendorUserId } });
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.user.delete({ where: { id: driverUserId } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('creates an SLA breach', async () => {

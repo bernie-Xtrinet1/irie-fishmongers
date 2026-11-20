@@ -131,12 +131,17 @@ describe('VendorSettlementsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.vendorSettlement.deleteMany({ where: { vendorId: vendor.id } });
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      await prisma.vendorSettlement.deleteMany({ where: { vendorId: vendor.id } });
+      await prisma.order.deleteMany({ where: { customerId } });
+      await prisma.user.delete({ where: { id: customerId } });
+      await prisma.user.delete({ where: { id: vendorUserId } });
+      await prisma.category.delete({ where: { id: category.id } });
+    } catch {
+      // Ignored on disposable test databases protected by financial immutability triggers
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('finds delivered-and-paid vendor orders with no settlement yet', async () => {

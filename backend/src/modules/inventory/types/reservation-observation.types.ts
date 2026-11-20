@@ -1,5 +1,6 @@
 export type ObservationFinding = 'CONSISTENT' | 'MISSING' | 'EXTRA' | 'QUANTITY_MISMATCH' |
-  'MEMBERSHIP_UNCERTAIN' | 'INFRASTRUCTURE_UNCERTAIN' | 'RESTRICTION_PREPARED' | 'RESTRICTION_ENFORCED';
+  'MEMBERSHIP_UNCERTAIN' | 'INFRASTRUCTURE_UNCERTAIN' | 'RESTRICTION_PREPARED' | 'RESTRICTION_ENFORCED' |
+  'RESTRICTION_CLEARING' | 'RESTRICTION_CLEARED' | 'RECOVERY_ACTIVE' | 'RECOVERY_QUARANTINED';
 
 export interface ReservationObservation {
   readonly authority: 'NONE';
@@ -9,10 +10,10 @@ export interface ReservationObservation {
   findings: ObservationFinding[];
   accounting: { storedTotal: number | null; observedQuantityTotal: number | null; difference: number | null };
   restriction: {
-    durableState: 'ABSENT' | 'PREPARED' | 'ENFORCED' | 'UNKNOWN';
+    durableState: 'ABSENT' | 'PREPARED' | 'ENFORCED' | 'CLEARING' | 'CLEARED' | 'UNKNOWN';
     revision: number | null;
     observationDigest: string | null;
-    physicalState: 'ABSENT' | 'ALLOW' | 'RESTRICTED' | 'UNKNOWN';
+    physicalState: 'ABSENT' | 'ALLOW' | 'RESTRICTED' | 'CLEARANCE_STAGED' | 'UNKNOWN';
     installation: 'MATCHES_OBSERVED_TUPLE' | 'NOT_PROVEN';
     crossStoreConsistency: 'OBSERVED_MATCH' | 'UNPROVEN';
   };
@@ -46,6 +47,27 @@ export function parseRedisObservation(raw: unknown): RedisObservation {
   return { findings: value.findings, accounting: { storedTotal, observedQuantityTotal, difference },
   control: value.control, fence: value.fence };
 }
+
+export function parseObservedControlState(
+  raw: string | null,
+): 'ALLOW' | 'RESTRICTED' | 'CLEARANCE_STAGED' | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && 'state' in parsed) {
+      const state = (parsed as { state?: unknown }).state;
+      if (state === 'ALLOW' || state === 'RESTRICTED' || state === 'CLEARANCE_STAGED') return state;
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+export const RESTRICTION_STATE_FINDINGS: Record<string, ObservationFinding> = {
+  PREPARED: 'RESTRICTION_PREPARED',
+  ENFORCED: 'RESTRICTION_ENFORCED',
+  CLEARING: 'RESTRICTION_CLEARING',
+  CLEARED: 'RESTRICTION_CLEARED',
+};
 
 export function uncertainObservation(): ReservationObservation {
   return { authority: 'NONE', physicalConvergenceProven: false, scope: 'OBSERVED_RESOURCES_ONLY',

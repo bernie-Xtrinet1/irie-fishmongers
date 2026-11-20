@@ -5,6 +5,7 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { ReservationEngineModeConfigRepository } from './repositories/reservation-engine-mode-config.repository';
 import { ReservationAvailabilityService } from './services/reservation-availability.service';
 import { ReservationEngineModeService } from './services/reservation-engine-mode.service';
+import { ReservationModeFenceCoordinatorService } from './services/reservation-mode-fence-coordinator.service';
 
 // Phase 16A.0-C, Units C1 (see
 // docs/integrations/ADR-007-checkout-cutover-and-operational-integration.md,
@@ -25,11 +26,13 @@ import { ReservationEngineModeService } from './services/reservation-engine-mode
 @Module({
   imports: [InventoryModule, CartMutationBarrierModule],
   providers: [
+    ReservationModeFenceCoordinatorService,
     ReservationEngineModeService,
     ReservationEngineModeConfigRepository,
     ReservationAvailabilityService,
   ],
   exports: [
+    ReservationModeFenceCoordinatorService,
     ReservationEngineModeService,
     ReservationEngineModeConfigRepository,
     ReservationAvailabilityService,

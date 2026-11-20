@@ -1,3 +1,4 @@
+import { reservationKey } from '../../inventory/constants/inventory.constants';
 import { randomUUID } from 'crypto';
 
 import { OrderPlacedEvent } from '../../../common/events/order-placed.event';
@@ -90,11 +91,14 @@ describe('CheckoutCoordinatorService failure windows / event emission (real Post
       // A quantity mismatch between the canonical plan and the real Redis
       // reservation forces checkoutMark to fail - simulated here by
       // reserving a different quantity than what price-lock/cart agree on.
-      await handles.inventoryReservations.reserveOrRenew(
-        scenario.cartId,
-        scenario.productId,
-        scenario.customerId,
-        99,
+      if (!handles.redisClient) throw new Error('Expected redisClient on coordinator test handles');
+      const driftKey = reservationKey(scenario.cartId, scenario.productId);
+      const rawDrift = await handles.redisClient.get(driftKey);
+      if (!rawDrift) throw new Error('Expected existing reservation entry to drift');
+      await handles.redisClient.set(
+        driftKey,
+        JSON.stringify({ ...JSON.parse(rawDrift), quantity: 99 }),
+        'KEEPTTL',
       );
       const events: OrderPlacedEvent[] = [];
       handles.eventEmitter.on(OrderPlacedEvent.eventName, (event: OrderPlacedEvent) => events.push(event));

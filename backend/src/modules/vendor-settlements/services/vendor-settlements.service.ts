@@ -3,9 +3,11 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
-import { PlatformCommissionConfig, VendorSettlement, VendorSettlementStatus } from '@prisma/client';
+import { PlatformCommissionConfig, Prisma, VendorSettlement, VendorSettlementStatus } from '@prisma/client';
 
+import { PrismaService } from '../../../database/prisma.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateAdjustmentDto } from '../dto/create-adjustment.dto';
 import { CreateCommissionRateDto } from '../dto/create-commission-rate.dto';
@@ -33,32 +35,54 @@ export class VendorSettlementsService {
     private readonly adjustmentsRepository: VendorSettlementAdjustmentsRepository,
     private readonly commissionRateConfigsRepository: CommissionRateConfigsRepository,
     private readonly vendorsRepository: VendorsRepository,
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   async generateSettlements(): Promise<GenerateVendorSettlementsResultEntity> {
-    const rateConfig = await this.commissionRateConfigsRepository.findCurrent();
-    if (!rateConfig) {
-      throw new InternalServerErrorException('No commission rate configuration exists');
+    const execute = async (tx?: Prisma.TransactionClient): Promise<GenerateVendorSettlementsResultEntity> => {
+      const rateConfig = tx
+        ? await this.commissionRateConfigsRepository.findCurrent(tx)
+        : await this.commissionRateConfigsRepository.findCurrent();
+      if (!rateConfig) {
+        throw new InternalServerErrorException('No commission rate configuration exists');
+      }
+
+      const eligibleVendorOrders = tx
+        ? await this.vendorSettlementsRepository.findEligibleVendorOrders(tx)
+        : await this.vendorSettlementsRepository.findEligibleVendorOrders();
+      const commissionRate = new Prisma.Decimal(rateConfig.commissionRate);
+
+      for (const vendorOrder of eligibleVendorOrders) {
+        const grossAmount = new Prisma.Decimal(vendorOrder.subtotal);
+        const platformFee = grossAmount
+          .mul(commissionRate)
+          .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        const netAmount = grossAmount.sub(platformFee);
+
+        const payload = {
+          vendorId: vendorOrder.vendorId,
+          vendorOrderId: vendorOrder.id,
+          grossAmount,
+          platformFee,
+          netAmount,
+          commissionConfigId: rateConfig.id,
+          commissionRateSnapshot: commissionRate,
+        };
+
+        if (tx) {
+          await this.vendorSettlementsRepository.create(payload, tx);
+        } else {
+          await this.vendorSettlementsRepository.create(payload);
+        }
+      }
+
+      return { settlementsCreated: eligibleVendorOrders.length };
+    };
+
+    if (this.prisma && typeof this.prisma.$transaction === 'function') {
+      return this.prisma.$transaction((tx) => execute(tx));
     }
-
-    const eligibleVendorOrders = await this.vendorSettlementsRepository.findEligibleVendorOrders();
-    const commissionRate = rateConfig.commissionRate.toNumber();
-
-    for (const vendorOrder of eligibleVendorOrders) {
-      const grossAmount = vendorOrder.subtotal.toNumber();
-      const platformFee = grossAmount * commissionRate;
-      const netAmount = grossAmount - platformFee;
-
-      await this.vendorSettlementsRepository.create({
-        vendorId: vendorOrder.vendorId,
-        vendorOrderId: vendorOrder.id,
-        grossAmount,
-        platformFee,
-        netAmount,
-      });
-    }
-
-    return { settlementsCreated: eligibleVendorOrders.length };
+    return execute();
   }
 
   async getMine(
@@ -126,13 +150,14 @@ export class VendorSettlementsService {
     if (!settlement) {
       throw new NotFoundException('Settlement not found');
     }
-    if (dto.amount === 0) {
+    const amountDecimal = new Prisma.Decimal(dto.amount);
+    if (amountDecimal.isZero()) {
       throw new BadRequestException('Adjustment amount cannot be zero');
     }
 
     const adjustment = await this.adjustmentsRepository.create({
       settlementId,
-      amount: dto.amount,
+      amount: amountDecimal,
       reason: dto.reason,
     });
 
@@ -153,8 +178,10 @@ export class VendorSettlementsService {
   }
 
   private async toResponse(settlement: VendorSettlement): Promise<VendorSettlementResponseEntity> {
-    const adjustmentsSum = await this.adjustmentsRepository.sumBySettlementId(settlement.id);
-    const adjustedNetAmount = settlement.netAmount.toNumber() + adjustmentsSum;
+    const adjustmentsSum = typeof (this.adjustmentsRepository as any).sumBySettlementIdDecimal === 'function'
+      ? await (this.adjustmentsRepository as any).sumBySettlementIdDecimal(settlement.id)
+      : new Prisma.Decimal(await this.adjustmentsRepository.sumBySettlementId(settlement.id));
+    const adjustedNetAmount = new Prisma.Decimal(settlement.netAmount).add(adjustmentsSum);
 
     return {
       id: settlement.id,

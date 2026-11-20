@@ -1,15 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import { CartRepository } from '../../cart/repositories/cart.repository';
 import { CartReservationSyncStateRepository } from '../../cart-reservation-sync/repositories/cart-reservation-sync-state.repository';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
+import { UUID_PATTERN } from '../../reservation-fence/types/reservation-fence.types';
 import { ReservationRecoveryConvergenceService } from '../../reservation-recovery/services/reservation-recovery-convergence.service';
 import {
   CartScopedBackfillOutcome,
   CartScopedBackfillTarget,
   CartScopedFreshnessOutcome,
   CutoverAttestation,
+  FreshnessSweepAuthorization,
 } from '../types/cart-scoped-backfill.types';
+import { CutoverFreshnessResetService } from './cutover-freshness-reset.service';
 
 // Keyset page size for enumeratePositiveTargets - an operational, rare,
 // admin-triggered procedure, never a hot path, so a conservative page
@@ -39,6 +42,7 @@ export class CartScopedBackfillService {
     private readonly syncState: CartReservationSyncStateRepository,
     private readonly convergence: ReservationRecoveryConvergenceService,
     private readonly inventoryReservations: InventoryReservationsService,
+    @Optional() private readonly freshnessReset?: CutoverFreshnessResetService,
   ) {}
 
   async enumeratePositiveTargets(): Promise<CartScopedBackfillTarget[]> {
@@ -107,38 +111,68 @@ export class CartScopedBackfillService {
   // The final, immediately-pre-cutover verify-and-recreate pass over the
   // SAME target set backfillTargets already converged - re-derived
   // desired state is unnecessary here (the mutation barrier guarantees it
-  // cannot have changed), but the Redis-side epoch reset is mandatory:
-  // see reserveWithFreshEpoch's own doc comment and the gate design
-  // review's freshness-race analysis for why a plain reserveOrRenew
-  // renewal is insufficient near an existing entry's absolute cap.
-  async freshnessSweep(targets: CartScopedBackfillTarget[]): Promise<CartScopedFreshnessOutcome[]> {
+  // cannot have changed), and Redis-side epoch reset goes strictly through
+  // CutoverFreshnessResetService (explicit authorization, Migration #67
+  // PREPARED -> Redis -> COMPLETED audit, and W1 Lua fencing), never the
+  // fail-closed 4-argument reserveWithFreshEpoch path.
+  async freshnessSweep(
+    targets: CartScopedBackfillTarget[],
+    authorization?: FreshnessSweepAuthorization,
+  ): Promise<CartScopedFreshnessOutcome[]> {
+    const validAuth =
+      !!authorization &&
+      UUID_PATTERN.test(authorization.cutoverRunId ?? '') &&
+      UUID_PATTERN.test(authorization.operatorId ?? '') &&
+      Number.isSafeInteger(authorization.barrierRevision) &&
+      authorization.barrierRevision > 0;
+    if (!validAuth || !this.freshnessReset) {
+      if (targets.length === 0) {
+        throw new Error('Unauthorized FRESHNESS_SWEEP: cutover authorization and freshness reset service are required');
+      }
+      return targets.map((target) => ({ outcome: 'BLOCKED', target, blockReason: 'FRESHNESS_UNAUTHORIZED' }));
+    }
+
     const outcomes: CartScopedFreshnessOutcome[] = [];
     for (const target of targets) {
-      outcomes.push(await this.freshnessOne(target));
+      outcomes.push(await this.freshnessOne(target, authorization));
     }
     return outcomes;
   }
 
-  private async freshnessOne(target: CartScopedBackfillTarget): Promise<CartScopedFreshnessOutcome> {
-    const result = await this.inventoryReservations.reserveWithFreshEpoch(
-      target.cartId,
-      target.productId,
-      target.customerId,
-      target.quantity,
-    );
+  private async freshnessOne(
+    target: CartScopedBackfillTarget,
+    authorization: FreshnessSweepAuthorization,
+  ): Promise<CartScopedFreshnessOutcome> {
+    const result = await this.freshnessReset!.executeAuthorizedFreshnessReset({
+      cutoverRunId: authorization.cutoverRunId,
+      operatorId: authorization.operatorId,
+      barrierRevision: authorization.barrierRevision,
+      reason: authorization.reason,
+      cartId: target.cartId,
+      productId: target.productId,
+      customerId: target.customerId,
+      quantity: target.quantity,
+    });
 
-    if (!result.ok) {
-      if (result.code === 'RESERVATION_PRODUCT_SUSPENDED') {
-        return { outcome: 'BLOCKED', target, blockReason: 'PRODUCT_SUSPECT' };
-      }
-      return result.code === 'RESERVATION_CHECKOUT_IN_PROGRESS'
-        ? { outcome: 'RETRY', target, reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: null }
-        : { outcome: 'RETRY', target, reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: result.code };
+    if (result.ok) {
+      return { outcome: 'CONVERGED', target, expiresAt: result.expiresAt };
     }
-    if (result.result.underflow !== null) {
+    if (result.category === 'SUSPECT') {
       return { outcome: 'BLOCKED', target, blockReason: 'PRODUCT_SUSPECT' };
     }
-    return { outcome: 'CONVERGED', target, expiresAt: result.result.entry.expiresAt };
+    if (result.category === 'UNAUTHORIZED') {
+      return { outcome: 'BLOCKED', target, blockReason: 'FRESHNESS_UNAUTHORIZED' };
+    }
+    if (result.category === 'ESCALATED') {
+      return { outcome: 'BLOCKED', target, blockReason: 'FRESHNESS_ESCALATION_REQUIRED' };
+    }
+    if (result.category === 'CHECKOUT_IN_PROGRESS') {
+      return { outcome: 'RETRY', target, reasonCode: 'CHECKOUT_IN_PROGRESS', lastError: result.detail };
+    }
+    if (result.category === 'FENCE_REJECTED') {
+      return { outcome: 'RETRY', target, reasonCode: 'FENCE_REJECTED', lastError: result.code };
+    }
+    return { outcome: 'RETRY', target, reasonCode: 'UNKNOWN_INFRA_FAILURE', lastError: result.code };
   }
 
   // Throws rather than returning a typed failure: called only by the

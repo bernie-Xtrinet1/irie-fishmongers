@@ -11,6 +11,7 @@ import { Prisma, Refund } from '@prisma/client';
 import { CashOnDeliveryAdapter } from '../providers/cash-on-delivery.adapter';
 import { WiPayAdapter } from '../providers/wipay.adapter';
 import { PaymentsRepository, PaymentWithOrder } from '../repositories/payments.repository';
+import { RefundAttemptsRepository } from '../repositories/refund-attempts.repository';
 import { RefundsRepository } from '../repositories/refunds.repository';
 import { PaymentsService } from './payments.service';
 
@@ -40,10 +41,12 @@ function buildRefund(overrides: Partial<Refund> = {}): Refund {
   return {
     id: 'refund-1',
     paymentId: 'payment-1',
+    obligationId: 'obligation-1',
+    supersedesRefundId: null,
     amount: new Prisma.Decimal(500),
     reason: 'Vendor rejected order',
     status: 'COMPLETED',
-    providerReference: 'wipay-refund-1',
+    providerReference: 'cod-refund-1',
     idempotencyKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -67,6 +70,15 @@ describe('PaymentsService', () => {
     >
   >;
   let refundsRepository: jest.Mocked<Pick<RefundsRepository, 'sumCompletedByPaymentId' | 'create'>>;
+  let refundAttemptsRepository: jest.Mocked<
+    Pick<
+      RefundAttemptsRepository,
+      | 'prepareAndClaimAttempt'
+      | 'recordPreSendAbort'
+      | 'recordSyncOutcomeAndOutbox'
+      | 'quarantineAttemptOutcome'
+    >
+  >;
   let wiPayAdapter: jest.Mocked<
     Pick<WiPayAdapter, 'createPayment' | 'refundPayment' | 'verifyTransactionResponse'>
   >;
@@ -89,6 +101,12 @@ describe('PaymentsService', () => {
       update: jest.fn(),
     };
     refundsRepository = { sumCompletedByPaymentId: jest.fn(), create: jest.fn() };
+    refundAttemptsRepository = {
+      prepareAndClaimAttempt: jest.fn(),
+      recordPreSendAbort: jest.fn(),
+      recordSyncOutcomeAndOutbox: jest.fn(),
+      quarantineAttemptOutcome: jest.fn(),
+    };
     wiPayAdapter = {
       createPayment: jest.fn(),
       refundPayment: jest.fn(),
@@ -103,6 +121,7 @@ describe('PaymentsService', () => {
       wiPayAdapter as unknown as WiPayAdapter,
       cashOnDeliveryAdapter as unknown as CashOnDeliveryAdapter,
       eventEmitter as unknown as EventEmitter2,
+      refundAttemptsRepository as unknown as RefundAttemptsRepository,
     );
   });
 
@@ -746,6 +765,19 @@ describe('PaymentsService', () => {
     });
   });
   describe('refundForOrder', () => {
+    const buildDispatchPrep = (amount = 500) => ({
+      action: 'DISPATCH' as const,
+      obligation: { id: 'obligation-1', authorizedAmount: new Prisma.Decimal(amount) } as any,
+      refund: buildRefund({ status: 'PROCESSING', amount: new Prisma.Decimal(amount) }),
+      attempt: {
+        id: 'attempt-1',
+        providerIdempotencyKey: 'refund:obligation-1:att:1',
+        attemptSequence: 1,
+      } as any,
+      parentPaymentReference: 'cod-order-1',
+      remainingBalance: new Prisma.Decimal(1000 - amount),
+    });
+
     it('returns null when the order has no payment', async () => {
       paymentsRepository.findByOrderId.mockResolvedValue(null);
       await expect(service.refundForOrder('order-1', 500, 'Vendor rejected order')).resolves.toBeNull();
@@ -756,76 +788,147 @@ describe('PaymentsService', () => {
       await expect(service.refundForOrder('order-1', 500, 'Vendor rejected order')).resolves.toBeNull();
     });
 
-    it('issues a partial refund for a paid order', async () => {
-      paymentsRepository.findByOrderId.mockResolvedValue(buildPayment({ status: 'PAID' }));
-      refundsRepository.sumCompletedByPaymentId.mockResolvedValue(0);
+    it('dispatches a partial refund via two-transaction boundary and emits event', async () => {
+      paymentsRepository.findByOrderId.mockResolvedValue(
+        buildPayment({ status: 'PAID', providerReference: 'cod-order-1' }),
+      );
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue(buildDispatchPrep(500));
       cashOnDeliveryAdapter.refundPayment.mockResolvedValue({
-        providerReference: 'cod-refund-1',
+        providerReference: 'cod-refund-attempt-1',
         status: 'COMPLETED',
       });
-      refundsRepository.create.mockResolvedValue(buildRefund());
-
-      const refund = await service.refundForOrder('order-1', 500, 'Vendor rejected order');
-
-      expect(refund).not.toBeNull();
-      expect(paymentsRepository.update).toHaveBeenCalledWith('payment-1', {
-        status: 'PARTIALLY_REFUNDED',
+      const completedRefund = buildRefund({ status: 'COMPLETED' });
+      refundAttemptsRepository.recordSyncOutcomeAndOutbox.mockResolvedValue({
+        obligation: { id: 'obligation-1', status: 'FULFILLED' } as any,
+        refund: completedRefund,
+        attempt: { id: 'attempt-1', status: 'COMPLETED' } as any,
+        outboxEventId: 'outbox-1',
       });
+
+      const refund = await service.refundForOrder('order-1', 500, 'Vendor rejected order', 'idem-500-key');
+
+      expect(refund).toEqual(completedRefund);
+      expect(refundAttemptsRepository.recordSyncOutcomeAndOutbox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attemptId: 'attempt-1',
+          providerOutcome: 'COMPLETED',
+          providerRefundReference: 'cod-refund-attempt-1',
+        }),
+      );
       expect(eventEmitter.emitAsync).toHaveBeenCalledWith(
         'refund.status_changed',
         expect.objectContaining({ customerId: 'user-1', status: 'COMPLETED' }),
       );
     });
 
-    it('marks the payment fully refunded once the whole amount is refunded', async () => {
+    it('returns existing refund without calling provider adapter when RETURN_EXISTING', async () => {
       paymentsRepository.findByOrderId.mockResolvedValue(buildPayment({ status: 'PAID' }));
-      refundsRepository.sumCompletedByPaymentId.mockResolvedValue(0);
-      cashOnDeliveryAdapter.refundPayment.mockResolvedValue({
-        providerReference: 'cod-refund-1',
-        status: 'COMPLETED',
+      const pendingRefund = buildRefund({ status: 'PENDING' });
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue({
+        action: 'RETURN_EXISTING',
+        refund: pendingRefund,
+        remainingBalance: new Prisma.Decimal(0),
       });
-      refundsRepository.create.mockResolvedValue(buildRefund({ amount: new Prisma.Decimal(1000) }));
 
-      await service.refundForOrder('order-1', 1000, 'Vendor rejected order');
+      const refund = await service.refundForOrder('order-1', 500, 'Vendor rejected order', 'idem-pending');
+      expect(refund).toEqual(pendingRefund);
+      expect(cashOnDeliveryAdapter.refundPayment).not.toHaveBeenCalled();
+    });
 
-      expect(paymentsRepository.update).toHaveBeenCalledWith('payment-1', { status: 'REFUNDED' });
+    it('records pre-send abort on unsupported WiPay refund without calling outbox outcome', async () => {
+      paymentsRepository.findByOrderId.mockResolvedValue(
+        buildPayment({ status: 'PAID', provider: 'WIPAY', providerReference: 'wipay-txn-1' }),
+      );
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue(buildDispatchPrep(500));
+      wiPayAdapter.refundPayment.mockRejectedValue(new NotImplementedException('WiPay unsupported'));
+      refundAttemptsRepository.recordPreSendAbort.mockResolvedValue({} as any);
+
+      await expect(
+        service.refundForOrder('order-1', 500, 'Vendor rejected order', 'idem-wipay-1'),
+      ).rejects.toBeInstanceOf(NotImplementedException);
+      expect(refundAttemptsRepository.recordPreSendAbort).toHaveBeenCalledTimes(1);
+      expect(refundAttemptsRepository.recordSyncOutcomeAndOutbox).not.toHaveBeenCalled();
+    });
+
+    it('quarantines ambiguous attempt on transport failure without releasing capacity', async () => {
+      paymentsRepository.findByOrderId.mockResolvedValue(
+        buildPayment({ status: 'PAID', providerReference: 'cod-order-1' }),
+      );
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue(buildDispatchPrep(500));
+      cashOnDeliveryAdapter.refundPayment.mockRejectedValue(new Error('ETIMEDOUT'));
+      refundAttemptsRepository.quarantineAttemptOutcome.mockResolvedValue({} as any);
+
+      await expect(
+        service.refundForOrder('order-1', 500, 'Vendor rejected order', 'idem-timeout-1'),
+      ).rejects.toThrow('ETIMEDOUT');
+      expect(refundAttemptsRepository.quarantineAttemptOutcome).toHaveBeenCalledTimes(1);
+      expect(refundAttemptsRepository.recordSyncOutcomeAndOutbox).not.toHaveBeenCalled();
     });
   });
 
   describe('refundByPaymentId', () => {
+    const validKey = '11111111-1111-4111-8111-111111111111';
+
+    it('rejects missing or invalid idempotency keys', async () => {
+      await expect(
+        service.refundByPaymentId('payment-1', 500, 'Admin adjustment'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('throws when the payment does not exist', async () => {
       paymentsRepository.findById.mockResolvedValue(null);
       await expect(
-        service.refundByPaymentId('missing', 500, 'Admin adjustment'),
+        service.refundByPaymentId('missing', 500, 'Admin adjustment', validKey),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('throws when the payment has not been paid', async () => {
       paymentsRepository.findById.mockResolvedValue(buildPayment({ status: 'PENDING' }));
       await expect(
-        service.refundByPaymentId('payment-1', 500, 'Admin adjustment'),
+        service.refundByPaymentId('payment-1', 500, 'Admin adjustment', validKey),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('throws when the refund amount exceeds the refundable balance', async () => {
+    it('throws when the refund amount exceeds remaining obligated balance', async () => {
       paymentsRepository.findById.mockResolvedValue(buildPayment({ status: 'PAID' }));
-      refundsRepository.sumCompletedByPaymentId.mockResolvedValue(800);
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue({
+        action: 'EXCEEDS_BALANCE',
+        remainingBalance: new Prisma.Decimal(200),
+      });
 
       await expect(
-        service.refundByPaymentId('payment-1', 500, 'Admin adjustment'),
+        service.refundByPaymentId('payment-1', 500, 'Admin adjustment', validKey),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('issues a refund within the remaining balance', async () => {
-      paymentsRepository.findById.mockResolvedValue(buildPayment({ status: 'PAID' }));
-      refundsRepository.sumCompletedByPaymentId.mockResolvedValue(0);
+    it('issues a refund within the remaining balance via two-transaction dispatch', async () => {
+      paymentsRepository.findById.mockResolvedValue(
+        buildPayment({ status: 'PAID', providerReference: 'cod-order-1' }),
+      );
+      refundAttemptsRepository.prepareAndClaimAttempt.mockResolvedValue({
+        action: 'DISPATCH',
+        obligation: { id: 'obligation-1', authorizedAmount: new Prisma.Decimal(500) } as any,
+        refund: buildRefund({ status: 'PROCESSING' }),
+        attempt: {
+          id: 'attempt-1',
+          providerIdempotencyKey: 'refund:obligation-1:att:1',
+          attemptSequence: 1,
+        } as any,
+        parentPaymentReference: 'cod-order-1',
+        remainingBalance: new Prisma.Decimal(500),
+      });
       cashOnDeliveryAdapter.refundPayment.mockResolvedValue({
-        providerReference: 'cod-refund-1',
+        providerReference: 'cod-refund-attempt-1',
         status: 'COMPLETED',
       });
-      refundsRepository.create.mockResolvedValue(buildRefund());
+      refundAttemptsRepository.recordSyncOutcomeAndOutbox.mockResolvedValue({
+        obligation: { id: 'obligation-1', status: 'FULFILLED' } as any,
+        refund: buildRefund({ status: 'COMPLETED' }),
+        attempt: { id: 'attempt-1', status: 'COMPLETED' } as any,
+        outboxEventId: 'outbox-1',
+      });
 
-      const result = await service.refundByPaymentId('payment-1', 500, 'Admin adjustment');
+      const result = await service.refundByPaymentId('payment-1', 500, 'Admin adjustment', validKey);
       expect(result.status).toBe('COMPLETED');
     });
   });

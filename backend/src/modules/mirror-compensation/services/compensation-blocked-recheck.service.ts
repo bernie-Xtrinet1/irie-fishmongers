@@ -50,11 +50,17 @@ export class CompensationBlockedRecheckService {
     // against the generation it started with, never one read later.
     const observedGeneration = row.generation;
 
+    if (row.blockReason === 'PRODUCT_SUSPECT') {
+      await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
+      // Observation or zero-quantity bookkeeping cannot repair or clear durable PRODUCT_SUSPECT blocks.
+      return this.rescheduleBlocked(compensationId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
+    }
+
     const item = await this.cartRepository.findItemByCartAndProduct(row.cartId, row.productId);
     const desiredQuantity = item?.quantity ?? 0;
 
     if (desiredQuantity === 0) {
-      // A release-shaped desired state is never blocked by either cause.
+      // A MODE_NOT_ADMITTING release-shaped desired state can safely unblock.
       return this.unblock(compensationId, observedGeneration, now);
     }
 
@@ -66,10 +72,7 @@ export class CompensationBlockedRecheckService {
       return this.unblock(compensationId, observedGeneration, now);
     }
 
-    // PRODUCT_SUSPECT
-    await this.inventoryReservations.observeProductReservations(row.productId, [row.cartId]);
-    // Observation cannot authorize repair or clear a durable PRODUCT_SUSPECT block.
-    return this.rescheduleBlocked(compensationId, observedGeneration, now, 'BLOCKED_PRODUCT_SUSPECT');
+    throw new Error(`Invariant violation: BLOCKED compensation ${compensationId} has unrecognized blockReason`);
   }
 
   private async unblock(

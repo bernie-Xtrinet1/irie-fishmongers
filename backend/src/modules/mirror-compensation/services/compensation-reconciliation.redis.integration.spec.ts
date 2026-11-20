@@ -5,7 +5,11 @@ import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
 import { productSuspectKey, productTotalKey, reservationHashKey } from '../../inventory/constants/inventory.constants';
 import { InventoryReservationsService } from '../../inventory/services/inventory-reservations.service';
-import { connectRealRedis } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
+import {
+  connectRealRedis,
+  ensureOpenReservationFence,
+} from '../../inventory/services/inventory-reservations.redis-test-helpers';
 import { ReservationEngineModeService } from '../../reservation-engine-mode/services/reservation-engine-mode.service';
 import { CartRepository } from '../../cart/repositories/cart.repository';
 import {
@@ -53,6 +57,24 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
     modeService.getCurrentMode.mockResolvedValue(mode);
   }
 
+  async function syncExpectedQuantity(cartId: string, productId: string, expectedQuantity: number): Promise<void> {
+    await prisma.cartReservationSyncState.upsert({
+      where: { cartId_productId: { cartId, productId } },
+      create: {
+        cartId,
+        productId,
+        expectedMutationVersion: 1,
+        expectedQuantity,
+        generation: 1,
+      },
+      update: {
+        expectedMutationVersion: { increment: 1 },
+        expectedQuantity,
+        generation: { increment: 1 },
+      },
+    });
+  }
+
   beforeAll(async () => {
     redisClient = await connectRealRedis();
     await redisClient.select(ISOLATED_DB_INDEX);
@@ -70,10 +92,13 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
 
   beforeEach(async () => {
     await redisClient.flushdb();
+    await ensureOpenReservationFence(prisma, redisClient, 'MIRROR', fixture.userIds[0]!);
     compensationRepository = new CompensationRepository(prisma);
     cartRepository = new CartRepository(prisma);
     const redisService = new RedisService(redisClient);
     inventoryReservations = new InventoryReservationsService(redisService);
+    const ordinary = new OrdinaryReservationService(prisma, redisService);
+    Object.assign(inventoryReservations, { ordinary, observationPrisma: prisma });
     modeService = { getCurrentMode: jest.fn().mockResolvedValue('MIRROR') };
     compensationService = new CompensationService(compensationRepository);
     reconciliationService = new CompensationReconciliationService(
@@ -93,6 +118,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('1. reserve convergence: a CartItem with quantity 7 converges the cart-scoped mirror to 7', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 7);
+    await syncExpectedQuantity(cartId, productId, 7);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -108,6 +134,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
 
   it('2. release convergence: a removed CartItem drains a genuine leftover mirror hold to zero', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    await syncExpectedQuantity(cartId, productId, 4);
     await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 4); // leftover mirror hold, no CartItem
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, operation: 'RELEASE_MIRROR', desiredQuantity: null }),
@@ -123,6 +150,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('3. a genuine PRODUCT_SUSPECT block remains blocked after observation', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 3);
+    await syncExpectedQuantity(cartId, productId, 3);
     await redisClient.set(productSuspectKey(productId), '1');
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
@@ -156,9 +184,11 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
 
   it('4. a genuine ACCOUNTING_UNDERFLOW block remains blocked after observation', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
+    await syncExpectedQuantity(cartId, productId, 10);
     await inventoryReservations.reserveOrRenew(cartId, productId, customerId, 10);
     await redisClient.set(productTotalKey(productId), '2'); // corrupt below the upcoming negative delta
     await cartRepository.addOrIncrementItem(cartId, productId, 3); // delta -7 against a stored total of 2
+    await syncExpectedQuantity(cartId, productId, 3);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -192,6 +222,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('5. a concurrent divergence arrival mid-recovery supersedes the attempt: old worker cannot resolve', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 5);
+    await syncExpectedQuantity(cartId, productId, 5);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -228,6 +259,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('6. repeated reconciliation is idempotent: a RESOLVED row is untouched by a second attempt', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 2);
+    await syncExpectedQuantity(cartId, productId, 2);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -244,6 +276,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('7. DRAINING with a positive desired quantity blocks without ever writing a reservation key', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 6);
+    await syncExpectedQuantity(cartId, productId, 6);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );
@@ -259,6 +292,7 @@ describe('CompensationReconciliationService / CompensationBlockedRecheckService 
   it('8. never writes the legacy hash-based reservation during recovery', async () => {
     const { cartId, productId, customerId } = await seedCartAndProduct(fixture);
     await cartRepository.addOrIncrementItem(cartId, productId, 4);
+    await syncExpectedQuantity(cartId, productId, 4);
     const row = await compensationRepository.create(
       baseCreateInput({ cartId, productId, customerId, reasonCode: 'UNKNOWN_INFRA_FAILURE' }),
     );

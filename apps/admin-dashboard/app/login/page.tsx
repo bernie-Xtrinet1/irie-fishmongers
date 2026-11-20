@@ -8,6 +8,7 @@ import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { isActiveAdminUser } from '@/lib/auth/admin-access';
 import { useAuth } from '@/lib/auth/auth-context';
 
 const loginSchema = z.object({
@@ -19,7 +20,7 @@ type LoginFormValues = z.infer<typeof loginSchema>;
 
 export default function LoginPage(): React.ReactElement {
   const router = useRouter();
-  const { login, status } = useAuth();
+  const { login, status, user } = useAuth();
   const [formError, setFormError] = useState<string | null>(null);
   const {
     register,
@@ -28,10 +29,10 @@ export default function LoginPage(): React.ReactElement {
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema) });
 
   useEffect(() => {
-    if (status === 'authenticated') {
+    if (status === 'authenticated' && isActiveAdminUser(user)) {
       router.replace('/');
     }
-  }, [status, router]);
+  }, [status, user, router]);
 
   async function onSubmit(values: LoginFormValues): Promise<void> {
     setFormError(null);

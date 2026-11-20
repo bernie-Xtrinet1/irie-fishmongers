@@ -1,6 +1,10 @@
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../../database/prisma.service';
 import { RedisService } from '../../../common/redis/redis.service';
+import {
+  findActiveProductRestriction,
+  nextOddRestrictionRevision,
+} from '../repositories/product-reservation-restriction.repository';
 import { ReservationFenceRepository, transitionTuple } from '../repositories/reservation-fence.repository';
 import { PRODUCT_CONTROL_INSTALL } from '../lua/product-reservation-restriction.lua';
 import { RESERVATION_FENCE_KEY } from '../lua/reservation-fence-control.lua';
@@ -25,12 +29,14 @@ export class ProductReservationRestrictionService {
     try {
       return await this.fences.locked(async tx => {
         await tx.product.findUniqueOrThrow({ where: { id: binding.productId }, select: { id: true } });
-        const existing = await tx.productReservationRestriction.findUnique({ where: { productId: binding.productId } });
-        return existing ?? tx.productReservationRestriction.create({ data: { id, ...binding } });
+        const existing = await findActiveProductRestriction(tx, binding.productId);
+        if (existing) return existing;
+        const restrictionRevision = await nextOddRestrictionRevision(tx, binding.productId);
+        return tx.productReservationRestriction.create({ data: { id, ...binding, restrictionRevision } });
       });
     } catch {
       // Reload only. Never create another identity after an ambiguous COMMIT.
-      try { return await this.fences.locked(tx => tx.productReservationRestriction.findUnique({ where: { productId: binding.productId } })); }
+      try { return await this.fences.locked(tx => findActiveProductRestriction(tx, binding.productId)); }
       catch { return null; }
     }
   }
@@ -40,13 +46,22 @@ export class ProductReservationRestrictionService {
     try {
       return await this.fences.locked(async tx => {
         const restriction = await tx.productReservationRestriction.findUniqueOrThrow({ where: { id } });
+        if (restriction.state !== 'PREPARED' && restriction.state !== 'ENFORCED') return 'UNRESOLVED';
+        const latestCleared = await tx.productSuspectRecovery.findFirst({
+          where: { productId: restriction.productId, status: 'COMPLETED' },
+          orderBy: { clearedControlRevision: 'desc' },
+          select: { clearedControlRevision: true },
+        });
+        if (latestCleared && restriction.restrictionRevision <= latestCleared.clearedControlRevision) {
+          return 'UNRESOLVED';
+        }
         const fence = await this.fences.latest(tx);
         const mode = await this.fences.mode(tx);
         if (!fence || fence.status !== 'ACKNOWLEDGED' || fence.protocol !== 1 ||
           fence.mode !== mode.mode || fence.modeRevision !== mode.modeRevision ||
           !legalPair(mode.mode, fence.phase, true)) return 'UNRESOLVED';
         const bytes = controlBytes({ version: 1, productId: restriction.productId, state: 'RESTRICTED',
-          restrictionId: id, restrictionRevision: 1, incarnation: fence.incarnation, epoch: fence.epoch });
+          restrictionId: id, restrictionRevision: restriction.restrictionRevision, incarnation: fence.incarnation, epoch: fence.epoch });
         const raw = await this.redis.eval(PRODUCT_CONTROL_INSTALL, [RESERVATION_FENCE_KEY, productControlKey(restriction.productId)],
           [JSON.stringify(transitionTuple(fence)), bytes]);
         if (typeof raw !== 'string') return 'UNRESOLVED';

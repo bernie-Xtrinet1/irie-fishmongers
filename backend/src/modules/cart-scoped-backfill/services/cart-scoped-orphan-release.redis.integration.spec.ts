@@ -1,3 +1,5 @@
+import { ensureOpenReservationFence, seedHistoricalActiveReservation } from '../../inventory/services/inventory-reservations.redis-test-helpers';
+import { OrdinaryReservationService } from '../../inventory/services/ordinary-reservation.service';
 import { randomUUID } from 'crypto';
 
 import { Redis } from 'ioredis';
@@ -43,7 +45,9 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
     await client.flushdb();
 
     cartRepository = new CartRepository(prisma);
-    inventoryReservations = new InventoryReservationsService(new RedisService(client));
+    const redisService = new RedisService(client);
+    inventoryReservations = new InventoryReservationsService(redisService);
+    Object.assign(inventoryReservations, { ordinary: new OrdinaryReservationService(prisma, redisService) });
     service = new CartScopedOrphanReleaseService(new RedisService(client), cartRepository, inventoryReservations);
 
     const usersRepository = new UsersRepository(prisma);
@@ -97,16 +101,25 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
       imageUrl: 'https://cdn.example.com/snapper.jpg',
     });
     productId = product.id;
+    await ensureOpenReservationFence(prisma, client, 'CART_SCOPED', vendorUserId);
   });
 
   afterAll(async () => {
-    await client.flushdb();
-    await client.quit();
-    await prisma.cartItem.deleteMany({ where: { productId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.category.delete({ where: { id: categoryId } });
-    await prisma.onModuleDestroy();
+    try {
+      await client.flushdb();
+      await client.quit();
+      await prisma.cartItem.deleteMany({ where: { productId } });
+      const retainedOwners = await prisma.ordinaryReservationOwner.count({ where: { productId } });
+      if (retainedOwners === 0) {
+        await prisma.cartReservationSyncState.deleteMany({ where: { productId } });
+        await prisma.reservationEngineModeConfig.deleteMany({ where: { updatedById: { in: [customerId, vendorUserId] } } });
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.category.delete({ where: { id: categoryId } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('releases a cart-scoped reservation with no corresponding positive CartItem, and leaves a genuine one untouched', async () => {
@@ -114,11 +127,16 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
 
     // Genuine target: a real CartItem AND a matching cart-scoped hold.
     await cartRepository.addOrIncrementItem(cart.id, productId, 5);
+    await prisma.cartReservationSyncState.upsert({
+      where: { cartId_productId: { cartId: cart.id, productId } },
+      create: { cartId: cart.id, productId, expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+      update: { expectedQuantity: 5, expectedMutationVersion: 1, generation: 1 },
+    });
     await inventoryReservations.reserveOrRenew(cart.id, productId, customerId, 5);
 
     // Orphan: a cart-scoped hold for a DIFFERENT cart with no CartItem at all.
     const orphanCartId = randomUUID();
-    await inventoryReservations.reserveOrRenew(orphanCartId, productId, customerId, 3);
+    await seedHistoricalActiveReservation(client, orphanCartId, productId, customerId, 3);
 
     const outcomes = await service.discoverAndReleaseOrphans();
 
@@ -138,7 +156,7 @@ describe('CartScopedOrphanReleaseService.discoverAndReleaseOrphans (real Postgre
   it('releases an orphan left behind by a reduced (not deleted) CartItem quantity going to zero via removal', async () => {
     const cart = await cartRepository.findOrCreateByCustomerId(customerId);
     const item = await cartRepository.addOrIncrementItem(cart.id, productId, 4);
-    await inventoryReservations.reserveOrRenew(cart.id, productId, customerId, 4);
+    await seedHistoricalActiveReservation(client, cart.id, productId, customerId, 4);
 
     // The item is removed (durable truth now says zero), but the
     // cart-scoped hold was never cleaned up - exactly the scenario a

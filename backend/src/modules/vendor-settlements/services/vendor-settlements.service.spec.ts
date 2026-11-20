@@ -1,4 +1,4 @@
-import { BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import {
   PlatformCommissionConfig,
   Prisma,
@@ -69,6 +69,8 @@ function buildSettlement(overrides: Partial<VendorSettlement> = {}): VendorSettl
     status: 'PENDING',
     paymentDate: null,
     notes: null,
+    commissionConfigId: null,
+    commissionRateSnapshot: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -81,6 +83,9 @@ function buildAdjustment(overrides: Partial<VendorSettlementAdjustment> = {}): V
     settlementId: 'settlement-1',
     amount: new Prisma.Decimal(-400),
     reason: 'Partial refund issued for damaged goods',
+    idempotencyKey: null,
+    refundId: null,
+    allocationId: null,
     createdAt: new Date(),
     ...overrides,
   };
@@ -135,9 +140,11 @@ describe('VendorSettlementsService', () => {
       expect(vendorSettlementsRepository.create).toHaveBeenCalledWith({
         vendorId: 'vendor-1',
         vendorOrderId: 'vo-1',
-        grossAmount: 1000,
-        platformFee: 100,
-        netAmount: 900,
+        grossAmount: new Prisma.Decimal(1000),
+        platformFee: new Prisma.Decimal(100),
+        netAmount: new Prisma.Decimal(900),
+        commissionConfigId: 'rate-config-1',
+        commissionRateSnapshot: new Prisma.Decimal(0.1),
       });
     });
 
@@ -247,6 +254,19 @@ describe('VendorSettlementsService', () => {
     });
   });
 
+  describe('updateStatus - offset protection', () => {
+    it('propagates offset/disbursement ConflictException when repository blocks APPROVED -> FAILED transition', async () => {
+      vendorSettlementsRepository.findById.mockResolvedValue(buildSettlement({ status: 'APPROVED' }));
+      vendorSettlementsRepository.updateStatus.mockRejectedValue(
+        new ConflictException('Cannot mark settlement as FAILED: committed SETTLEMENT_OFFSET recovery depends on it'),
+      );
+
+      await expect(service.updateStatus('settlement-1', 'FAILED')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+  });
+
   describe('createAdjustment', () => {
     const dto = { amount: -400, reason: 'Partial refund issued for damaged goods' };
 
@@ -258,7 +278,7 @@ describe('VendorSettlementsService', () => {
       expect(result.amount).toBe('-400');
       expect(adjustmentsRepository.create).toHaveBeenCalledWith({
         settlementId: 'settlement-1',
-        amount: -400,
+        amount: new Prisma.Decimal(-400),
         reason: dto.reason,
       });
     });

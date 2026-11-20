@@ -8,12 +8,16 @@ export interface RestrictionObservationBinding {
   reasonCategory: ProductReservationRestrictionReason;
   observationDigest: string;
 }
+export const ACTIVE_RESTRICTION_STATES = ['PREPARED', 'ENFORCED', 'CLEARING'] as const;
+export const BLOCKING_RECOVERY_STATES = ['REQUESTED', 'APPROVED', 'EXECUTING', 'AMBIGUOUS_QUARANTINED'] as const;
+export type ProductRestrictionControlState = 'ALLOW' | 'RESTRICTED' | 'CLEARANCE_STAGED';
+
 export interface ProductRestrictionControl {
   version: 1;
   productId: string;
-  state: 'ALLOW' | 'RESTRICTED';
+  state: ProductRestrictionControlState;
   restrictionId: string | null;
-  restrictionRevision: 0 | 1;
+  restrictionRevision: number;
   incarnation: string;
   epoch: number;
 }

@@ -36,8 +36,9 @@ describe('InventoryReservationsService (cart-scoped model)', () => {
       { provide: RedisService, useValue: redis }, { provide: OrdinaryReservationService, useValue: ordinary },
       { provide: PrismaService, useValue: {
         reservationFenceTransition: { findFirst: jest.fn() },
-        productReservationRestriction: { findUnique: jest.fn() },
-        productReservationRestrictionInstallation: { findUnique: jest.fn() },
+        productReservationRestriction: { findFirst: jest.fn().mockResolvedValue(null) },
+        productSuspectRecovery: { findFirst: jest.fn().mockResolvedValue(null) },
+        productReservationRestrictionInstallation: { findUnique: jest.fn().mockResolvedValue(null) },
       } }] }).compile();
     service = testingModule.get(InventoryReservationsService);
   });
@@ -63,6 +64,34 @@ describe('InventoryReservationsService (cart-scoped model)', () => {
     it('preserves uncertain infrastructure instead of assuming a failed physical write', async () => {
       ordinary.reserve.mockResolvedValue({ code: 'INFRASTRUCTURE_FAILURE', outcome: 'UNCERTAIN' });
       expect(await service.reserveOrRenew('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'UNCERTAIN_INFRASTRUCTURE' });
+    });
+    it('classifies ACCOUNTING_UNDERFLOW, ACCOUNTING_CORRUPTION, and MALFORMED_RESOURCE{_GUARD} losslessly', async () => {
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'ACCOUNTING_UNDERFLOW' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_ACCOUNTING_UNDERFLOW' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'ACCOUNTING_CORRUPTION' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_ACCOUNTING_CORRUPTION' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'MALFORMED_RESOURCE' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_MALFORMED_RESOURCE' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'MALFORMED_RESOURCE_GUARD' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_MALFORMED_RESOURCE' });
+    });
+    it('distinguishes RESOURCE_GENERATION_MISMATCH, CHECKOUT_IN_PROGRESS, and CAPABILITY_REVOKED from generic FENCE_REJECTED', async () => {
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'RESOURCE_GENERATION_MISMATCH' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_RESOURCE_GENERATION_MISMATCH' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'CHECKOUT_IN_PROGRESS' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_CHECKOUT_IN_PROGRESS' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'CAPABILITY_REVOKED' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'RESERVATION_PRODUCT_SUSPENDED' });
+      ordinary.reserve.mockResolvedValueOnce({ code: 'FENCE_REJECTED', reason: 'OPERATION_MISMATCH' });
+      expect(await service.reserveOrRenew('cart', 'product', 'customer', 4))
+        .toEqual({ ok: false, code: 'FENCE_REJECTED' });
     });
     it('does not expose an unfenced administrative lifetime-reset path', async () => {
       expect(await service.reserveWithFreshEpoch('cart', 'product', 'customer', 4)).toEqual({ ok: false, code: 'FENCE_REJECTED' });

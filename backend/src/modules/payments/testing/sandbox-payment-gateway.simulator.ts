@@ -9,6 +9,7 @@ import {
   PaymentCreateInput,
   PaymentCreateResult,
   PaymentProviderAdapter,
+  PaymentRefundDispatchContext,
   PaymentRefundResult,
   PaymentVerifyResult,
 } from '../interfaces/payment-provider.interface';
@@ -287,14 +288,17 @@ export class SandboxPaymentGatewaySimulator implements PaymentProviderAdapter {
     providerReference: string,
     amount: number,
     reason: string,
+    context?: PaymentRefundDispatchContext,
   ): Promise<PaymentRefundResult> {
     const { scenario, options } = this.resolveActiveScenario();
+    if (scenario === SimulatorScenario.CONNECTION_RESET || scenario === SimulatorScenario.NETWORK_TIMEOUT) {
+      this.recordCall('refundPayment', { providerReference, amount, reason, context }, scenario, 'REJECTED');
+      throw new Error(options.errorMessage ?? 'Simulated refund transport timeout');
+    }
     const outcome = options.refundStatus ?? 'COMPLETED';
-
-    this.recordCall('refundPayment', { providerReference, amount, reason }, scenario, 'RESOLVED');
-
+    this.recordCall('refundPayment', { providerReference, amount, reason, context }, scenario, 'RESOLVED');
     return {
-      providerReference: `sim-refund-${randomUUID()}`,
+      providerReference: `sim-refund-${context?.attemptId ?? randomUUID()}`,
       status: outcome,
     };
   }

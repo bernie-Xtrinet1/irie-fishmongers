@@ -15,6 +15,9 @@ describe('PaymentsRepository', () => {
   let repository: PaymentsRepository;
   let customerId: string;
   let vendorUserId: string;
+  let ordersRepository: OrdersRepository;
+  let vendorId: string;
+  let productId: string;
   let category: Category;
   let orderId: string;
 
@@ -22,12 +25,12 @@ describe('PaymentsRepository', () => {
     prisma = new PrismaService();
     await prisma.onModuleInit();
     repository = new PaymentsRepository(prisma);
+    ordersRepository = new OrdersRepository(prisma);
 
     const usersRepository = new UsersRepository(prisma);
     const vendorsRepository = new VendorsRepository(prisma);
     const categoriesRepository = new CategoriesRepository(prisma);
     const productsRepository = new ProductsRepository(prisma);
-    const ordersRepository = new OrdersRepository(prisma);
 
     const customerRole: Role = await prisma.role.findUniqueOrThrow({
       where: { name: RoleName.CUSTOMER },
@@ -63,6 +66,7 @@ describe('PaymentsRepository', () => {
       parish: 'KINGSTON',
       termsAcceptedAt: new Date(),
     });
+    vendorId = vendor.id;
 
     category = await categoriesRepository.create({
       name: `Payment Repo Category ${randomUUID()}`,
@@ -79,6 +83,7 @@ describe('PaymentsRepository', () => {
       quantityAvailable: 50,
       imageUrl: 'https://cdn.example.com/snapper.jpg',
     });
+    productId = product.id;
 
     const order = await ordersRepository.create({
       customerId,
@@ -108,11 +113,16 @@ describe('PaymentsRepository', () => {
   });
 
   afterAll(async () => {
-    await prisma.order.deleteMany({ where: { customerId } });
-    await prisma.user.delete({ where: { id: customerId } });
-    await prisma.user.delete({ where: { id: vendorUserId } });
-    await prisma.category.delete({ where: { id: category.id } });
-    await prisma.onModuleDestroy();
+    try {
+      const retainedOrders = await prisma.order.count({ where: { customerId } });
+      if (retainedOrders === 0) {
+        await prisma.user.delete({ where: { id: customerId } });
+        await prisma.user.delete({ where: { id: vendorUserId } });
+        await prisma.category.delete({ where: { id: category.id } });
+      }
+    } finally {
+      await prisma.onModuleDestroy();
+    }
   });
 
   it('creates a payment for an order', async () => {
@@ -227,158 +237,185 @@ describe('PaymentsRepository', () => {
 
   describe('findRecoveryCandidates', () => {
     it('finds a stale WiPay initiation-recovery candidate and excludes it after the cutoff', async () => {
-      const existing = await repository.findByOrderId(orderId);
-      expect(existing).not.toBeNull();
+      const recoveryOrder = await ordersRepository.create({
+        customerId,
+        deliveryAddressLine1: '2 Test Street',
+        deliveryParish: 'KINGSTON',
+        deliveryPhone: '+18765551234',
+        currency: 'JMD',
+        vendorOrders: [
+          {
+            vendorId,
+            subtotal: 1000,
+            items: [
+              {
+                productId,
+                productName: 'Payment Repo Snapper',
+                unitPrice: 500,
+                unit: 'PER_POUND',
+                quantity: 2,
+                subtotal: 1000,
+                currency: 'JMD',
+              },
+            ],
+          },
+        ],
+      });
+      const recoveryPayment = await repository.create({
+        orderId: recoveryOrder.id,
+        provider: 'WIPAY',
+        amount: 1000,
+        currency: 'JMD',
+      });
 
       const staleAt = new Date('2026-01-01T00:00:00.000Z');
       const staleBefore = new Date('2026-01-02T00:00:00.000Z');
 
-      try {
-        await prisma.payment.update({
-          where: { id: existing!.id },
-          data: {
-            provider: 'WIPAY',
-            initiationStatus: 'RECONCILE_REQUIRED',
-            updatedAt: staleAt,
-          },
-        });
+      await prisma.payment.update({
+        where: { id: recoveryPayment.id },
+        data: {
+          initiationStatus: 'RECONCILE_REQUIRED',
+          updatedAt: staleAt,
+        },
+      });
 
-        const candidates = await repository.findRecoveryCandidates(staleBefore, 10);
+      const candidates = await repository.findRecoveryCandidates(staleBefore, 10);
 
-        expect(candidates.map((payment) => payment.id)).toContain(existing!.id);
+      expect(candidates.map((payment) => payment.id)).toContain(recoveryPayment.id);
 
-        const beforeCandidateAge = await repository.findRecoveryCandidates(
-          new Date('2025-12-31T23:59:59.000Z'),
-          10,
-        );
+      const beforeCandidateAge = await repository.findRecoveryCandidates(
+        new Date('2025-12-31T23:59:59.000Z'),
+        10,
+      );
 
-        expect(beforeCandidateAge.map((payment) => payment.id)).not.toContain(existing!.id);
-      } finally {
-        await prisma.payment.update({
-          where: { id: existing!.id },
-          data: {
-            provider: existing!.provider,
-            initiationStatus: existing!.initiationStatus,
-          },
-        });
-      }
+      expect(beforeCandidateAge.map((payment) => payment.id)).not.toContain(recoveryPayment.id);
     });
   });
 
   describe('recovery claim fencing', () => {
     it('allows one worker to claim, permits stale reclaim, and fences stale release', async () => {
-      const existing = await repository.findByOrderId(orderId);
-      expect(existing).not.toBeNull();
+      const fencingOrder = await ordersRepository.create({
+        customerId,
+        deliveryAddressLine1: '3 Test Street',
+        deliveryParish: 'KINGSTON',
+        deliveryPhone: '+18765551234',
+        currency: 'JMD',
+        vendorOrders: [
+          {
+            vendorId,
+            subtotal: 1000,
+            items: [
+              {
+                productId,
+                productName: 'Payment Repo Snapper',
+                unitPrice: 500,
+                unit: 'PER_POUND',
+                quantity: 2,
+                subtotal: 1000,
+                currency: 'JMD',
+              },
+            ],
+          },
+        ],
+      });
+      const fencingPayment = await repository.create({
+        orderId: fencingOrder.id,
+        provider: 'WIPAY',
+        amount: 1000,
+        currency: 'JMD',
+      });
 
-      const paymentId = existing!.id;
+      const paymentId = fencingPayment.id;
       const firstNow = new Date('2026-09-03T10:00:00.000Z');
       const firstStaleBefore = new Date('2026-09-03T09:55:00.000Z');
       const secondNow = new Date('2026-09-03T10:10:00.000Z');
       const secondStaleBefore = new Date('2026-09-03T10:05:00.000Z');
 
-      try {
-        await prisma.payment.update({
-          where: { id: paymentId },
-          data: {
-            provider: 'WIPAY',
-            status: 'PENDING',
-            initiationStatus: 'ESTABLISHED',
-            providerReference: `wipay-recovery-${randomUUID()}`,
-            recoveryAttemptCount: 0,
-            recoveryStartedAt: null,
-          },
-        });
+      await prisma.payment.update({
+        where: { id: paymentId },
+        data: {
+          initiationStatus: 'ESTABLISHED',
+          providerReference: `wipay-recovery-${randomUUID()}`,
+          recoveryAttemptCount: 0,
+          recoveryStartedAt: null,
+        },
+      });
 
-        const competingClaims = await Promise.all([
-          repository.claimForRecovery(
-            paymentId,
-            firstNow,
-            firstStaleBefore,
-          ),
-          repository.claimForRecovery(
-            paymentId,
-            firstNow,
-            firstStaleBefore,
-          ),
-        ]);
-
-        const winners = competingClaims.filter(
-          (payment): payment is NonNullable<typeof payment> => payment !== null,
-        );
-
-        expect(winners).toHaveLength(1);
-        const winner = winners[0];
-        expect(winner).toBeDefined();
-        expect(winner!.recoveryAttemptCount).toBe(1);
-        expect(winner!.recoveryStartedAt?.getTime()).toBe(firstNow.getTime());
-
-        await expect(
-          repository.claimForRecovery(
-            paymentId,
-            new Date('2026-09-03T10:01:00.000Z'),
-            firstStaleBefore,
-          ),
-        ).resolves.toBeNull();
-
-        const staleReclaim = await repository.claimForRecovery(
+      const competingClaims = await Promise.all([
+        repository.claimForRecovery(
           paymentId,
-          secondNow,
-          secondStaleBefore,
-        );
+          firstNow,
+          firstStaleBefore,
+        ),
+        repository.claimForRecovery(
+          paymentId,
+          firstNow,
+          firstStaleBefore,
+        ),
+      ]);
 
-        expect(staleReclaim).not.toBeNull();
-        expect(staleReclaim!.recoveryAttemptCount).toBe(2);
-        expect(staleReclaim!.recoveryStartedAt?.getTime()).toBe(
-          secondNow.getTime(),
-        );
+      const winners = competingClaims.filter(
+        (payment): payment is NonNullable<typeof payment> => payment !== null,
+      );
 
-        await expect(
-          repository.releaseRecoveryClaimIfCurrent(paymentId, 1),
-        ).resolves.toBe(false);
+      expect(winners).toHaveLength(1);
+      const winner = winners[0];
+      expect(winner).toBeDefined();
+      expect(winner!.recoveryAttemptCount).toBe(1);
+      expect(winner!.recoveryStartedAt?.getTime()).toBe(firstNow.getTime());
 
-        const afterStaleRelease = await repository.findById(paymentId);
-        expect(afterStaleRelease!.recoveryStartedAt?.getTime()).toBe(
-          secondNow.getTime(),
-        );
+      await expect(
+        repository.claimForRecovery(
+          paymentId,
+          new Date('2026-09-03T10:01:00.000Z'),
+          firstStaleBefore,
+        ),
+      ).resolves.toBeNull();
 
-        await expect(
-          repository.releaseRecoveryClaimIfCurrent(paymentId, 2),
-        ).resolves.toBe(true);
+      const staleReclaim = await repository.claimForRecovery(
+        paymentId,
+        secondNow,
+        secondStaleBefore,
+      );
 
-        const afterCurrentRelease = await repository.findById(paymentId);
-        expect(afterCurrentRelease!.recoveryStartedAt).toBeNull();
+      expect(staleReclaim).not.toBeNull();
+      expect(staleReclaim!.recoveryAttemptCount).toBe(2);
+      expect(staleReclaim!.recoveryStartedAt?.getTime()).toBe(
+        secondNow.getTime(),
+      );
 
-        await prisma.payment.update({
-          where: { id: paymentId },
-          data: {
-            status: 'PAID',
-            initiationStatus: 'RECONCILE_REQUIRED',
-            recoveryStartedAt: null,
-          },
-        });
+      await expect(
+        repository.releaseRecoveryClaimIfCurrent(paymentId, 1),
+      ).resolves.toBe(false);
 
-        await expect(
-          repository.claimForRecovery(
-            paymentId,
-            new Date('2026-09-03T10:20:00.000Z'),
-            new Date('2026-09-03T10:15:00.000Z'),
-          ),
-        ).resolves.toBeNull();
-      } finally {
-        await prisma.payment.update({
-          where: { id: paymentId },
-          data: {
-            provider: existing!.provider,
-            status: existing!.status,
-            initiationStatus: existing!.initiationStatus,
-            providerReference: existing!.providerReference,
-            failureReason: existing!.failureReason,
-            paidAt: existing!.paidAt,
-            recoveryAttemptCount: 0,
-            recoveryStartedAt: null,
-          },
-        });
-      }
+      const afterStaleRelease = await repository.findById(paymentId);
+      expect(afterStaleRelease!.recoveryStartedAt?.getTime()).toBe(
+        secondNow.getTime(),
+      );
+
+      await expect(
+        repository.releaseRecoveryClaimIfCurrent(paymentId, 2),
+      ).resolves.toBe(true);
+
+      const afterCurrentRelease = await repository.findById(paymentId);
+      expect(afterCurrentRelease!.recoveryStartedAt).toBeNull();
+
+      await prisma.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: 'PAID',
+          initiationStatus: 'RECONCILE_REQUIRED',
+          recoveryStartedAt: null,
+        },
+      });
+
+      await expect(
+        repository.claimForRecovery(
+          paymentId,
+          new Date('2026-09-03T10:20:00.000Z'),
+          new Date('2026-09-03T10:15:00.000Z'),
+        ),
+      ).resolves.toBeNull();
     });
   });
 

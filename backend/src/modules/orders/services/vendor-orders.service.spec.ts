@@ -1,6 +1,12 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  NotImplementedException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { PaymentProviderName, Prisma, RefundStatus } from '@prisma/client';
 
 import { InventoryEventsRepository } from '../../inventory/repositories/inventory-events.repository';
 import { PaymentsService } from '../../payments/services/payments.service';
@@ -258,6 +264,79 @@ describe('VendorOrdersService', () => {
     it('rejects rejecting an already-accepted order', async () => {
       mockOwnedVendorOrder(buildVendorOrder({ status: 'ACCEPTED' }));
       await expect(service.reject('user-1', 'vo-1')).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('persists REQUIRED refund obligation inside tx and returns explicit MANUAL_REFUND_REQUIRED status for WiPay', async () => {
+      mockOwnedVendorOrder();
+      vendorOrdersRepository.updateStatus.mockResolvedValue(buildVendorOrder({ status: 'REJECTED' }));
+      const createdRefund = {
+        id: 'refund-wipay-1',
+        idempotencyKey: 'refund_vendor_order_reject_pay-1_vo-1',
+        paymentId: 'pay-1',
+        amount: new Prisma.Decimal('500.00'),
+        reason: 'Vendor rejected order',
+        status: RefundStatus.REQUIRED,
+        providerReference: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      const mockTx = {
+        payment: { findUnique: jest.fn().mockResolvedValue({ id: 'pay-1', status: 'PAID', amount: new Prisma.Decimal('500.00'), provider: PaymentProviderName.WIPAY, currency: 'JMD' }) },
+        vendorOrder: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        refund: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+          create: jest.fn().mockResolvedValue(createdRefund),
+        },
+      };
+      prisma.$transaction.mockImplementationOnce(async (cb: any) => cb(mockTx));
+      (prisma as any).refund = { findUnique: jest.fn().mockResolvedValue(createdRefund) };
+      paymentsService.refundForOrder.mockRejectedValueOnce(new NotImplementedException('WiPay unsupported'));
+
+      const result = await service.reject('user-1', 'vo-1');
+
+      expect(result.status).toBe('REJECTED');
+      expect(result.refundObligation?.status).toBe(RefundStatus.REQUIRED);
+      expect(result.refundObligation?.operationalStatus).toBe('MANUAL_REFUND_REQUIRED');
+      expect(result.refundObligation?.manualRefundRequired).toBe(true);
+      expect(result.refundObligation?.automatedRefundSupported).toBe(false);
+      expect(mockTx.refund.create).toHaveBeenCalledTimes(1);
+      expect(paymentsService.refundForOrder).toHaveBeenCalledWith(
+        'order-1',
+        new Prisma.Decimal('500.00'),
+        'Vendor rejected order',
+        'refund_vendor_order_reject_pay-1_vo-1',
+      );
+    });
+
+    it('aborts transaction and does NOT dispatch provider refund if obligation creation fails inside tx', async () => {
+      mockOwnedVendorOrder();
+      vendorOrdersRepository.updateStatus.mockResolvedValue(buildVendorOrder({ status: 'REJECTED' }));
+      const mockTx = {
+        payment: { findUnique: jest.fn().mockResolvedValue({ id: 'pay-1', status: 'PAID', amount: new Prisma.Decimal('500.00'), provider: PaymentProviderName.CASH_ON_DELIVERY, currency: 'JMD' }) },
+        vendorOrder: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        refund: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+          create: jest.fn().mockRejectedValue(new Error('DB_OBLIGATION_WRITE_FAILED')),
+        },
+      };
+      prisma.$transaction.mockImplementationOnce(async (cb: any) => cb(mockTx));
+
+      await expect(service.reject('user-1', 'vo-1')).rejects.toThrow('DB_OBLIGATION_WRITE_FAILED');
+      expect(paymentsService.refundForOrder).not.toHaveBeenCalled();
+    });
+
+    it('propagates ConflictException when concurrent update modifies PENDING status inside tx', async () => {
+      mockOwnedVendorOrder();
+      const mockTx = {
+        vendorOrder: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        refund: { findUnique: jest.fn(), findMany: jest.fn(), create: jest.fn() },
+      };
+      prisma.$transaction.mockImplementationOnce(async (cb: any) => cb(mockTx));
+
+      await expect(service.reject('user-1', 'vo-1')).rejects.toBeInstanceOf(ConflictException);
+      expect(paymentsService.refundForOrder).not.toHaveBeenCalled();
     });
   });
 

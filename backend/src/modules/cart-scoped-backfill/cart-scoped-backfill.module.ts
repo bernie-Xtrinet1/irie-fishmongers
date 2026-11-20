@@ -6,6 +6,8 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { ReservationRecoveryModule } from '../reservation-recovery/reservation-recovery.module';
 import { CartScopedBackfillService } from './services/cart-scoped-backfill.service';
 import { CartScopedOrphanReleaseService } from './services/cart-scoped-orphan-release.service';
+import { CutoverFreshnessResetAuditRepository } from './repositories/cutover-freshness-reset-audit.repository';
+import { CutoverFreshnessResetService } from './services/cutover-freshness-reset.service';
 
 // CART_SCOPED activation-boundary gate (see the gate design review's
 // direct-backfill design). RedisService is available via RedisModule's own
@@ -17,7 +19,17 @@ import { CartScopedOrphanReleaseService } from './services/cart-scoped-orphan-re
 // comment) introduces no cycle.
 @Module({
   imports: [CartRepositoryModule, CartReservationSyncModule, InventoryModule, ReservationRecoveryModule],
-  providers: [CartScopedBackfillService, CartScopedOrphanReleaseService],
-  exports: [CartScopedBackfillService, CartScopedOrphanReleaseService],
+  providers: [
+    CutoverFreshnessResetAuditRepository,
+    CutoverFreshnessResetService,
+    CartScopedBackfillService,
+    CartScopedOrphanReleaseService,
+  ],
+  exports: [
+    CutoverFreshnessResetAuditRepository,
+    CutoverFreshnessResetService,
+    CartScopedBackfillService,
+    CartScopedOrphanReleaseService,
+  ],
 })
 export class CartScopedBackfillModule {}

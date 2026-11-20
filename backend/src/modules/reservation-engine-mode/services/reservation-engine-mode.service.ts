@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Prisma, ReservationEngineMode } from '@prisma/client';
 
 import { CartMutationBarrierConfigRepository } from '../../cart-mutation-barrier/repositories/cart-mutation-barrier-config.repository';
@@ -11,11 +11,14 @@ import {
 } from '../repositories/reservation-engine-mode-config.repository';
 import {
   CutoverAttestation,
+  ReconcileModeFenceResult,
   ReservationEngineModeSnapshot,
   RollbackVerificationResult,
   SetReservationEngineModeInput,
   SetReservationEngineModeResult,
 } from '../types/reservation-engine-mode.types';
+import { ReservationModeFenceCoordinatorService } from './reservation-mode-fence-coordinator.service';
+import { verifyRollbackSafeFromRedis } from './reservation-rollback-verification';
 
 // CART_SCOPED activation-boundary gate (see the gate design review's final
 // atomic-freshness design). Passed explicitly to setMode's own
@@ -25,9 +28,6 @@ import {
 // one named constant ties transaction lifetime to Redis freshness, rather
 // than two independently-chosen numbers that could silently drift apart.
 export const CUTOVER_TRANSITION_TX_TIMEOUT_MS = 5_000;
-
-const CART_INDEX_KEY_PATTERN = /^inv:reserved:cart-index:\{([^{}]+)\}$/;
-const PRODUCT_TOTAL_KEY_PATTERN = /^inv:reserved:product-total:\{([^{}]+)\}$/;
 
 // Every valid (from, to) pair - the state-transition table lives in
 // ADR-007 Decision 8; this is its exact code form. No self-loops - a
@@ -63,13 +63,18 @@ const TRANSITION_LOCK_KEY = 'reservation_engine_mode_transition';
 // getCurrentMode()/setMode() yet.
 @Injectable()
 export class ReservationEngineModeService {
+  private readonly fenceCoordinator: ReservationModeFenceCoordinatorService;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly repository: ReservationEngineModeConfigRepository,
     private readonly redis: RedisService,
     private readonly inventoryReservations: InventoryReservationsService,
     private readonly mutationBarrierRepository: CartMutationBarrierConfigRepository,
-  ) {}
+    @Optional() fenceCoordinator?: ReservationModeFenceCoordinatorService,
+  ) {
+    this.fenceCoordinator = fenceCoordinator ?? new ReservationModeFenceCoordinatorService(prisma, redis);
+  }
 
   // No config row yet means LEGACY, not an error - deliberately different
   // from MarketplaceConfigService.getCurrentModeConfig()'s throw-if-missing
@@ -115,10 +120,29 @@ export class ReservationEngineModeService {
   // admin-triggered actions, not a hot path - global serialization is an
   // acceptable cost here.
   async setMode(input: SetReservationEngineModeInput): Promise<SetReservationEngineModeResult> {
+    if (this.fenceCoordinator.shouldCoordinate(this.prisma, this.repository, this.redis)) {
+      return this.fenceCoordinator.executeCoordinatedSetMode(
+        input,
+        this.repository,
+        (tx, attestation, postLockNow) => this.verifyCutoverPreconditions(tx, attestation, postLockNow),
+        () => this.verifyRollbackSafe(),
+      );
+    }
     return this.prisma.$transaction(
       tx => this.transitionInTransaction(tx, input, 'EXISTING_PUBLIC_PATH'),
       { timeout: CUTOVER_TRANSITION_TX_TIMEOUT_MS },
     );
+  }
+
+  async checkModeFenceConsistency(): Promise<boolean> {
+    if (!this.fenceCoordinator.shouldCoordinate(this.prisma, this.repository, this.redis)) {
+      return true;
+    }
+    return this.fenceCoordinator.checkConsistency();
+  }
+
+  async reconcilePendingTransition(): Promise<ReconcileModeFenceResult> {
+    return this.fenceCoordinator.reconcilePendingTransition();
   }
 
   // Inactive publication composition only. The caller must acquire exclusive
@@ -144,7 +168,11 @@ export class ReservationEngineModeService {
     input: SetReservationEngineModeInput,
     path: 'EXISTING_PUBLIC_PATH' | 'INACTIVE_RESTRICTION',
   ): Promise<SetReservationEngineModeResult> {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
+        if (path === 'EXISTING_PUBLIC_PATH') {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY})) FROM (SELECT pg_advisory_xact_lock(1380339280, 1)) AS _fence_lock`;
+        } else {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRANSITION_LOCK_KEY}))`;
+        }
         const postLockNow = Date.now();
 
         const currentConfig = await this.repository.findCurrent(tx);
@@ -292,114 +320,6 @@ export class ReservationEngineModeService {
   // emergency-rollback gate, not something called per request, so a full
   // keyspace scan is an acceptable cost here.
   async verifyRollbackSafe(): Promise<RollbackVerificationResult> {
-    const [nonZeroTotalProductIds, liveIndexProductIds] = await Promise.all([
-      this.findProductsWithNonZeroTotal(),
-      this.findProductsWithLiveCartIndexReservations(),
-    ]);
-
-    const totalsSet = new Set(nonZeroTotalProductIds);
-    const liveSet = new Set(liveIndexProductIds.present);
-    const unresolvedSet = new Set(liveIndexProductIds.unresolved);
-    const outstandingProductIds: string[] = [];
-    const structureDriftProductIds: string[] = [];
-
-    for (const productId of new Set([...totalsSet, ...liveSet, ...unresolvedSet])) {
-      if (!unresolvedSet.has(productId) && totalsSet.has(productId) && liveSet.has(productId)) {
-        outstandingProductIds.push(productId);
-      } else {
-        structureDriftProductIds.push(productId);
-      }
-    }
-
-    outstandingProductIds.sort();
-    structureDriftProductIds.sort();
-
-    return {
-      clear: outstandingProductIds.length === 0 && structureDriftProductIds.length === 0,
-      outstandingProductIds,
-      structureDriftProductIds,
-    };
-  }
-
-  // Fast-path signal: does any product's aggregated reserved-total key
-  // report a non-zero value? This is the projection reservation-lifecycle.md
-  // §7 already documents as capable of OVERCOUNT/UNDERCOUNT drift - one of
-  // two independent signals, never trusted alone.
-  private async findProductsWithNonZeroTotal(): Promise<string[]> {
-    const client = this.redis.getClient();
-    const nonZero: string[] = [];
-    let cursor = '0';
-
-    do {
-      const [nextCursor, keys] = await client.scan(
-        cursor,
-        'MATCH',
-        'inv:reserved:product-total:{*}',
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      for (const key of keys) {
-        const match = PRODUCT_TOTAL_KEY_PATTERN.exec(key);
-        if (!match) {
-          continue;
-        }
-        const value = await client.get(key);
-        if (value !== null && Number(value) > 0) {
-          nonZero.push(match[1]!);
-        }
-      }
-    } while (cursor !== '0');
-
-    return nonZero;
-  }
-
-  // Ground-truth signal: walk the cart-scoped reservation index
-  // (inv:reserved:cart-index:{cartId}, per reservation-lifecycle.md §4 -
-  // every productId a given cart currently holds a reservation for), and
-  // for every (cartId, productId) member, ask
-  // InventoryReservationsService.getActiveReservation whether that hold is
-  // genuinely still live - reusing the exact same parse/expiry logic every
-  // other read path already depends on, rather than re-deriving it here.
-  // A stale index member (evicted key, expired entry) is correctly
-  // retained as unresolved evidence. Aggregated by productId (not cartId) so it is
-  // directly comparable against findProductsWithNonZeroTotal's per-product
-  // signal for drift detection.
-  private async findProductsWithLiveCartIndexReservations(): Promise<{ present: string[]; unresolved: string[] }> {
-    const client = this.redis.getClient();
-    const liveProductIds = new Set<string>();
-    const unresolvedProductIds = new Set<string>();
-    let cursor = '0';
-
-    do {
-      const [nextCursor, keys] = await client.scan(
-        cursor,
-        'MATCH',
-        'inv:reserved:cart-index:{*}',
-        'COUNT',
-        100,
-      );
-      cursor = nextCursor;
-      for (const key of keys) {
-        const match = CART_INDEX_KEY_PATTERN.exec(key);
-        if (!match) {
-          continue;
-        }
-        const cartId = match[1]!;
-        const productIds = await client.smembers(key);
-        for (const productId of productIds) {
-          const observation = await this.inventoryReservations.getActiveReservation(cartId, productId);
-          if (observation.status === 'ACTIVE') {
-            liveProductIds.add(productId);
-          } else {
-            // An indexed absence, expired hold or untrusted representation is
-            // unresolved evidence. Verification never performs its cleanup.
-            unresolvedProductIds.add(productId);
-          }
-        }
-      }
-    } while (cursor !== '0');
-
-    return { present: Array.from(liveProductIds), unresolved: Array.from(unresolvedProductIds) };
+    return verifyRollbackSafeFromRedis(this.redis, this.inventoryReservations);
   }
 }

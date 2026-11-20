@@ -39,7 +39,14 @@ describe('api-client', () => {
       if (url.includes('/auth/refresh')) {
         refreshCallCount += 1;
         return Promise.resolve(
-          jsonResponse(200, { success: true, data: { accessToken: 'fresh-token' }, error: null }),
+          jsonResponse(200, {
+            success: true,
+            data: {
+              accessToken: 'fresh-token',
+              user: { id: 'admin-1', roles: ['ADMINISTRATOR'], status: 'ACTIVE' },
+            },
+            error: null,
+          }),
         );
       }
 
@@ -85,6 +92,100 @@ describe('api-client', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
     // One call for /vendors, one for /auth/refresh - no retry loop.
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards refreshed token and revokes session without retrying when refreshed user lacks ADMINISTRATOR', async () => {
+    const onTokenRefreshed = jest.fn();
+    const onUnauthorized = jest.fn();
+    configureApiClient({
+      getAccessToken: () => 'expired-token',
+      onTokenRefreshed,
+      onUnauthorized,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(401, { success: false, data: null, error: 'Expired' }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          success: true,
+          data: {
+            accessToken: 'customer-token',
+            user: { id: 'cust-1', roles: ['CUSTOMER'], status: 'ACTIVE' },
+          },
+          error: null,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { success: true, data: null, error: null }));
+
+    await expect(apiGet('/analytics/dashboard')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 403,
+    });
+    expect(onTokenRefreshed).not.toHaveBeenCalled();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining('/auth/logout'),
+      expect.any(Object),
+    );
+  });
+
+  it('discards refreshed token and revokes session when refreshed administrator is SUSPENDED', async () => {
+    const onTokenRefreshed = jest.fn();
+    const onUnauthorized = jest.fn();
+    configureApiClient({
+      getAccessToken: () => 'expired-token',
+      onTokenRefreshed,
+      onUnauthorized,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(401, { success: false, data: null, error: 'Expired' }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          success: true,
+          data: {
+            accessToken: 'susp-token',
+            user: { id: 'admin-susp', roles: ['ADMINISTRATOR'], status: 'SUSPENDED' },
+          },
+          error: null,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { success: true, data: null, error: null }));
+
+    await expect(apiGet('/analytics/dashboard')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 403,
+    });
+    expect(onTokenRefreshed).not.toHaveBeenCalled();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('revokes session and invokes onUnauthorized when an active session receives 403', async () => {
+    const onUnauthorized = jest.fn();
+    configureApiClient({
+      getAccessToken: () => 'active-token',
+      onTokenRefreshed: jest.fn(),
+      onUnauthorized,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(403, { success: false, data: null, error: 'Forbidden' }))
+      .mockResolvedValueOnce(jsonResponse(200, { success: true, data: null, error: null }));
+
+    await expect(apiGet('/vendors')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 403,
+    });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('/auth/logout'),
+      expect.any(Object),
+    );
   });
 
   it('never retries /auth/login through the refresh flow', async () => {

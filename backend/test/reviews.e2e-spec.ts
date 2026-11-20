@@ -87,34 +87,42 @@ describe('Reviews (e2e)', () => {
   });
 
   afterAll(async () => {
-    // ReviewAuditLog.reviewId is Restrict, so audit rows must go before their
-    // reviews; Review.vendorOrderId is Restrict, so reviews must be cleared
-    // before the customer cascade (Order -> VendorOrder) can run.
-    if (vendorUserEmails.length > 0) {
-      await prisma.reviewAuditLog.deleteMany({
-        where: { review: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.review.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-    }
-    if (customerEmails.length > 0) {
-      await cleanupCustomerCartArtifacts(prisma, customerEmails);
-      await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
-    }
-    if (vendorUserEmails.length > 0) {
-      await prisma.inventoryEvent.deleteMany({
-        where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
-      });
-      await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
-      await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
-    }
-    if (driverUserEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
-    }
-    if (adminEmails.length > 0) {
-      await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
-    }
-    if (app) {
-      await app.close();
+    try {
+      if (customerEmails.length > 0) {
+        await cleanupCustomerCartArtifacts(prisma, customerEmails);
+      }
+      const retainedOrders =
+        customerEmails.length > 0
+          ? await prisma.order.count({ where: { customer: { email: { in: customerEmails } } } })
+          : 0;
+      if (retainedOrders === 0) {
+        if (vendorUserEmails.length > 0) {
+          await prisma.reviewAuditLog.deleteMany({
+            where: { review: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+          });
+          await prisma.review.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+        }
+        if (customerEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: customerEmails } } });
+        }
+        if (vendorUserEmails.length > 0) {
+          await prisma.inventoryEvent.deleteMany({
+            where: { product: { vendor: { user: { email: { in: vendorUserEmails } } } } },
+          });
+          await prisma.product.deleteMany({ where: { vendor: { user: { email: { in: vendorUserEmails } } } } });
+          await prisma.user.deleteMany({ where: { email: { in: vendorUserEmails } } });
+        }
+        if (driverUserEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: driverUserEmails } } });
+        }
+        if (adminEmails.length > 0) {
+          await prisma.user.deleteMany({ where: { email: { in: adminEmails } } });
+        }
+      }
+    } finally {
+      if (app) {
+        await app.close();
+      }
     }
   });
 

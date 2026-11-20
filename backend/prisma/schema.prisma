@@ -88,6 +88,10 @@ model User {
   weightApprovalRecords        CustomerWeightApprovalRecord[]   @relation("WeightApprovalCustomer")
   weightApprovalChallenges     CustomerWeightApprovalChallenge[] @relation("ApprovalChallengeCustomer")
   settledWeightAdjustments     WeightAdjustmentSettlementRecord[] @relation("AdjustmentSettlementRecorder")
+  cutoverFreshnessResetAudits  CutoverFreshnessResetAudit[]       @relation("FreshnessResetOperator")
+  requestedSuspectRecoveries   ProductSuspectRecovery[]           @relation("SuspectRecoveryRequester")
+  approvedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryApprover")
+  rejectedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryRejector")
 
   @@map("users")
 }
@@ -189,7 +193,9 @@ model Vendor {
   temperatureDevices TemperatureDevice[]
   certifications     RegulatoryCertification[]
   reviews            Review[]
-  dailyListings      VendorDailyListing[]
+  dailyListings           VendorDailyListing[]
+  receivables             VendorReceivable[]
+  settlementDisbursements VendorSettlementDisbursement[]
 
   @@map("vendors")
 }
@@ -435,7 +441,8 @@ model VendorDailyListingSpecies {
 }
 
 model Product {
-  reservationRestriction ProductReservationRestriction?
+  reservationRestrictions  ProductReservationRestriction[]
+  productSuspectRecoveries ProductSuspectRecovery[]
   id                String        @id @default(uuid())
   vendorId          String
   categoryId        String
@@ -478,6 +485,7 @@ model Product {
   reservationSyncStates           CartReservationSyncState[]
   cartItemAddAttempts             CartItemAddAttempt[]
   dailyListings                   VendorDailyListing[]
+  cutoverFreshnessResetAudits     CutoverFreshnessResetAudit[]
 
   @@index([vendorId])
   @@index([categoryId])
@@ -489,6 +497,8 @@ model Product {
 enum ProductReservationRestrictionState {
   PREPARED
   ENFORCED
+  CLEARING
+  CLEARED
 }
 
 enum ProductReservationRestrictionReason {
@@ -498,18 +508,25 @@ enum ProductReservationRestrictionReason {
 }
 
 model ProductReservationRestriction {
-  id                      String @id @default(uuid()) @db.Uuid
-  productId               String @unique
-  restrictionRevision     Int @default(1)
+  id                      String                              @id @default(uuid()) @db.Uuid
+  productId               String
+  restrictionRevision     Int                                 @default(1)
   reasonCategory          ProductReservationRestrictionReason
   observationDigest       String
-  state                   ProductReservationRestrictionState @default(PREPARED)
-  preparedAt              DateTime @default(now())
-  firstEnforcedAt          DateTime?
-  physicalProtocolVersion Int @default(1)
-  product                 Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  state                   ProductReservationRestrictionState  @default(PREPARED)
+  preparedAt              DateTime                            @default(now())
+  firstEnforcedAt         DateTime?
+  clearedAt               DateTime?                           @db.Timestamptz(3)
+  clearedByRecoveryId     String?                             @db.Uuid
+  physicalProtocolVersion Int                                 @default(1)
+  product                 Product                             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  clearedByRecovery       ProductSuspectRecovery?             @relation("RestrictionClearedBy", fields: [clearedByRecoveryId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recoveries              ProductSuspectRecovery[]            @relation("RecoveryTargetRestriction")
   installations           ProductReservationRestrictionInstallation[]
 
+  @@unique([productId, restrictionRevision])
+  @@unique([id, productId, restrictionRevision])
+  @@index([productId, state])
   @@map("reservation_product_restrictions")
 }
 
@@ -540,8 +557,9 @@ model Cart {
   checkoutAttempts      CheckoutAttempt[]
   checkoutOperations    CheckoutOperation[]
   compensations         CartReservationCompensation[]
-  reservationSyncStates CartReservationSyncState[]
-  itemAddAttempts       CartItemAddAttempt[]
+  reservationSyncStates       CartReservationSyncState[]
+  itemAddAttempts             CartItemAddAttempt[]
+  cutoverFreshnessResetAudits CutoverFreshnessResetAudit[]
 
   @@unique([id, customerId])
   @@map("carts")
@@ -675,8 +693,10 @@ model CartReservationSyncState {
   createdAt                    DateTime                        @default(now())
   updatedAt                    DateTime                        @updatedAt
 
-  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  cart                        Cart                         @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  product                     Product                      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  cutoverFreshnessResetAudits CutoverFreshnessResetAudit[]
+  suspectRecoveryTargets      ProductSuspectRecoveryTarget[]
 
   @@unique([cartId, productId])
   @@unique([id, cartId, productId])
@@ -778,12 +798,13 @@ model Order {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  customer        User             @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  deliveryZone    DeliveryZone?    @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
-  vendorOrders    VendorOrder[]
-  payment         Payment?
-  checkoutAttempt CheckoutAttempt?
-  settlementEvents PaymentSettlementEvent[]
+  customer          User                     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  deliveryZone      DeliveryZone?            @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull)
+  vendorOrders      VendorOrder[]
+  payment           Payment?
+  checkoutAttempt   CheckoutAttempt?
+  settlementEvents  PaymentSettlementEvent[]
+  refundObligations RefundObligation[]
 
   @@index([customerId])
   @@map("orders")
@@ -798,13 +819,15 @@ model VendorOrder {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  order           Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  vendor          Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  items           OrderItem[]
-  delivery        Delivery?
-  settlement      VendorSettlement?
-  inventoryEvents InventoryEvent[]
-  reviews         Review[]
+  order             Order                         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vendor            Vendor                        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items             OrderItem[]
+  delivery          Delivery?
+  settlement        VendorSettlement?
+  inventoryEvents   InventoryEvent[]
+  reviews           Review[]
+  refundAllocations RefundVendorOrderAllocation[]
+  refundObligations RefundObligation[]
 
   @@index([vendorId])
   @@index([orderId])
@@ -826,11 +849,12 @@ model OrderItem {
   purchaseSnapshot   Json?
   createdAt          DateTime                      @default(now())
 
-  vendorOrder        VendorOrder                   @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  vendorOrder        VendorOrder                   @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
   product            Product                       @relation(fields: [productId], references: [id], onDelete: Restrict)
   originalLot        SeafoodLot?                   @relation(fields: [originalLotId], references: [id], onDelete: Restrict)
   originalListing    VendorDailyListing?           @relation(fields: [originalListingId], references: [id], onDelete: Restrict)
   weightAdjustment   SeafoodOrderWeightAdjustment?
+  refundAllocations  RefundVendorOrderAllocation[]
 
   @@index([originalLotId])
   @@index([originalListingId])
@@ -921,8 +945,10 @@ model ReservationFenceTransition {
   ordinaryOwners          OrdinaryReservationOwner[]
   ordinaryCauses          OrdinaryReservationCommand[]    @relation("OrdinaryCause")
   ordinaryDispatches      OrdinaryReservationCommand[]    @relation("OrdinaryDispatch")
-  reservationSettlements  CheckoutReservationSettlement[]
-  id                      String                          @id @default(uuid()) @db.Uuid
+  reservationSettlements      CheckoutReservationSettlement[]
+  cutoverFreshnessResetAudits CutoverFreshnessResetAudit[]
+  productSuspectRecoveries    ProductSuspectRecovery[]
+  id                          String                          @id @default(uuid()) @db.Uuid
   revision                Int                             @unique
   incarnation             String                          @db.Uuid
   epoch                   Int
@@ -1075,9 +1101,12 @@ model Payment {
   createdAt            DateTime                @default(now())
   updatedAt            DateTime                @updatedAt
 
-  order            Order                    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  refunds          Refund[]
-  settlementEvents PaymentSettlementEvent[]
+  order                  Order                          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  refunds                Refund[]
+  refundObligations      RefundObligation[]
+  refundProviderAttempts RefundProviderAttempt[]
+  reconciliationApprovals RefundReconciliationApproval[]
+  settlementEvents       PaymentSettlementEvent[]
 
   @@unique([provider, merchantAccountId, providerReference])
   @@map("payments")
@@ -1092,21 +1121,399 @@ enum RefundStatus {
   RECONCILE_REQUIRED
 }
 
-model Refund {
-  id                String       @id @default(uuid())
-  idempotencyKey    String?      @unique
-  paymentId         String
-  amount            Decimal      @db.Decimal(10, 2)
-  reason            String
-  status            RefundStatus @default(PENDING)
-  providerReference String?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+enum RefundObligationType {
+  ORDER_CANCELLATION
+  VENDOR_ORDER_CANCELLATION
+  VENDOR_ORDER_REJECTION
+  SETTLED_AFTER_CANCELLATION
+  ADMIN_EXCEPTIONAL_ADJUSTMENT
+}
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+enum RefundObligationStatus {
+  OPEN
+  IN_FLIGHT
+  PENDING_PROVIDER
+  RECONCILE_REQUIRED
+  FULFILLED
+  CANCELLED_VOIDED
+}
+
+enum RefundHistoricalClassification {
+  NATIVE
+  LEGACY_CLEAN_OBLIGATION
+  LEGACY_VERIFIED_COMPLETED
+  LEGACY_COMPLETED_AMBIGUOUS_OR_MISSING_REF
+  LEGACY_AMBIGUOUS_CHARGE_REF
+  LEGACY_UNRESOLVED_IN_FLIGHT
+  LEGACY_PENDING_VERIFIED
+  LEGACY_PENDING_NO_REF
+  LEGACY_PRE_OBLIGATION_TERMINAL_FAILED
+}
+
+enum RefundExecutionChannel {
+  AUTOMATED_GATEWAY
+  COD_INTERNAL
+  MANUAL_PORTAL_SETTLEMENT
+  LEGACY_BACKFILL
+}
+
+enum RefundAttemptStatus {
+  PREPARED
+  DISPATCHING
+  PROVIDER_PENDING
+  AMBIGUOUS_OUTCOME
+  COMPLETED
+  FAILED
+  CANCELLED_BEFORE_DISPATCH
+}
+
+enum RefundAttemptFailureClass {
+  NONE
+  UNSUPPORTED_OPERATION
+  VALIDATION_REJECTED_BEFORE_SEND
+  PROVIDER_DEFINITIVE_DECLINE
+  TRANSPORT_AMBIGUOUS
+  PROCESS_CRASH_SUSPECTED
+  EVIDENCE_CONTRADICTION
+  LEGACY_REFERENCE_AMBIGUOUS
+  POLICY_ABORTED
+}
+
+enum RefundAttemptEventType {
+  ATTEMPT_PREPARED
+  DISPATCH_CLAIMED
+  DISPATCH_ABORTED_UNSUPPORTED
+  DISPATCH_FAILED_PRE_SEND
+  PROVIDER_SYNC_RESPONSE
+  PROVIDER_TRANSPORT_TIMEOUT
+  LEASE_EXPIRED_QUARANTINED
+  WEBHOOK_OBSERVED
+  STATUS_POLL_OBSERVED
+  CONTRADICTION_QUARANTINED
+  MANUAL_RECONCILIATION_APPLIED
+  LEGACY_BACKFILL_RECORDED
+  LEGACY_BACKFILL_QUARANTINED
+  OUTBOX_EMITTED
+}
+
+enum RefundEvidenceProvenance {
+  APPLICATION_SYNC_RESPONSE
+  AUTHENTICATED_WEBHOOK
+  VERIFIED_STATUS_POLL
+  INTERNAL_COD_ADAPTER
+  LEASE_TIMEOUT_SWEEPER
+  DUAL_CONTROL_ADMIN_RECONCILIATION
+  LEGACY_BACKFILL
+}
+
+enum RefundEvidenceDisposition {
+  APPLIED
+  DUPLICATE_IGNORED
+  CONFLICT_REJECTED
+  UNMATCHED_IGNORED
+  SIGNATURE_REJECTED
+}
+
+enum RefundReconciliationActionType {
+  MANUAL_OFFLINE_SETTLEMENT_COMPLETED
+  RESOLVE_QUARANTINED_COMPLETED
+  RESOLVE_QUARANTINED_DEFINITIVE_FAIL_NO_REMITTANCE
+  CONTINUE_QUARANTINE
+  VOID_OBLIGATION
+}
+
+enum RefundReconciliationOutcome {
+  VERIFIED_COMPLETED
+  VERIFIED_FAILED
+  CONTINUE_QUARANTINE
+  VOID_OBLIGATION
+}
+
+enum RefundReconciliationApprovalStatus {
+  REQUESTED
+  APPROVED
+  EXECUTING
+  APPLIED
+  REJECTED
+  REVOKED
+  EXPIRED
+  QUARANTINED
+}
+
+enum RefundReconciliationApprovalEventType {
+  REQUESTED
+  APPROVED
+  REJECTED
+  REVOKED
+  EXPIRED
+  EXECUTION_CLAIMED
+  APPLIED
+  QUARANTINED
+}
+
+model RefundObligation {
+  id                       String                         @id @default(uuid())
+  paymentId                String
+  orderId                  String
+  vendorOrderId            String?
+  obligationKey            String                         @unique
+  obligationType           RefundObligationType
+  authorizedAmount         Decimal                        @db.Decimal(10, 2)
+  currency                 String                         @default("JMD")
+  reason                   String
+  status                   RefundObligationStatus         @default(OPEN)
+  historicalClassification RefundHistoricalClassification @default(NATIVE)
+  fulfilledRefundId        String?                        @unique
+  fulfilledAttemptId       String?                        @unique
+  voidApprovalId           String?                        @unique
+  createdByActorId         String?
+  createdByRole            String?
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+
+  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  order                  Order                          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vendorOrder            VendorOrder?                   @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  fulfilledRefund        Refund?                        @relation("ObligationFulfilledRefund", fields: [fulfilledRefundId], references: [id], onDelete: Restrict)
+  refunds                Refund[]                       @relation("ObligationRefunds")
+  attempts                 RefundProviderAttempt[]
+  attemptEvents            RefundProviderAttemptEvent[]
+  evidenceReceipts         RefundEvidenceReceipt[]
+  reconciliationApprovals  RefundReconciliationApproval[]
+  approvalEvents           RefundReconciliationApprovalEvent[]
+
+  @@index([paymentId, status])
+  @@index([orderId])
+  @@index([vendorOrderId])
+  @@map("refund_obligations")
+}
+
+model Refund {
+  id                 String       @id @default(uuid())
+  idempotencyKey     String?      @unique
+  paymentId          String
+  obligationId       String?
+  supersedesRefundId String?      @unique
+  amount             Decimal      @db.Decimal(10, 2)
+  reason             String
+  status             RefundStatus @default(PENDING)
+  providerReference  String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  payment                 Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  obligation              RefundObligation?              @relation("ObligationRefunds", fields: [obligationId], references: [id], onDelete: Restrict)
+  fulfilledForObligation  RefundObligation?              @relation("ObligationFulfilledRefund")
+  supersedesRefund        Refund?                        @relation("RefundSupersession", fields: [supersedesRefundId], references: [id], onDelete: Restrict)
+  supersededByRefund      Refund?                        @relation("RefundSupersession")
+  providerAttempts        RefundProviderAttempt[]
+  attemptEvents           RefundProviderAttemptEvent[]
+  evidenceReceipts        RefundEvidenceReceipt[]
+  reconciliationApprovals RefundReconciliationApproval[]
+  adjustments             VendorSettlementAdjustment[]
+  allocations             RefundVendorOrderAllocation[]
 
   @@index([paymentId])
+  @@index([obligationId])
   @@map("refunds")
+}
+
+model RefundReconciliationApproval {
+  id                          String                             @id @default(uuid())
+  obligationId                String
+  refundId                    String?
+  attemptId                   String?
+  paymentId                   String?
+  provider                    PaymentProviderName?
+  merchantAccountId           String?
+  amount                      Decimal?                           @db.Decimal(10, 2)
+  currency                    String?
+  actionType                  RefundReconciliationActionType
+  requestedOutcome            RefundReconciliationOutcome?
+  evidenceType                String
+  externalSettlementReference String?
+  evidenceDigest              String                             @db.Char(64)
+  evidenceReceiptIds          Json                               @default("[]")
+  requestDigest               String?                            @db.Char(64)
+  approvalDigest              String?                            @db.Char(64)
+  rationale                   String
+  authorizationRevision       Int                                @default(1)
+  requestedByActorId          String
+  requestedAt                 DateTime                           @default(now())
+  approvedByActorId           String?
+  approvedAt                  DateTime?
+  expiresAt                   DateTime?
+  rejectedByActorId           String?
+  rejectedAt                  DateTime?
+  rejectionReason             String?
+  revokedByActorId            String?
+  revokedAt                   DateTime?
+  revocationReason            String?
+  executedByActorId           String?
+  executingAt                 DateTime?
+  executionClaimToken         String?
+  appliedAt                   DateTime?
+  quarantinedAt               DateTime?
+  quarantineReason            String?
+  resultingAttemptEventId     String?
+  resultingOutboxId           String?
+  resultingAttemptStatus      RefundAttemptStatus?
+  resultingRefundStatus       RefundStatus?
+  resultingObligationStatus   RefundObligationStatus?
+  status                      RefundReconciliationApprovalStatus @default(REQUESTED)
+
+  obligation            RefundObligation                    @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  refund                Refund?                             @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  targetAttempt         RefundProviderAttempt?              @relation("ApprovalTargetAttempt", fields: [attemptId], references: [id], onDelete: Restrict)
+  payment               Payment?                            @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  resultingAttemptEvent RefundProviderAttemptEvent?         @relation("ApprovalResultingEvent", fields: [resultingAttemptEventId], references: [id], onDelete: Restrict)
+  resolvedAttempts      RefundProviderAttempt[]             @relation("AttemptResolutionApproval")
+  events                RefundReconciliationApprovalEvent[]
+
+  @@index([obligationId, status])
+  @@index([refundId])
+  @@index([attemptId])
+  @@index([paymentId])
+  @@index([status, expiresAt])
+  @@map("refund_reconciliation_approvals")
+}
+
+model RefundReconciliationApprovalEvent {
+  id                    String                                  @id @default(uuid())
+  approvalId            String
+  obligationId          String
+  eventSequence         Int
+  eventType             RefundReconciliationApprovalEventType
+  previousStatus        RefundReconciliationApprovalStatus?
+  resultingStatus       RefundReconciliationApprovalStatus
+  authorizationRevision Int
+  actorId               String
+  actorRole             String?
+  evidenceDigest        String                                  @db.Char(64)
+  sanitizedPayload      Json?
+  occurredAt            DateTime                                @default(now())
+  recordedAt            DateTime                                @default(now())
+
+  approval   RefundReconciliationApproval @relation(fields: [approvalId], references: [id], onDelete: Restrict)
+  obligation RefundObligation             @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+
+  @@unique([approvalId, eventSequence])
+  @@unique([approvalId, authorizationRevision], map: "uq_refund_approval_events_approval_rev")
+  @@index([obligationId])
+  @@map("refund_reconciliation_approval_events")
+}
+
+model RefundProviderAttempt {
+  id                       String                         @id @default(uuid())
+  refundId                 String
+  obligationId             String
+  paymentId                String
+  provider                 PaymentProviderName
+  merchantAccountId        String                         @default("default")
+  attemptSequence          Int
+  providerIdempotencyKey   String                         @unique
+  amount                   Decimal                        @db.Decimal(10, 2)
+  currency                 String                         @default("JMD")
+  executionChannel         RefundExecutionChannel
+  parentPaymentReference   String?
+  providerRefundReference  String?
+  status                   RefundAttemptStatus            @default(PREPARED)
+  failureClassification    RefundAttemptFailureClass      @default(NONE)
+  retryEligible            Boolean                        @default(false)
+  historicalClassification RefundHistoricalClassification @default(NATIVE)
+  requestDigest            String                         @db.Char(64)
+  preparedAt               DateTime                       @default(now())
+  dispatchStartedAt        DateTime?
+  leaseExpiresAt           DateTime?
+  providerRespondedAt      DateTime?
+  quarantinedAt            DateTime?
+  terminalizedAt           DateTime?
+  pollLockUntil            DateTime?
+  pollAttemptCount         Int                            @default(0)
+  resolvedByProvenance     RefundEvidenceProvenance?
+  resolvedByEventId        String?
+  reconciliationApprovalId String?
+  initiatedByActorId       String?
+  initiatedByRole          String?
+  version                  Int                            @default(1)
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+
+  refund                 Refund                         @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  obligation             RefundObligation               @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  reconciliationApproval RefundReconciliationApproval?  @relation("AttemptResolutionApproval", fields: [reconciliationApprovalId], references: [id], onDelete: Restrict)
+  events                 RefundProviderAttemptEvent[]
+  evidenceReceipts       RefundEvidenceReceipt[]
+  targetingApprovals     RefundReconciliationApproval[] @relation("ApprovalTargetAttempt")
+
+  @@unique([obligationId, attemptSequence])
+  @@unique([refundId, attemptSequence])
+  @@index([paymentId, status])
+  @@index([status, leaseExpiresAt])
+  @@map("refund_provider_attempts")
+}
+
+model RefundProviderAttemptEvent {
+  id                      String                   @id @default(uuid())
+  attemptId               String
+  refundId                String
+  obligationId            String
+  eventSequence           Int
+  eventType               RefundAttemptEventType
+  previousAttemptStatus   RefundAttemptStatus?
+  resultingAttemptStatus  RefundAttemptStatus
+  provenance              RefundEvidenceProvenance
+  provider                PaymentProviderName
+  merchantAccountId       String
+  providerEventId         String?
+  providerRefundReference String?
+  httpStatusCode          Int?
+  evidenceDigest          String                   @db.Char(64)
+  sanitizedPayload        Json?
+  actorId                 String?
+  actorRole               String?
+  occurredAt              DateTime                 @default(now())
+  recordedAt              DateTime                 @default(now())
+
+  attempt           RefundProviderAttempt          @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  refund            Refund                         @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  obligation        RefundObligation               @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  resolvedApprovals RefundReconciliationApproval[] @relation("ApprovalResultingEvent")
+
+  @@unique([attemptId, eventSequence])
+  @@index([refundId])
+  @@index([obligationId])
+  @@index([provider, merchantAccountId, providerRefundReference])
+  @@map("refund_provider_attempt_events")
+}
+
+model RefundEvidenceReceipt {
+  id                      String                    @id @default(uuid())
+  provider                PaymentProviderName
+  merchantAccountId       String
+  eventId                 String
+  providerRefundReference String?
+  attemptId               String?
+  refundId                String?
+  obligationId            String?
+  provenance              RefundEvidenceProvenance
+  disposition             RefundEvidenceDisposition
+  signatureValid          Boolean                   @default(false)
+  evidenceDigest          String                    @db.Char(64)
+  sourceIp                String?
+  rejectionReason         String?
+  receivedAt              DateTime                  @default(now())
+
+  attempt    RefundProviderAttempt? @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  refund     Refund?                @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  obligation RefundObligation?      @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+
+  @@index([provider, merchantAccountId, eventId])
+  @@index([attemptId])
+  @@index([refundId])
+  @@index([obligationId])
+  @@map("refund_evidence_receipts")
 }
 
 model PaymentSettlementEvent {
@@ -1357,6 +1764,8 @@ model PlatformCommissionConfig {
   commissionRate Decimal  @db.Decimal(5, 4)
   createdAt      DateTime @default(now())
 
+  settlements VendorSettlement[]
+
   @@map("platform_commission_configs")
 }
 
@@ -1372,23 +1781,29 @@ enum VendorSettlementStatus {
 // corrections are recorded as separate VendorSettlementAdjustment rows
 // instead of editing netAmount in place.
 model VendorSettlement {
-  id            String                 @id @default(uuid())
-  vendorId      String
-  vendorOrderId String                 @unique
-  grossAmount   Decimal                @db.Decimal(10, 2)
-  platformFee   Decimal                @db.Decimal(10, 2)
-  netAmount     Decimal                @db.Decimal(10, 2)
-  status        VendorSettlementStatus @default(PENDING)
-  paymentDate   DateTime?
-  notes         String?
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
+  id                     String                 @id @default(uuid())
+  vendorId               String
+  vendorOrderId          String                 @unique
+  grossAmount            Decimal                @db.Decimal(10, 2)
+  platformFee            Decimal                @db.Decimal(10, 2)
+  netAmount              Decimal                @db.Decimal(10, 2)
+  status                 VendorSettlementStatus @default(PENDING)
+  paymentDate            DateTime?
+  notes                  String?
+  commissionConfigId     String?
+  commissionRateSnapshot Decimal?               @db.Decimal(5, 4)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
-  vendor      Vendor                       @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  vendorOrder VendorOrder                  @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
-  adjustments VendorSettlementAdjustment[]
+  vendor           Vendor                    @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  vendorOrder      VendorOrder               @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  commissionConfig PlatformCommissionConfig? @relation(fields: [commissionConfigId], references: [id], onDelete: Restrict)
+  adjustments      VendorSettlementAdjustment[]
+  receivables      VendorReceivable[]
+  disbursements    VendorSettlementDisbursement[]
 
   @@index([vendorId])
+  @@index([commissionConfigId])
   @@map("vendor_settlements")
 }
 
@@ -1398,16 +1813,214 @@ model VendorSettlement {
 // the settlement's original grossAmount/platformFee/netAmount are never
 // edited - the adjusted total is netAmount + sum(adjustments).
 model VendorSettlementAdjustment {
-  id           String   @id @default(uuid())
-  settlementId String
-  amount       Decimal  @db.Decimal(10, 2)
-  reason       String
-  createdAt    DateTime @default(now())
+  id             String   @id @default(uuid())
+  settlementId   String
+  amount         Decimal  @db.Decimal(10, 2)
+  reason         String
+  idempotencyKey String?  @unique
+  refundId       String?
+  allocationId   String?
+  createdAt      DateTime @default(now())
 
-  settlement VendorSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  settlement           VendorSettlement             @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  refund               Refund?                      @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  allocation           RefundVendorOrderAllocation? @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  receivableRecoveries VendorReceivableRecovery[]
 
   @@index([settlementId])
+  @@index([refundId])
+  @@index([allocationId])
   @@map("vendor_settlement_adjustments")
+}
+
+enum RefundAllocationType {
+  CANCELLATION
+  ITEM_DEFECT
+  CUSTOMER_RETURN
+  MANUAL_SUPERVISOR_ADJUSTMENT
+}
+
+enum RefundAllocationEntryKind {
+  ALLOCATION
+  REVERSAL
+}
+
+model RefundVendorOrderAllocation {
+  id                   String                    @id @default(uuid())
+  refundId             String
+  vendorOrderId        String
+  orderItemId          String?
+  componentKey         String                    @default("VO")
+  entryKind            RefundAllocationEntryKind @default(ALLOCATION)
+  reversesAllocationId String?                   @unique
+  amount               Decimal                   @db.Decimal(10, 2)
+  currency             String                    @default("JMD")
+  allocationType       RefundAllocationType
+  reason               String?
+  createdAt            DateTime                  @default(now())
+
+  refund                 Refund                         @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  vendorOrder            VendorOrder                    @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  orderItem              OrderItem?                     @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  reversesAllocation     RefundVendorOrderAllocation?   @relation("RefundAllocationReversal", fields: [reversesAllocationId], references: [id], onDelete: Restrict)
+  reversedBy             RefundVendorOrderAllocation?   @relation("RefundAllocationReversal")
+  receivable             VendorReceivable?
+  liabilityDetermination VendorLiabilityDetermination?
+  settlementAdjustments  VendorSettlementAdjustment[]
+
+  @@unique([refundId, vendorOrderId, allocationType, componentKey])
+  @@index([vendorOrderId])
+  @@index([refundId])
+  @@index([orderItemId])
+  @@map("refund_vendor_order_allocations")
+}
+
+enum VendorLiabilityDecision {
+  VENDOR_RESPONSIBLE
+  PLATFORM_CONCESSION
+  UNRESOLVED
+}
+
+enum VendorLiabilityCategory {
+  VENDOR_CANCELLED_ORDER
+  VENDOR_ITEM_DEFECT
+  VENDOR_FULFILLMENT_SHORTFALL
+  CONTRACTUAL_VENDOR_RETURN
+  PLATFORM_GOODWILL_CONCESSION
+  PLATFORM_SYSTEM_ERROR
+  PAYMENT_PROCESSING_FEE_ADJUSTMENT
+  UNSPECIFIED
+}
+
+// Append-only authoritative responsibility determination per allocation.
+// Liability never assumes vendor fault unless an explicit VENDOR_RESPONSIBLE determination exists.
+model VendorLiabilityDetermination {
+  id                String                  @id @default(uuid())
+  allocationId      String                  @unique
+  decision          VendorLiabilityDecision
+  category          VendorLiabilityCategory
+  rationale         String
+  evidenceReference String?
+  createdAt         DateTime                @default(now())
+
+  allocation RefundVendorOrderAllocation @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+
+  @@map("vendor_liability_determinations")
+}
+
+enum VendorSettlementDisbursementStatus {
+  IN_FLIGHT
+  CONFIRMED
+  FAILED
+}
+
+// Authoritative payout disbursement ledger proving actual external payout state.
+// Bare VendorSettlement.status = PAID without CONFIRMED disbursement is DISBURSEMENT_UNKNOWN.
+model VendorSettlementDisbursement {
+  id                String                             @id @default(uuid())
+  settlementId      String
+  vendorId          String
+  amount            Decimal                            @db.Decimal(10, 2)
+  currency          String                             @default("JMD")
+  status            VendorSettlementDisbursementStatus
+  externalReference String?
+  notes             String?
+  initiatedAt       DateTime                           @default(now())
+  confirmedAt       DateTime?
+  createdAt         DateTime                           @default(now())
+  updatedAt         DateTime                           @updatedAt
+
+  settlement VendorSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  vendor     Vendor           @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  @@index([settlementId])
+  @@index([vendorId])
+  @@index([status])
+  @@map("vendor_settlement_disbursements")
+}
+
+enum VendorReceivableStatus {
+  OPEN
+  PARTIALLY_RECOVERED
+  RECOVERED
+  DISPUTED
+  WRITTEN_OFF
+}
+
+enum VendorReceivableRecoveryType {
+  SETTLEMENT_OFFSET
+  MANUAL_PAYMENT
+}
+
+// Passive sub-ledger representing confirmed vendor liability for completed refunds
+// on settlements proven externally disbursed via CONFIRMED VendorSettlementDisbursement.
+// Immutable original figures; cached totals & status synchronized exclusively by DB triggers.
+model VendorReceivable {
+  id                       String                 @id @default(uuid())
+  allocationId             String                 @unique
+  vendorId                 String
+  settlementId             String
+  currency                 String                 @default("JMD")
+  grossAllocatedAmount     Decimal                @db.Decimal(10, 2)
+  commissionReversedAmount Decimal                @db.Decimal(10, 2)
+  originalAmount           Decimal                @db.Decimal(10, 2)
+  recoveredAmount          Decimal                @default(0.00) @db.Decimal(10, 2)
+  writtenOffAmount         Decimal                @default(0.00) @db.Decimal(10, 2)
+  status                   VendorReceivableStatus @default(OPEN)
+  notes                    String?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+
+  allocation RefundVendorOrderAllocation @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  vendor     Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  settlement VendorSettlement            @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  recoveries VendorReceivableRecovery[]
+  writeOffs  VendorReceivableWriteOff[]
+
+  @@index([vendorId])
+  @@index([settlementId])
+  @@index([status])
+  @@map("vendor_receivables")
+}
+
+// Append-only recovery entries against an outstanding VendorReceivable.
+// Strictly positive amount; SETTLEMENT_OFFSET must reference a unique negative adjustment;
+// MANUAL_PAYMENT requires non-empty externalReference, collectedAt timestamp, and idempotencyKey
+// (with case-insensitive trimmed uniqueness enforced on MANUAL_PAYMENT externalReference in PostgreSQL).
+model VendorReceivableRecovery {
+  id                 String                       @id @default(uuid())
+  receivableId       String
+  targetAdjustmentId String?                      @unique
+  amount             Decimal                      @db.Decimal(10, 2)
+  recoveryType       VendorReceivableRecoveryType
+  externalReference  String?
+  collectedAt        DateTime?
+  idempotencyKey     String?                      @unique
+  notes              String?
+  createdAt          DateTime                     @default(now())
+
+  receivable       VendorReceivable            @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  targetAdjustment VendorSettlementAdjustment? @relation(fields: [targetAdjustmentId], references: [id], onDelete: Restrict)
+
+  @@index([receivableId])
+  @@index([externalReference])
+  @@map("vendor_receivable_recoveries")
+}
+
+// Append-only write-off entries against an outstanding VendorReceivable.
+// Separately recorded from recoveries; any closure with writtenOffAmount > 0 yields WRITTEN_OFF.
+model VendorReceivableWriteOff {
+  id             String   @id @default(uuid())
+  receivableId   String
+  amount         Decimal  @db.Decimal(10, 2)
+  reason         String
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  receivable VendorReceivable @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+
+  @@index([receivableId])
+  @@map("vendor_receivable_write_offs")
 }
 
 // ---------------------------------------------------------------------------
@@ -2685,7 +3298,8 @@ model CartMutationBarrierConfig {
   activatedById String?
   createdAt     DateTime @default(now())
 
-  activatedBy User? @relation(fields: [activatedById], references: [id], onDelete: Restrict)
+  activatedBy                 User?                        @relation(fields: [activatedById], references: [id], onDelete: Restrict)
+  cutoverFreshnessResetAudits CutoverFreshnessResetAudit[]
 
   @@map("cart_mutation_barrier_configs")
 }
@@ -2779,8 +3393,9 @@ model CartReservationCompensation {
   resolvedAt         DateTime?
   permanentFailureAt DateTime?
 
-  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Restrict)
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  cart                   Cart                           @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  product                Product                        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  suspectRecoveryTargets ProductSuspectRecoveryTarget[]
 
   @@index([status, nextAttemptAt])
   @@index([cartId, productId])
@@ -3888,4 +4503,183 @@ model WeightAdjustmentSettlementRecord {
   @@index([obligationId, settledAt], name: "idx_settlement_time")
   @@index([settlementChannel], name: "idx_settlement_channel")
   @@map("weight_adjustment_settlement_records")
+}
+
+// ============================================================================
+// WP4.3B.4F.7D.4B.6K-M67: DEDICATED FRESHNESS-RESET AUDIT & CRASH-RECOVERY
+// ============================================================================
+
+enum CutoverFreshnessResetStatus {
+  PREPARED
+  COMPLETED
+  ABORTED
+}
+
+// Durable administrative authorization, execution, and crash-recovery audit
+// ledger for W1 FRESHNESS_SWEEP operations. A PREPARED record captures
+// pre-execution authorization only and never by itself authorizes an
+// unrestricted Redis mutation. Terminal COMPLETED/ABORTED rows and identity
+// columns are database-enforced immutable and delete/truncate protected.
+model CutoverFreshnessResetAudit {
+  id                       String                      @id @default(uuid()) @db.Uuid
+  requestId                String                      @unique @db.Uuid
+  cutoverRunId             String                      @db.Uuid
+  barrierRevision          Int
+  fenceTransitionId        String                      @db.Uuid
+  incarnation              String                      @db.Uuid
+  fenceEpoch               Int
+  fenceRevision            Int
+  modeRevision             Int
+  markerId                 String
+  generation               Int
+  holdInstanceId           String                      @db.Uuid
+  customerId               String
+  cartId                   String
+  productId                String
+  quantity                 Int
+  operatorId               String
+  authorizationEffect      String                      @default("FRESHNESS_SWEEP") @db.VarChar(32)
+  authorizationPhase       String                      @default("OPEN") @db.VarChar(16)
+  permitTtlMs              Int                         @default(5000)
+  reason                   String                      @default("CUTOVER_FRESHNESS_SWEEP") @db.VarChar(128)
+  status                   CutoverFreshnessResetStatus @default(PREPARED)
+  anchorNowMs              BigInt
+  priorCreatedAtMs         BigInt?
+  priorLastRenewedAtMs     BigInt?
+  priorExpiresAtMs         BigInt?
+  priorAbsoluteExpiresAtMs BigInt?
+  newCreatedAtMs           BigInt?
+  newLastRenewedAtMs       BigInt?
+  newExpiresAtMs           BigInt?
+  newAbsoluteExpiresAtMs   BigInt?
+  redisReceipt             String?
+  redisReceiptHash         String?                     @db.Char(64)
+  failureCode              String?                     @db.VarChar(64)
+  failureDetail            String?                     @db.VarChar(500)
+  createdAt                DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                    @updatedAt @db.Timestamptz(3)
+  completedAt              DateTime?                   @db.Timestamptz(3)
+
+  barrierConfig   CartMutationBarrierConfig  @relation(fields: [barrierRevision], references: [revision], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_barrier_fkey")
+  fenceTransition ReservationFenceTransition @relation(fields: [fenceTransitionId, incarnation, fenceEpoch], references: [id, incarnation, epoch], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_fence_fkey")
+  marker          CartReservationSyncState   @relation(fields: [markerId, cartId, productId], references: [id, cartId, productId], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_marker_fkey")
+  cart            Cart                       @relation(fields: [cartId, customerId], references: [id, customerId], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_cart_fkey")
+  product         Product                    @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_product_fkey")
+  operator        User                       @relation("FreshnessResetOperator", fields: [operatorId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "cutover_freshness_resets_operator_fkey")
+
+  @@unique([cutoverRunId, barrierRevision, markerId, generation], map: "cutover_freshness_resets_idempotency_key")
+  @@index([status, createdAt], map: "cutover_freshness_resets_status_createdAt_idx")
+  @@index([cutoverRunId, status], map: "cutover_freshness_resets_run_status_idx")
+  @@index([cartId, productId, createdAt], map: "cutover_freshness_resets_cart_product_idx")
+  @@index([markerId, generation], map: "cutover_freshness_resets_marker_gen_idx")
+  @@map("cutover_freshness_resets")
+}
+
+enum ProductSuspectRecoveryStatus {
+  REQUESTED
+  APPROVED
+  EXECUTING
+  AMBIGUOUS_QUARANTINED
+  COMPLETED
+  ABORTED
+  EXPIRED
+  REJECTED
+}
+
+enum ProductSuspectExecutionEvidence {
+  APPLIED
+  NOT_APPLIED
+  UNKNOWN
+  AMBIGUOUS
+}
+
+enum ProductSuspectRecoveryTargetKind {
+  COMPENSATION
+  SYNC_STATE
+}
+
+model ProductSuspectRecovery {
+  id                        String                         @id @default(uuid()) @db.Uuid
+  requestId                 String                         @unique @db.Uuid
+  productId                 String
+  restrictionId             String?                        @db.Uuid
+  targetRestrictionRevision Int                            @default(0)
+  clearedControlRevision    Int
+  status                    ProductSuspectRecoveryStatus   @default(REQUESTED)
+  modeRevision              Int
+  fenceTransitionId         String                         @db.Uuid
+  incarnation               String                         @db.Uuid
+  fenceEpoch                Int
+  fenceRevision             Int
+  authorizationPhase        ReservationFencePhase
+  requestedById             String
+  requestedAt               DateTime                       @default(now()) @db.Timestamptz(3)
+  requestReason             String                         @db.VarChar(256)
+  observationDigest         String                         @db.Char(64)
+  approvedById              String?
+  approvedAt                DateTime?                      @db.Timestamptz(3)
+  approvalExpiresAt         DateTime?                      @db.Timestamptz(3)
+  approvalDigest            String?                        @db.Char(64)
+  rejectedById              String?
+  rejectedAt                DateTime?                      @db.Timestamptz(3)
+  rejectionReason           String?                        @db.VarChar(256)
+  reconciliationSnapshot    Json
+  reconciliationDigest      String                         @db.Char(64)
+  priorStoredTotal          Int?
+  targetReconciledTotal     Int
+  priorSuspectPresent       Boolean
+  affectedMarkerCount       Int                            @default(0)
+  affectedCompensationCount Int                            @default(0)
+  permitTtlMs               Int                            @default(5000)
+  stagedControlRevision     Int?
+  executingAt               DateTime?                      @db.Timestamptz(3)
+  executionEvidence         ProductSuspectExecutionEvidence?
+  evidenceEvaluatedAt       DateTime?                      @db.Timestamptz(3)
+  evidenceDetail            Json?
+  quarantinedAt             DateTime?                      @db.Timestamptz(3)
+  quarantineReason          String?                        @db.VarChar(128)
+  redisReceipt              String?
+  redisReceiptHash          String?                        @db.Char(64)
+  failureCode               String?                        @db.VarChar(64)
+  failureDetail             String?                        @db.VarChar(500)
+  completedAt               DateTime?                      @db.Timestamptz(3)
+  createdAt                 DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime                       @default(now()) @updatedAt @db.Timestamptz(3)
+
+  product             Product                        @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_product_fkey")
+  targetRestriction   ProductReservationRestriction? @relation("RecoveryTargetRestriction", fields: [restrictionId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_restriction_fkey")
+  clearedRestrictions ProductReservationRestriction[] @relation("RestrictionClearedBy")
+  fenceTransition     ReservationFenceTransition     @relation(fields: [fenceTransitionId, incarnation, fenceEpoch], references: [id, incarnation, epoch], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_fence_fkey")
+  requestedBy         User                           @relation("SuspectRecoveryRequester", fields: [requestedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_requester_fkey")
+  approvedBy          User?                          @relation("SuspectRecoveryApprover", fields: [approvedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_approver_fkey")
+  rejectedBy          User?                          @relation("SuspectRecoveryRejector", fields: [rejectedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recoveries_rejector_fkey")
+  targets             ProductSuspectRecoveryTarget[]
+
+  @@unique([id, productId])
+  @@index([productId, status], map: "product_suspect_recoveries_product_status_idx")
+  @@index([status, createdAt], map: "product_suspect_recoveries_status_createdAt_idx")
+  @@map("product_suspect_recoveries")
+}
+
+model ProductSuspectRecoveryTarget {
+  id                 String                           @id @default(uuid()) @db.Uuid
+  recoveryId         String                           @db.Uuid
+  productId          String
+  targetKind         ProductSuspectRecoveryTargetKind
+  compensationId     String?
+  syncStateId        String?
+  expectedGeneration Int
+  priorStatus        String
+  priorBlockReason   String
+  unblockedAt        DateTime?                        @db.Timestamptz(3)
+  createdAt          DateTime                         @default(now()) @db.Timestamptz(3)
+
+  recovery     ProductSuspectRecovery      @relation(fields: [recoveryId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recovery_targets_recovery_fkey")
+  compensation CartReservationCompensation? @relation(fields: [compensationId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recovery_targets_compensation_fkey")
+  syncState    CartReservationSyncState?   @relation(fields: [syncStateId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "product_suspect_recovery_targets_sync_state_fkey")
+
+  @@unique([recoveryId, compensationId], map: "product_suspect_recovery_targets_recoveryId_compensationId_key")
+  @@unique([recoveryId, syncStateId], map: "product_suspect_recovery_targets_recoveryId_syncStateId_key")
+  @@index([productId, recoveryId], map: "product_suspect_recovery_targets_product_recovery_idx")
+  @@map("product_suspect_recovery_targets")
 }
