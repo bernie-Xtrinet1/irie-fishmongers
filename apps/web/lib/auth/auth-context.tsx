@@ -13,6 +13,8 @@ interface AuthContextValue {
   user: AuthUser | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Refreshes the active session from the server so mid-session role or status revocations take effect immediately. */
+  refreshSession?: () => Promise<AuthUser | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -41,8 +43,11 @@ export function AuthProvider({
   useEffect(() => {
     configureApiClient({
       getAccessToken: () => accessTokenRef.current,
-      onTokenRefreshed: (accessToken) => {
+      onTokenRefreshed: (accessToken, refreshedUser) => {
         accessTokenRef.current = accessToken;
+        if (refreshedUser) {
+          setUser(refreshedUser);
+        }
       },
       onUnauthorized: () => {
         queryClient.clear();
@@ -107,8 +112,22 @@ export function AuthProvider({
     }
   }, [clearSession, queryClient]);
 
+  const refreshSession = useCallback(async (): Promise<AuthUser | null> => {
+    try {
+      const session = await apiPost<AuthTokensResponse>('/auth/refresh', {});
+      accessTokenRef.current = session.accessToken;
+      setUser(session.user);
+      setStatus('authenticated');
+      return session.user;
+    } catch {
+      queryClient.clear();
+      clearSession();
+      return null;
+    }
+  }, [clearSession, queryClient]);
+
   return (
-    <AuthContext.Provider value={{ status, user, login, logout }}>
+    <AuthContext.Provider value={{ status, user, login, logout, refreshSession }}>
       {children}
     </AuthContext.Provider>
   );

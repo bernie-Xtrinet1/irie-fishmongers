@@ -238,4 +238,56 @@ describe('web api-client', () => {
     expect(requestHeaders.Authorization).toBe('Bearer access-token');
   });
 
+  it('forwards refreshed user details to onTokenRefreshed when returned by /auth/refresh', async () => {
+    let accessToken = 'expired-token';
+    const refreshedUser = {
+      id: 'user-1',
+      email: 'driver@example.com',
+      firstName: 'Dana',
+      lastName: 'Driver',
+      phone: null,
+      status: 'ACTIVE',
+      roles: ['CUSTOMER'],
+      createdAt: '2026-08-31T00:00:00.000Z',
+    };
+    const onTokenRefreshed = jest.fn((token: string) => {
+      accessToken = token;
+    });
+
+    configureApiClient({
+      getAccessToken: () => accessToken,
+      onTokenRefreshed,
+      onUnauthorized: jest.fn(),
+    });
+
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (url.includes('/auth/refresh')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            success: true,
+            data: { accessToken: 'fresh-token', user: refreshedUser },
+            error: null,
+          }),
+        );
+      }
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.Authorization === 'Bearer fresh-token') {
+        return Promise.resolve(jsonResponse(200, { success: true, data: { ok: true }, error: null }));
+      }
+      return Promise.resolve(
+        jsonResponse(401, { success: false, data: null, error: 'Unauthorized' }),
+      );
+    });
+
+    await apiGet('/drivers/me');
+
+    expect(onTokenRefreshed).toHaveBeenCalledWith('fresh-token', refreshedUser);
+  });
+
 });

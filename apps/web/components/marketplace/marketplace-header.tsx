@@ -11,6 +11,7 @@ export function MarketplaceHeader(): React.ReactElement {
 
   const isCustomer = user?.roles.includes(UserRole.CUSTOMER) ?? false;
   const isVendor = user?.roles.includes(UserRole.VENDOR) ?? false;
+  const isDriver = user?.roles.includes(UserRole.DRIVER) ?? false;
   const displayName = user
     ? `${user.firstName} ${user.lastName}`.trim() || user.email
     : '';
@@ -18,7 +19,7 @@ export function MarketplaceHeader(): React.ReactElement {
   return (
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-4">
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <Link
             href="/"
             className="text-xl font-semibold text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
@@ -26,7 +27,7 @@ export function MarketplaceHeader(): React.ReactElement {
             Irie Fishmongers
           </Link>
 
-          <nav aria-label="Marketplace navigation" className="flex items-center gap-4">
+          <nav aria-label="Marketplace navigation" className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Link
               href="/"
               className="text-sm font-medium text-gray-700 hover:text-irie-green focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
@@ -52,7 +53,7 @@ export function MarketplaceHeader(): React.ReactElement {
               </Link>
             ) : null}
 
-            {status === 'authenticated' && (isCustomer || isVendor) ? (
+            {status === 'authenticated' && (isCustomer || isVendor || isDriver) ? (
               <Link
                 href="/account"
                 className="text-sm font-medium text-gray-700 hover:text-irie-green focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"

@@ -39,6 +39,22 @@ const driver: AuthUser = {
   roles: [UserRole.DRIVER],
 };
 
+const multiRole: AuthUser = {
+  ...customer,
+  id: 'multi-1',
+  email: 'multi@example.com',
+  firstName: 'Multi',
+  roles: [UserRole.CUSTOMER, UserRole.VENDOR, UserRole.DRIVER],
+};
+
+const fisherman: AuthUser = {
+  ...customer,
+  id: 'fisherman-1',
+  email: 'fisherman@example.com',
+  firstName: 'Fisher',
+  roles: [UserRole.FISHERMAN],
+};
+
 describe('AccountView', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -79,7 +95,24 @@ describe('AccountView', () => {
     );
   });
 
-  it('does not expose the account view to non-customer/non-vendor roles', () => {
+  it('does not expose the account view to non-customer/non-vendor/non-driver roles', () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: fisherman,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    render(<AccountView />);
+
+    expect(
+      screen.getByText('This account page is available to customer, vendor, and driver accounts.'),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByText('Account details')).not.toBeInTheDocument();
+  });
+
+  it('renders a My Deliveries link to /driver/deliveries for signed-in drivers', () => {
     mockUseAuth.mockReturnValue({
       status: 'authenticated',
       user: driver,
@@ -89,11 +122,34 @@ describe('AccountView', () => {
 
     render(<AccountView />);
 
-    expect(
-      screen.getByText('This account page is available to customer and vendor accounts.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Driver')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'My Deliveries' })).toHaveAttribute(
+      'href',
+      '/driver/deliveries',
+    );
+    expect(screen.queryByRole('link', { name: 'Catch of the Day' })).not.toBeInTheDocument();
+  });
 
-    expect(screen.queryByText('Account details')).not.toBeInTheDocument();
+  it('preserves customer details, Catch of the Day, and My Deliveries for multi-role accounts', () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: multiRole,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    render(<AccountView />);
+
+    expect(screen.getByText('Customer · Vendor · Driver')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Account details' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Catch of the Day' })).toHaveAttribute(
+      'href',
+      '/vendor/daily-listings',
+    );
+    expect(screen.getByRole('link', { name: 'My Deliveries' })).toHaveAttribute(
+      'href',
+      '/driver/deliveries',
+    );
   });
 
   it('renders a Catch of the Day link to /vendor/daily-listings for signed-in vendors', () => {
@@ -111,9 +167,10 @@ describe('AccountView', () => {
       'href',
       '/vendor/daily-listings',
     );
+    expect(screen.queryByRole('link', { name: 'My Deliveries' })).not.toBeInTheDocument();
   });
 
-  it('hides the vendor Catch of the Day link from customer-only accounts', () => {
+  it('hides the vendor and driver workspace links from customer-only accounts', () => {
     mockUseAuth.mockReturnValue({
       status: 'authenticated',
       user: customer,
@@ -124,6 +181,7 @@ describe('AccountView', () => {
     render(<AccountView />);
 
     expect(screen.queryByRole('link', { name: 'Catch of the Day' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'My Deliveries' })).not.toBeInTheDocument();
   });
 
   it('renders the authenticated customer account information', () => {

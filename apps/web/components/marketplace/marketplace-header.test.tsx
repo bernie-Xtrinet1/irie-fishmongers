@@ -41,6 +41,15 @@ const driverUser = {
   roles: [UserRole.DRIVER],
 };
 
+const fishermanUser = {
+  ...customerUser,
+  id: 'fisherman-1',
+  email: 'fisherman@example.com',
+  firstName: 'Irie',
+  lastName: 'Fisher',
+  roles: [UserRole.FISHERMAN],
+};
+
 describe('MarketplaceHeader', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,10 +128,26 @@ describe('MarketplaceHeader', () => {
     expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('href', '/account');
   });
 
-  it('hides Cart, Orders, and Account for roles without storefront account pages', () => {
+  it('shows Account but hides Cart and Orders for an authenticated driver role', () => {
     mockedUseAuth.mockReturnValue({
       status: 'authenticated',
       user: driverUser,
+      login: jest.fn(),
+      logout,
+    });
+
+    render(<MarketplaceHeader />);
+
+    expect(screen.getByText('Irie Driver')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('href', '/account');
+  });
+
+  it('hides Cart, Orders, and Account for roles without storefront account pages', () => {
+    mockedUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: fishermanUser,
       login: jest.fn(),
       logout,
     });

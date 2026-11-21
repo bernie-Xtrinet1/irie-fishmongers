@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Driver, Order, OrderItem, User, Vendor, VendorOrder } from '@prisma/client';
+import { Driver, Order, OrderItem, Prisma, User, Vendor, VendorOrder } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
@@ -403,6 +403,35 @@ describe('DeliveriesService', () => {
 
       const result = await service.assign('driver-user-1', dto);
       expect(result.stage).toBe('ASSIGNED');
+    });
+
+    it('throws ConflictException when vendor order is already ASSIGNED_TO_DRIVER inside transaction', async () => {
+      driversRepository.findByUserId.mockResolvedValue(onlineDriver);
+      deliveriesRepository.countActiveByDriverId.mockResolvedValue(0);
+      deliveriesRepository.findVendorOrderForPickup.mockResolvedValue(
+        buildAvailableVendorOrder({ status: 'ASSIGNED_TO_DRIVER' }),
+      );
+
+      await expect(service.assign('driver-user-1', dto)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('maps Prisma P2002 unique constraint errors to ConflictException', async () => {
+      driversRepository.findByUserId.mockResolvedValue(onlineDriver);
+      deliveriesRepository.countActiveByDriverId.mockResolvedValue(0);
+      deliveriesRepository.findVendorOrderForPickup.mockResolvedValue(buildAvailableVendorOrder());
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(null);
+      deliveriesRepository.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: '6.19.3',
+        }),
+      );
+
+      await expect(service.assign('driver-user-1', dto)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
   });
 

@@ -1,3 +1,5 @@
+import type { AuthUser } from '@iriefishmongers/types';
+
 // Fallback is the RELATIVE same-origin path, never an absolute localhost URL:
 // the real value comes from NEXT_PUBLIC_API_URL (written to .env.local by
 // scripts/start-codespaces-demo.sh). If that is ever missing, a relative
@@ -23,11 +25,12 @@ export class ApiError extends Error {
 
 interface RefreshResult {
   accessToken: string;
+  user?: AuthUser;
 }
 
 interface ApiClientConfig {
   getAccessToken: () => string | null;
-  onTokenRefreshed: (accessToken: string) => void;
+  onTokenRefreshed: (accessToken: string, user?: AuthUser) => void;
   onUnauthorized: () => void;
 }
 
@@ -61,8 +64,8 @@ function refreshAccessToken(): Promise<string> {
       body: JSON.stringify({}),
     })
       .then((response) => unwrap<RefreshResult>(response))
-      .then(({ accessToken }) => {
-        clientConfig?.onTokenRefreshed(accessToken);
+      .then(({ accessToken, user }) => {
+        clientConfig?.onTokenRefreshed(accessToken, user);
         return accessToken;
       })
       .finally(() => {

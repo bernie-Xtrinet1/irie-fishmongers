@@ -1225,3 +1225,123 @@ export interface AddListingPhotoInput {
   isPrimary?: boolean;
   captureDate?: string;
 }
+
+// --- Driver Delivery Operations ---
+// Hand-mirrored from backend/src/modules/delivery/entities and dto contracts.
+
+export enum ProofOfDeliveryType {
+  SIGNATURE = 'SIGNATURE',
+  PHOTO = 'PHOTO',
+}
+
+export enum CustomerAcceptanceStatus {
+  PENDING = 'PENDING',
+  ACCEPTED = 'ACCEPTED',
+  REJECTED = 'REJECTED',
+}
+
+export type DeliveryStage = 'ASSIGNED' | 'PICKED_UP' | 'DELIVERED' | 'FAILED';
+
+export type DeliveryStatusAction = 'PICKED_UP' | 'DELIVERED' | 'FAILED';
+
+export type DriverAvailabilityTarget = 'ONLINE' | 'OFFLINE';
+
+export type DriverProfile = DriverAdmin;
+
+export interface DeliveryItemSummary {
+  productName: string;
+  unit: ProductUnit;
+  quantity: number;
+}
+
+export interface AvailableDelivery {
+  vendorOrderId: string;
+  pickupVendorName: string;
+  pickupParish: Parish;
+  items: DeliveryItemSummary[];
+  readyForPickupAt: string;
+}
+
+export interface PaginatedAvailableDeliveries {
+  items: AvailableDelivery[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface DeliveryExceptionSummary {
+  id: string;
+  deliveryId: string;
+  type: DeliveryExceptionType;
+  reason: string;
+  photos: string[];
+  notes: string | null;
+  resolved: boolean;
+  resolvedAt: string | null;
+  resolvedById: string | null;
+  createdAt: string;
+}
+
+export interface DeliveryRouteHistorySummary {
+  id: string;
+  deliveryId: string;
+  driverId: string;
+  gpsSamples: number;
+  distanceKm: string;
+  durationMinutes: number;
+  createdAt: string;
+}
+
+export interface DriverDelivery {
+  id: string;
+  vendorOrderId: string;
+  driverId: string;
+  stage: DeliveryStage;
+  pickupVendorName: string;
+  pickupParish: Parish;
+  items: DeliveryItemSummary[];
+  deliveryAddressLine1: string;
+  deliveryAddressLine2: string | null;
+  deliveryParish: Parish;
+  deliveryPhone: string;
+  scheduledPickupWindowStart: string | null;
+  scheduledPickupWindowEnd: string | null;
+  customerDeliveryWindowStart: string | null;
+  customerDeliveryWindowEnd: string | null;
+  vendorConfirmedAt: string | null;
+  vendorConfirmedById: string | null;
+  customerAcceptanceStatus: CustomerAcceptanceStatus;
+  customerAcceptedAt: string | null;
+  customerRejectedAt: string | null;
+  rejectionReason: string | null;
+  assignedAt: string;
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+  proofType: ProofOfDeliveryType | null;
+  proofUrl: string | null;
+  exceptions: DeliveryExceptionSummary[];
+  routeHistory: DeliveryRouteHistorySummary | null;
+}
+
+export interface PaginatedDriverDeliveries {
+  items: DriverDelivery[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface UpdateDeliveryScheduleInput {
+  scheduledPickupWindowStart?: string;
+  scheduledPickupWindowEnd?: string;
+  customerDeliveryWindowStart?: string;
+  customerDeliveryWindowEnd?: string;
+}
+
+export interface UpdateDeliveryStatusInput {
+  action: DeliveryStatusAction;
+  proofType?: ProofOfDeliveryType;
+  proofUrl?: string;
+  failureReason?: string;
+}

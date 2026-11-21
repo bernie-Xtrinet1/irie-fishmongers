@@ -1,3 +1,4 @@
+import { UserRole, UserStatus } from '@iriefishmongers/types';
 import { QueryClient } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -197,6 +198,63 @@ describe('Web AuthProvider', () => {
     expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
     expect(screen.getByTestId('user')).toHaveTextContent('none');
     expect(config.getAccessToken()).toBeNull();
+    expect(clearSpy).toHaveBeenCalled();
+  });
+
+  it('updates user roles mid-session when onTokenRefreshed receives an updated user payload', async () => {
+    mockApiPost.mockResolvedValueOnce({
+      ...authenticatedSession,
+      user: {
+        ...authenticatedSession.user,
+        roles: ['DRIVER', 'CUSTOMER'],
+      },
+    });
+
+    function RolesConsumer(): React.ReactElement {
+      const { user, refreshSession } = useAuth();
+      return (
+        <div>
+          <span data-testid="roles">{user?.roles.join(',') ?? 'none'}</span>
+          <button
+            onClick={() => {
+              void refreshSession?.();
+            }}
+          >
+            refresh
+          </button>
+        </div>
+      );
+    }
+
+    const userEvents = userEvent.setup();
+
+    render(
+      <AuthProvider queryClient={queryClient}>
+        <RolesConsumer />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('roles')).toHaveTextContent('DRIVER,CUSTOMER');
+    });
+
+    const config = mockConfigureApiClient.mock.calls[0]?.[0];
+    act(() => {
+      config?.onTokenRefreshed('token-2', {
+        ...authenticatedSession.user,
+        status: UserStatus.ACTIVE,
+        roles: [UserRole.CUSTOMER],
+      });
+    });
+
+    expect(screen.getByTestId('roles')).toHaveTextContent('CUSTOMER');
+
+    mockApiPost.mockRejectedValueOnce(new Error('Forbidden'));
+    await userEvents.click(screen.getByRole('button', { name: 'refresh' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('roles')).toHaveTextContent('none');
+    });
     expect(clearSpy).toHaveBeenCalled();
   });
 });

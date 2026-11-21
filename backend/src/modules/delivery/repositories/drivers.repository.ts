@@ -29,12 +29,18 @@ export class DriversRepository {
     return this.prisma.driver.create({ data: input });
   }
 
-  findById(id: string): Promise<Driver | null> {
-    return this.prisma.driver.findUnique({ where: { id } });
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<Driver | null> {
+    return client.driver.findUnique({ where: { id } });
   }
 
-  findByUserId(userId: string): Promise<Driver | null> {
-    return this.prisma.driver.findUnique({ where: { userId } });
+  findByUserId(userId: string, client: PrismaClientOrTx = this.prisma): Promise<Driver | null> {
+    return client.driver.findUnique({ where: { userId } });
+  }
+
+  async lockByIdForUpdate(id: string, client: PrismaClientOrTx): Promise<void> {
+    if (typeof client.$queryRaw === 'function') {
+      await client.$queryRaw`SELECT id FROM drivers WHERE id = ${id} FOR UPDATE`;
+    }
   }
 
   updateStatus(id: string, status: DriverStatus): Promise<Driver> {

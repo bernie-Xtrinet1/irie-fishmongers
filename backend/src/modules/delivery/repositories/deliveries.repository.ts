@@ -80,15 +80,21 @@ export class DeliveriesRepository {
     return { items, total };
   }
 
-  findVendorOrderForPickup(vendorOrderId: string): Promise<AvailableVendorOrder | null> {
-    return this.prisma.vendorOrder.findUnique({
+  findVendorOrderForPickup(
+    vendorOrderId: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<AvailableVendorOrder | null> {
+    return client.vendorOrder.findUnique({
       where: { id: vendorOrderId },
       include: availableVendorOrder.include,
     });
   }
 
-  async vendorOrderRequiresColdChain(vendorOrderId: string): Promise<boolean> {
-    const count = await this.prisma.orderItem.count({
+  async vendorOrderRequiresColdChain(
+    vendorOrderId: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<boolean> {
+    const count = await client.orderItem.count({
       where: { vendorOrderId, product: { lot: { isNot: null } } },
     });
     return count > 0;
@@ -101,24 +107,39 @@ export class DeliveriesRepository {
     return client.delivery.create({ data: input, include: deliveryWithDetails.include });
   }
 
-  findById(id: string): Promise<DeliveryWithDetails | null> {
-    return this.prisma.delivery.findUnique({
+  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<DeliveryWithDetails | null> {
+    return client.delivery.findUnique({
       where: { id },
       include: deliveryWithDetails.include,
     });
   }
 
-  findByVendorOrderId(vendorOrderId: string): Promise<DeliveryWithDetails | null> {
-    return this.prisma.delivery.findUnique({
+  findByVendorOrderId(
+    vendorOrderId: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<DeliveryWithDetails | null> {
+    return client.delivery.findUnique({
       where: { vendorOrderId },
       include: deliveryWithDetails.include,
     });
   }
 
-  countActiveByDriverId(driverId: string): Promise<number> {
-    return this.prisma.delivery.count({
+  countActiveByDriverId(driverId: string, client: PrismaClientOrTx = this.prisma): Promise<number> {
+    return client.delivery.count({
       where: { driverId, deliveredAt: null, failedAt: null },
     });
+  }
+
+  async lockVendorOrderForUpdate(vendorOrderId: string, client: PrismaClientOrTx): Promise<void> {
+    if (typeof client.$queryRaw === 'function') {
+      await client.$queryRaw`SELECT id FROM vendor_orders WHERE id = ${vendorOrderId} FOR UPDATE`;
+    }
+  }
+
+  async lockDeliveryForUpdate(deliveryId: string, client: PrismaClientOrTx): Promise<void> {
+    if (typeof client.$queryRaw === 'function') {
+      await client.$queryRaw`SELECT id FROM deliveries WHERE id = ${deliveryId} FOR UPDATE`;
+    }
   }
 
   async findManyByDriver(

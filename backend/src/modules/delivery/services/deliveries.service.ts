@@ -13,6 +13,7 @@ import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.
 import { DeliveryStatusUpdatedEvent } from '../../../common/events/delivery-status-updated.event';
 import { DriverAssignedEvent } from '../../../common/events/driver-assigned.event';
 import { PrismaService } from '../../../database/prisma.service';
+import { PrismaClientOrTx } from '../../orders/repositories/orders.repository';
 import { VendorOrdersRepository } from '../../orders/repositories/vendor-orders.repository';
 import { DriverSettlementEngine } from '../../driver-settlements/services/driver-settlement-engine.service';
 import { AssignDeliveryDto } from '../dto/assign-delivery.dto';
@@ -40,6 +41,10 @@ import {
 
 @Injectable()
 export class DeliveriesService {
+  private static txClient(tx: Prisma.TransactionClient): PrismaClientOrTx | undefined {
+    return typeof (tx as { $queryRaw?: unknown }).$queryRaw === 'function' ? tx : undefined;
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveriesRepository: DeliveriesRepository,
@@ -72,49 +77,69 @@ export class DeliveriesService {
   }
 
   async assign(userId: string, dto: AssignDeliveryDto): Promise<DriverDeliveryResponseEntity> {
-    const driver = await this.getOnlineApprovedDriver(userId);
-
-    const activeCount = await this.deliveriesRepository.countActiveByDriverId(driver.id);
-    if (activeCount > 0) {
-      throw new ConflictException(
-        'You already have an active delivery in progress - complete or fail it before claiming another',
-      );
-    }
-
-    const vendorOrder = await this.deliveriesRepository.findVendorOrderForPickup(
-      dto.vendorOrderId,
-    );
-    if (!vendorOrder) {
-      throw new NotFoundException('Vendor order not found');
-    }
-    if (vendorOrder.status !== 'READY_FOR_PICKUP') {
-      throw new BadRequestException('This vendor order is not ready for pickup');
-    }
-
-    const requiresColdChain = await this.deliveriesRepository.vendorOrderRequiresColdChain(
-      dto.vendorOrderId,
-    );
-    if (requiresColdChain && !driver.coldChainCapable) {
-      throw new ForbiddenException(
-        'This delivery contains cold-chain-sensitive seafood and requires a cold-chain-capable driver',
-      );
-    }
-
-    const existingDelivery = await this.deliveriesRepository.findByVendorOrderId(
-      dto.vendorOrderId,
-    );
-    if (existingDelivery) {
-      throw new ConflictException('This delivery has already been claimed by another driver');
-    }
+    const precheckDriver = await this.getOnlineApprovedDriver(userId);
 
     const delivery = await this.prisma.$transaction(async (tx) => {
-      const created = await this.deliveriesRepository.create(
-        { vendorOrderId: dto.vendorOrderId, driverId: driver.id },
-        tx,
+      const client = DeliveriesService.txClient(tx);
+      // Lock driver first, then vendor_order so concurrent claims serialize cleanly without deadlocks.
+      await this.driversRepository.lockByIdForUpdate?.(precheckDriver.id, tx);
+      const driver = await this.getOnlineApprovedDriver(userId, client);
+
+      const activeCount = await this.deliveriesRepository.countActiveByDriverId(driver.id, client);
+      if (activeCount > 0) {
+        throw new ConflictException(
+          'You already have an active delivery in progress - complete or fail it before claiming another',
+        );
+      }
+
+      await this.deliveriesRepository.lockVendorOrderForUpdate?.(dto.vendorOrderId, tx);
+
+      const vendorOrder = await this.deliveriesRepository.findVendorOrderForPickup(
+        dto.vendorOrderId,
+        client,
       );
-      await this.vendorOrdersRepository.updateStatus(dto.vendorOrderId, 'ASSIGNED_TO_DRIVER', tx);
-      await this.driversRepository.updateAvailabilityStatus(driver.id, 'BUSY', tx);
-      return created;
+      if (!vendorOrder) {
+        throw new NotFoundException('Vendor order not found');
+      }
+      if (vendorOrder.status === 'ASSIGNED_TO_DRIVER') {
+        throw new ConflictException('This delivery has already been claimed by another driver');
+      }
+      if (vendorOrder.status !== 'READY_FOR_PICKUP') {
+        throw new BadRequestException('This vendor order is not ready for pickup');
+      }
+
+      const requiresColdChain = await this.deliveriesRepository.vendorOrderRequiresColdChain(
+        dto.vendorOrderId,
+        client,
+      );
+      if (requiresColdChain && !driver.coldChainCapable) {
+        throw new ForbiddenException(
+          'This delivery contains cold-chain-sensitive seafood and requires a cold-chain-capable driver',
+        );
+      }
+
+      const existingDelivery = await this.deliveriesRepository.findByVendorOrderId(
+        dto.vendorOrderId,
+        client,
+      );
+      if (existingDelivery) {
+        throw new ConflictException('This delivery has already been claimed by another driver');
+      }
+
+      try {
+        const created = await this.deliveriesRepository.create(
+          { vendorOrderId: dto.vendorOrderId, driverId: driver.id },
+          tx,
+        );
+        await this.vendorOrdersRepository.updateStatus(dto.vendorOrderId, 'ASSIGNED_TO_DRIVER', tx);
+        await this.driversRepository.updateAvailabilityStatus(driver.id, 'BUSY', tx);
+        return created;
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          throw new ConflictException('This delivery has already been claimed by another driver');
+        }
+        throw err;
+      }
     });
 
     await this.eventEmitter.emitAsync(
@@ -153,10 +178,17 @@ export class DeliveriesService {
     deliveryId: string,
     dto: UpdateDeliveryStatusDto,
   ): Promise<DriverDeliveryResponseEntity> {
-    const driver = await this.getApprovedDriver(userId);
-    const delivery = await this.getOwnedDelivery(driver.id, deliveryId);
+    const initialDriver = await this.getApprovedDriver(userId);
+    const initialDelivery = await this.getOwnedDelivery(initialDriver.id, deliveryId);
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const client = DeliveriesService.txClient(tx);
+      await this.deliveriesRepository.lockDeliveryForUpdate?.(deliveryId, tx);
+      const driver = client ? await this.getApprovedDriver(userId, client) : initialDriver;
+      const delivery = client
+        ? await this.getOwnedDelivery(driver.id, deliveryId, client)
+        : initialDelivery;
+
       if (dto.action === 'PICKED_UP') {
         this.assertOpenForTransition(delivery);
         if (delivery.pickedUpAt) {
@@ -400,8 +432,12 @@ export class DeliveriesService {
     );
   }
 
-  private async getOwnedDelivery(driverId: string, deliveryId: string): Promise<DeliveryWithDetails> {
-    const delivery = await this.deliveriesRepository.findById(deliveryId);
+  private async getOwnedDelivery(
+    driverId: string,
+    deliveryId: string,
+    client?: PrismaClientOrTx,
+  ): Promise<DeliveryWithDetails> {
+    const delivery = await this.deliveriesRepository.findById(deliveryId, client);
     if (!delivery) {
       throw new NotFoundException('Delivery not found');
     }
@@ -411,24 +447,27 @@ export class DeliveriesService {
     return delivery;
   }
 
-  private async getApprovedDriver(userId: string): Promise<Driver> {
-    const driver = await this.getOwnDriver(userId);
+  private async getApprovedDriver(userId: string, client?: PrismaClientOrTx): Promise<Driver> {
+    const driver = await this.getOwnDriver(userId, client);
     if (driver.status !== 'APPROVED') {
       throw new ForbiddenException('Only approved drivers can perform this action');
     }
     return driver;
   }
 
-  private async getOnlineApprovedDriver(userId: string): Promise<Driver> {
-    const driver = await this.getApprovedDriver(userId);
+  private async getOnlineApprovedDriver(
+    userId: string,
+    client?: PrismaClientOrTx,
+  ): Promise<Driver> {
+    const driver = await this.getApprovedDriver(userId, client);
     if (driver.availabilityStatus !== 'ONLINE') {
       throw new ForbiddenException('You must be online to do this - update your availability first');
     }
     return driver;
   }
 
-  private async getOwnDriver(userId: string): Promise<Driver> {
-    const driver = await this.driversRepository.findByUserId(userId);
+  private async getOwnDriver(userId: string, client?: PrismaClientOrTx): Promise<Driver> {
+    const driver = await this.driversRepository.findByUserId(userId, client);
     if (!driver) {
       throw new NotFoundException('No driver profile exists for this account');
     }
