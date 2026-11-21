@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import {
   ListingLifecycleStatus,
   ListingPhotoModerationStatus,
@@ -385,6 +385,20 @@ describe('DailyListingsRepository Publication Concurrency & Guards (F-16B-02)', 
           }),
         }),
       );
+    });
+  });
+
+  describe('withdrawPhoto listing scope isolation', () => {
+    it('throws NotFoundException when photo belongs to a different listing', async () => {
+      mockTx.listingPhoto.findUnique = jest.fn().mockResolvedValue({
+        ...validPhoto,
+        vendorDailyListingId: 'other-listing',
+      });
+
+      await expect(
+        repository.withdrawPhoto('photo-1', 'user-1', 'Cleanup reason', 'listing-1'),
+      ).rejects.toThrow(new NotFoundException('Photo not found on this listing'));
+      expect(mockTx.listingPhoto.update).not.toHaveBeenCalled();
     });
   });
 });

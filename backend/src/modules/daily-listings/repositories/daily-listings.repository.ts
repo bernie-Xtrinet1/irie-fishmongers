@@ -311,6 +311,7 @@ export class DailyListingsRepository {
     photoId: string,
     userId: string,
     reason: string,
+    expectedListingId?: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const photo = await tx.listingPhoto.findUnique({
@@ -318,6 +319,9 @@ export class DailyListingsRepository {
       });
       if (!photo) {
         throw new NotFoundException(`Listing photo not found: ${photoId}`);
+      }
+      if (expectedListingId && photo.vendorDailyListingId !== expectedListingId) {
+        throw new NotFoundException('Photo not found on this listing');
       }
 
       const listing = await tx.vendorDailyListing.findUnique({

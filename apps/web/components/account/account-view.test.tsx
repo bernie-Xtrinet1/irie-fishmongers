@@ -31,6 +31,14 @@ const vendor: AuthUser = {
   roles: [UserRole.VENDOR],
 };
 
+const driver: AuthUser = {
+  ...customer,
+  id: 'driver-1',
+  email: 'driver@example.com',
+  firstName: 'Driver',
+  roles: [UserRole.DRIVER],
+};
+
 describe('AccountView', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -71,7 +79,24 @@ describe('AccountView', () => {
     );
   });
 
-  it('does not expose the customer account view to a non-customer account', () => {
+  it('does not expose the account view to non-customer/non-vendor roles', () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: driver,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    render(<AccountView />);
+
+    expect(
+      screen.getByText('This account page is available to customer and vendor accounts.'),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByText('Account details')).not.toBeInTheDocument();
+  });
+
+  it('renders a Catch of the Day link to /vendor/daily-listings for signed-in vendors', () => {
     mockUseAuth.mockReturnValue({
       status: 'authenticated',
       user: vendor,
@@ -81,11 +106,24 @@ describe('AccountView', () => {
 
     render(<AccountView />);
 
-    expect(
-      screen.getByText('This account page is available to customer accounts.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Vendor')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Catch of the Day' })).toHaveAttribute(
+      'href',
+      '/vendor/daily-listings',
+    );
+  });
 
-    expect(screen.queryByText('Account details')).not.toBeInTheDocument();
+  it('hides the vendor Catch of the Day link from customer-only accounts', () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: customer,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    render(<AccountView />);
+
+    expect(screen.queryByRole('link', { name: 'Catch of the Day' })).not.toBeInTheDocument();
   });
 
   it('renders the authenticated customer account information', () => {

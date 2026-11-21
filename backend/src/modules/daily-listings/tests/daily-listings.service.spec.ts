@@ -531,10 +531,24 @@ describe('DailyListingsService', () => {
         reason: 'Wrong batch photo',
       });
 
-      expect(dailyListingsRepo.withdrawPhoto).toHaveBeenCalledWith('photo-1', 'user-1', 'Wrong batch photo');
+      expect(dailyListingsRepo.withdrawPhoto).toHaveBeenCalledWith(
+        'photo-1',
+        'user-1',
+        'Wrong batch photo',
+        'listing-1',
+      );
       expect(dailyListingsRepo.withdrawListing).toHaveBeenCalledWith(
         'listing-1',
         'Automatically withdrawn: all listing photographs withdrawn',
+      );
+    });
+
+    it('denies cross-vendor read via findOwnedById', async () => {
+      vendorsRepo.findByUserId.mockResolvedValue({ ...mockVendor, id: 'vendor-2', userId: 'user-2' });
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+
+      await expect(service.findOwnedById('user-2', 'listing-1')).rejects.toThrow(
+        ForbiddenException,
       );
     });
   });

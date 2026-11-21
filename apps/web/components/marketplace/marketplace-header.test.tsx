@@ -32,6 +32,15 @@ const vendorUser = {
   roles: [UserRole.VENDOR],
 };
 
+const driverUser = {
+  ...customerUser,
+  id: 'driver-1',
+  email: 'driver@example.com',
+  firstName: 'Irie',
+  lastName: 'Driver',
+  roles: [UserRole.DRIVER],
+};
+
 describe('MarketplaceHeader', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -94,7 +103,7 @@ describe('MarketplaceHeader', () => {
     expect(screen.queryByRole('link', { name: 'Sign In' })).not.toBeInTheDocument();
   });
 
-  it('does not show cart to an authenticated non-customer role', () => {
+  it('shows Account but hides Cart and Orders for an authenticated vendor role', () => {
     mockedUseAuth.mockReturnValue({
       status: 'authenticated',
       user: vendorUser,
@@ -105,6 +114,21 @@ describe('MarketplaceHeader', () => {
     render(<MarketplaceHeader />);
 
     expect(screen.getByText('Irie Vendor')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('href', '/account');
+  });
+
+  it('hides Cart, Orders, and Account for roles without storefront account pages', () => {
+    mockedUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: driverUser,
+      login: jest.fn(),
+      logout,
+    });
+
+    render(<MarketplaceHeader />);
+
     expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument();

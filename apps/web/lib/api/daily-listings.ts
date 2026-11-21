@@ -1,11 +1,15 @@
 import type {
+  AddListingPhotoInput,
+  CreateDailyListingInput,
+  DailyListingPhotoResponse,
   DailyListingResponse,
   PaginatedAvailableToday,
   PaginatedDailyListings,
   QueryDailyListings,
+  UpdateDailyListingInput,
 } from '@iriefishmongers/types';
 
-import { apiGet } from '../api-client';
+import { apiDelete, apiGet, apiPatch, apiPost } from '../api-client';
 
 function buildQueryParams(query?: QueryDailyListings): string {
   if (!query) return '';
@@ -48,5 +52,92 @@ export function fetchDailyListing(
 ): Promise<DailyListingResponse> {
   return apiGet<DailyListingResponse>(
     `/daily-listings/${encodeURIComponent(id)}`,
+  );
+}
+
+export function fetchMyDailyListings(
+  query?: QueryDailyListings,
+): Promise<PaginatedDailyListings> {
+  return apiGet<PaginatedDailyListings>(
+    `/vendor/daily-listings${buildQueryParams(query)}`,
+  );
+}
+
+export function fetchMyDailyListing(
+  id: string,
+): Promise<DailyListingResponse> {
+  return apiGet<DailyListingResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}`,
+  );
+}
+
+export function createDailyListing(
+  input: CreateDailyListingInput,
+): Promise<DailyListingResponse> {
+  return apiPost<DailyListingResponse>('/vendor/daily-listings', input);
+}
+
+export function updateDailyListing(
+  id: string,
+  input: UpdateDailyListingInput,
+): Promise<DailyListingResponse> {
+  return apiPatch<DailyListingResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}`,
+    input,
+  );
+}
+
+export function publishDailyListing(
+  id: string,
+): Promise<DailyListingResponse> {
+  return apiPost<DailyListingResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}/publish`,
+    {},
+  );
+}
+
+export function withdrawDailyListing(
+  id: string,
+  reason: string,
+): Promise<DailyListingResponse> {
+  return apiPost<DailyListingResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}/withdraw`,
+    { reason },
+  );
+}
+
+export function addDailyListingPhoto(
+  id: string,
+  input: AddListingPhotoInput,
+): Promise<DailyListingPhotoResponse> {
+  return apiPost<DailyListingPhotoResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}/photos`,
+    input,
+  );
+}
+
+export function setPrimaryDailyListingPhoto(
+  id: string,
+  photoId: string,
+): Promise<DailyListingPhotoResponse> {
+  return apiPatch<DailyListingPhotoResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}/photos/${encodeURIComponent(photoId)}/primary`,
+    {},
+  );
+}
+
+export function withdrawDailyListingPhoto(
+  id: string,
+  photoId: string,
+  reason: string,
+): Promise<DailyListingPhotoResponse> {
+  return apiDelete<DailyListingPhotoResponse>(
+    `/vendor/daily-listings/${encodeURIComponent(id)}/photos/${encodeURIComponent(photoId)}`,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reason }),
+    },
   );
 }

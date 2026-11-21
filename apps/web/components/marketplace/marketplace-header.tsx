@@ -10,6 +10,7 @@ export function MarketplaceHeader(): React.ReactElement {
   const { status, user, logout } = useAuth();
 
   const isCustomer = user?.roles.includes(UserRole.CUSTOMER) ?? false;
+  const isVendor = user?.roles.includes(UserRole.VENDOR) ?? false;
   const displayName = user
     ? `${user.firstName} ${user.lastName}`.trim() || user.email
     : '';
@@ -51,7 +52,7 @@ export function MarketplaceHeader(): React.ReactElement {
               </Link>
             ) : null}
 
-            {status === 'authenticated' && isCustomer ? (
+            {status === 'authenticated' && (isCustomer || isVendor) ? (
               <Link
                 href="/account"
                 className="text-sm font-medium text-gray-700 hover:text-irie-green focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"

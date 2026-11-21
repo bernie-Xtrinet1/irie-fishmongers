@@ -1122,3 +1122,106 @@ export interface QueryDailyListings {
   page?: number;
   pageSize?: number;
 }
+
+export type CatalogueCompositionMode =
+  | 'SINGLE_SPECIES'
+  | 'FIXED_COMPOSITE'
+  | 'VARIABLE_COMPOSITE'
+  | 'UNVERIFIED_COMPOSITION';
+
+export interface SeafoodCatalogueItem {
+  id: string;
+  name: string;
+  scientificName: string | null;
+  commonName: string;
+  jamaicanNames: string[];
+  description: string | null;
+  categoryId: string;
+  categoryName?: string;
+  compositionMode: CatalogueCompositionMode;
+  lifecycleStatus: string;
+  referenceImageUrl: string | null;
+  typicalUnit: ProductUnit;
+}
+
+export interface PaginatedCatalogueItems {
+  data: SeafoodCatalogueItem[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+  };
+}
+
+export interface LandingSite {
+  id: string;
+  name: string;
+  parish: Parish;
+  status: string;
+  inspectionStatus: string;
+}
+
+export interface ManagedSpecies {
+  id: string;
+  scientificName: string;
+  commercialName: string;
+  regulatoryStatus: string;
+}
+
+export interface VendorComplianceStatus {
+  tier: VendorTier;
+  canSell: boolean;
+  requiredDocuments: Array<{
+    type: string;
+    status: string;
+  }>;
+}
+
+export interface RegulatoryEvaluationResult {
+  eligible: boolean;
+  reasons: string[];
+  evaluatedAt: string;
+  mode: 'ENFORCING' | 'DEGRADED_FAIL_CLOSED';
+}
+
+export interface DeclareListingSpeciesInput {
+  speciesId: string;
+  proportion?: number;
+  notes?: string;
+}
+
+export interface CreateDailyListingInput {
+  catalogueItemId: string;
+  lotId: string;
+  landingSiteId?: string;
+  listingTitle?: string;
+  description?: string;
+  catchDate: string;
+  availableFrom?: string;
+  expiresAt: string;
+  unit: ProductUnit;
+  price: number;
+  currency?: string;
+  quantityUploaded: number;
+  deliveryAvailable?: boolean;
+  pickupAvailable?: boolean;
+  speciesDeclarations?: DeclareListingSpeciesInput[];
+}
+
+export interface UpdateDailyListingInput {
+  listingTitle?: string;
+  description?: string;
+  expiresAt?: string;
+  price?: number;
+  quantityUploaded?: number;
+  deliveryAvailable?: boolean;
+  pickupAvailable?: boolean;
+  speciesDeclarations?: DeclareListingSpeciesInput[];
+}
+
+export interface AddListingPhotoInput {
+  url: string;
+  caption?: string;
+  isPrimary?: boolean;
+  captureDate?: string;
+}

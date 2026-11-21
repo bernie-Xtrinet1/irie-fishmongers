@@ -515,6 +515,7 @@ export class DailyListingsService {
       photoId,
       userId,
       dto.reason,
+      listingId,
     );
 
     // If listing was PUBLISHED, check if at least one approved active photo remains
@@ -581,6 +582,11 @@ export class DailyListingsService {
     if (!listing) {
       throw new NotFoundException(`Listing not found: ${id}`);
     }
+    return this.mapToEntity(listing);
+  }
+
+  async findOwnedById(userId: string, id: string): Promise<DailyListingResponseEntity> {
+    const listing = await this.assertOwnership(userId, id);
     return this.mapToEntity(listing);
   }
 

@@ -65,9 +65,10 @@ export class VendorDailyListingsController {
   @ApiOperation({ summary: 'Get details of a daily listing owned by vendor' })
   @ApiResponseDoc({ status: 200, type: DailyListingResponseEntity })
   findOne(
+    @CurrentUser() user: RequestUser,
     @Param('id') id: string,
   ): Promise<DailyListingResponseEntity> {
-    return this.dailyListingsService.findById(id, true);
+    return this.dailyListingsService.findOwnedById(user.id, id);
   }
 
   @Patch(':id')

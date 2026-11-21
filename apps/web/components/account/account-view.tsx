@@ -48,6 +48,9 @@ export function AccountView(): React.ReactElement {
   const isCustomer =
     status === 'authenticated' &&
     user?.roles.includes(UserRole.CUSTOMER) === true;
+  const isVendor =
+    status === 'authenticated' &&
+    user?.roles.includes(UserRole.VENDOR) === true;
 
   if (status === 'loading') {
     return (
@@ -74,13 +77,13 @@ export function AccountView(): React.ReactElement {
     );
   }
 
-  if (!isCustomer || !user) {
+  if ((!isCustomer && !isVendor) || !user) {
     return (
       <main className="mx-auto max-w-5xl px-4 py-10">
         <h1 className="text-3xl font-semibold text-gray-900">Your account</h1>
         <div className="mt-8 rounded-card border border-gray-200 bg-white p-6">
           <p className="text-gray-700">
-            This account page is available to customer accounts.
+            This account page is available to customer and vendor accounts.
           </p>
         </div>
       </main>
@@ -89,6 +92,12 @@ export function AccountView(): React.ReactElement {
 
   const displayName =
     `${user.firstName} ${user.lastName}`.trim() || user.email;
+  const accountTypeLabel =
+    isVendor && isCustomer
+      ? 'Vendor · Customer'
+      : isVendor
+        ? 'Vendor'
+        : 'Customer';
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
@@ -98,6 +107,33 @@ export function AccountView(): React.ReactElement {
           Review the account information associated with your marketplace profile.
         </p>
       </div>
+
+      {isVendor ? (
+        <section
+          aria-labelledby="vendor-workspace-heading"
+          className="mt-8 rounded-card border border-irie-green/25 bg-irie-green/5 p-6"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2
+                id="vendor-workspace-heading"
+                className="text-xl font-semibold text-gray-900"
+              >
+                Vendor workspace
+              </h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Create daily seafood listings from your verified lots, attach catch photos, and publish to Available Today.
+              </p>
+            </div>
+            <Link
+              href="/vendor/daily-listings"
+              className="inline-flex h-11 shrink-0 items-center justify-center rounded-button bg-irie-green px-5 text-sm font-medium text-white transition-colors hover:bg-irie-green/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-irie-green focus-visible:ring-offset-2"
+            >
+              Catch of the Day
+            </Link>
+          </div>
+        </section>
+      ) : null}
 
       <section
         aria-labelledby="account-details-heading"
@@ -114,7 +150,7 @@ export function AccountView(): React.ReactElement {
           <AccountDetail label="Name" value={displayName} />
           <AccountDetail label="Email" value={user.email} />
           <AccountDetail label="Phone" value={user.phone?.trim() || 'Not provided'} />
-          <AccountDetail label="Account type" value="Customer" />
+          <AccountDetail label="Account type" value={accountTypeLabel} />
           <AccountDetail label="Account status" value={formatStatus(user.status)} />
           <AccountDetail
             label="Member since"

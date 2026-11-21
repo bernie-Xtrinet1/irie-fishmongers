@@ -75,6 +75,7 @@ describe('Daily Listings Controllers', () => {
         id: 'listing-2',
       }),
       findById: jest.fn().mockResolvedValue(sampleListingResponse),
+      findOwnedById: jest.fn().mockResolvedValue(sampleListingResponse),
       findPublicById: jest.fn().mockResolvedValue(sampleListingResponse),
       getAvailableTodayMarketplace: jest.fn().mockResolvedValue({
         items: [],
@@ -170,6 +171,13 @@ describe('Daily Listings Controllers', () => {
 
       expect(dailyListingsService.findMyListings).toHaveBeenCalledWith(mockUser.id, { page: 1, pageSize: 20 });
       expect(result.total).toBe(1);
+    });
+
+    it('retrieves a single vendor listing using ownership enforcement', async () => {
+      const result = await vendorController.findOne(mockUser, 'listing-1');
+
+      expect(dailyListingsService.findOwnedById).toHaveBeenCalledWith(mockUser.id, 'listing-1');
+      expect(result.id).toBe('listing-1');
     });
 
     it('publishes listing', async () => {
