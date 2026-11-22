@@ -571,4 +571,90 @@ describe('VendorDailyListingsView', () => {
       await screen.findByText(/does not exist or does not belong to your vendor account/i),
     ).toBeInTheDocument();
   });
+
+  it('labels bundled /demo-products/red-snapper.png as Sample Photo (Demo) in preview, attached card, and review', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: vendorUser,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+    const demoPhotoUrl =
+      'https://ca-irie-web.agreeablerock-458effa7.eastus2.azurecontainerapps.io/demo-products/red-snapper.png';
+    const demoPhoto: DailyListingPhotoResponse = {
+      id: 'photo-demo-1',
+      vendorDailyListingId: 'dl-demo-1',
+      url: demoPhotoUrl,
+      caption: 'Sample Red Snapper photo',
+      isPrimary: true,
+      moderationStatus: ListingPhotoModerationStatus.APPROVED,
+      uploadedAt: new Date().toISOString(),
+      captureDate: null,
+      withdrawnAt: null,
+      withdrawnReason: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const draftWithDemoPhoto: DailyListingResponse = {
+      id: 'dl-demo-1',
+      vendorId: 'vendor-1',
+      productId: 'prod-1',
+      catalogueItemId: 'cat-1',
+      lotId: 'lot-safe-1',
+      landingSiteId: null,
+      listingTitle: 'Demo Snapper Draft',
+      description: null,
+      catchDate: safeLot.catchDate,
+      availableFrom: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(),
+      unit: ProductUnit.PER_POUND,
+      price: 1200,
+      currency: 'JMD',
+      quantityUploaded: 15,
+      quantityAvailable: 15,
+      quantityReserved: 0,
+      quantitySold: 0,
+      deliveryAvailable: true,
+      pickupAvailable: true,
+      status: ListingLifecycleStatus.DRAFT,
+      derivedStatus: 'DRAFT',
+      publishedAt: null,
+      withdrawnAt: null,
+      withdrawnReason: null,
+      suspendedAt: null,
+      suspensionReason: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      primaryPhoto: demoPhoto,
+      photos: [demoPhoto],
+      speciesDeclarations: [],
+    };
+    mockFetchMyListings.mockResolvedValueOnce({
+      items: [draftWithDemoPhoto],
+      total: 1,
+      page: 1,
+      limit: 100,
+      totalPages: 1,
+    });
+    mockFetchMyListing.mockResolvedValue(draftWithDemoPhoto);
+
+    renderWithQuery();
+    fireEvent.click(await screen.findByRole('button', { name: /Photos \(1\)/i }));
+
+    expect(screen.getByTestId('demo-sample-photo-attached-badge')).toHaveTextContent(
+      /Sample Photo \(Demo\)/i,
+    );
+
+    fireEvent.change(screen.getByLabelText('Actual catch photograph URL *'), {
+      target: { value: demoPhotoUrl },
+    });
+    expect(screen.getByTestId('demo-sample-photo-preview-badge')).toHaveTextContent(
+      /Sample Photo \(Demo\)/i,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue to Review/i }));
+    expect(await screen.findByTestId('review-sample-photo-badge')).toHaveTextContent(
+      /Sample Photo \(Demo\)/i,
+    );
+  });
 });

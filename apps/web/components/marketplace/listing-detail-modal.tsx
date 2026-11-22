@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatDate, formatEnumLabel } from '@/lib/format';
+import { formatDate, formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
 import { useCatalogueItemListings } from '@/lib/hooks/use-available-today';
 
 export interface ListingDetailModalProps {
@@ -263,31 +263,59 @@ export function ListingDetailModal({
                     </div>
 
                     {/* Listing Photographs */}
-                    {activeListing.photos && activeListing.photos.length > 0 && (
-                      <div>
-                        <span className="text-xs font-semibold uppercase text-gray-500 tracking-wider">
-                          Actual Vendor Catch Photos
-                        </span>
-                        <div className="mt-2 flex gap-3 overflow-x-auto pb-2">
-                          {activeListing.photos.map((photo) => (
-                            <div
-                              key={photo.id}
-                              className="relative h-28 w-28 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100"
-                            >
-                              <Image
-                                src={photo.url}
-                                alt="Actual catch"
-                                fill
-                                className="object-cover"
-                              />
-                              <div className="absolute bottom-0 inset-x-0 bg-black/60 px-1 py-0.5 text-[9px] text-white text-center">
-                                Today&apos;s Catch
-                              </div>
-                            </div>
-                          ))}
+                    {activeListing.photos && activeListing.photos.length > 0 && (() => {
+                      const hasSampleDemoPhoto = activeListing.photos.some((photo) =>
+                        isDemoSamplePhotoUrl(photo.url),
+                      );
+                      return (
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold uppercase text-gray-500 tracking-wider">
+                              Actual Vendor Catch Photos
+                            </span>
+                            {hasSampleDemoPhoto && (
+                              <Badge
+                                variant="warning"
+                                className="bg-amber-600/95 text-white text-[10px]"
+                                data-testid="modal-sample-photo-badge"
+                              >
+                                Sample Photo (Demo)
+                              </Badge>
+                            )}
+                          </div>
+                          {hasSampleDemoPhoto && (
+                            <p className="mt-1 text-xs text-amber-800">
+                              Sample photo shown for demonstration purposes.
+                            </p>
+                          )}
+                          <div className="mt-2 flex gap-3 overflow-x-auto pb-2">
+                            {activeListing.photos.map((photo) => {
+                              const isSamplePhoto = isDemoSamplePhotoUrl(photo.url);
+                              return (
+                                <div
+                                  key={photo.id}
+                                  className="relative h-28 w-28 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100"
+                                >
+                                  <Image
+                                    src={photo.url}
+                                    alt={isSamplePhoto ? 'Sample demo catch photo' : 'Actual catch'}
+                                    fill
+                                    className="object-cover"
+                                  />
+                                  <div
+                                    className={`absolute bottom-0 inset-x-0 px-1 py-0.5 text-[9px] text-white text-center ${
+                                      isSamplePhoto ? 'bg-amber-700/90 font-semibold' : 'bg-black/60'
+                                    }`}
+                                  >
+                                    {isSamplePhoto ? 'Sample Photo (Demo)' : "Today's Catch"}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {/* Preparation Options */}
                     {activeListing.preparationOptions && activeListing.preparationOptions.length > 0 && (

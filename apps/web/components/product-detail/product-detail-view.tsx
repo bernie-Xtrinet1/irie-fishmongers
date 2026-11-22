@@ -17,9 +17,10 @@ import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
 import { useAuth } from '@/lib/auth/auth-context';
 import { resolveBestVendor } from '@/lib/api/marketplace';
-import { formatComplianceBand, formatDate, formatEnumLabel } from '@/lib/format';
+import { formatComplianceBand, formatDate, formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
 import { useProductDetail } from '@/lib/hooks/use-product-detail';
 import { ProductReviewsSection } from './product-reviews-section';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -108,6 +109,15 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
       <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
         <div className="relative aspect-square overflow-hidden rounded-card bg-gray-100">
           <Image src={product.imageUrl} alt={product.name} fill className="object-cover" />
+          {isDemoSamplePhotoUrl(product.imageUrl) ? (
+            <Badge
+              variant="warning"
+              className="absolute left-3 top-3 bg-amber-600/95 text-white shadow-xs"
+              data-testid="product-sample-photo-badge"
+            >
+              Sample Photo (Demo)
+            </Badge>
+          ) : null}
         </div>
 
         <div>

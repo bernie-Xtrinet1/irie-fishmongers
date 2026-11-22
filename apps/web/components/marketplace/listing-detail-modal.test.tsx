@@ -249,4 +249,27 @@ describe('ListingDetailModal', () => {
     fireEvent.click(screen.getByLabelText('Close details'));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('labels bundled /demo-products/ listing photos as Sample Photo (Demo) in detail view', () => {
+    const firstListing = mockListings[0]!;
+    const firstPhoto = firstListing.photos[0]!;
+    const demoListings: DailyListingResponse[] = [
+      {
+        ...firstListing,
+        photos: [
+          {
+            ...firstPhoto,
+            url: 'https://ca-irie-web.agreeablerock-458effa7.eastus2.azurecontainerapps.io/demo-products/red-snapper.png',
+          },
+        ],
+      },
+    ];
+    mockUseCatalogueItemListings.mockReturnValue(mockQueryResult(demoListings));
+
+    renderModal();
+
+    expect(screen.getByTestId('modal-sample-photo-badge')).toHaveTextContent(/Sample Photo \(Demo\)/i);
+    expect(screen.getByText(/Sample photo shown for demonstration purposes/i)).toBeInTheDocument();
+    expect(screen.getAllByText('Sample Photo (Demo)').length).toBeGreaterThanOrEqual(2);
+  });
 });

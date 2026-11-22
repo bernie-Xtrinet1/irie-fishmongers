@@ -7,7 +7,7 @@ import Image from 'next/image';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { formatEnumLabel } from '@/lib/format';
+import { formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
 
 export interface AvailableTodayCardProps {
   item: AvailableTodayItem;
@@ -36,6 +36,7 @@ export function AvailableTodayCard({
 
   const displayImageUrl = actualCatchPhoto || item.referenceImageUrl;
   const isActualCatchPhoto = Boolean(actualCatchPhoto);
+  const isDemoSamplePhoto = isDemoSamplePhotoUrl(displayImageUrl);
 
   return (
     <Card className="flex h-full flex-col overflow-hidden transition-all duration-200 hover:shadow-lg focus-within:ring-2 focus-within:ring-irie-green">
@@ -55,9 +56,18 @@ export function AvailableTodayCard({
           </div>
         )}
 
-        {/* Photo Attribution Badge: Today's Catch (Actual Photo) vs Catalogue Reference */}
+        {/* Photo Attribution Badge: Sample Demo Photo vs Today's Catch vs Catalogue Reference */}
         <div className="absolute left-2.5 top-2.5 flex flex-col gap-1">
-          {isActualCatchPhoto ? (
+          {isDemoSamplePhoto ? (
+            <Badge
+              variant="warning"
+              className="bg-amber-600/95 text-white backdrop-blur-xs shadow-xs"
+              data-testid="sample-demo-photo-badge"
+            >
+              <Camera className="mr-1 h-3 w-3" aria-hidden="true" />
+              Sample Photo (Demo)
+            </Badge>
+          ) : isActualCatchPhoto ? (
             <Badge
               variant="success"
               className="bg-emerald-700/90 text-white backdrop-blur-xs shadow-xs"

@@ -56,3 +56,24 @@ export function formatRelativeTime(isoDate: string | null): string | null {
   const years = Math.floor(months / 12);
   return `${years} year${years === 1 ? '' : 's'} ago`;
 }
+
+const DEMO_SAMPLE_PHOTO_PREFIX = '/demo-products/';
+
+/**
+ * Returns true when an image reference points to a bundled `/demo-products/*`
+ * asset so storefront and vendor UIs label it clearly as a sample demo photo.
+ */
+export function isDemoSamplePhotoUrl(url: string | null | undefined): boolean {
+  if (!url) {
+    return false;
+  }
+  const trimmed = url.trim();
+  if (trimmed.startsWith(DEMO_SAMPLE_PHOTO_PREFIX)) {
+    return true;
+  }
+  try {
+    return new URL(trimmed).pathname.startsWith(DEMO_SAMPLE_PHOTO_PREFIX);
+  } catch {
+    return false;
+  }
+}

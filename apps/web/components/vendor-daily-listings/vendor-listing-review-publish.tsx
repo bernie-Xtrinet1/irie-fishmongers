@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatEnumLabel } from '@/lib/format';
+import { formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
 
 import {
   formatDateTimeReadable,
@@ -142,12 +142,23 @@ export function VendorListingReviewPublish({
           <div className="sm:col-span-5">
             <div className="relative h-56 w-full overflow-hidden rounded-card border border-gray-200 bg-gray-100">
               {primaryPhoto ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={primaryPhoto.url}
-                  alt={primaryPhoto.caption || listing.listingTitle || 'Primary catch photo'}
-                  className="h-full w-full object-cover"
-                />
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={primaryPhoto.url}
+                    alt={primaryPhoto.caption || listing.listingTitle || 'Primary catch photo'}
+                    className="h-full w-full object-cover"
+                  />
+                  {isDemoSamplePhotoUrl(primaryPhoto.url) ? (
+                    <Badge
+                      variant="warning"
+                      className="absolute left-2.5 top-2.5 bg-amber-600/95 text-white shadow-xs"
+                      data-testid="review-sample-photo-badge"
+                    >
+                      Sample Photo (Demo)
+                    </Badge>
+                  ) : null}
+                </>
               ) : (
                 <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-xs text-gray-500">
                   <Fish className="h-8 w-8 text-gray-400" aria-hidden="true" />

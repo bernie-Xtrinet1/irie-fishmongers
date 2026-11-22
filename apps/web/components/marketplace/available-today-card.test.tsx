@@ -115,4 +115,25 @@ describe('AvailableTodayCard', () => {
     expect(screen.getByTestId('reference-photo-badge')).toHaveTextContent(/Catalogue Reference/i);
     expect(screen.getByText('1 vendor')).toBeInTheDocument();
   });
+
+  it('labels bundled /demo-products/ images explicitly as a Sample Photo (Demo)', () => {
+    const firstListing = mockItem.listingsPreview[0]!;
+    const demoItem: AvailableTodayItem = {
+      ...mockItem,
+      listingsPreview: [
+        {
+          ...firstListing,
+          primaryPhoto: {
+            ...firstListing.primaryPhoto!,
+            url: 'https://ca-irie-web.agreeablerock-458effa7.eastus2.azurecontainerapps.io/demo-products/red-snapper.png',
+          },
+        },
+      ],
+    };
+
+    render(<AvailableTodayCard item={demoItem} onSelect={jest.fn()} />);
+
+    expect(screen.getByTestId('sample-demo-photo-badge')).toHaveTextContent(/Sample Photo \(Demo\)/i);
+    expect(screen.queryByTestId('actual-catch-badge')).not.toBeInTheDocument();
+  });
 });

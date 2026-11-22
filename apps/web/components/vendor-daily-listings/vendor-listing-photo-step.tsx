@@ -11,6 +11,7 @@ import { Camera, CheckCircle2, Info, RotateCcw, Star, Trash2 } from 'lucide-reac
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { isDemoSamplePhotoUrl } from '@/lib/format';
 
 import {
   formatDateTimeReadable,
@@ -210,7 +211,14 @@ export function VendorListingPhotoStep({
 
           {canRenderPreview ? (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
-              <p className="text-xs font-medium text-gray-700">Live image preview</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-gray-700">Live image preview</p>
+                {isDemoSamplePhotoUrl(photoUrl) ? (
+                  <Badge variant="warning" data-testid="demo-sample-photo-preview-badge">
+                    Sample Photo (Demo)
+                  </Badge>
+                ) : null}
+              </div>
               {previewFailed ? (
                 <p className="text-xs text-amber-800">
                   Preview could not load in the browser for this URL — double-check the URL is publicly accessible before publishing.
@@ -309,6 +317,11 @@ export function VendorListingPhotoStep({
                           ) : null}
                           {photo.moderationStatus}
                         </Badge>
+                        {isDemoSamplePhotoUrl(photo.url) ? (
+                          <Badge variant="warning" data-testid="demo-sample-photo-attached-badge">
+                            Sample Photo (Demo)
+                          </Badge>
+                        ) : null}
                       </div>
                       {photo.caption ? (
                         <p className="text-sm text-gray-800">{photo.caption}</p>
