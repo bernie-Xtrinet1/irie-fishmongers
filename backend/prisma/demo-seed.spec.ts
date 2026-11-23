@@ -25,10 +25,27 @@ describe('demo seed product placeholders', () => {
     }
   });
 
-  it('references image files that exist in apps/web/public', () => {
+  it('references non-placeholder image files that exist in apps/web/public', () => {
     for (const product of DEMO_PRODUCTS) {
       const file = path.join(PUBLIC_DIR, product.imageUrl);
       expect(fs.existsSync(file)).toBe(true);
+      expect(fs.statSync(file).size).toBeGreaterThan(10_000);
+    }
+  });
+
+  it('includes labelled sample raster files for broader species catalogue previews', () => {
+    const previewFiles = [
+      '/demo-products/red-snapper.png',
+      '/demo-products/jumbo-shrimp.png',
+      '/demo-products/lobster.png',
+      '/demo-products/king-fish.png',
+      '/demo-products/mackerel.png',
+    ];
+
+    for (const relativePath of previewFiles) {
+      const file = path.join(PUBLIC_DIR, relativePath);
+      expect(fs.existsSync(file)).toBe(true);
+      expect(fs.statSync(file).size).toBeGreaterThan(10_000);
     }
   });
 });
