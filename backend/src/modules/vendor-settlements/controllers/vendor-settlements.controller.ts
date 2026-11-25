@@ -15,12 +15,15 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CreateAdjustmentDto } from '../dto/create-adjustment.dto';
 import { CreateCommissionRateDto } from '../dto/create-commission-rate.dto';
 import { ListVendorSettlementsDto } from '../dto/list-vendor-settlements.dto';
+import { UpdateVendorSettlementPaymentReferenceDto } from '../dto/update-vendor-settlement-payment-reference.dto';
 import { UpdateVendorSettlementStatusDto } from '../dto/update-vendor-settlement-status.dto';
 import { AdjustmentResponseEntity } from '../entities/adjustment-response.entity';
 import { CommissionRateResponseEntity } from '../entities/commission-rate-response.entity';
 import { GenerateVendorSettlementsResultEntity } from '../entities/generate-vendor-settlements-result.entity';
 import { PaginatedVendorSettlementsEntity } from '../entities/paginated-vendor-settlements.entity';
+import { VendorSettlementAuditLogResponseEntity } from '../entities/vendor-settlement-audit-log-response.entity';
 import { VendorSettlementResponseEntity } from '../entities/vendor-settlement-response.entity';
+import { PrimaryAdminVendorSettlementGuard } from '../guards/primary-admin-vendor-settlement.guard';
 import { VendorSettlementsService } from '../services/vendor-settlements.service';
 
 @ApiTags('vendor-settlements')
@@ -59,13 +62,43 @@ export class VendorSettlementsController {
 
   @Patch(':id/status')
   @Roles(RoleName.ADMINISTRATOR)
-  @ApiOperation({ summary: 'Approve, pay, or fail a settlement (admin only)' })
+  @UseGuards(PrimaryAdminVendorSettlementGuard)
+  @ApiOperation({
+    summary: 'Approve, pay, or fail a settlement (designated primary administrator only)',
+  })
   @ApiResponseDoc({ status: 200, type: VendorSettlementResponseEntity })
   updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateVendorSettlementStatusDto,
+    @CurrentUser() user: RequestUser,
   ): Promise<VendorSettlementResponseEntity> {
-    return this.vendorSettlementsService.updateStatus(id, dto.status, dto.notes);
+    return this.vendorSettlementsService.updateStatus(id, dto.status, user, {
+      notes: dto.notes,
+      paymentReference: dto.paymentReference,
+    });
+  }
+
+  @Patch(':id/payment-reference')
+  @Roles(RoleName.ADMINISTRATOR)
+  @UseGuards(PrimaryAdminVendorSettlementGuard)
+  @ApiOperation({
+    summary: 'Record or update a settlement payment reference (designated primary administrator only)',
+  })
+  @ApiResponseDoc({ status: 200, type: VendorSettlementResponseEntity })
+  updatePaymentReference(
+    @Param('id') id: string,
+    @Body() dto: UpdateVendorSettlementPaymentReferenceDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<VendorSettlementResponseEntity> {
+    return this.vendorSettlementsService.updatePaymentReference(id, dto, user);
+  }
+
+  @Get(':id/audit-logs')
+  @Roles(RoleName.ADMINISTRATOR)
+  @ApiOperation({ summary: 'List immutable authorization and status audit logs for a settlement (admin only)' })
+  @ApiResponseDoc({ status: 200, type: VendorSettlementAuditLogResponseEntity, isArray: true })
+  getAuditLogs(@Param('id') id: string): Promise<VendorSettlementAuditLogResponseEntity[]> {
+    return this.vendorSettlementsService.getAuditLogs(id);
   }
 
   @Post(':id/adjustments')

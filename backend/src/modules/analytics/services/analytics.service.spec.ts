@@ -179,11 +179,28 @@ describe('AnalyticsService', () => {
       const result = await service.getDashboardSummary();
 
       expect(result.systemHealth).toEqual({ postgres: 'up', redis: 'down' });
-      expect(result.financials.grossPaidAmount).toBe('5000');
+      expect(result.financials?.grossPaidAmount).toBe('5000');
+    });
+
+    it('omits the financials key and skips payment/settlement queries when includeFinancials is false', async () => {
+      const result = await service.getDashboardSummary(undefined, { includeFinancials: false });
+
+      expect(Object.prototype.hasOwnProperty.call(result, 'financials')).toBe(false);
+      expect(paymentsRepository.sumByStatus).not.toHaveBeenCalled();
+      expect(vendorSettlementsRepository.sumPlatformFeeByStatus).not.toHaveBeenCalled();
+      expect(result.orders).toEqual({ customerOrdersTotal: 4, vendorOrdersByStatus });
     });
   });
 
   describe('getVendorDashboard', () => {
+    it('omits topVendorsByRevenue and skips revenue query when includeFinancials is false', async () => {
+      const result = await service.getVendorDashboard(undefined, { includeFinancials: false });
+
+      expect(Object.prototype.hasOwnProperty.call(result, 'topVendorsByRevenue')).toBe(false);
+      expect(vendorSettlementsRepository.getTopVendorsByRevenue).not.toHaveBeenCalled();
+      expect(result.byStatus).toEqual(vendorsByStatus);
+      expect(result.byTier).toEqual(vendorsByTier);
+    });
     it('composes vendor status/tier/compliance/top-vendors into one summary', async () => {
       const result = await service.getVendorDashboard();
 

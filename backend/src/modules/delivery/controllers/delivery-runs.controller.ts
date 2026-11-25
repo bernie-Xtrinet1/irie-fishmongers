@@ -19,7 +19,7 @@ import { DeliveryRunsService } from '../services/delivery-runs.service';
 @ApiTags('delivery-runs')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('delivery-runs')
 export class DeliveryRunsController {
   constructor(private readonly deliveryRunsService: DeliveryRunsService) {}

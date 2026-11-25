@@ -11,22 +11,26 @@ function FinancialSummaryCardImpl(): React.ReactElement {
 
   return (
     <SummaryCard title="Financials" query={query}>
-      {(financials) => (
-        <dl className="flex flex-col gap-4">
-          <div>
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Gross paid volume</dt>
-            <dd className="text-2xl font-semibold text-gray-900">
-              {formatCurrency(financials.grossPaidAmount, financials.currency)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Platform commission</dt>
-            <dd className="text-xl font-semibold text-irie-green">
-              {formatCurrency(financials.platformCommission, financials.currency)}
-            </dd>
-          </div>
-        </dl>
-      )}
+      {(financials) =>
+        financials ? (
+          <dl className="flex flex-col gap-4">
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Gross paid volume</dt>
+              <dd className="text-2xl font-semibold text-gray-900">
+                {formatCurrency(financials.grossPaidAmount, financials.currency)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Platform commission</dt>
+              <dd className="text-xl font-semibold text-irie-green">
+                {formatCurrency(financials.platformCommission, financials.currency)}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="text-sm text-gray-500">Financial metrics unavailable.</p>
+        )
+      }
     </SummaryCard>
   );
 }

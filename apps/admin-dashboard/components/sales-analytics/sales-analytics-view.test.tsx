@@ -3,12 +3,17 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { useOptionalAuth } from '@/lib/auth/auth-context';
 import { useSalesAnalytics } from '@/lib/hooks/use-sales-analytics';
 import { SalesAnalyticsView } from './sales-analytics-view';
 
 jest.mock('@/lib/hooks/use-sales-analytics');
+jest.mock('@/lib/auth/auth-context', () => ({
+  useOptionalAuth: jest.fn(),
+}));
 
 const mockUseSalesAnalytics = useSalesAnalytics as jest.MockedFunction<typeof useSalesAnalytics>;
+const mockUseOptionalAuth = useOptionalAuth as jest.MockedFunction<typeof useOptionalAuth>;
 
 function salesAnalytics(overrides: Partial<SalesAnalytics> = {}): SalesAnalytics {
   return {
@@ -26,7 +31,38 @@ function withData(data: SalesAnalytics): UseQueryResult<SalesAnalytics> {
 }
 
 describe('SalesAnalyticsView', () => {
+  beforeEach(() => {
+    mockUseOptionalAuth.mockReturnValue(null);
+  });
+
+  it('blocks OPERATIONS_STAFF without enabling sales-analytics query', () => {
+    mockUseOptionalAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'staff-1',
+        email: 'staff.operations@iriefishmongers.test',
+        firstName: 'Ops',
+        lastName: 'Staff',
+        status: 'ACTIVE',
+        roles: ['OPERATIONS_STAFF'],
+      },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+    mockUseSalesAnalytics.mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: false,
+    } as unknown as UseQueryResult<SalesAnalytics>);
+
+    render(<SalesAnalyticsView />);
+
+    expect(mockUseSalesAnalytics).toHaveBeenCalledWith(false);
+    expect(screen.getByRole('alert')).toHaveTextContent('Access Denied');
+  });
+
   it('shows a loading state', () => {
+    mockUseOptionalAuth.mockReturnValue(null);
     mockUseSalesAnalytics.mockReturnValue({ isPending: true, isError: false } as UseQueryResult<SalesAnalytics>);
 
     render(<SalesAnalyticsView />);

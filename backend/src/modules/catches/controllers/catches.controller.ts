@@ -43,7 +43,7 @@ export class CatchesController {
   }
 
   @Get()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List catches, optionally filtered by fisherman (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedCatchesEntity })
   list(@Query() dto: ListCatchesDto): Promise<PaginatedCatchesEntity> {
@@ -51,7 +51,7 @@ export class CatchesController {
   }
 
   @Get(':id')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get a catch by id (admin only)' })
   @ApiResponseDoc({ status: 200, type: CatchResponseEntity })
   getById(@Param('id') id: string): Promise<CatchResponseEntity> {

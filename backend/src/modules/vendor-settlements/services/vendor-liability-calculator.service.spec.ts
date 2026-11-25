@@ -95,6 +95,7 @@ describe('VendorLiabilityCalculatorService', () => {
       netAmount: new Prisma.Decimal('8500.00'),
       status: VendorSettlementStatus.PAID,
       paymentDate: new Date('2026-11-01T12:00:00Z'),
+      paymentReference: null,
       notes: null,
       commissionConfigId: 'config-1',
       commissionRateSnapshot: new Prisma.Decimal('0.1500'),

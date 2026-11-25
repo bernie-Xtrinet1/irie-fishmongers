@@ -188,6 +188,45 @@ describe('api-client', () => {
     );
   });
 
+  it('accepts refreshed OPERATIONS_STAFF sessions during 401 token refresh', async () => {
+    let accessToken = 'expired-staff-token';
+    const onTokenRefreshed = jest.fn((token: string) => {
+      accessToken = token;
+    });
+    const onUnauthorized = jest.fn();
+
+    configureApiClient({
+      getAccessToken: () => accessToken,
+      onTokenRefreshed,
+      onUnauthorized,
+    });
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes('/auth/refresh')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            success: true,
+            data: {
+              accessToken: 'fresh-staff-token',
+              user: { id: 'staff-1', roles: ['OPERATIONS_STAFF'], status: 'ACTIVE' },
+            },
+            error: null,
+          }),
+        );
+      }
+
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.Authorization === 'Bearer fresh-staff-token') {
+        return Promise.resolve(jsonResponse(200, { success: true, data: { items: [] }, error: null }));
+      }
+      return Promise.resolve(jsonResponse(401, { success: false, data: null, error: 'Unauthorized' }));
+    });
+
+    await expect(apiGet('/vendors')).resolves.toEqual({ items: [] });
+    expect(onTokenRefreshed).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
   it('never retries /auth/login through the refresh flow', async () => {
     configureApiClient({
       getAccessToken: () => null,

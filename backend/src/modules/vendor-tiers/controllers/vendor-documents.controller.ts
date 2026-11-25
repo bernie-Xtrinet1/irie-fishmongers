@@ -47,7 +47,7 @@ export class VendorDocumentsController {
   }
 
   @Get('vendor/:vendorId')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: "List a vendor's documents (admin only)" })
   @ApiResponseDoc({ status: 200, type: VendorDocumentResponseEntity, isArray: true })
   listForVendor(@Param('vendorId') vendorId: string): Promise<VendorDocumentResponseEntity[]> {
@@ -55,7 +55,7 @@ export class VendorDocumentsController {
   }
 
   @Patch(':id/review')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Approve or reject a pending vendor document (admin only)' })
   @ApiResponseDoc({ status: 200, type: VendorDocumentResponseEntity })
   review(

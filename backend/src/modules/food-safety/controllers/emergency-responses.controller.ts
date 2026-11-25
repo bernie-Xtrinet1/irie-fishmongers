@@ -14,7 +14,7 @@ import { EmergencyResponsesService } from '../services/emergency-responses.servi
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/emergency-responses')
 export class EmergencyResponsesController {
   constructor(private readonly responsesService: EmergencyResponsesService) {}

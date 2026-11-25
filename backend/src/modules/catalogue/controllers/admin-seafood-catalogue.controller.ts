@@ -56,6 +56,7 @@ export class AdminSeafoodCatalogueController {
   }
 
   @Get()
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List all master catalogue items across all lifecycle states' })
   async listAll(@Query() query: QueryCatalogueDto) {
     const result = await this.catalogueService.findMany(query, false);
@@ -70,6 +71,7 @@ export class AdminSeafoodCatalogueController {
   }
 
   @Get(':id')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get full details of any master catalogue item' })
   async getById(
     @Param('id', ParseUUIDPipe) id: string,

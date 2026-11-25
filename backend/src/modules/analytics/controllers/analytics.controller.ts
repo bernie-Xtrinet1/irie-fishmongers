@@ -2,8 +2,10 @@ import { BadRequestException, Controller, Get, Query, UseGuards } from '@nestjs/
 import { ApiBearerAuth, ApiOperation, ApiResponse as ApiResponseDoc, ApiTags } from '@nestjs/swagger';
 import { RoleName } from '@prisma/client';
 
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { isAdministratorRole } from '../../../common/auth/admin-roles';
+import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { DashboardSummaryQueryDto } from '../dto/dashboard-summary-query.dto';
 import { DashboardSummaryEntity } from '../entities/dashboard-summary.entity';
@@ -22,26 +24,39 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
   @Get('dashboard-summary')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({
     summary:
-      'Admin dashboard overview KPIs (financials, orders, vendors, drivers, compliance, system health) - admin only',
+      'Admin dashboard overview KPIs (financials omitted for operations staff)',
   })
   @ApiResponseDoc({ status: 200, type: DashboardSummaryEntity })
-  getDashboardSummary(@Query() query: DashboardSummaryQueryDto): Promise<DashboardSummaryEntity> {
-    return this.analyticsService.getDashboardSummary(AnalyticsController.parseRange(query));
+  getDashboardSummary(
+    @Query() query: DashboardSummaryQueryDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<DashboardSummaryEntity> {
+    return this.analyticsService.getDashboardSummary(AnalyticsController.parseRange(query), {
+      includeFinancials: isAdministratorRole(user.roles),
+    });
   }
 
   @Get('vendor-dashboard')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({
     summary:
-      'Vendor Dashboard: vendor counts by status/tier, average compliance score, top vendors by revenue - admin only',
+      'Vendor Dashboard: vendor counts by status/tier, average compliance score (revenue ranking omitted for operations staff)',
   })
   @ApiResponseDoc({ status: 200, type: VendorDashboardEntity })
-  getVendorDashboard(@Query() query: DashboardSummaryQueryDto): Promise<VendorDashboardEntity> {
-    return this.analyticsService.getVendorDashboard(AnalyticsController.parseRange(query));
+  getVendorDashboard(
+    @Query() query: DashboardSummaryQueryDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<VendorDashboardEntity> {
+    return this.analyticsService.getVendorDashboard(AnalyticsController.parseRange(query), {
+      includeFinancials: isAdministratorRole(user.roles),
+    });
   }
 
   @Get('sales-analytics')
+  @Roles(RoleName.ADMINISTRATOR)
   @ApiOperation({
     summary:
       'Sales Analytics: top products and categories by revenue, sales by payment method, average order value - admin only',
@@ -52,9 +67,10 @@ export class AnalyticsController {
   }
 
   @Get('delivery-analytics')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({
     summary:
-      'Delivery Analytics: SLA breaches by zone, fleet asset counts by zone, delivery customer-acceptance breakdown - admin only',
+      'Delivery Analytics: SLA breaches by zone, fleet asset counts by zone, delivery customer-acceptance breakdown',
   })
   @ApiResponseDoc({ status: 200, type: DeliveryAnalyticsEntity })
   getDeliveryAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<DeliveryAnalyticsEntity> {
@@ -62,9 +78,10 @@ export class AnalyticsController {
   }
 
   @Get('inventory-analytics')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({
     summary:
-      'Inventory Analytics: product counts by availability, low-stock products, inventory event activity by type - admin only',
+      'Inventory Analytics: product counts by availability, low-stock products, inventory event activity by type',
   })
   @ApiResponseDoc({ status: 200, type: InventoryAnalyticsEntity })
   getInventoryAnalytics(@Query() query: DashboardSummaryQueryDto): Promise<InventoryAnalyticsEntity> {

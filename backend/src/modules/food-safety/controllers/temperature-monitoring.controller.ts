@@ -34,7 +34,7 @@ export class TemperatureMonitoringController {
   }
 
   @Get('temperature-readings/lot/:lotId')
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get the temperature reading history for a lot (owning vendor or admin)' })
   @ApiResponseDoc({ status: 200, type: PaginatedTemperatureReadingsEntity })
   getReadingsForLot(
@@ -46,7 +46,7 @@ export class TemperatureMonitoringController {
   }
 
   @Get('temperature-alerts')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List temperature alerts, optionally filtered (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedTemperatureAlertsEntity })
   listAlerts(@Query() dto: ListTemperatureAlertsDto): Promise<PaginatedTemperatureAlertsEntity> {
@@ -54,7 +54,7 @@ export class TemperatureMonitoringController {
   }
 
   @Patch('temperature-alerts/:id/resolve')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Mark a temperature alert as resolved (admin only)' })
   @ApiResponseDoc({ status: 200, type: TemperatureAlertResponseEntity })
   resolveAlert(@Param('id') id: string): Promise<TemperatureAlertResponseEntity> {

@@ -12,6 +12,7 @@ enum RoleName {
   VENDOR
   DRIVER
   ADMINISTRATOR
+  OPERATIONS_STAFF
   FISHERMAN
 }
 
@@ -30,6 +31,7 @@ model User {
   lastName                        String
   phone                           String?
   status                          UserStatus @default(PENDING_VERIFICATION)
+  canAuthorizeVendorSettlements   Boolean    @default(false)
   emailVerifiedAt                 DateTime?
   emailVerificationTokenHash      String?
   emailVerificationTokenExpiresAt DateTime?
@@ -92,6 +94,7 @@ model User {
   requestedSuspectRecoveries   ProductSuspectRecovery[]           @relation("SuspectRecoveryRequester")
   approvedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryApprover")
   rejectedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryRejector")
+  vendorSettlementAuditLogs    VendorSettlementAuditLog[]         @relation("VendorSettlementAuditActor")
 
   @@map("users")
 }
@@ -1789,6 +1792,7 @@ model VendorSettlement {
   netAmount              Decimal                @db.Decimal(10, 2)
   status                 VendorSettlementStatus @default(PENDING)
   paymentDate            DateTime?
+  paymentReference       String?
   notes                  String?
   commissionConfigId     String?
   commissionRateSnapshot Decimal?               @db.Decimal(5, 4)
@@ -1801,10 +1805,43 @@ model VendorSettlement {
   adjustments      VendorSettlementAdjustment[]
   receivables      VendorReceivable[]
   disbursements    VendorSettlementDisbursement[]
+  auditLogs        VendorSettlementAuditLog[]
 
   @@index([vendorId])
   @@index([commissionConfigId])
   @@map("vendor_settlements")
+}
+
+enum VendorSettlementAuditAction {
+  APPROVE_SETTLEMENT
+  MARK_PAID
+  MARK_FAILED
+  UPDATE_PAYMENT_REFERENCE
+  INITIATE_DISBURSEMENT
+  RELEASE_DISBURSEMENT
+}
+
+// Append-only audit log for vendor settlement authorization, payment-reference
+// updates, and disbursement initiation/release transitions.
+model VendorSettlementAuditLog {
+  id               String                      @id @default(uuid())
+  settlementId     String
+  actorUserId      String
+  actorEmail       String
+  action           VendorSettlementAuditAction
+  previousStatus   VendorSettlementStatus
+  newStatus        VendorSettlementStatus
+  paymentReference String?
+  notes            String?
+  createdAt        DateTime                    @default(now())
+
+  settlement VendorSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  actor      User             @relation("VendorSettlementAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([settlementId])
+  @@index([actorUserId])
+  @@index([createdAt])
+  @@map("vendor_settlement_audit_logs")
 }
 
 // Immutable correction record for a settlement whose underlying payment was

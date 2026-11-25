@@ -44,7 +44,7 @@ export class FishermenController {
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List fishermen, optionally filtered by status (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedFishermenEntity })

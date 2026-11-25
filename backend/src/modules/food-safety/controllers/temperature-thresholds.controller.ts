@@ -13,7 +13,7 @@ import { TemperatureThresholdsService } from '../services/temperature-thresholds
 @ApiTags('temperature-thresholds')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('temperature-thresholds')
 export class TemperatureThresholdsController {
   constructor(private readonly thresholdsService: TemperatureThresholdsService) {}

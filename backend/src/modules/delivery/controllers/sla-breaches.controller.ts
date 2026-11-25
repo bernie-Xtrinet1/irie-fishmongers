@@ -20,7 +20,7 @@ import { SLABreachesService } from '../services/sla-breaches.service';
 @ApiTags('sla-breaches')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('sla-breaches')
 export class SLABreachesController {
   constructor(private readonly slaBreachesService: SLABreachesService) {}

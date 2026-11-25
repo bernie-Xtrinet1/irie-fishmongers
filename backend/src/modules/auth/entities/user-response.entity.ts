@@ -23,6 +23,9 @@ export class UserResponseEntity {
   @ApiProperty({ enum: RoleName, isArray: true })
   roles!: RoleName[];
 
+  @ApiProperty({ required: false, default: false })
+  canAuthorizeVendorSettlements?: boolean;
+
   @ApiProperty()
   createdAt!: Date;
 }

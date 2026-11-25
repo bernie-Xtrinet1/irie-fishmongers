@@ -122,8 +122,8 @@ export class SystemHealthEntity {
 }
 
 export class DashboardSummaryEntity {
-  @ApiProperty({ type: FinancialsEntity })
-  financials!: FinancialsEntity;
+  @ApiProperty({ type: FinancialsEntity, required: false })
+  financials?: FinancialsEntity;
 
   @ApiProperty({ type: OrderCountsEntity })
   orders!: OrderCountsEntity;

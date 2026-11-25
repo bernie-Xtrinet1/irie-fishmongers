@@ -9,8 +9,9 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { RoleName } from '@prisma/client';
+import { RoleName, UserStatus } from '@prisma/client';
 
+import { isAdministratorRole } from '../../../common/auth/admin-roles';
 import { RegistrationConfirmedEvent } from '../../../common/events/registration-confirmed.event';
 import { ForgotPasswordDto } from '../dto/forgot-password.dto';
 import { LoginDto } from '../dto/login.dto';
@@ -185,6 +186,7 @@ export class AuthService {
   }
 
   private static toUserResponse(user: UserWithRoles): UserResponseEntity {
+    const roles = UsersRepository.toRoleNames(user);
     return {
       id: user.id,
       email: user.email,
@@ -192,7 +194,11 @@ export class AuthService {
       lastName: user.lastName,
       phone: user.phone,
       status: user.status,
-      roles: UsersRepository.toRoleNames(user),
+      roles,
+      canAuthorizeVendorSettlements:
+        user.status === UserStatus.ACTIVE &&
+        Boolean(user.canAuthorizeVendorSettlements) &&
+        isAdministratorRole(roles),
       createdAt: user.createdAt,
     };
   }

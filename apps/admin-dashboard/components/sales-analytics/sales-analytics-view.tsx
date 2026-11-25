@@ -4,11 +4,26 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { isActiveAdministratorUser } from '@/lib/auth/admin-access';
+import { useOptionalAuth } from '@/lib/auth/auth-context';
 import { formatCurrency } from '@/lib/format';
 import { useSalesAnalytics } from '@/lib/hooks/use-sales-analytics';
 
 export function SalesAnalyticsView(): React.ReactElement {
-  const query = useSalesAnalytics();
+  const auth = useOptionalAuth();
+  const isAdministrator = !auth || isActiveAdministratorUser(auth.user);
+  const query = useSalesAnalytics(isAdministrator);
+
+  if (!isAdministrator) {
+    return (
+      <div className="rounded-card border border-gray-200 bg-white p-6" role="alert">
+        <h1 className="text-xl font-semibold text-gray-900">Access Denied</h1>
+        <p className="mt-2 text-sm text-gray-600">
+          Your account does not have permission to view Sales Analytics.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">

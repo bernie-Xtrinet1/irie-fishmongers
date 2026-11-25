@@ -15,7 +15,7 @@ import { RegulatoryCertificationsService } from '../services/regulatory-certific
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/certifications')
 export class RegulatoryCertificationsController {
   constructor(private readonly certificationsService: RegulatoryCertificationsService) {}

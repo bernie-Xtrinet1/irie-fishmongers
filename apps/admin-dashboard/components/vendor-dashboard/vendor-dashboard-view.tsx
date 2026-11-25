@@ -4,10 +4,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { isActiveAdministratorUser } from '@/lib/auth/admin-access';
+import { useOptionalAuth } from '@/lib/auth/auth-context';
 import { formatCurrency, formatEnumLabel } from '@/lib/format';
 import { useVendorDashboard } from '@/lib/hooks/use-vendor-dashboard';
 
 export function VendorDashboardView(): React.ReactElement {
+  const auth = useOptionalAuth();
+  const showTopVendorsByRevenue = !auth || isActiveAdministratorUser(auth.user);
   const query = useVendorDashboard();
 
   return (
@@ -81,35 +85,37 @@ export function VendorDashboardView(): React.ReactElement {
             </Card>
           </div>
 
-          <Card className="p-0">
-            <CardHeader className="p-6 pb-0">
-              <CardTitle>Top Vendors by Revenue</CardTitle>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Business Name</TableHead>
-                  <TableHead>Gross Settled Revenue</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {query.data.topVendorsByRevenue.length === 0 ? (
+          {showTopVendorsByRevenue && Array.isArray(query.data.topVendorsByRevenue) ? (
+            <Card className="p-0">
+              <CardHeader className="p-6 pb-0">
+                <CardTitle>Top Vendors by Revenue</CardTitle>
+              </CardHeader>
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={2} className="text-center text-gray-500">
-                      No settled vendor revenue yet.
-                    </TableCell>
+                    <TableHead>Business Name</TableHead>
+                    <TableHead>Gross Settled Revenue</TableHead>
                   </TableRow>
-                ) : (
-                  query.data.topVendorsByRevenue.map((vendor) => (
-                    <TableRow key={vendor.vendorId}>
-                      <TableCell className="font-medium">{vendor.businessName}</TableCell>
-                      <TableCell>{formatCurrency(vendor.grossAmount, 'JMD')}</TableCell>
+                </TableHeader>
+                <TableBody>
+                  {query.data.topVendorsByRevenue.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-center text-gray-500">
+                        No settled vendor revenue yet.
+                      </TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </Card>
+                  ) : (
+                    query.data.topVendorsByRevenue.map((vendor) => (
+                      <TableRow key={vendor.vendorId}>
+                        <TableCell className="font-medium">{vendor.businessName}</TableCell>
+                        <TableCell>{formatCurrency(vendor.grossAmount, 'JMD')}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          ) : null}
         </>
       ) : null}
     </div>

@@ -20,7 +20,7 @@ import { DailyListingsService } from '../services/daily-listings.service';
 @ApiTags('admin/daily-listings')
 @Controller('admin/daily-listings')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @ApiBearerAuth()
 export class AdminDailyListingsController {
   constructor(private readonly dailyListingsService: DailyListingsService) {}

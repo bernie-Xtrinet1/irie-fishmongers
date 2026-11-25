@@ -38,7 +38,7 @@ export class DeliveryExceptionsController {
 
   @Get('exceptions')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({
     summary:
@@ -53,7 +53,7 @@ export class DeliveryExceptionsController {
 
   @Patch('exceptions/:id/resolve')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mark a delivery exception resolved (admin only)' })
   @ApiResponseDoc({ status: 200, type: DeliveryExceptionResponseEntity })

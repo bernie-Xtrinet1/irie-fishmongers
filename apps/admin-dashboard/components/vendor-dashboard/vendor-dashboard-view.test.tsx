@@ -75,4 +75,16 @@ describe('VendorDashboardView', () => {
 
     expect(screen.getByText('—')).toBeInTheDocument();
   });
+
+  it('omits Top Vendors by Revenue when topVendorsByRevenue is stripped for operations staff', () => {
+    mockUseVendorDashboard.mockReturnValue(
+      withData(vendorDashboard({ topVendorsByRevenue: undefined })),
+    );
+
+    render(<VendorDashboardView />);
+
+    expect(screen.getByText('Vendors by Status')).toBeInTheDocument();
+    expect(screen.getByText('Average Compliance Score')).toBeInTheDocument();
+    expect(screen.queryByText('Top Vendors by Revenue')).not.toBeInTheDocument();
+  });
 });

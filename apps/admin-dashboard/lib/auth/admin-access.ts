@@ -5,13 +5,102 @@ export interface RefreshedSessionUser {
   lastName?: string;
   status?: 'PENDING_VERIFICATION' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
   roles: string[];
+  canAuthorizeVendorSettlements?: boolean;
 }
 
+const ADMIN_PORTAL_ROLES = ['ADMINISTRATOR', 'OPERATIONS_STAFF'] as const;
+
+const OPERATIONS_STAFF_ALLOWED_PATHS = [
+  '/',
+  '/vendors',
+  '/vendor-dashboard',
+  '/drivers',
+  '/delivery-zones',
+  '/delivery-operations',
+  '/delivery-analytics',
+  '/inventory-analytics',
+  '/cold-chain',
+  '/recalls',
+  '/reviews',
+] as const;
+
+function hasActiveStatus(user?: { status?: string } | null): boolean {
+  return Boolean(user) && (user?.status === undefined || user.status === 'ACTIVE');
+}
+
+/**
+ * Returns true strictly for ACTIVE ADMINISTRATOR accounts (never OPERATIONS_STAFF).
+ */
 export function isActiveAdminUser(
   user?: { roles?: readonly string[]; status?: string } | null,
 ): boolean {
   if (!user || !Array.isArray(user.roles) || !user.roles.includes('ADMINISTRATOR')) {
     return false;
   }
-  return user.status === undefined || user.status === 'ACTIVE';
+  return hasActiveStatus(user);
+}
+
+export const isActiveAdministratorUser = isActiveAdminUser;
+
+/**
+ * Returns true when the account is active and holds either ADMINISTRATOR or OPERATIONS_STAFF.
+ */
+export function isActiveAdminPortalUser(
+  user?: { roles?: readonly string[]; status?: string } | null,
+): boolean {
+  if (!user || !Array.isArray(user.roles) || !hasActiveStatus(user)) {
+    return false;
+  }
+  const allowed: readonly string[] = ADMIN_PORTAL_ROLES;
+  return user.roles.some((role: string) => allowed.includes(role));
+}
+
+/**
+ * Returns true only for an active designated primary administrator authorized
+ * to approve or mark vendor settlements as paid.
+ */
+export function canAuthorizeVendorSettlements(
+  user?: { roles?: readonly string[]; status?: string; canAuthorizeVendorSettlements?: boolean } | null,
+): boolean {
+  return isActiveAdminUser(user) && Boolean(user?.canAuthorizeVendorSettlements);
+}
+
+/**
+ * Enforces the explicit route allowlist for OPERATIONS_STAFF while allowing
+ * full ADMINISTRATOR accounts across all portal paths.
+ */
+export function canAccessAdminPath(
+  user: { roles?: readonly string[]; status?: string } | null | undefined,
+  pathname: string,
+): boolean {
+  if (!isActiveAdminPortalUser(user)) {
+    return false;
+  }
+  if (isActiveAdminUser(user)) {
+    return true;
+  }
+  const normalized = pathname || '/';
+  return OPERATIONS_STAFF_ALLOWED_PATHS.some((allowed) =>
+    allowed === '/'
+      ? normalized === '/'
+      : normalized === allowed || normalized.startsWith(`${allowed}/`),
+  );
+}
+
+/**
+ * Human-readable role badge for the portal header.
+ */
+export function getAdminRoleLabel(
+  user?: { roles?: readonly string[]; status?: string; canAuthorizeVendorSettlements?: boolean } | null,
+): string {
+  if (canAuthorizeVendorSettlements(user)) {
+    return 'Primary Administrator';
+  }
+  if (isActiveAdminUser(user)) {
+    return 'Administrator';
+  }
+  if (isActiveAdminPortalUser(user)) {
+    return 'Operations Staff';
+  }
+  return 'Unauthorized';
 }

@@ -21,7 +21,7 @@ export class QualityInspectionsController {
   constructor(private readonly qualityInspectionsService: QualityInspectionsService) {}
 
   @Post()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Record a quality inspection for a seafood lot (admin only)' })
   @ApiResponseDoc({ status: 201, type: QualityInspectionResponseEntity })
   inspect(
@@ -33,7 +33,7 @@ export class QualityInspectionsController {
   }
 
   @Get('lot/:lotId')
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get the inspection history for a lot (owning vendor or admin)' })
   @ApiResponseDoc({ status: 200, type: PaginatedQualityInspectionsEntity })
   getForLot(

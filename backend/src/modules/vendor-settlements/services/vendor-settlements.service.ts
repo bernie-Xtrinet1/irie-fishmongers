@@ -1,25 +1,37 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { PlatformCommissionConfig, Prisma, VendorSettlement, VendorSettlementStatus } from '@prisma/client';
+import {
+  PlatformCommissionConfig,
+  Prisma,
+  VendorSettlement,
+  VendorSettlementAuditAction,
+  VendorSettlementAuditLog,
+  VendorSettlementStatus,
+} from '@prisma/client';
 
+import { isAdministratorRole } from '../../../common/auth/admin-roles';
 import { PrismaService } from '../../../database/prisma.service';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { CreateAdjustmentDto } from '../dto/create-adjustment.dto';
 import { CreateCommissionRateDto } from '../dto/create-commission-rate.dto';
 import { ListVendorSettlementsDto } from '../dto/list-vendor-settlements.dto';
+import { UpdateVendorSettlementPaymentReferenceDto } from '../dto/update-vendor-settlement-payment-reference.dto';
 import { AdjustmentResponseEntity } from '../entities/adjustment-response.entity';
 import { CommissionRateResponseEntity } from '../entities/commission-rate-response.entity';
 import { GenerateVendorSettlementsResultEntity } from '../entities/generate-vendor-settlements-result.entity';
 import { PaginatedVendorSettlementsEntity } from '../entities/paginated-vendor-settlements.entity';
+import { VendorSettlementAuditLogResponseEntity } from '../entities/vendor-settlement-audit-log-response.entity';
 import { VendorSettlementResponseEntity } from '../entities/vendor-settlement-response.entity';
+import { PRIMARY_ADMIN_SETTLEMENT_FORBIDDEN_MESSAGE } from '../guards/primary-admin-vendor-settlement.guard';
 import { CommissionRateConfigsRepository } from '../repositories/commission-rate-configs.repository';
 import { VendorSettlementAdjustmentsRepository } from '../repositories/vendor-settlement-adjustments.repository';
-import { VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
+import { SettlementActor, VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
 
 const ALLOWED_STATUS_TRANSITIONS: Record<VendorSettlementStatus, VendorSettlementStatus[]> = {
   PENDING: ['APPROVED', 'FAILED'],
@@ -124,8 +136,16 @@ export class VendorSettlementsService {
   async updateStatus(
     id: string,
     status: VendorSettlementStatus,
-    notes?: string,
+    actor: SettlementActor,
+    options: { notes?: string; paymentReference?: string } = {},
   ): Promise<VendorSettlementResponseEntity> {
+    this.assertPrimaryAdminActor(actor);
+
+    let normalizedPaymentReference: string | undefined;
+    if (options.paymentReference !== undefined) {
+      normalizedPaymentReference = this.normalizePaymentReference(options.paymentReference);
+    }
+
     const settlement = await this.vendorSettlementsRepository.findById(id);
     if (!settlement) {
       throw new NotFoundException('Settlement not found');
@@ -136,10 +156,106 @@ export class VendorSettlementsService {
 
     const updated = await this.vendorSettlementsRepository.updateStatus(id, status, {
       paymentDate: status === 'PAID' ? new Date() : undefined,
-      notes,
+      notes: options.notes,
+      ...(normalizedPaymentReference !== undefined
+        ? { paymentReference: normalizedPaymentReference }
+        : {}),
+      actor,
     });
 
     return this.toResponse(updated);
+  }
+
+  async updatePaymentReference(
+    id: string,
+    dto: UpdateVendorSettlementPaymentReferenceDto,
+    actor: SettlementActor,
+  ): Promise<VendorSettlementResponseEntity> {
+    this.assertPrimaryAdminActor(actor);
+    const paymentReference = this.normalizePaymentReference(dto.paymentReference);
+
+    const settlement = await this.vendorSettlementsRepository.findById(id);
+    if (!settlement) {
+      throw new NotFoundException('Settlement not found');
+    }
+    if (settlement.status === VendorSettlementStatus.FAILED) {
+      throw new BadRequestException('Cannot update payment reference for a FAILED settlement');
+    }
+
+    const updated = await this.vendorSettlementsRepository.updatePaymentReference(id, {
+      paymentReference,
+      notes: dto.notes,
+      actor,
+    });
+
+    return this.toResponse(updated);
+  }
+
+  /**
+   * Shared primary-administrator authorization and audit gate required by any
+   * vendor disbursement initiation or release workflow.
+   */
+  async authorizeDisbursementAction(
+    settlementId: string,
+    action: Extract<VendorSettlementAuditAction, 'INITIATE_DISBURSEMENT' | 'RELEASE_DISBURSEMENT'>,
+    actor: SettlementActor,
+    options: { paymentReference?: string; notes?: string } = {},
+  ): Promise<VendorSettlementAuditLogResponseEntity> {
+    this.assertPrimaryAdminActor(actor);
+
+    const normalizedReference =
+      options.paymentReference !== undefined
+        ? this.normalizePaymentReference(options.paymentReference)
+        : undefined;
+
+    const settlement = await this.vendorSettlementsRepository.findById(settlementId);
+    if (!settlement) {
+      throw new NotFoundException('Settlement not found');
+    }
+    if (
+      settlement.status !== VendorSettlementStatus.APPROVED &&
+      settlement.status !== VendorSettlementStatus.PAID
+    ) {
+      throw new BadRequestException(
+        `Cannot ${action.toLowerCase()} for a settlement in status ${settlement.status}`,
+      );
+    }
+
+    const auditLog = await this.vendorSettlementsRepository.recordAuthorizedDisbursementAudit(
+      settlementId,
+      action,
+      actor,
+      {
+        ...(normalizedReference !== undefined ? { paymentReference: normalizedReference } : {}),
+        ...(options.notes !== undefined ? { notes: options.notes } : {}),
+      },
+    );
+
+    return VendorSettlementsService.toAuditLogResponse(auditLog);
+  }
+
+  async getAuditLogs(settlementId: string): Promise<VendorSettlementAuditLogResponseEntity[]> {
+    const settlement = await this.vendorSettlementsRepository.findById(settlementId);
+    if (!settlement) {
+      throw new NotFoundException('Settlement not found');
+    }
+
+    const logs = await this.vendorSettlementsRepository.findAuditLogsBySettlementId(settlementId);
+    return logs.map((log) => VendorSettlementsService.toAuditLogResponse(log));
+  }
+
+  private assertPrimaryAdminActor(actor?: SettlementActor): asserts actor is SettlementActor {
+    if (!actor?.id || !isAdministratorRole(actor.roles) || !actor.canAuthorizeVendorSettlements) {
+      throw new ForbiddenException(PRIMARY_ADMIN_SETTLEMENT_FORBIDDEN_MESSAGE);
+    }
+  }
+
+  private normalizePaymentReference(raw: string): string {
+    const trimmed = raw.trim();
+    if (trimmed.length < 3) {
+      throw new BadRequestException('Payment reference must be at least 3 characters');
+    }
+    return trimmed;
   }
 
   async createAdjustment(
@@ -193,8 +309,26 @@ export class VendorSettlementsService {
       adjustedNetAmount: adjustedNetAmount.toString(),
       status: settlement.status,
       paymentDate: settlement.paymentDate,
+      paymentReference: settlement.paymentReference ?? null,
       notes: settlement.notes,
       createdAt: settlement.createdAt,
+    };
+  }
+
+  private static toAuditLogResponse(
+    log: VendorSettlementAuditLog,
+  ): VendorSettlementAuditLogResponseEntity {
+    return {
+      id: log.id,
+      settlementId: log.settlementId,
+      actorUserId: log.actorUserId,
+      actorEmail: log.actorEmail,
+      action: log.action,
+      previousStatus: log.previousStatus,
+      newStatus: log.newStatus,
+      paymentReference: log.paymentReference,
+      notes: log.notes,
+      createdAt: log.createdAt,
     };
   }
 

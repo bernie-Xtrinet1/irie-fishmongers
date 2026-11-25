@@ -44,7 +44,7 @@ export class DeliveryZonesController {
   }
 
   @Post()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Create a delivery zone (admin only)' })
   @ApiResponseDoc({ status: 201, type: DeliveryZoneResponseEntity })
   create(@Body() dto: CreateDeliveryZoneDto): Promise<DeliveryZone> {
@@ -52,7 +52,7 @@ export class DeliveryZonesController {
   }
 
   @Patch(':id')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Update a delivery zone (admin only)' })
   @ApiResponseDoc({ status: 200, type: DeliveryZoneResponseEntity })
   update(

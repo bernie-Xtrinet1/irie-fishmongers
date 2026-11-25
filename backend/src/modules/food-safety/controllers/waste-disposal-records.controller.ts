@@ -19,7 +19,7 @@ export class WasteDisposalRecordsController {
   constructor(private readonly wasteDisposalRecordsService: WasteDisposalRecordsService) {}
 
   @Post()
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Record the disposal of seafood waste for a lot (owning vendor or admin)' })
   @ApiResponseDoc({ status: 201, type: WasteDisposalRecordResponseEntity })
   create(
@@ -30,7 +30,7 @@ export class WasteDisposalRecordsController {
   }
 
   @Get()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List waste disposal records, optionally filtered by lot or recall (admin only)' })
   @ApiResponseDoc({ status: 200, type: WasteDisposalRecordResponseEntity, isArray: true })
   list(@Query() dto: ListWasteDisposalRecordsDto): Promise<WasteDisposalRecordResponseEntity[]> {

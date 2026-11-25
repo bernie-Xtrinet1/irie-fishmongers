@@ -11,7 +11,7 @@ import { DispatchService } from '../services/dispatch.service';
 @ApiTags('dispatch')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('delivery-runs')
 export class DispatchController {
   constructor(private readonly dispatchService: DispatchService) {}

@@ -115,6 +115,7 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
           lastName: 'Customer',
           phone: null,
           status: 'ACTIVE',
+          canAuthorizeVendorSettlements: false,
           emailVerifiedAt: new Date(),
           emailVerificationTokenHash: null,
           emailVerificationTokenExpiresAt: null,

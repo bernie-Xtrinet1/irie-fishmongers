@@ -35,7 +35,7 @@ export class HealthController {
   // poll frequency, never recompute business KPIs.
   @Get('status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Admin dashboard connectivity widget status - always 200, admin only' })
   checkStatus(): Promise<HealthStatus> {

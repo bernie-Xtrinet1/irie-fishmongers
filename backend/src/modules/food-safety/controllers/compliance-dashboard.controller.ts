@@ -11,7 +11,7 @@ import { ComplianceDashboardService } from '../services/compliance-dashboard.ser
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/compliance-dashboard')
 export class ComplianceDashboardController {
   constructor(private readonly complianceDashboardService: ComplianceDashboardService) {}

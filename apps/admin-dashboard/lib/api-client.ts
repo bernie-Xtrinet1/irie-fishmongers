@@ -1,7 +1,11 @@
-import { isActiveAdminUser, type RefreshedSessionUser } from './auth/admin-access';
+import {
+  isActiveAdminPortalUser,
+  isActiveAdminUser,
+  type RefreshedSessionUser,
+} from './auth/admin-access';
 import { env } from './env';
 
-export { isActiveAdminUser, type RefreshedSessionUser };
+export { isActiveAdminPortalUser, isActiveAdminUser, type RefreshedSessionUser };
 
 const API_BASE_URL = env.apiUrl;
 
@@ -86,12 +90,12 @@ function refreshAccessToken(): Promise<string> {
     })
       .then((response) => unwrap<RefreshResult>(response))
       .then(async (session) => {
-        if (!isActiveAdminUser(session.user)) {
+        if (!isActiveAdminPortalUser(session.user)) {
           // Role missing or inactive after refresh: discard the refreshed
           // access token, revoke the refresh session server-side, and abort
           // without retrying the protected request.
           await revokeCookieSessionBestEffort();
-          throw new ApiError('Administrator access is required', 403);
+          throw new ApiError('Administrator or operations staff access is required', 403);
         }
         clientConfig?.onTokenRefreshed(session.accessToken, session.user);
         return session.accessToken;

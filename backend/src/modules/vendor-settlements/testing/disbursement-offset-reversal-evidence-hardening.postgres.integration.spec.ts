@@ -12,7 +12,9 @@ import {
   RefundAllocationEntryKind,
   RefundAllocationType,
   RefundStatus,
+  RoleName,
   User,
+  UserStatus,
   Vendor,
   VendorLiabilityCategory,
   VendorLiabilityDecision,
@@ -30,7 +32,7 @@ import { CommissionRateConfigsRepository } from '../repositories/commission-rate
 import { RefundAllocationsRepository } from '../repositories/refund-allocations.repository';
 import { VendorReceivablesRepository } from '../repositories/vendor-receivables.repository';
 import { VendorSettlementAdjustmentsRepository } from '../repositories/vendor-settlement-adjustments.repository';
-import { VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
+import { SettlementActor, VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
 import { RefundAllocationsService } from '../services/refund-allocations.service';
 import {
   VendorLiabilityCalculatorService,
@@ -52,6 +54,7 @@ describe('D.4B.5D Second-Pass Hardening — Disbursement, Reversal, Offset, Evid
   let receivablesRepo: VendorReceivablesRepository;
 
   let customerUser: User;
+  let primaryAdminActor: SettlementActor;
   let vendor1: Vendor;
   let vendor2: Vendor;
   let category: { id: string };
@@ -92,6 +95,29 @@ describe('D.4B.5D Second-Pass Hardening — Disbursement, Reversal, Offset, Evid
         lastName: 'Customer',
       },
     });
+
+    const adminRole = await prisma.role.upsert({
+      where: { name: RoleName.ADMINISTRATOR },
+      update: {},
+      create: { name: RoleName.ADMINISTRATOR },
+    });
+    const adminUser = await prisma.user.create({
+      data: {
+        email: `d4b5d_primary_admin_${randomUUID()}@example.com`,
+        passwordHash: 'dummy_hash',
+        firstName: 'Primary',
+        lastName: 'Admin',
+        status: UserStatus.ACTIVE,
+        canAuthorizeVendorSettlements: true,
+        roles: { create: [{ roleId: adminRole.id }] },
+      },
+    });
+    primaryAdminActor = {
+      id: adminUser.id,
+      email: adminUser.email,
+      roles: [RoleName.ADMINISTRATOR],
+      canAuthorizeVendorSettlements: true,
+    };
 
     const createVendor = async (suffix: string, parish: Parish) => {
       const user = await prisma.user.create({
@@ -616,7 +642,9 @@ describe('D.4B.5D Second-Pass Hardening — Disbursement, Reversal, Offset, Evid
         targetAdjustmentId: validAdj.id,
         idempotencyKey: `b5d03_off_${randomUUID()}`,
       }),
-      settlementsService.updateStatus(s2.id, VendorSettlementStatus.FAILED, 'Concurrent fail attempt'),
+      settlementsService.updateStatus(s2.id, VendorSettlementStatus.FAILED, primaryAdminActor, {
+        notes: 'Concurrent fail attempt',
+      }),
     ]);
     const recAfterRace = await prisma.vendorReceivableRecovery.findUnique({
       where: { targetAdjustmentId: validAdj.id },
@@ -629,7 +657,9 @@ describe('D.4B.5D Second-Pass Hardening — Disbursement, Reversal, Offset, Evid
 
       // Sequential FAIL via service, repository, and raw SQL all blocked
       await expect(
-        settlementsService.updateStatus(s2.id, VendorSettlementStatus.FAILED, 'Blocked'),
+        settlementsService.updateStatus(s2.id, VendorSettlementStatus.FAILED, primaryAdminActor, {
+          notes: 'Blocked',
+        }),
       ).rejects.toThrow(ConflictException);
       await expect(
         settlementsRepo.updateStatus(s2.id, VendorSettlementStatus.FAILED),

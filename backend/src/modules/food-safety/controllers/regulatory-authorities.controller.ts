@@ -12,7 +12,7 @@ import { RegulatoryAuthoritiesService } from '../services/regulatory-authorities
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/authorities')
 export class RegulatoryAuthoritiesController {
   constructor(private readonly authoritiesService: RegulatoryAuthoritiesService) {}

@@ -33,7 +33,7 @@ export class VendorTiersController {
   }
 
   @Post(':id/downgrade')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Downgrade a vendor to a lower tier (admin only)' })
   @ApiResponseDoc({ status: 201, type: VendorDowngradeEventResponseEntity })
   downgrade(
@@ -45,7 +45,7 @@ export class VendorTiersController {
   }
 
   @Get(':id/downgrade-events')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: "List a vendor's downgrade history (admin only)" })
   @ApiResponseDoc({ status: 200, type: PaginatedDowngradeEventsEntity })
   listDowngradeEvents(

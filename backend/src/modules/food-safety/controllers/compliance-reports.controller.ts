@@ -13,7 +13,7 @@ import { ComplianceReportsService, ReportRow } from '../services/compliance-repo
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/reports')
 export class ComplianceReportsController {
   constructor(private readonly reportsService: ComplianceReportsService) {}

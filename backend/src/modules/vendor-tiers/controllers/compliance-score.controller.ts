@@ -11,7 +11,7 @@ import { ComplianceScoreService } from '../services/compliance-score.service';
 @ApiTags('admin-compliance-scores')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('admin/vendors/:vendorId/compliance-score')
 export class ComplianceScoreController {
   constructor(private readonly complianceScoreService: ComplianceScoreService) {}

@@ -50,7 +50,7 @@ export class VendorPermissionsController {
   }
 
   @Get(':id/permissions')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: "Get a vendor's tier-derived permissions and limits (admin only)" })
   @ApiResponseDoc({ status: 200, type: VendorPermissionsEntity })
   async getForVendor(@Param('id') id: string): Promise<VendorPermissionsEntity> {

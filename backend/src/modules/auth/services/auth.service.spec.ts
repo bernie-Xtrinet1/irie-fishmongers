@@ -32,6 +32,7 @@ function buildUser(overrides: Partial<UserWithRoles> = {}): UserWithRoles {
     lastName: 'Doe',
     phone: null,
     status: UserStatus.ACTIVE,
+    canAuthorizeVendorSettlements: false,
     emailVerifiedAt: null,
     emailVerificationTokenHash: null,
     emailVerificationTokenExpiresAt: null,
@@ -173,6 +174,27 @@ describe('AuthService', () => {
       expect(session.accessToken).toBe('access-token');
       expect(session.refreshToken).toBe('refresh-token');
       expect(session.user.roles).toEqual([RoleName.CUSTOMER]);
+      expect(session.user.canAuthorizeVendorSettlements).toBe(false);
+    });
+
+    it('exposes canAuthorizeVendorSettlements only for ACTIVE primary administrators', async () => {
+      const passwordHash = await bcrypt.hash('StrongPass1', 4);
+      const adminRole: Role = {
+        id: 'role-admin',
+        name: RoleName.ADMINISTRATOR,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      usersRepository.findByEmail.mockResolvedValue(
+        buildUser({
+          passwordHash,
+          canAuthorizeVendorSettlements: true,
+          roles: [{ id: 'ur-1', userId: 'user-1', roleId: 'role-admin', createdAt: new Date(), role: adminRole }],
+        }),
+      );
+
+      const session = await service.login({ email: 'jane@example.com', password: 'StrongPass1' });
+      expect(session.user.canAuthorizeVendorSettlements).toBe(true);
     });
 
     it('rejects an unknown email', async () => {

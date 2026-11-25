@@ -14,6 +14,7 @@ const settlement: VendorSettlementResponseEntity = {
   adjustedNetAmount: '900',
   status: 'PENDING',
   paymentDate: null,
+  paymentReference: null,
   notes: null,
   createdAt: new Date(),
 };
@@ -33,6 +34,25 @@ const commissionRate: CommissionRateResponseEntity = {
 };
 
 const vendorUser = { id: 'vendor-user-1', email: 'a@b.com', roles: ['VENDOR' as const] };
+const primaryAdminUser = {
+  id: 'admin-1',
+  email: 'bernard.uat@iriefishmongers.test',
+  roles: ['ADMINISTRATOR' as const],
+  canAuthorizeVendorSettlements: true,
+};
+
+const auditLogEntry = {
+  id: 'audit-1',
+  settlementId: 'settlement-1',
+  actorUserId: primaryAdminUser.id,
+  actorEmail: primaryAdminUser.email,
+  action: 'APPROVE_SETTLEMENT' as const,
+  previousStatus: 'PENDING' as const,
+  newStatus: 'APPROVED' as const,
+  paymentReference: null,
+  notes: null,
+  createdAt: new Date(),
+};
 
 describe('VendorSettlementsController', () => {
   let vendorSettlementsService: jest.Mocked<
@@ -42,6 +62,8 @@ describe('VendorSettlementsController', () => {
       | 'getMine'
       | 'list'
       | 'updateStatus'
+      | 'updatePaymentReference'
+      | 'getAuditLogs'
       | 'createAdjustment'
       | 'getCurrentCommissionRate'
       | 'createCommissionRate'
@@ -55,6 +77,10 @@ describe('VendorSettlementsController', () => {
       getMine: jest.fn().mockResolvedValue({ items: [settlement], total: 1, page: 1, pageSize: 20 }),
       list: jest.fn().mockResolvedValue({ items: [settlement], total: 1, page: 1, pageSize: 20 }),
       updateStatus: jest.fn().mockResolvedValue({ ...settlement, status: 'APPROVED' }),
+      updatePaymentReference: jest
+        .fn()
+        .mockResolvedValue({ ...settlement, paymentReference: 'NCB-WIRE-1' }),
+      getAuditLogs: jest.fn().mockResolvedValue([auditLogEntry]),
       createAdjustment: jest.fn().mockResolvedValue(adjustment),
       getCurrentCommissionRate: jest.fn().mockResolvedValue(commissionRate),
       createCommissionRate: jest.fn().mockResolvedValue(commissionRate),
@@ -83,15 +109,31 @@ describe('VendorSettlementsController', () => {
     expect(result.total).toBe(1);
   });
 
-  it('updates a settlement status', async () => {
-    const dto = { status: 'APPROVED' as const, notes: undefined };
-    const result = await controller.updateStatus('settlement-1', dto);
+  it('updates a settlement status with acting user context', async () => {
+    const dto = { status: 'APPROVED' as const, notes: undefined, paymentReference: 'WIRE-001' };
+    const result = await controller.updateStatus('settlement-1', dto, primaryAdminUser);
     expect(result.status).toBe('APPROVED');
     expect(vendorSettlementsService.updateStatus).toHaveBeenCalledWith(
       'settlement-1',
       'APPROVED',
-      undefined,
+      primaryAdminUser,
+      { notes: undefined, paymentReference: 'WIRE-001' },
     );
+  });
+
+  it('updates a payment reference with acting user context', async () => {
+    const dto = { paymentReference: 'NCB-WIRE-1' };
+    const result = await controller.updatePaymentReference('settlement-1', dto, primaryAdminUser);
+    expect(result.paymentReference).toBe('NCB-WIRE-1');
+    expect(vendorSettlementsService.updatePaymentReference).toHaveBeenCalledWith(
+      'settlement-1',
+      dto,
+      primaryAdminUser,
+    );
+  });
+
+  it('lists audit logs for a settlement', async () => {
+    await expect(controller.getAuditLogs('settlement-1')).resolves.toEqual([auditLogEntry]);
   });
 
   it('creates an adjustment', async () => {

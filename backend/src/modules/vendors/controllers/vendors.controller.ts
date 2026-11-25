@@ -80,7 +80,7 @@ export class VendorsController {
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List vendors, optionally filtered by status (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedVendorsEntity })
@@ -97,7 +97,7 @@ export class VendorsController {
 
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Approve, suspend, or reject a vendor (admin only)' })
   @ApiResponseDoc({ status: 200, type: VendorResponseEntity })

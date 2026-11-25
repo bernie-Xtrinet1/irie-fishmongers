@@ -1,11 +1,20 @@
-import { BadRequestException, ConflictException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   PlatformCommissionConfig,
   Prisma,
+  RoleName,
   Vendor,
   VendorOrder,
   VendorSettlement,
   VendorSettlementAdjustment,
+  VendorSettlementAuditAction,
+  VendorSettlementAuditLog,
 } from '@prisma/client';
 
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
@@ -68,6 +77,7 @@ function buildSettlement(overrides: Partial<VendorSettlement> = {}): VendorSettl
     netAmount: new Prisma.Decimal(900),
     status: 'PENDING',
     paymentDate: null,
+    paymentReference: null,
     notes: null,
     commissionConfigId: null,
     commissionRateSnapshot: null,
@@ -91,11 +101,58 @@ function buildAdjustment(overrides: Partial<VendorSettlementAdjustment> = {}): V
   };
 }
 
+const primaryAdminActor = {
+  id: 'primary-admin-1',
+  email: 'bernard.uat@iriefishmongers.test',
+  roles: [RoleName.ADMINISTRATOR],
+  canAuthorizeVendorSettlements: true,
+};
+
+const ordinaryAdminActor = {
+  id: 'ordinary-admin-1',
+  email: 'admin@demo.iriefishmongers.test',
+  roles: [RoleName.ADMINISTRATOR],
+  canAuthorizeVendorSettlements: false,
+};
+
+const staffActor = {
+  id: 'staff-1',
+  email: 'staff.operations@iriefishmongers.test',
+  roles: [RoleName.OPERATIONS_STAFF],
+  canAuthorizeVendorSettlements: false,
+};
+
+function buildAuditLog(
+  overrides: Partial<VendorSettlementAuditLog> = {},
+): VendorSettlementAuditLog {
+  return {
+    id: 'audit-1',
+    settlementId: 'settlement-1',
+    actorUserId: primaryAdminActor.id,
+    actorEmail: primaryAdminActor.email,
+    action: VendorSettlementAuditAction.APPROVE_SETTLEMENT,
+    previousStatus: 'PENDING',
+    newStatus: 'APPROVED',
+    paymentReference: null,
+    notes: null,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
 describe('VendorSettlementsService', () => {
   let vendorSettlementsRepository: jest.Mocked<
     Pick<
       VendorSettlementsRepository,
-      'findEligibleVendorOrders' | 'create' | 'findById' | 'updateStatus' | 'findManyByVendor' | 'findMany'
+      | 'findEligibleVendorOrders'
+      | 'create'
+      | 'findById'
+      | 'updateStatus'
+      | 'updatePaymentReference'
+      | 'recordAuthorizedDisbursementAudit'
+      | 'findAuditLogsBySettlementId'
+      | 'findManyByVendor'
+      | 'findMany'
     >
   >;
   let adjustmentsRepository: jest.Mocked<
@@ -113,6 +170,9 @@ describe('VendorSettlementsService', () => {
       create: jest.fn(),
       findById: jest.fn(),
       updateStatus: jest.fn(),
+      updatePaymentReference: jest.fn(),
+      recordAuthorizedDisbursementAudit: jest.fn(),
+      findAuditLogsBySettlementId: jest.fn(),
       findManyByVendor: jest.fn(),
       findMany: jest.fn(),
     };
@@ -201,56 +261,80 @@ describe('VendorSettlementsService', () => {
   });
 
   describe('updateStatus', () => {
-    it('approves a pending settlement', async () => {
+    it('approves a pending settlement for the designated primary administrator', async () => {
       vendorSettlementsRepository.findById.mockResolvedValue(buildSettlement());
       vendorSettlementsRepository.updateStatus.mockResolvedValue(
         buildSettlement({ status: 'APPROVED' }),
       );
 
-      const result = await service.updateStatus('settlement-1', 'APPROVED');
+      const result = await service.updateStatus('settlement-1', 'APPROVED', primaryAdminActor);
       expect(result.status).toBe('APPROVED');
       expect(vendorSettlementsRepository.updateStatus).toHaveBeenCalledWith('settlement-1', 'APPROVED', {
         paymentDate: undefined,
         notes: undefined,
+        actor: primaryAdminActor,
       });
     });
 
-    it('sets a payment date when marking a settlement paid', async () => {
+    it('sets a payment date and normalized payment reference when marking a settlement paid', async () => {
       vendorSettlementsRepository.findById.mockResolvedValue(
         buildSettlement({ status: 'APPROVED' }),
       );
       vendorSettlementsRepository.updateStatus.mockResolvedValue(
-        buildSettlement({ status: 'PAID', paymentDate: new Date() }),
+        buildSettlement({
+          status: 'PAID',
+          paymentDate: new Date(),
+          paymentReference: 'NCB-WIRE-20261125-001',
+        }),
       );
 
-      await service.updateStatus('settlement-1', 'PAID');
+      const result = await service.updateStatus('settlement-1', 'PAID', primaryAdminActor, {
+        paymentReference: '  NCB-WIRE-20261125-001  ',
+        notes: 'Staging settlement payout recorded',
+      });
 
+      expect(result.paymentReference).toBe('NCB-WIRE-20261125-001');
       expect(vendorSettlementsRepository.updateStatus).toHaveBeenCalledWith(
         'settlement-1',
         'PAID',
-        expect.objectContaining({ paymentDate: expect.any(Date) as Date }),
+        expect.objectContaining({
+          paymentDate: expect.any(Date) as Date,
+          paymentReference: 'NCB-WIRE-20261125-001',
+          notes: 'Staging settlement payout recorded',
+          actor: primaryAdminActor,
+        }),
       );
+    });
+
+    it('denies an ordinary administrator or operations staff from updating settlement status', async () => {
+      await expect(
+        service.updateStatus('settlement-1', 'APPROVED', ordinaryAdminActor),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.updateStatus('settlement-1', 'PAID', staffActor),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(vendorSettlementsRepository.updateStatus).not.toHaveBeenCalled();
     });
 
     it('rejects skipping straight from PENDING to PAID', async () => {
       vendorSettlementsRepository.findById.mockResolvedValue(buildSettlement({ status: 'PENDING' }));
-      await expect(service.updateStatus('settlement-1', 'PAID')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(
+        service.updateStatus('settlement-1', 'PAID', primaryAdminActor),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('rejects any transition once a settlement is PAID', async () => {
       vendorSettlementsRepository.findById.mockResolvedValue(buildSettlement({ status: 'PAID' }));
-      await expect(service.updateStatus('settlement-1', 'FAILED')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(
+        service.updateStatus('settlement-1', 'FAILED', primaryAdminActor),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('throws when the settlement does not exist', async () => {
       vendorSettlementsRepository.findById.mockResolvedValue(null);
-      await expect(service.updateStatus('missing', 'APPROVED')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.updateStatus('missing', 'APPROVED', primaryAdminActor),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
@@ -261,9 +345,73 @@ describe('VendorSettlementsService', () => {
         new ConflictException('Cannot mark settlement as FAILED: committed SETTLEMENT_OFFSET recovery depends on it'),
       );
 
-      await expect(service.updateStatus('settlement-1', 'FAILED')).rejects.toBeInstanceOf(
-        ConflictException,
+      await expect(
+        service.updateStatus('settlement-1', 'FAILED', primaryAdminActor),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('updatePaymentReference & disbursement authorization', () => {
+    it('updates paymentReference for primary administrator and denies ordinary admins', async () => {
+      vendorSettlementsRepository.findById.mockResolvedValue(
+        buildSettlement({ status: 'APPROVED' }),
       );
+      vendorSettlementsRepository.updatePaymentReference.mockResolvedValue(
+        buildSettlement({ status: 'APPROVED', paymentReference: 'NCB-WIRE-99' }),
+      );
+
+      await expect(
+        service.updatePaymentReference(
+          'settlement-1',
+          { paymentReference: 'NCB-WIRE-99' },
+          ordinaryAdminActor,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      const updated = await service.updatePaymentReference(
+        'settlement-1',
+        { paymentReference: '  NCB-WIRE-99  ', notes: 'Corrected wire number' },
+        primaryAdminActor,
+      );
+      expect(updated.paymentReference).toBe('NCB-WIRE-99');
+      expect(vendorSettlementsRepository.updatePaymentReference).toHaveBeenCalledWith(
+        'settlement-1',
+        {
+          paymentReference: 'NCB-WIRE-99',
+          notes: 'Corrected wire number',
+          actor: primaryAdminActor,
+        },
+      );
+    });
+
+    it('enforces primary admin permission on disbursement initiation/release and returns audit logs', async () => {
+      vendorSettlementsRepository.findById.mockResolvedValue(
+        buildSettlement({ status: 'APPROVED' }),
+      );
+      vendorSettlementsRepository.recordAuthorizedDisbursementAudit.mockResolvedValue(
+        buildAuditLog({ action: VendorSettlementAuditAction.INITIATE_DISBURSEMENT }),
+      );
+      vendorSettlementsRepository.findAuditLogsBySettlementId.mockResolvedValue([buildAuditLog()]);
+
+      await expect(
+        service.authorizeDisbursementAction(
+          'settlement-1',
+          'INITIATE_DISBURSEMENT',
+          ordinaryAdminActor,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      const audit = await service.authorizeDisbursementAction(
+        'settlement-1',
+        'INITIATE_DISBURSEMENT',
+        primaryAdminActor,
+        { paymentReference: 'DISB-101' },
+      );
+      expect(audit.action).toBe(VendorSettlementAuditAction.INITIATE_DISBURSEMENT);
+
+      const logs = await service.getAuditLogs('settlement-1');
+      expect(logs).toHaveLength(1);
+      expect(logs[0]!.actorEmail).toBe(primaryAdminActor.email);
     });
   });
 

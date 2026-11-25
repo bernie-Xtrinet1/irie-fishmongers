@@ -15,7 +15,7 @@ import { VendorTiersService } from '../services/vendor-tiers.service';
 @ApiTags('vendor-tiers')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('tier-upgrade-requests')
 export class TierUpgradeRequestsController {
   constructor(private readonly vendorTiersService: VendorTiersService) {}

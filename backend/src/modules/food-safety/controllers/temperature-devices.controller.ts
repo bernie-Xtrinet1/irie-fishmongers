@@ -37,7 +37,7 @@ export class TemperatureDevicesController {
   }
 
   @Get()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List devices, optionally filtered by vendor, flagging offline devices (admin only)' })
   @ApiResponseDoc({ status: 200, type: TemperatureDeviceResponseEntity, isArray: true })
   list(@Query('vendorId') vendorId?: string): Promise<TemperatureDeviceResponseEntity[]> {
@@ -45,7 +45,7 @@ export class TemperatureDevicesController {
   }
 
   @Patch(':id/calibrate')
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Record a calibration, resetting the 90-day calibration due date (owning vendor or admin)' })
   @ApiResponseDoc({ status: 200, type: TemperatureDeviceResponseEntity })
   calibrate(

@@ -1,16 +1,41 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   Prisma,
+  RoleName,
+  UserStatus,
   VendorOrder,
   VendorReceivableRecoveryType,
   VendorSettlement,
+  VendorSettlementAuditAction,
+  VendorSettlementAuditLog,
   VendorSettlementDisbursementStatus,
   VendorSettlementStatus,
 } from '@prisma/client';
 
+import { isAdministratorRole } from '../../../common/auth/admin-roles';
 import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
+import { PRIMARY_ADMIN_SETTLEMENT_FORBIDDEN_MESSAGE } from '../guards/primary-admin-vendor-settlement.guard';
 import { validateCommissionRate } from './commission-rate-configs.repository';
+
+export interface SettlementActor {
+  id: string;
+  email: string;
+  roles?: readonly RoleName[];
+  canAuthorizeVendorSettlements?: boolean;
+}
+
+const STATUS_TO_AUDIT_ACTION: Partial<Record<VendorSettlementStatus, VendorSettlementAuditAction>> = {
+  APPROVED: VendorSettlementAuditAction.APPROVE_SETTLEMENT,
+  PAID: VendorSettlementAuditAction.MARK_PAID,
+  FAILED: VendorSettlementAuditAction.MARK_FAILED,
+};
 
 export interface CreateSettlementInput {
   vendorId: string;
@@ -115,9 +140,18 @@ export class VendorSettlementsRepository {
   async updateStatus(
     id: string,
     status: VendorSettlementStatus,
-    data: { paymentDate?: Date; notes?: string } = {},
+    data: {
+      paymentDate?: Date;
+      notes?: string;
+      paymentReference?: string | null;
+      actor?: SettlementActor;
+    } = {},
   ): Promise<VendorSettlement> {
     const executeUpdate = async (client: Prisma.TransactionClient): Promise<VendorSettlement> => {
+      const verifiedActor = data.actor
+        ? await this.assertPrimaryAdminActorInTx(client, data.actor)
+        : undefined;
+
       await client.$queryRaw`SELECT "id" FROM "vendor_settlements" WHERE "id" = ${id} FOR UPDATE`;
       const existing = await client.vendorSettlement.findUnique({ where: { id } });
       if (!existing) {
@@ -172,13 +206,161 @@ export class VendorSettlementsRepository {
         }
       }
 
-      return client.vendorSettlement.update({ where: { id }, data: { status, ...data } });
+      const updated = await client.vendorSettlement.update({
+        where: { id },
+        data: {
+          status,
+          ...(data.paymentDate !== undefined ? { paymentDate: data.paymentDate } : {}),
+          ...(data.notes !== undefined ? { notes: data.notes } : {}),
+          ...(data.paymentReference !== undefined
+            ? { paymentReference: data.paymentReference }
+            : {}),
+        },
+      });
+
+      if (verifiedActor) {
+        const action = STATUS_TO_AUDIT_ACTION[status];
+        if (action) {
+          await client.vendorSettlementAuditLog.create({
+            data: {
+              settlementId: id,
+              actorUserId: verifiedActor.id,
+              actorEmail: verifiedActor.email,
+              action,
+              previousStatus: existing.status,
+              newStatus: updated.status,
+              paymentReference: updated.paymentReference,
+              notes: data.notes ?? updated.notes,
+            },
+          });
+        }
+      }
+
+      return updated;
     };
 
     if (typeof (this.prisma as any).$transaction === 'function') {
       return this.prisma.$transaction((tx) => executeUpdate(tx));
     }
     return executeUpdate(this.prisma);
+  }
+
+  async updatePaymentReference(
+    id: string,
+    data: { paymentReference: string; notes?: string; actor: SettlementActor },
+  ): Promise<VendorSettlement> {
+    const executeUpdate = async (client: Prisma.TransactionClient): Promise<VendorSettlement> => {
+      const verifiedActor = await this.assertPrimaryAdminActorInTx(client, data.actor);
+
+      await client.$queryRaw`SELECT "id" FROM "vendor_settlements" WHERE "id" = ${id} FOR UPDATE`;
+      const existing = await client.vendorSettlement.findUnique({ where: { id } });
+      if (!existing) {
+        throw new NotFoundException(`VendorSettlement ${id} not found`);
+      }
+      if (existing.status === VendorSettlementStatus.FAILED) {
+        throw new BadRequestException('Cannot update payment reference for a FAILED settlement');
+      }
+
+      const updated = await client.vendorSettlement.update({
+        where: { id },
+        data: {
+          paymentReference: data.paymentReference,
+          ...(data.notes !== undefined ? { notes: data.notes } : {}),
+        },
+      });
+
+      await client.vendorSettlementAuditLog.create({
+        data: {
+          settlementId: id,
+          actorUserId: verifiedActor.id,
+          actorEmail: verifiedActor.email,
+          action: VendorSettlementAuditAction.UPDATE_PAYMENT_REFERENCE,
+          previousStatus: existing.status,
+          newStatus: updated.status,
+          paymentReference: updated.paymentReference,
+          notes: data.notes ?? updated.notes,
+        },
+      });
+
+      return updated;
+    };
+
+    if (typeof (this.prisma as { $transaction?: unknown }).$transaction === 'function') {
+      return this.prisma.$transaction((tx) => executeUpdate(tx));
+    }
+    return executeUpdate(this.prisma);
+  }
+
+  async recordAuthorizedDisbursementAudit(
+    settlementId: string,
+    action: Extract<VendorSettlementAuditAction, 'INITIATE_DISBURSEMENT' | 'RELEASE_DISBURSEMENT'>,
+    actor: SettlementActor,
+    data: { paymentReference?: string | null; notes?: string | null } = {},
+  ): Promise<VendorSettlementAuditLog> {
+    const execute = async (client: Prisma.TransactionClient): Promise<VendorSettlementAuditLog> => {
+      const verifiedActor = await this.assertPrimaryAdminActorInTx(client, actor);
+      await client.$queryRaw`SELECT "id" FROM "vendor_settlements" WHERE "id" = ${settlementId} FOR UPDATE`;
+      const existing = await client.vendorSettlement.findUnique({ where: { id: settlementId } });
+      if (!existing) {
+        throw new NotFoundException(`VendorSettlement ${settlementId} not found`);
+      }
+
+      return client.vendorSettlementAuditLog.create({
+        data: {
+          settlementId,
+          actorUserId: verifiedActor.id,
+          actorEmail: verifiedActor.email,
+          action,
+          previousStatus: existing.status,
+          newStatus: existing.status,
+          paymentReference: data.paymentReference ?? existing.paymentReference,
+          notes: data.notes ?? existing.notes,
+        },
+      });
+    };
+
+    if (typeof (this.prisma as { $transaction?: unknown }).$transaction === 'function') {
+      return this.prisma.$transaction((tx) => execute(tx));
+    }
+    return execute(this.prisma);
+  }
+
+  findAuditLogsBySettlementId(settlementId: string): Promise<VendorSettlementAuditLog[]> {
+    return this.prisma.vendorSettlementAuditLog.findMany({
+      where: { settlementId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  private async assertPrimaryAdminActorInTx(
+    client: Prisma.TransactionClient,
+    actor: SettlementActor,
+  ): Promise<{ id: string; email: string }> {
+    const userDelegate = (client as { user?: { findUnique?: unknown } }).user;
+    if (typeof userDelegate?.findUnique !== 'function') {
+      throw new ForbiddenException(PRIMARY_ADMIN_SETTLEMENT_FORBIDDEN_MESSAGE);
+    }
+
+    const dbUser = await client.user.findUnique({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        email: true,
+        status: true,
+        canAuthorizeVendorSettlements: true,
+        roles: { select: { role: { select: { name: true } } } },
+      },
+    });
+    const dbRoles = dbUser?.roles.map((entry) => entry.role.name) ?? [];
+    if (
+      !dbUser ||
+      dbUser.status !== UserStatus.ACTIVE ||
+      !dbUser.canAuthorizeVendorSettlements ||
+      !isAdministratorRole(dbRoles)
+    ) {
+      throw new ForbiddenException(PRIMARY_ADMIN_SETTLEMENT_FORBIDDEN_MESSAGE);
+    }
+    return { id: dbUser.id, email: dbUser.email };
   }
 
   async findManyByVendor(

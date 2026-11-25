@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { VendorSettlementsController } from './controllers/vendor-settlements.controller';
+import { PrimaryAdminVendorSettlementGuard } from './guards/primary-admin-vendor-settlement.guard';
 import { CommissionRateConfigsRepository } from './repositories/commission-rate-configs.repository';
 import { RefundAllocationsRepository } from './repositories/refund-allocations.repository';
 import { VendorReceivablesRepository } from './repositories/vendor-receivables.repository';
@@ -24,12 +25,15 @@ import { VendorSettlementsService } from './services/vendor-settlements.service'
     RefundAllocationsService,
     VendorLiabilityCalculatorService,
     VendorReceivablesRepository,
+    PrimaryAdminVendorSettlementGuard,
   ],
   exports: [
     VendorSettlementsRepository,
+    VendorSettlementsService,
     RefundAllocationsService,
     VendorLiabilityCalculatorService,
     VendorReceivablesRepository,
+    PrimaryAdminVendorSettlementGuard,
   ],
 })
 export class VendorSettlementsModule {}

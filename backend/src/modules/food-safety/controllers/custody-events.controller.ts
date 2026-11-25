@@ -19,7 +19,7 @@ import { CustodyEventsService } from '../services/custody-events.service';
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/custody-events')
 export class CustodyEventsController {
   constructor(private readonly custodyEventsService: CustodyEventsService) {}

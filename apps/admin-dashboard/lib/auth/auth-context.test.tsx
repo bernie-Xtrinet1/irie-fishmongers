@@ -212,4 +212,34 @@ describe('AuthProvider - non-administrator session revocation', () => {
     expect(screen.getByTestId('user')).toHaveTextContent('none');
     expect(clearSpy).toHaveBeenCalled();
   });
+
+  it('admits an ACTIVE OPERATIONS_STAFF session without revoking', async () => {
+    mockApiPost.mockRejectedValueOnce(new Error('no refresh cookie'));
+    mockApiPost.mockResolvedValueOnce({
+      accessToken: 'staff-token',
+      refreshToken: 'staff-refresh',
+      user: {
+        id: 'staff-1',
+        email: 'staff.operations@iriefishmongers.test',
+        firstName: 'Ops',
+        lastName: 'Staff',
+        status: 'ACTIVE',
+        roles: ['OPERATIONS_STAFF'],
+      },
+    });
+
+    const user = userEvent.setup();
+    render(
+      <AuthProvider queryClient={queryClient}>
+        <TestConsumer />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
+    await user.click(screen.getByRole('button', { name: 'login' }));
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    expect(screen.getByTestId('user')).toHaveTextContent('staff.operations@iriefishmongers.test');
+    expect(mockApiPost).not.toHaveBeenCalledWith('/auth/logout', {});
+  });
 });

@@ -14,7 +14,7 @@ import { ComplianceDocumentsService } from '../services/compliance-documents.ser
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/documents')
 export class ComplianceDocumentsController {
   constructor(private readonly documentsService: ComplianceDocumentsService) {}

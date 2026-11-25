@@ -43,7 +43,7 @@ export class VesselsController {
   }
 
   @Get()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List all registered vessels (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedVesselsEntity })
   list(@Query() dto: PaginationDto): Promise<PaginatedVesselsEntity> {

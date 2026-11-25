@@ -50,7 +50,7 @@ export class SeafoodLotsController {
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List seafood lots, optionally filtered (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedSeafoodLotsEntity })
@@ -67,7 +67,7 @@ export class SeafoodLotsController {
 
   @Get(':id/qr-code')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Generate a label-printing QR code encoding this lot\'s public passport URL (owning vendor or admin)' })
   @ApiResponseDoc({ status: 200, type: SeafoodLotQrCodeEntity })
@@ -80,7 +80,7 @@ export class SeafoodLotsController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get a seafood lot by id (admin only)' })
   @ApiResponseDoc({ status: 200, type: SeafoodLotResponseEntity })
@@ -90,7 +90,7 @@ export class SeafoodLotsController {
 
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Place a lot on hold/quarantine or clear it (admin only)' })
   @ApiResponseDoc({ status: 200, type: SeafoodLotResponseEntity })

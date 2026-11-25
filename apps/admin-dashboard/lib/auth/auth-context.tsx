@@ -4,10 +4,15 @@ import type { QueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 
-import { isActiveAdminUser, type RefreshedSessionUser } from '@/lib/auth/admin-access';
+import { isActiveAdminPortalUser, type RefreshedSessionUser } from '@/lib/auth/admin-access';
 import { apiPost, configureApiClient } from '@/lib/api-client';
 
-export type UserRole = 'CUSTOMER' | 'VENDOR' | 'DRIVER' | 'ADMINISTRATOR';
+export type UserRole =
+  | 'CUSTOMER'
+  | 'VENDOR'
+  | 'DRIVER'
+  | 'OPERATIONS_STAFF'
+  | 'ADMINISTRATOR';
 
 export interface AuthUser {
   id: string;
@@ -16,6 +21,7 @@ export interface AuthUser {
   lastName: string;
   status?: 'PENDING_VERIFICATION' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
   roles: UserRole[];
+  canAuthorizeVendorSettlements?: boolean;
 }
 
 interface AuthTokensResponse {
@@ -73,7 +79,7 @@ export function AuthProvider({
     configureApiClient({
       getAccessToken: () => accessTokenRef.current,
       onTokenRefreshed: (accessToken: string, refreshedUser?: RefreshedSessionUser) => {
-        if (!isActiveAdminUser(refreshedUser)) {
+        if (!isActiveAdminPortalUser(refreshedUser)) {
           clearSessionAndCache();
           router.replace('/login');
           return;
@@ -88,6 +94,8 @@ export function AuthProvider({
             lastName: refreshedUser.lastName ?? prev?.lastName ?? '',
             status: refreshedUser.status ?? prev?.status,
             roles: refreshedUser.roles as UserRole[],
+            canAuthorizeVendorSettlements:
+              refreshedUser.canAuthorizeVendorSettlements ?? prev?.canAuthorizeVendorSettlements,
           }));
         }
       },
@@ -109,7 +117,7 @@ export function AuthProvider({
         const session = await apiPost<AuthTokensResponse>('/auth/refresh', {});
         if (cancelled) return;
 
-        if (!isActiveAdminUser(session.user)) {
+        if (!isActiveAdminPortalUser(session.user)) {
           accessTokenRef.current = null;
           setUser(null);
           await revokeCurrentSession(queryClient);
@@ -140,7 +148,7 @@ export function AuthProvider({
     async (email: string, password: string): Promise<void> => {
       const session = await apiPost<AuthTokensResponse>('/auth/login', { email, password });
 
-      if (!isActiveAdminUser(session.user)) {
+      if (!isActiveAdminPortalUser(session.user)) {
         clearSession();
         await revokeCurrentSession(queryClient);
         throw new Error('This account does not have admin access.');
@@ -173,4 +181,8 @@ export function useAuth(): AuthContextValue {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
+}
+
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext);
 }

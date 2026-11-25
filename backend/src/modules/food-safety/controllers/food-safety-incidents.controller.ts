@@ -23,7 +23,7 @@ export class FoodSafetyIncidentsController {
   constructor(private readonly incidentsService: FoodSafetyIncidentsService) {}
 
   @Post()
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Report a food safety incident for a lot (owning vendor or admin)' })
   @ApiResponseDoc({ status: 201, type: IncidentResponseEntity })
   report(
@@ -34,7 +34,7 @@ export class FoodSafetyIncidentsController {
   }
 
   @Get('lot/:lotId')
-  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR)
+  @Roles(RoleName.VENDOR, RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get the incident history for a lot (owning vendor or admin)' })
   @ApiResponseDoc({ status: 200, type: PaginatedIncidentsEntity })
   getForLot(
@@ -46,7 +46,7 @@ export class FoodSafetyIncidentsController {
   }
 
   @Get()
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'List food safety incidents, optionally filtered (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedIncidentsEntity })
   list(@Query() dto: ListIncidentsDto): Promise<PaginatedIncidentsEntity> {
@@ -54,7 +54,7 @@ export class FoodSafetyIncidentsController {
   }
 
   @Patch(':id/status')
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Investigate, resolve, or close a food safety incident (admin only)' })
   @ApiResponseDoc({ status: 200, type: IncidentResponseEntity })
   updateStatus(

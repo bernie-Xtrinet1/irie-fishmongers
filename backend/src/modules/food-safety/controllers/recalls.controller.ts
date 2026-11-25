@@ -18,7 +18,7 @@ import { RecallsService } from '../services/recalls.service';
 @ApiTags('recalls')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('recalls')
 export class RecallsController {
   constructor(private readonly recallsService: RecallsService) {}

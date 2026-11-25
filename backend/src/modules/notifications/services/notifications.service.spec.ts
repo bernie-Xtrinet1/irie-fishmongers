@@ -35,6 +35,7 @@ function buildUser(overrides: Partial<UserWithRoles> = {}): UserWithRoles {
     lastName: 'Doe',
     phone: null,
     status: UserStatus.ACTIVE,
+    canAuthorizeVendorSettlements: false,
     emailVerifiedAt: new Date(),
     emailVerificationTokenHash: null,
     emailVerificationTokenExpiresAt: null,

@@ -268,7 +268,7 @@ export interface DashboardSystemHealth {
 }
 
 export interface DashboardSummary {
-  financials: DashboardFinancials;
+  financials?: DashboardFinancials;
   orders: DashboardOrderCounts;
   vendors: DashboardVendorCounts;
   drivers: DashboardDriverCounts;
@@ -296,7 +296,7 @@ export interface VendorDashboard {
   byStatus: FourWayStatusCounts;
   byTier: VendorTierCounts;
   averageComplianceScore: number | null;
-  topVendorsByRevenue: TopVendor[];
+  topVendorsByRevenue?: TopVendor[];
 }
 
 // --- Sales Analytics (Phase 12B) ---
@@ -905,6 +905,7 @@ export enum UserRole {
   DRIVER = 'DRIVER',
   FISHERMAN = 'FISHERMAN',
   ADMINISTRATOR = 'ADMINISTRATOR',
+  OPERATIONS_STAFF = 'OPERATIONS_STAFF',
 }
 
 export enum UserStatus {
@@ -928,6 +929,7 @@ export interface AuthUser {
   phone: string | null;
   status: UserStatus;
   roles: UserRole[];
+  canAuthorizeVendorSettlements?: boolean;
   createdAt: string;
 }
 

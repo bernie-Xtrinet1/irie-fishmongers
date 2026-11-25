@@ -29,7 +29,10 @@ export class WasteDisposalRecordsService {
       throw new NotFoundException('Seafood lot not found');
     }
 
-    if (!user.roles.includes(RoleName.ADMINISTRATOR)) {
+    if (
+      !user.roles.includes(RoleName.ADMINISTRATOR) &&
+      !user.roles.includes(RoleName.OPERATIONS_STAFF)
+    ) {
       const vendor = await this.vendorsRepository.findByUserId(user.id);
       if (!vendor || vendor.id !== lot.vendorId) {
         throw new ForbiddenException('You do not own this lot');

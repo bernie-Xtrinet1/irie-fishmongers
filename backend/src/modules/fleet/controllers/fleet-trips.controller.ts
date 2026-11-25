@@ -20,7 +20,7 @@ import { FleetTripsService } from '../services/fleet-trips.service';
 @ApiTags('fleet')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('fleet-trips')
 export class FleetTripsController {
   constructor(private readonly fleetTripsService: FleetTripsService) {}

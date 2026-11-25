@@ -20,7 +20,12 @@ import { usePathname } from 'next/navigation';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { isActiveAdminUser } from '@/lib/auth/admin-access';
+import {
+  canAccessAdminPath,
+  getAdminRoleLabel,
+  isActiveAdministratorUser,
+  isActiveAdminPortalUser,
+} from '@/lib/auth/admin-access';
 import { useAuth } from '@/lib/auth/auth-context';
 import { env } from '@/lib/env';
 import { useHealthStatus } from '@/lib/hooks/use-health-status';
@@ -32,24 +37,27 @@ import { cn } from '@/lib/utils';
 // more-complete admin experience than what's actually shipped (12C covers
 // Compliance Administration/Reporting).
 const NAV_ITEMS = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/vendors', label: 'Vendors', icon: Store },
-  { href: '/vendor-dashboard', label: 'Vendor Dashboard', icon: BarChart3 },
-  { href: '/sales-analytics', label: 'Sales Analytics', icon: TrendingUp },
-  { href: '/drivers', label: 'Drivers', icon: Truck },
-  { href: '/delivery-zones', label: 'Delivery Zones & Fleet', icon: MapPinned },
-  { href: '/delivery-operations', label: 'Delivery Operations', icon: Route },
-  { href: '/delivery-analytics', label: 'Delivery Analytics', icon: Activity },
-  { href: '/inventory-analytics', label: 'Inventory Analytics', icon: Boxes },
-  { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer },
-  { href: '/recalls', label: 'Recalls', icon: AlertTriangle },
-  { href: '/reviews', label: 'Review Moderation', icon: MessageSquare },
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
+  { href: '/vendors', label: 'Vendors', icon: Store, adminOnly: false },
+  { href: '/vendor-dashboard', label: 'Vendor Dashboard', icon: BarChart3, adminOnly: false },
+  { href: '/sales-analytics', label: 'Sales Analytics', icon: TrendingUp, adminOnly: true },
+  { href: '/drivers', label: 'Drivers', icon: Truck, adminOnly: false },
+  { href: '/delivery-zones', label: 'Delivery Zones & Fleet', icon: MapPinned, adminOnly: false },
+  { href: '/delivery-operations', label: 'Delivery Operations', icon: Route, adminOnly: false },
+  { href: '/delivery-analytics', label: 'Delivery Analytics', icon: Activity, adminOnly: false },
+  { href: '/inventory-analytics', label: 'Inventory Analytics', icon: Boxes, adminOnly: false },
+  { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer, adminOnly: false },
+  { href: '/recalls', label: 'Recalls', icon: AlertTriangle, adminOnly: false },
+  { href: '/reviews', label: 'Review Moderation', icon: MessageSquare, adminOnly: false },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }): React.ReactElement {
   const pathname = usePathname();
   const { status, user, logout } = useAuth();
-  const hasAdminAccess = status === 'authenticated' && isActiveAdminUser(user);
+  const hasAdminAccess = status === 'authenticated' && isActiveAdminPortalUser(user);
+  const isFullAdministrator = isActiveAdministratorUser(user);
+  const visibleNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isFullAdministrator);
+  const canAccessCurrentRoute = canAccessAdminPath(user, pathname || '/');
   const health = useHealthStatus(hasAdminAccess);
 
   if (!hasAdminAccess) {
@@ -69,7 +77,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
           <span className="text-lg font-semibold text-irie-green">Irie Fishmongers</span>
         </div>
         <nav aria-label="Admin navigation" className="flex flex-1 flex-col gap-1 p-3">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = pathname === item.href;
             const Icon = item.icon;
             return (
@@ -121,7 +129,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
               <p className="font-medium text-gray-900">
                 {user?.firstName} {user?.lastName}
               </p>
-              <p className="text-gray-500">Administrator</p>
+              <p className="text-gray-500">{getAdminRoleLabel(user)}</p>
             </div>
             <Button variant="ghost" size="sm" onClick={() => void logout()}>
               <LogOut className="h-4 w-4" aria-hidden="true" />
@@ -130,7 +138,24 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
           </div>
         </header>
 
-        <main className="flex-1 p-8">{children}</main>
+        <main className="flex-1 p-8">
+          {canAccessCurrentRoute ? (
+            children
+          ) : (
+            <div className="rounded-card border border-gray-200 bg-white p-6" role="alert">
+              <h1 className="text-xl font-semibold text-gray-900">Access Denied</h1>
+              <p className="mt-2 text-sm text-gray-600">
+                Your account does not have permission to view this financial page.
+              </p>
+              <Link
+                href="/"
+                className="mt-4 inline-flex items-center rounded-button bg-irie-green px-4 py-2 text-sm font-medium text-white hover:bg-irie-green/90"
+              >
+                Return to Dashboard
+              </Link>
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );

@@ -30,7 +30,7 @@ import { FleetSanitationRecordsService } from '../services/fleet-sanitation-reco
 @ApiTags('fleet')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('fleet-assets')
 export class FleetAssetsController {
   constructor(

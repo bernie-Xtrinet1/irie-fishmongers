@@ -3,17 +3,17 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
-import { isActiveAdminUser } from '@/lib/auth/admin-access';
+import { isActiveAdminPortalUser } from '@/lib/auth/admin-access';
 import { useAuth } from '@/lib/auth/auth-context';
 
 // UX-only route protection (ADR-004) - the real authorization boundary is
-// every admin backend endpoint's independent RolesGuard(ADMINISTRATOR)
-// check. This wrapper prevents protected UI or queries from rendering unless
-// the signed-in user currently holds an active ADMINISTRATOR role.
+// every admin backend endpoint's independent RolesGuard check. This wrapper
+// prevents protected UI or queries from rendering unless the signed-in user
+// currently holds an active ADMINISTRATOR or OPERATIONS_STAFF role.
 export function RequireAdmin({ children }: { children: React.ReactNode }): React.ReactElement {
   const router = useRouter();
   const { status, user, logout } = useAuth();
-  const hasAdminAccess = status === 'authenticated' && isActiveAdminUser(user);
+  const hasAdminAccess = status === 'authenticated' && isActiveAdminPortalUser(user);
 
   useEffect(() => {
     if (status === 'authenticated' && !hasAdminAccess) {

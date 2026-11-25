@@ -50,6 +50,6 @@ export class VendorDashboardEntity {
   @ApiProperty({ required: false, nullable: true, description: 'Point-in-time snapshot - ignores the from/to range' })
   averageComplianceScore!: number | null;
 
-  @ApiProperty({ type: TopVendorEntity, isArray: true })
-  topVendorsByRevenue!: TopVendorEntity[];
+  @ApiProperty({ type: TopVendorEntity, isArray: true, required: false })
+  topVendorsByRevenue?: TopVendorEntity[];
 }

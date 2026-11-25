@@ -123,7 +123,7 @@ export class DriversController {
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List drivers, optionally filtered by status (admin only)' })
   @ApiResponseDoc({ status: 200, type: PaginatedDriversEntity })
@@ -133,7 +133,7 @@ export class DriversController {
 
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Approve, suspend, or reject a driver (admin only)' })
   @ApiResponseDoc({ status: 200, type: DriverResponseEntity })
@@ -146,7 +146,7 @@ export class DriversController {
 
   @Get(':id/performance')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get a driver's computed performance metrics (admin only)" })
   @ApiResponseDoc({ status: 200, type: DriverPerformanceMetricsEntity })
@@ -156,7 +156,7 @@ export class DriversController {
 
   @Post(':id/cold-chain-certifications')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: '10E: issue a cold-chain handling certification to a driver (admin only)' })
   @ApiResponseDoc({ status: 201, type: DriverColdChainCertificationResponseEntity })
@@ -169,7 +169,7 @@ export class DriversController {
 
   @Get(':id/cold-chain-certifications')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: "10E: list a driver's cold-chain certifications (admin only)" })
   @ApiResponseDoc({ status: 200, type: PaginatedDriverColdChainCertificationsEntity })
@@ -182,7 +182,7 @@ export class DriversController {
 
   @Patch('cold-chain-certifications/:certificationId/revoke')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(RoleName.ADMINISTRATOR)
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiBearerAuth()
   @ApiOperation({ summary: "10E: revoke a driver's cold-chain certification early (admin only)" })
   @ApiResponseDoc({ status: 200, type: DriverColdChainCertificationResponseEntity })

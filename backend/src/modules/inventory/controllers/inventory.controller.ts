@@ -15,7 +15,7 @@ import { InventoryReconciliationService } from '../services/inventory-reconcilia
 @ApiTags('inventory')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('inventory')
 export class InventoryController {
   constructor(

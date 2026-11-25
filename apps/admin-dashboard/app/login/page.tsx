@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { isActiveAdminUser } from '@/lib/auth/admin-access';
+import { isActiveAdminPortalUser } from '@/lib/auth/admin-access';
 import { useAuth } from '@/lib/auth/auth-context';
 
 const loginSchema = z.object({
@@ -29,7 +29,7 @@ export default function LoginPage(): React.ReactElement {
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema) });
 
   useEffect(() => {
-    if (status === 'authenticated' && isActiveAdminUser(user)) {
+    if (status === 'authenticated' && isActiveAdminPortalUser(user)) {
       router.replace('/');
     }
   }, [status, user, router]);
@@ -49,7 +49,9 @@ export default function LoginPage(): React.ReactElement {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>Irie Fishmongers Admin</CardTitle>
-          <p className="text-sm text-gray-500">Sign in with your administrator account.</p>
+          <p className="text-sm text-gray-500">
+            Sign in with your administrator or operations staff account.
+          </p>
         </CardHeader>
         <CardContent>
           <form

@@ -297,7 +297,7 @@ export class SeafoodLotsService {
     if (!lot) {
       throw new NotFoundException('Seafood lot not found');
     }
-    if (user.roles.includes(RoleName.ADMINISTRATOR)) {
+    if (user.roles.includes(RoleName.ADMINISTRATOR) || user.roles.includes(RoleName.OPERATIONS_STAFF)) {
       return lot;
     }
 

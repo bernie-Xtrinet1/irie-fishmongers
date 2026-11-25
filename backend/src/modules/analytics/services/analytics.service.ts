@@ -53,9 +53,13 @@ export class AnalyticsService {
     private readonly healthService: HealthService,
   ) {}
 
-  async getDashboardSummary(range?: DateRange): Promise<DashboardSummaryEntity> {
+  async getDashboardSummary(
+    range?: DateRange,
+    options: { includeFinancials?: boolean } = {},
+  ): Promise<DashboardSummaryEntity> {
+    const includeFinancials = options.includeFinancials ?? true;
     const [financials, orders, vendors, drivers, compliance, systemHealth] = await Promise.all([
-      this.getFinancials(range),
+      includeFinancials ? this.getFinancials(range) : Promise.resolve(undefined),
       this.getOrderCounts(range),
       this.getVendorCounts(),
       this.getDriverCounts(),
@@ -63,23 +67,37 @@ export class AnalyticsService {
       this.getSystemHealth(),
     ]);
 
-    return { financials, orders, vendors, drivers, compliance, systemHealth };
+    return {
+      ...(financials !== undefined ? { financials } : {}),
+      orders,
+      vendors,
+      drivers,
+      compliance,
+      systemHealth,
+    };
   }
 
   // 12B Vendor Dashboard - a sibling composer to getDashboardSummary, per
   // this class's own "future analytics become sibling methods" design note.
-  async getVendorDashboard(range?: DateRange): Promise<VendorDashboardEntity> {
-    const [{ countByStatus, averageComplianceScore }, byTier, topVendorsByRevenue] = await Promise.all([
-      this.vendorsRepository.getComplianceSummary(),
-      this.vendorsRepository.countByTier(),
-      this.vendorSettlementsRepository.getTopVendorsByRevenue(TOP_VENDORS_LIMIT, range),
-    ]);
+  async getVendorDashboard(
+    range?: DateRange,
+    options: { includeFinancials?: boolean } = {},
+  ): Promise<VendorDashboardEntity> {
+    const includeFinancials = options.includeFinancials ?? true;
+    const [{ countByStatus, averageComplianceScore }, byTier, topVendorsByRevenue] =
+      await Promise.all([
+        this.vendorsRepository.getComplianceSummary(),
+        this.vendorsRepository.countByTier(),
+        includeFinancials
+          ? this.vendorSettlementsRepository.getTopVendorsByRevenue(TOP_VENDORS_LIMIT, range)
+          : Promise.resolve(undefined),
+      ]);
 
     return {
       byStatus: countByStatus,
       byTier,
       averageComplianceScore,
-      topVendorsByRevenue,
+      ...(topVendorsByRevenue !== undefined ? { topVendorsByRevenue } : {}),
     };
   }
 

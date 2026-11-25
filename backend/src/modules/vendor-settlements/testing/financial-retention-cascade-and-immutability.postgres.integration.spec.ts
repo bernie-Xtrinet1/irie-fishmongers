@@ -10,7 +10,9 @@ import {
   RefundAllocationEntryKind,
   RefundAllocationType,
   RefundStatus,
+  RoleName,
   User,
+  UserStatus,
   Vendor,
   VendorOrder,
   VendorOrderStatus,
@@ -23,7 +25,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { RefundsRepository } from '../../payments/repositories/refunds.repository';
 import { RefundAllocationsRepository } from '../repositories/refund-allocations.repository';
 import { RefundAllocationsService } from '../services/refund-allocations.service';
-import { VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
+import { SettlementActor, VendorSettlementsRepository } from '../repositories/vendor-settlements.repository';
 import { VendorSettlementAdjustmentsRepository } from '../repositories/vendor-settlement-adjustments.repository';
 import { VendorSettlementsService } from '../services/vendor-settlements.service';
 
@@ -38,6 +40,7 @@ describe('D.4B.4 Financial Retention, Cascade Closure and Immutability (PostgreS
   let settlementsService: VendorSettlementsService;
 
   let customerUser: User;
+  let primaryAdminActor: SettlementActor;
   let vendor1: Vendor;
   let vendor2: Vendor;
   let category: { id: string };
@@ -75,6 +78,29 @@ describe('D.4B.4 Financial Retention, Cascade Closure and Immutability (PostgreS
         lastName: 'Customer',
       },
     });
+
+    const adminRole = await prisma.role.upsert({
+      where: { name: RoleName.ADMINISTRATOR },
+      update: {},
+      create: { name: RoleName.ADMINISTRATOR },
+    });
+    const adminUser = await prisma.user.create({
+      data: {
+        email: `d4b4_primary_admin_${randomUUID()}@example.com`,
+        passwordHash: 'dummy_hash',
+        firstName: 'Primary',
+        lastName: 'Admin',
+        status: UserStatus.ACTIVE,
+        canAuthorizeVendorSettlements: true,
+        roles: { create: [{ roleId: adminRole.id }] },
+      },
+    });
+    primaryAdminActor = {
+      id: adminUser.id,
+      email: adminUser.email,
+      roles: [RoleName.ADMINISTRATOR],
+      canAuthorizeVendorSettlements: true,
+    };
 
     const createVendor = async (suffix: string, parish: Parish) => {
       const user = await prisma.user.create({
@@ -455,16 +481,26 @@ describe('D.4B.4 Financial Retention, Cascade Closure and Immutability (PostgreS
     });
     expect(settlement.status).toBe(VendorSettlementStatus.PENDING);
 
-    const approved = await settlementsService.updateStatus(settlement.id, VendorSettlementStatus.APPROVED, 'Approved by finance');
+    const approved = await settlementsService.updateStatus(
+      settlement.id,
+      VendorSettlementStatus.APPROVED,
+      primaryAdminActor,
+      { notes: 'Approved by finance' },
+    );
     expect(approved.status).toBe(VendorSettlementStatus.APPROVED);
 
-    const paid = await settlementsService.updateStatus(settlement.id, VendorSettlementStatus.PAID, 'Disbursed via bank transfer');
+    const paid = await settlementsService.updateStatus(
+      settlement.id,
+      VendorSettlementStatus.PAID,
+      primaryAdminActor,
+      { notes: 'Disbursed via bank transfer' },
+    );
     expect(paid.status).toBe(VendorSettlementStatus.PAID);
     expect(paid.paymentDate).toBeDefined();
 
     // Terminal PAID settlement cannot transition or alter paymentDate
     await expect(
-      settlementsService.updateStatus(settlement.id, VendorSettlementStatus.APPROVED),
+      settlementsService.updateStatus(settlement.id, VendorSettlementStatus.APPROVED, primaryAdminActor),
     ).rejects.toThrow(BadRequestException);
     await expect(
       prisma.$executeRawUnsafe(

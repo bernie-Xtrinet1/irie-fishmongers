@@ -17,7 +17,7 @@ import { FleetMaintenanceService } from '../services/fleet-maintenance.service';
 @ApiTags('fleet')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('fleet-maintenance')
 export class FleetMaintenanceController {
   constructor(private readonly fleetMaintenanceService: FleetMaintenanceService) {}

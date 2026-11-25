@@ -17,7 +17,7 @@ import { ReviewModerationService } from '../services/review-moderation.service';
 @ApiTags('admin-reviews')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('admin/reviews')
 export class ReviewModerationController {
   constructor(private readonly moderationService: ReviewModerationService) {}

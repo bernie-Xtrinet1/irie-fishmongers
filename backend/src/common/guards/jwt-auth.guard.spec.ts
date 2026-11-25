@@ -112,10 +112,36 @@ describe('JwtAuthGuard', () => {
       id: 'user-1',
       email: 'pending@example.com',
       status: UserStatus.PENDING_VERIFICATION,
-      roles: [{ role: { name: RoleName.ADMINISTRATOR } }, { role: { name: RoleName.CUSTOMER } }],
+      canAuthorizeVendorSettlements: true,
+      roles: [{ role: { name: RoleName.ADMINISTRATOR } }, { role: { name: RoleName.OPERATIONS_STAFF } }, { role: { name: RoleName.CUSTOMER } }],
     });
     await expect(dbGuard.canActivate(pendingAdmin.ctx)).resolves.toBe(true);
     expect(pendingAdmin.req.user.roles).toEqual([RoleName.CUSTOMER]);
+    expect(pendingAdmin.req.user.canAuthorizeVendorSettlements).toBe(false);
+
+    const activeStaff = mkCtx();
+    (prismaMock.user.findUnique as jest.Mock).mockResolvedValueOnce({
+      id: 'user-1',
+      email: 'staff@example.com',
+      status: UserStatus.ACTIVE,
+      canAuthorizeVendorSettlements: true,
+      roles: [{ role: { name: RoleName.OPERATIONS_STAFF } }],
+    });
+    await expect(dbGuard.canActivate(activeStaff.ctx)).resolves.toBe(true);
+    expect(activeStaff.req.user.roles).toEqual([RoleName.OPERATIONS_STAFF]);
+    expect(activeStaff.req.user.canAuthorizeVendorSettlements).toBe(false);
+
+    const primaryAdmin = mkCtx();
+    (prismaMock.user.findUnique as jest.Mock).mockResolvedValueOnce({
+      id: 'user-1',
+      email: 'primary@example.com',
+      status: UserStatus.ACTIVE,
+      canAuthorizeVendorSettlements: true,
+      roles: [{ role: { name: RoleName.ADMINISTRATOR } }],
+    });
+    await expect(dbGuard.canActivate(primaryAdmin.ctx)).resolves.toBe(true);
+    expect(primaryAdmin.req.user.roles).toEqual([RoleName.ADMINISTRATOR]);
+    expect(primaryAdmin.req.user.canAuthorizeVendorSettlements).toBe(true);
   });
 
   it('throws when the token fails verification', async () => {

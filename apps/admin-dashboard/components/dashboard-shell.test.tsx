@@ -5,10 +5,11 @@ import { useAuth } from '@/lib/auth/auth-context';
 import { useHealthStatus } from '@/lib/hooks/use-health-status';
 import { DashboardShell } from './dashboard-shell';
 
+const mockUsePathname = jest.fn(() => '/vendors');
 jest.mock('@/lib/auth/auth-context');
 jest.mock('@/lib/hooks/use-health-status');
 jest.mock('next/navigation', () => ({
-  usePathname: () => '/vendors',
+  usePathname: (): string => mockUsePathname(),
 }));
 
 const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
@@ -23,6 +24,7 @@ describe('DashboardShell', () => {
 
   beforeEach(() => {
     logout.mockReset();
+    mockUsePathname.mockReturnValue('/vendors');
     mockUseAuth.mockReturnValue({
       status: 'authenticated',
       user: { id: '1', email: 'admin@example.com', firstName: 'Ada', lastName: 'Min', roles: ['ADMINISTRATOR'] },
@@ -124,6 +126,62 @@ describe('DashboardShell', () => {
       expect(mockUseHealthStatus).toHaveBeenCalledWith(false);
     },
   );
+
+  it('hides Sales Analytics nav and blocks direct /sales-analytics navigation for OPERATIONS_STAFF', () => {
+    mockHealth({ data: { postgres: 'up', redis: 'up' }, isPending: false });
+    mockUsePathname.mockReturnValue('/sales-analytics');
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'staff-1',
+        email: 'staff.operations@iriefishmongers.test',
+        firstName: 'Ops',
+        lastName: 'Staff',
+        status: 'ACTIVE',
+        roles: ['OPERATIONS_STAFF'],
+      },
+      login: jest.fn(),
+      logout,
+    });
+
+    render(
+      <DashboardShell>
+        <div>Restricted Sales Analytics Children</div>
+      </DashboardShell>,
+    );
+
+    expect(screen.getByText('Operations Staff')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sales Analytics' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Cold Chain' })).toBeInTheDocument();
+    expect(screen.queryByText('Restricted Sales Analytics Children')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Access Denied');
+  });
+
+  it('displays Primary Administrator role badge when designated', () => {
+    mockHealth({ data: { postgres: 'up', redis: 'up' }, isPending: false });
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'primary-1',
+        email: 'bernard.uat@iriefishmongers.test',
+        firstName: 'Bernard',
+        lastName: 'Admin',
+        status: 'ACTIVE',
+        roles: ['ADMINISTRATOR'],
+        canAuthorizeVendorSettlements: true,
+      },
+      login: jest.fn(),
+      logout,
+    });
+
+    render(
+      <DashboardShell>
+        <div>content</div>
+      </DashboardShell>,
+    );
+
+    expect(screen.getByText('Primary Administrator')).toBeInTheDocument();
+  });
 
   it('calls logout when the log out control is activated', async () => {
     mockHealth({ data: undefined, isPending: true });

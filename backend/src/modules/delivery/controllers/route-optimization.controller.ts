@@ -16,7 +16,7 @@ import { RouteOptimizationService } from '../services/route-optimization.service
 @ApiTags('delivery-zones')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('delivery/zones')
 export class RouteOptimizationController {
   constructor(private readonly routeOptimizationService: RouteOptimizationService) {}

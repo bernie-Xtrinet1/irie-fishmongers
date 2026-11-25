@@ -32,6 +32,9 @@ export class VendorSettlementResponseEntity {
   paymentDate!: Date | null;
 
   @ApiProperty({ required: false, nullable: true })
+  paymentReference!: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
   notes!: string | null;
 
   @ApiProperty()

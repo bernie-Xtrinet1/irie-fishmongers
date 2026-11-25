@@ -12,7 +12,7 @@ import { ComplianceAuditLogService } from '../services/compliance-audit-log.serv
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(RoleName.ADMINISTRATOR)
+@Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('food-safety/audit-logs')
 export class ComplianceAuditLogController {
   constructor(private readonly auditLogService: ComplianceAuditLogService) {}

@@ -99,6 +99,31 @@ describe('RequireAdmin', () => {
     },
   );
 
+  it('renders protected children for an ACTIVE OPERATIONS_STAFF user', () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'staff-1',
+        email: 'staff.operations@iriefishmongers.test',
+        firstName: 'Ops',
+        lastName: 'Staff',
+        status: 'ACTIVE',
+        roles: ['OPERATIONS_STAFF'],
+      },
+      logout: mockLogout,
+      login: jest.fn(),
+    });
+
+    render(
+      <RequireAdmin>
+        <div>Secret Admin Dashboard</div>
+      </RequireAdmin>,
+    );
+
+    expect(screen.getByText('Secret Admin Dashboard')).toBeInTheDocument();
+    expect(mockLogout).not.toHaveBeenCalled();
+  });
+
   it('renders protected children for an ACTIVE ADMINISTRATOR', () => {
     mockUseAuth.mockReturnValue({
       status: 'authenticated',

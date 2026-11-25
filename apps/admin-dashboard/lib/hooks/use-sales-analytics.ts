@@ -10,10 +10,11 @@ import { fetchSalesAnalytics } from '@/lib/api/analytics';
 // the slower Vendor/Driver-summary cadence.
 const REFETCH_INTERVAL_MS = 20_000;
 
-export function useSalesAnalytics(): UseQueryResult<SalesAnalytics> {
+export function useSalesAnalytics(enabled = true): UseQueryResult<SalesAnalytics> {
   return useQuery({
     queryKey: ['analytics', 'sales-analytics'],
     queryFn: () => fetchSalesAnalytics(),
+    enabled,
     staleTime: REFETCH_INTERVAL_MS,
     refetchInterval: REFETCH_INTERVAL_MS,
   });
