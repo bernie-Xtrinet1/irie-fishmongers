@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { PrismaModule } from '../../database/prisma.module';
+import { AuthModule } from '../auth/auth.module';
 import { ColdChainModule } from '../food-safety/cold-chain.module';
 import { TelemetryIngestionController } from './controllers/telemetry-ingestion.controller';
 import { TelemetryOperationsController } from './controllers/telemetry-operations.controller';
@@ -10,7 +11,7 @@ import { TelemetryIngestionService } from './services/telemetry-ingestion.servic
 import { TelemetryOperationsService } from './services/telemetry-operations.service';
 
 @Module({
-  imports: [PrismaModule, ColdChainModule],
+  imports: [PrismaModule, AuthModule, ColdChainModule],
   controllers: [TelemetryIngestionController, TelemetryOperationsController],
   providers: [
     TelemetryGatewayAuthGuard,
