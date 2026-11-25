@@ -9,7 +9,7 @@
   1. Validates 15-digit IMEI against `POST /api/v1/telemetry/authorize-imei`.
   2. Forwards raw binary frames to `POST /api/v1/telemetry/codec8e` with `X-Telemetry-Key`.
   3. Writes the 4-byte record count ACK back to the FMC130 **only after** PostgreSQL commit succeeds. If cellular coverage or the backend drops, the FMC130 keeps unacknowledged records in flash.
-- **Note on Azure Container Apps (`cae-irie-staging`):** `cae-irie-staging` has `vnet: null` and does not support external raw TCP ingress. Deploy raw TCP `5027` via `infrastructure/azure/tier3/modules/telemetryGateway.bicep` (ACI public FQDN/IP) OR terminate TLS MQTT (`8883`) in Azure IoT Hub with `Codec JSON`.
+- **Note on Azure Container Apps (`cae-irie-staging`):** `cae-irie-staging` has `vnet: null` and does not support external raw TCP ingress. Run `npm run start:telemetry-gateway` over a supervised pilot bridge forwarding Codec 8E to HTTPS `/api/v1/telemetry/codec8e`, or after Tier-3 IaC & cost approval provision an ACI TCP listener (`5027`) or Azure IoT Hub (`8883` TLS MQTT `Codec JSON`).
 
 ---
 
