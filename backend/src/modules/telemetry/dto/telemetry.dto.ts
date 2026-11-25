@@ -511,6 +511,76 @@ export class RecordCompartmentHandoverDto {
   items?: HandoverLotQuantityDto[];
 }
 
+export class TransferLotQuantityDto {
+  @ApiProperty()
+  @IsUUID()
+  lotId!: string;
+
+  @ApiProperty({ minimum: 1 })
+  @IsInt()
+  @Min(1)
+  transferQuantity!: number;
+}
+
+export class RecordCompartmentTransferDto {
+  @ApiProperty()
+  @IsUUID()
+  deliveryId!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  fromCompartmentId?: string;
+
+  @ApiProperty()
+  @IsUUID()
+  toFleetAssetId!: string;
+
+  @ApiProperty()
+  @IsUUID()
+  toCompartmentId!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  toTrackerId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  toSensorDeviceId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  transferredAt?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsLatitude()
+  latitude?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsLongitude()
+  longitude?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  notes?: string;
+
+  @ApiPropertyOptional({ type: [TransferLotQuantityDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => TransferLotQuantityDto)
+  items?: TransferLotQuantityDto[];
+}
+
 export class ListTelemetryHistoryQueryDto {
   @ApiPropertyOptional({ default: 24, minimum: 1, maximum: 168 })
   @IsOptional()

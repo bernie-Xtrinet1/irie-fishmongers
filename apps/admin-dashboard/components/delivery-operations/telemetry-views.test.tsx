@@ -206,6 +206,7 @@ describe('Live Telemetry Admin Views', () => {
       totalRows: 1,
       importedFrames: 1,
       deduplicatedFrames: 0,
+      unmatchedFrames: 0,
       lotReadingsCreated: 1,
       alertsCreated: 0,
     });

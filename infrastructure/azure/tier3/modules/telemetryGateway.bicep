@@ -76,9 +76,12 @@ resource telemetryAci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' =
             { name: 'TELEMETRY_GATEWAY_TOKEN', secureValue: telemetryGatewayToken }
           ]
           resources: {
+            // Note: Azure Container Instances bills Linux container groups at a
+            // minimum of 1 vCPU and 1 GB memory (rounded up to whole vCPU).
+            // Keep this Bicep module UNPROVISIONED until service/cost approval.
             requests: {
-              cpu: json('0.25')
-              memoryInGB: json('0.5')
+              cpu: json('1')
+              memoryInGB: json('1')
             }
           }
         }

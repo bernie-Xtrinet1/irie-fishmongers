@@ -140,8 +140,8 @@ export function SensorTelemetryDialog({
               {uploadCsv.data ? (
                 <p className="text-xs font-medium text-irie-green">
                   Imported {uploadCsv.data.importedFrames} frames ({uploadCsv.data.deduplicatedFrames}{' '}
-                  deduplicated), attributed {uploadCsv.data.lotReadingsCreated} lot readings, raised{' '}
-                  {uploadCsv.data.alertsCreated} alerts.
+                  deduplicated, {uploadCsv.data.unmatchedFrames} unmatched), attributed{' '}
+                  {uploadCsv.data.lotReadingsCreated} lot readings, raised {uploadCsv.data.alertsCreated} alerts.
                 </p>
               ) : null}
               {uploadCsv.isError ? (
@@ -204,7 +204,13 @@ export function SensorTelemetryDialog({
                             {formatCoordinates(frame.latitude, frame.longitude)}
                           </TableCell>
                           <TableCell className="text-xs">
-                            {frame.linkedLotsCount} lot(s) · {frame.alertsCount} alert(s)
+                            {frame.linkedLotsCount === 0 ? (
+                              <span className="text-gray-500">Unmatched (no onboard lot)</span>
+                            ) : (
+                              <>
+                                {frame.linkedLotsCount} lot(s) · {frame.alertsCount} alert(s)
+                              </>
+                            )}
                           </TableCell>
                         </TableRow>
                       );

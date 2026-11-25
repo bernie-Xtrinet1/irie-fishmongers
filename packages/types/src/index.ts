@@ -1560,6 +1560,7 @@ export interface EyeCsvImportSummary {
   totalRows: number;
   importedFrames: number;
   deduplicatedFrames: number;
+  unmatchedFrames: number;
   lotReadingsCreated: number;
   alertsCreated: number;
 }

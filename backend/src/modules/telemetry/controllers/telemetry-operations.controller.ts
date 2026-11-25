@@ -22,6 +22,7 @@ import {
   ListTelemetryHistoryQueryDto,
   RecordCompartmentHandoverDto,
   RecordCompartmentPickupDto,
+  RecordCompartmentTransferDto,
   RegisterCargoSensorDto,
   RegisterVehicleTrackerDto,
   RevokeTelemetryCredentialDto,
@@ -112,8 +113,8 @@ export class TelemetryOperationsController {
   @Get('overview/active-runs')
   @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
   @ApiOperation({ summary: 'Get live GPS vehicle positions, active runs, and stale/delayed flags' })
-  getActiveRunsLiveOverview() {
-    return this.opsService.getActiveRunsLiveOverview();
+  getActiveRunsLiveOverview(@CurrentUser() user: RequestUser) {
+    return this.opsService.getActiveRunsLiveOverview(user);
   }
 
   @Get('overview/devices')
@@ -178,5 +179,17 @@ export class TelemetryOperationsController {
     @Body() dto: RecordCompartmentHandoverDto,
   ) {
     return this.opsService.recordCompartmentHandover(user, dto);
+  }
+
+  @Post('cargo/transfer')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF, RoleName.DRIVER)
+  @ApiOperation({
+    summary: 'Transfer open cargo quantities to another fleet vehicle and cold-chain compartment',
+  })
+  recordTransfer(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: RecordCompartmentTransferDto,
+  ) {
+    return this.opsService.recordCompartmentTransfer(user, dto);
   }
 }

@@ -33,6 +33,7 @@ import {
   ListTelemetryHistoryQueryDto,
   RecordCompartmentHandoverDto,
   RecordCompartmentPickupDto,
+  RecordCompartmentTransferDto,
   RegisterCargoSensorDto,
   RegisterVehicleTrackerDto,
 } from '../dto/telemetry.dto';
@@ -553,6 +554,186 @@ export class TelemetryOperationsService {
       deliveryId: delivery.id,
       unloadedAt,
       updatedAssignments: results,
+    };
+  }
+
+  async recordCompartmentTransfer(user: RequestUser, dto: RecordCompartmentTransferDto) {
+    const delivery = await this.assertCanOperateDelivery(user, dto.deliveryId);
+
+    const openAssignments = await this.prisma.cargoCompartmentAssignment.findMany({
+      where: {
+        deliveryId: delivery.id,
+        unloadedAt: null,
+        ...(dto.fromCompartmentId ? { compartmentId: dto.fromCompartmentId } : {}),
+      },
+      orderBy: { loadedAt: 'asc' },
+    });
+
+    if (openAssignments.length === 0) {
+      throw new BadRequestException('No open cargo compartment assignments available to transfer');
+    }
+
+    const toCompartment = await this.prisma.vehicleCompartment.findUnique({
+      where: { id: dto.toCompartmentId },
+      include: {
+        sensors: {
+          where: { status: 'ACTIVE' },
+          orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
+          select: { id: true },
+        },
+      },
+    });
+    if (!toCompartment || toCompartment.fleetAssetId !== dto.toFleetAssetId || !toCompartment.active) {
+      throw new BadRequestException('Destination compartment is inactive or does not belong to destination vehicle');
+    }
+
+    if (openAssignments.some((a) => a.compartmentId === toCompartment.id)) {
+      throw new BadRequestException('Cannot transfer cargo to the same compartment it is already in');
+    }
+
+    const toTracker = dto.toTrackerId
+      ? await this.prisma.vehicleTracker.findFirst({
+          where: { id: dto.toTrackerId, fleetAssetId: dto.toFleetAssetId, status: 'ACTIVE' },
+          select: { id: true },
+        })
+      : await this.prisma.vehicleTracker.findFirst({
+          where: { fleetAssetId: dto.toFleetAssetId, status: 'ACTIVE' },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+
+    let resolvedToSensorId = dto.toSensorDeviceId ?? toCompartment.sensors[0]?.id ?? null;
+    if (dto.toSensorDeviceId) {
+      const validSensor = toCompartment.sensors.find((s) => s.id === dto.toSensorDeviceId);
+      if (!validSensor) {
+        throw new BadRequestException('Selected destination temperature sensor is not active on destination compartment');
+      }
+      resolvedToSensorId = validSensor.id;
+    }
+
+    const transferQtyByLot = new Map<string, number>();
+    if (dto.items && dto.items.length > 0) {
+      for (const item of dto.items) {
+        transferQtyByLot.set(
+          item.lotId,
+          (transferQtyByLot.get(item.lotId) ?? 0) + item.transferQuantity,
+        );
+      }
+    } else {
+      for (const a of openAssignments) {
+        const remaining = a.quantityUnits - a.handedOverQuantity;
+        if (remaining > 0) {
+          transferQtyByLot.set(a.lotId, (transferQtyByLot.get(a.lotId) ?? 0) + remaining);
+        }
+      }
+    }
+
+    const transferPlan: Array<{
+      assignment: (typeof openAssignments)[number];
+      transferQty: number;
+      fullRemainingTransfer: boolean;
+    }> = [];
+
+    for (const [lotId, requestedQty] of transferQtyByLot.entries()) {
+      const lotAssignments = openAssignments.filter((a) => a.lotId === lotId);
+      const totalRemaining = lotAssignments.reduce(
+        (sum, a) => sum + (a.quantityUnits - a.handedOverQuantity),
+        0,
+      );
+      if (lotAssignments.length === 0 || requestedQty <= 0 || requestedQty > totalRemaining) {
+        throw new BadRequestException(
+          `Cannot transfer ${requestedQty} unit(s) for lot ${lotId}; ${totalRemaining} available to transfer`,
+        );
+      }
+
+      let leftToAllocate = requestedQty;
+      for (const assignment of lotAssignments) {
+        if (leftToAllocate <= 0) break;
+        const remainingHere = assignment.quantityUnits - assignment.handedOverQuantity;
+        if (remainingHere <= 0) continue;
+        const delta = Math.min(remainingHere, leftToAllocate);
+        leftToAllocate -= delta;
+        transferPlan.push({
+          assignment,
+          transferQty: delta,
+          fullRemainingTransfer: delta >= remainingHere,
+        });
+      }
+    }
+
+    const transferredAt = dto.transferredAt ? new Date(dto.transferredAt) : new Date();
+    const actorUserId = delivery.driver?.userId ?? user.id;
+
+    const createdAssignments = await this.prisma.$transaction(async (tx) => {
+      const destinationRows = [];
+      for (const step of transferPlan) {
+        const custody = await tx.chainOfCustodyEvent.create({
+          data: {
+            lotId: step.assignment.lotId,
+            deliveryId: delivery.id,
+            compartmentId: toCompartment.id,
+            fleetAssetId: dto.toFleetAssetId,
+            eventType: CustodyEventType.TRANSIT,
+            fromUserId: actorUserId,
+            toUserId: user.id,
+            latitude: dto.latitude ?? null,
+            longitude: dto.longitude ?? null,
+            notes:
+              dto.notes ??
+              `Vehicle transfer of ${step.transferQty} unit(s) into ${toCompartment.compartmentCode}`,
+            occurredAt: transferredAt,
+          },
+          select: { id: true },
+        });
+
+        await tx.cargoCompartmentAssignment.update({
+          where: { id: step.assignment.id },
+          data: step.fullRemainingTransfer
+            ? {
+                unloadedAt: transferredAt,
+                handoverCustodyEventId: custody.id,
+                notes:
+                  dto.notes ??
+                  `Transferred ${step.transferQty} unit(s) out to compartment ${toCompartment.compartmentCode}`,
+              }
+            : {
+                quantityUnits: step.assignment.quantityUnits - step.transferQty,
+                notes:
+                  dto.notes ??
+                  `Partial transfer of ${step.transferQty} unit(s) out to compartment ${toCompartment.compartmentCode}`,
+              },
+        });
+
+        const dest = await tx.cargoCompartmentAssignment.create({
+          data: {
+            deliveryId: delivery.id,
+            vendorOrderId: step.assignment.vendorOrderId,
+            lotId: step.assignment.lotId,
+            fleetAssetId: dto.toFleetAssetId,
+            compartmentId: toCompartment.id,
+            trackerId: toTracker?.id ?? null,
+            sensorDeviceId: resolvedToSensorId,
+            quantityUnits: step.transferQty,
+            handedOverQuantity: 0,
+            loadedAt: transferredAt,
+            pickupCustodyEventId: custody.id,
+            recordedById: user.id,
+            notes: dto.notes ?? `Transferred in (${step.transferQty} units)`,
+          },
+        });
+        destinationRows.push(dest);
+      }
+      return destinationRows;
+    });
+
+    return {
+      deliveryId: delivery.id,
+      toFleetAssetId: dto.toFleetAssetId,
+      toCompartmentId: toCompartment.id,
+      toTrackerId: toTracker?.id ?? null,
+      toSensorDeviceId: resolvedToSensorId,
+      transferredAt,
+      createdAssignments,
     };
   }
 

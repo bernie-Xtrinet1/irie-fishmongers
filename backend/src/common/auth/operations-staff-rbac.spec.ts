@@ -235,6 +235,7 @@ describe('Operations Staff & Primary Administrator RBAC Matrix', () => {
       [TelemetryOperationsController, 'getDeliveryTelemetryDetail'],
       [TelemetryOperationsController, 'recordPickup'],
       [TelemetryOperationsController, 'recordHandover'],
+      [TelemetryOperationsController, 'recordTransfer'],
     ];
 
     for (const [ctrl, method] of methodChecks) {
@@ -259,7 +260,12 @@ describe('Operations Staff & Primary Administrator RBAC Matrix', () => {
       ]);
     }
 
-    for (const driverAllowedMethod of ['getDeliveryTelemetryDetail', 'recordPickup', 'recordHandover']) {
+    for (const driverAllowedMethod of [
+      'getDeliveryTelemetryDetail',
+      'recordPickup',
+      'recordHandover',
+      'recordTransfer',
+    ]) {
       expect(effectiveRolesFor(TelemetryOperationsController, driverAllowedMethod)).toContain(
         RoleName.DRIVER,
       );

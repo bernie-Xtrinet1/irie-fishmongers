@@ -42,6 +42,7 @@ export interface TelemetryIngestSummary {
   acceptedCount: number;
   storedFrames: number;
   deduplicatedFrames: number;
+  unmatchedFrames: number;
   lotReadingsCreated: number;
   alertsCreated: number;
   sensorMissingFrames: number;
@@ -55,6 +56,7 @@ export interface EyeCsvImportSummary {
   totalRows: number;
   importedFrames: number;
   deduplicatedFrames: number;
+  unmatchedFrames: number;
   lotReadingsCreated: number;
   alertsCreated: number;
 }
@@ -189,6 +191,7 @@ export class TelemetryIngestionService {
 
     let importedFrames = 0;
     let deduplicatedFrames = 0;
+    let unmatchedFrames = 0;
     let lotReadingsCreated = 0;
     let alertsCreated = 0;
     let latestCsvCapture: { capturedAt: Date; tempC: number; humidityPct: number | null; batteryMv: number | null; doorOpen: boolean | null; delaySeconds: number } | null = null;
@@ -268,6 +271,9 @@ export class TelemetryIngestionService {
       });
       lotReadingsCreated += attributed.readingsCreated;
       alertsCreated += attributed.alertsCreated;
+      if (attributed.readingsCreated === 0) {
+        unmatchedFrames += 1;
+      }
     }
 
     if (
@@ -297,6 +303,7 @@ export class TelemetryIngestionService {
       totalRows: parsedRows.length,
       importedFrames,
       deduplicatedFrames,
+      unmatchedFrames,
       lotReadingsCreated,
       alertsCreated,
     };
@@ -351,6 +358,7 @@ export class TelemetryIngestionService {
     const receivedAt = new Date();
     let storedFrames = 0;
     let deduplicatedFrames = 0;
+    let unmatchedFrames = 0;
     let lotReadingsCreated = 0;
     let alertsCreated = 0;
     let sensorMissingFrames = 0;
@@ -522,7 +530,14 @@ export class TelemetryIngestionService {
             });
             lotReadingsCreated += attributed.readingsCreated;
             alertsCreated += attributed.alertsCreated;
+            if (attributed.readingsCreated === 0) {
+              unmatchedFrames += 1;
+            }
+          } else {
+            unmatchedFrames += 1;
           }
+        } else {
+          unmatchedFrames += 1;
         }
       }
 
@@ -550,6 +565,7 @@ export class TelemetryIngestionService {
       acceptedCount: sortedRecords.length,
       storedFrames,
       deduplicatedFrames,
+      unmatchedFrames,
       lotReadingsCreated,
       alertsCreated,
       sensorMissingFrames,
