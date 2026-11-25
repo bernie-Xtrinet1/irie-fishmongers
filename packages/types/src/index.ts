@@ -1347,3 +1347,338 @@ export interface UpdateDeliveryStatusInput {
   proofUrl?: string;
   failureReason?: string;
 }
+
+// --- Live Vehicle GPS & Cold-Chain Cargo-Air Telemetry (Teltonika FMC130 + EYE BTSMP1) ---
+
+export enum TelemetryProtocol {
+  TELTONIKA_CODEC_8E = 'TELTONIKA_CODEC_8E',
+  TELTONIKA_CODEC_JSON = 'TELTONIKA_CODEC_JSON',
+  HTTP_JSON = 'HTTP_JSON',
+  EYE_APP_CSV = 'EYE_APP_CSV',
+}
+
+export enum TemperatureReadingOrigin {
+  MANUAL_PRODUCT_CHECK = 'MANUAL_PRODUCT_CHECK',
+  CARGO_AIR_SENSOR = 'CARGO_AIR_SENSOR',
+  EYE_APP_RECOVERY_CSV = 'EYE_APP_RECOVERY_CSV',
+}
+
+export enum TelemetryGapKind {
+  LTE_BUFFERED_RECOVERY = 'LTE_BUFFERED_RECOVERY',
+  SENSOR_SIGNAL_MISSING = 'SENSOR_SIGNAL_MISSING',
+  GNSS_NO_FIX = 'GNSS_NO_FIX',
+}
+
+export type TelemetryReportingStatus =
+  | 'REPORTING'
+  | 'DELAYED'
+  | 'SENSOR_SIGNAL_MISSING'
+  | 'STALE'
+  | 'OFFLINE'
+  | 'DECOMMISSIONED';
+
+export type VehicleGpsStatus = 'LIVE' | 'DELAYED' | 'NO_FIX' | 'STALE' | 'OFFLINE';
+
+export interface LiveVehicleSensorSnapshot {
+  id: string;
+  deviceCode: string;
+  lastTemperatureC: number | null;
+  lastCapturedAt: string | null;
+  lastDelaySeconds: number | null;
+  reportingStatus: TelemetryReportingStatus;
+}
+
+export interface LiveVehicleCompartmentSnapshot {
+  id: string;
+  compartmentCode: string;
+  label: string;
+  storageType: string;
+  sensors: LiveVehicleSensorSnapshot[];
+}
+
+export interface LiveVehicleOverview {
+  fleetAssetId: string;
+  licensePlate: string;
+  assetType: string;
+  gpsStatus: VehicleGpsStatus;
+  lastLatitude: number | null;
+  lastLongitude: number | null;
+  lastSpeedKph: number | null;
+  lastHeadingDeg: number | null;
+  lastSatellites: number | null;
+  lastGpsCapturedAt: string | null;
+  lastTelemetryReceivedAt: string | null;
+  lastTelemetryDelayed: boolean;
+  trackerImei: string | null;
+  compartments: LiveVehicleCompartmentSnapshot[];
+}
+
+export interface LiveRunStopSummary {
+  id: string;
+  sequence: number;
+  deliveryId: string;
+  deliveryStatus: string;
+  deliveryAddress: string | null;
+  openLotCount: number;
+}
+
+export interface LiveRunOverviewItem {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  status: DeliveryRunStatus;
+  driverName: string | null;
+  fleetAssetId: string | null;
+  vehicle: LiveVehicleOverview | null;
+  stops: LiveRunStopSummary[];
+  createdAt: string;
+}
+
+export interface ActiveDeliveryLiveRow {
+  deliveryId: string;
+  vendorOrderId: string;
+  vendorName: string;
+  status: string;
+  deliveryAddress: string | null;
+  runId: string | null;
+  stopSequence: number | null;
+  driverName: string | null;
+  fleetAssetId: string | null;
+  licensePlate: string | null;
+  gpsStatus: VehicleGpsStatus;
+  lastLatitude: number | null;
+  lastLongitude: number | null;
+  lastGpsCapturedAt: string | null;
+  lastTelemetryDelayed: boolean;
+  onboardLotCount: number;
+  latestCargoTempC: number | null;
+  sensorReportingStatus: TelemetryReportingStatus | null;
+}
+
+export interface ActiveRunsLiveOverview {
+  generatedAt: string;
+  vehicles: LiveVehicleOverview[];
+  runs: LiveRunOverviewItem[];
+  activeDeliveries: ActiveDeliveryLiveRow[];
+}
+
+export interface EnrolledTrackerSummary {
+  id: string;
+  imei: string;
+  hardwareModel: string;
+  firmwareVersion: string | null;
+  simCarrier: string | null;
+  protocol: TelemetryProtocol;
+  status: DeviceStatus;
+  fleetAssetId: string;
+  licensePlate: string;
+  gpsStatus: VehicleGpsStatus;
+  lastCapturedAt: string | null;
+  lastReceivedAt: string | null;
+  activeCredentialCount: number;
+}
+
+export interface EnrolledSensorSummary {
+  id: string;
+  deviceCode: string;
+  hardwareModel: string;
+  bleMacAddress: string | null;
+  sensorSlot: number | null;
+  firmwareVersion: string | null;
+  status: DeviceStatus;
+  vendorId: string | null;
+  vendorName: string | null;
+  compartmentId: string | null;
+  compartmentCode: string | null;
+  compartmentLabel: string | null;
+  storageType: string | null;
+  fleetAssetId: string | null;
+  licensePlate: string | null;
+  lastTemperatureC: number | null;
+  lastCapturedAt: string | null;
+  lastReceivedAt: string | null;
+  lastDelaySeconds: number | null;
+  lastHumidityPct: number | null;
+  lastBatteryMv: number | null;
+  lastDoorOpen: boolean | null;
+  lastMovement: boolean | null;
+  lastGapKind: TelemetryGapKind | null;
+  lastSignalMissingAt: string | null;
+  reportingStatus: TelemetryReportingStatus;
+}
+
+export interface TelemetryDevicesOverview {
+  generatedAt: string;
+  trackers: EnrolledTrackerSummary[];
+  sensors: EnrolledSensorSummary[];
+}
+
+export interface SensorTelemetryFrameRow {
+  id: string;
+  protocol: TelemetryProtocol;
+  origin: TemperatureReadingOrigin;
+  capturedAt: string;
+  receivedAt: string;
+  delaySeconds: number;
+  isDelayed: boolean;
+  cargoTempC: number | null;
+  humidityPct: number | null;
+  doorOpen: boolean | null;
+  movement: boolean | null;
+  batteryMv: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  gnssValid: boolean;
+  gapKind: TelemetryGapKind | null;
+  linkedLotsCount: number;
+  alertsCount: number;
+}
+
+export interface SensorTelemetryHistory {
+  sensor: {
+    id: string;
+    deviceCode: string;
+    hardwareModel: string;
+    bleMacAddress: string | null;
+    sensorSlot: number | null;
+    fleetAssetId: string | null;
+    licensePlate: string | null;
+    compartmentCode: string | null;
+    compartmentLabel: string | null;
+    lastTemperatureC: number | null;
+    lastCapturedAt: string | null;
+    lastReceivedAt: string | null;
+    lastDelaySeconds: number | null;
+    reportingStatus: TelemetryReportingStatus;
+  };
+  frames: SensorTelemetryFrameRow[];
+}
+
+export interface EyeCsvImportSummary {
+  sensorId: string;
+  deviceCode: string;
+  totalRows: number;
+  importedFrames: number;
+  deduplicatedFrames: number;
+  lotReadingsCreated: number;
+  alertsCreated: number;
+}
+
+export interface DeliveryCargoAssignmentView {
+  id: string;
+  lotId: string;
+  lotNumber: string;
+  species: string;
+  storageType: string;
+  foodSafetyStatus: string;
+  compartmentId: string;
+  compartmentCode: string;
+  compartmentLabel: string;
+  trackerImei: string | null;
+  sensorId: string | null;
+  sensorDeviceCode: string | null;
+  sensorReportingStatus: TelemetryReportingStatus | null;
+  sensorLastTempC: number | null;
+  quantityUnits: number;
+  handedOverQuantity: number;
+  loadedAt: string;
+  unloadedAt: string | null;
+  pickupCustodyEventId: string | null;
+  handoverCustodyEventId: string | null;
+}
+
+export interface DeliveryTelemetryDetail {
+  delivery: {
+    id: string;
+    vendorOrderId: string;
+    status: string;
+    deliveryAddress: string | null;
+    assignedAt: string;
+    pickedUpAt: string | null;
+    deliveredAt: string | null;
+    vendorName: string;
+    driverName: string | null;
+  };
+  vehicle: {
+    id: string;
+    licensePlate: string;
+    assetType: string;
+    gpsStatus: VehicleGpsStatus;
+    lastLatitude: number | null;
+    lastLongitude: number | null;
+    lastSpeedKph: number | null;
+    lastHeadingDeg: number | null;
+    lastSatellites: number | null;
+    lastGpsCapturedAt: string | null;
+    lastTelemetryReceivedAt: string | null;
+    lastTelemetryDelayed: boolean;
+  } | null;
+  assignments: DeliveryCargoAssignmentView[];
+  manualProductChecks: Array<{
+    id: string;
+    lotId: string;
+    lotNumber: string;
+    checkpoint: string;
+    temperatureC: string;
+    origin: TemperatureReadingOrigin;
+    capturedAt: string;
+    receivedAt: string;
+    recordedAt: string;
+    photoUrl: string | null;
+  }>;
+  cargoAirReadings: Array<{
+    id: string;
+    lotId: string;
+    lotNumber: string;
+    deviceId: string | null;
+    deviceCode: string | null;
+    checkpoint: string;
+    temperatureC: string;
+    origin: TemperatureReadingOrigin;
+    capturedAt: string;
+    receivedAt: string;
+    isDelayed: boolean;
+    latitude: number | null;
+    longitude: number | null;
+  }>;
+  complianceChecklist: {
+    pickupManualCheckRecorded: boolean;
+    deliveryManualCheckRecorded: boolean;
+    continuousSensorActive: boolean;
+    manualChecksDistinctNotice: string;
+  };
+  alerts: Array<{
+    id: string;
+    lotId: string;
+    severity: AlertSeverity;
+    actualC: string;
+    resolved: boolean;
+    createdAt: string;
+    readingOrigin: TemperatureReadingOrigin;
+    readingCapturedAt: string | null;
+    isDelayed: boolean;
+    emergencyResponse: {
+      id: string;
+      status: EmergencyResponseStatus;
+      acknowledgedAt: string | null;
+      resolvedAt: string | null;
+    } | null;
+  }>;
+  telemetryGaps: Array<{
+    frameId: string;
+    gapKind: TelemetryGapKind;
+    capturedAt: string;
+    receivedAt: string;
+    delaySeconds: number;
+    latitude: number | null;
+    longitude: number | null;
+  }>;
+  gpsTrail: Array<{
+    latitude: number;
+    longitude: number;
+    speedKph: number | null;
+    capturedAt: string;
+    isDelayed: boolean;
+  }>;
+}
+

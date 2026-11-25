@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { AlertSeverity, SeafoodStorageType, TemperatureThreshold } from '@prisma/client';
+import { AlertSeverity, SeafoodStorageType, TemperatureCheckpoint, TemperatureThreshold } from '@prisma/client';
 
 import { ColdChainAlertRaisedEvent } from '../../../common/events/cold-chain-alert-raised.event';
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
@@ -47,12 +47,20 @@ export class TemperatureMonitoringService {
 
     await this.assertCanRecordReading(userId, lot.vendorId);
 
+    const receivedAt = new Date();
+    const capturedAt = dto.capturedAt ? new Date(dto.capturedAt) : receivedAt;
+    const isDelayed = receivedAt.getTime() - capturedAt.getTime() > 90_000;
+
     const reading = await this.readingsRepository.create({
       lotId: dto.lotId,
       deviceId: dto.deviceId,
       checkpoint: dto.checkpoint,
       temperatureC: dto.temperatureC,
       recordedById: userId,
+      origin: 'MANUAL_PRODUCT_CHECK',
+      capturedAt,
+      receivedAt,
+      isDelayed,
       latitude: dto.latitude,
       longitude: dto.longitude,
       photoUrl: dto.photoUrl,
@@ -62,26 +70,55 @@ export class TemperatureMonitoringService {
       await this.devicesRepository.touchLastSeen(dto.deviceId);
     }
 
-    const threshold = await this.resolveThreshold(dto.deviceId, lot.storageType);
+    const alert = await this.evaluateAndCreateAlertForReading({
+      reading,
+      lot,
+      deviceId: dto.deviceId,
+      temperatureC: dto.temperatureC,
+      checkpoint: dto.checkpoint,
+    });
+
+    return {
+      reading: TemperatureMonitoringService.toReadingResponse(reading),
+      ...(alert ? { alert: TemperatureMonitoringService.toAlertResponse(alert) } : {}),
+    };
+  }
+
+  /**
+   * Shared cold-chain alert evaluation, CRITICAL review flagging, EMERGENCY
+   * quarantine + emergency response creation, and vendor notification path
+   * reused identically by manual checks, automated FMC130 telemetry, and
+   * EYE App CSV recovery imports.
+   */
+  async evaluateAndCreateAlertForReading(params: {
+    reading: { id: string };
+    lot: { id: string; vendorId: string; lotNumber: string; storageType: SeafoodStorageType; foodSafetyStatus: string };
+    deviceId?: string | null;
+    temperatureC: number;
+    checkpoint: TemperatureCheckpoint;
+  }) {
+    const { reading, lot, deviceId, temperatureC, checkpoint } = params;
+
+    const threshold = await this.resolveThreshold(deviceId ?? undefined, lot.storageType);
     const severity = threshold
-      ? TemperatureMonitoringService.evaluateSeverity(threshold, dto.temperatureC)
+      ? TemperatureMonitoringService.evaluateSeverity(threshold, temperatureC)
       : null;
     if (!severity) {
-      return { reading: TemperatureMonitoringService.toReadingResponse(reading) };
+      return null;
     }
 
     const alert = await this.alertsRepository.create({
       readingId: reading.id,
-      lotId: dto.lotId,
+      lotId: lot.id,
       severity,
-      actualC: dto.temperatureC,
+      actualC: temperatureC,
     });
 
     if (severity === 'CRITICAL' && lot.foodSafetyStatus === 'SAFE') {
       await this.lotsRepository.updateStatus(
         lot.id,
         'UNDER_REVIEW',
-        `Automatically flagged for review after a critical temperature reading of ${dto.temperatureC}C at ${dto.checkpoint}`,
+        `Automatically flagged for review after a critical temperature reading of ${temperatureC}C at ${checkpoint}`,
       );
     }
 
@@ -97,7 +134,7 @@ export class TemperatureMonitoringService {
       await this.lotsRepository.updateStatus(
         lot.id,
         'QUARANTINED',
-        `Automatically quarantined after an emergency temperature reading of ${dto.temperatureC}C at ${dto.checkpoint}`,
+        `Automatically quarantined after an emergency temperature reading of ${temperatureC}C at ${checkpoint}`,
       );
     }
 
@@ -105,9 +142,6 @@ export class TemperatureMonitoringService {
       await this.emergencyResponsesRepository.create(alert.id);
     }
 
-    // cold-chain-management.md's "Notify Vendor" automated action applies
-    // at every severity tier - see ColdChainAlertRaisedEvent for why the
-    // CRITICAL/EMERGENCY admin/operations escalation isn't wired here too.
     const vendor = await this.vendorsRepository.findById(lot.vendorId);
     if (vendor) {
       await this.eventEmitter.emitAsync(
@@ -116,16 +150,13 @@ export class TemperatureMonitoringService {
           vendor.userId,
           lot.lotNumber,
           severity,
-          dto.temperatureC.toString(),
-          dto.checkpoint,
+          temperatureC.toString(),
+          String(checkpoint),
         ),
       );
     }
 
-    return {
-      reading: TemperatureMonitoringService.toReadingResponse(reading),
-      alert: TemperatureMonitoringService.toAlertResponse(alert),
-    };
+    return alert;
   }
 
   async getReadingsForLot(
@@ -251,6 +282,16 @@ export class TemperatureMonitoringService {
     deviceId: string | null;
     checkpoint: string;
     temperatureC: { toString(): string };
+    origin?: TemperatureReadingResponseEntity['origin'];
+    capturedAt?: Date | null;
+    receivedAt?: Date;
+    isDelayed?: boolean;
+    deliveryId?: string | null;
+    fleetAssetId?: string | null;
+    compartmentId?: string | null;
+    trackerId?: string | null;
+    telemetryFrameId?: string | null;
+    recordedById?: string | null;
     latitude: number | null;
     longitude: number | null;
     photoUrl: string | null;
@@ -262,6 +303,16 @@ export class TemperatureMonitoringService {
       deviceId: reading.deviceId,
       checkpoint: reading.checkpoint as TemperatureReadingResponseEntity['checkpoint'],
       temperatureC: reading.temperatureC.toString(),
+      origin: reading.origin,
+      capturedAt: reading.capturedAt,
+      receivedAt: reading.receivedAt,
+      isDelayed: reading.isDelayed,
+      deliveryId: reading.deliveryId,
+      fleetAssetId: reading.fleetAssetId,
+      compartmentId: reading.compartmentId,
+      trackerId: reading.trackerId,
+      telemetryFrameId: reading.telemetryFrameId,
+      recordedById: reading.recordedById,
       latitude: reading.latitude,
       longitude: reading.longitude,
       photoUrl: reading.photoUrl,

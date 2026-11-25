@@ -29,6 +29,7 @@ import {
 import { PaginatedAvailableDeliveriesEntity } from '../entities/paginated-available-deliveries.entity';
 import { PaginatedDriverDeliveriesEntity } from '../entities/paginated-driver-deliveries.entity';
 import { DriverLocationsRepository } from '../repositories/driver-locations.repository';
+import { closeOpenCompartmentAssignmentsForDelivery } from '../../telemetry/services/telemetry-operations.service';
 import { DriversRepository } from '../repositories/drivers.repository';
 import { RouteHistoryRepository } from '../repositories/route-history.repository';
 import { SLABreachesRepository } from '../repositories/sla-breaches.repository';
@@ -241,6 +242,16 @@ export class DeliveriesService {
             tx,
           );
         }
+        await closeOpenCompartmentAssignmentsForDelivery(
+          tx,
+          delivery.id,
+          delivered.deliveredAt as Date,
+          {
+            markRemainingAsHandedOver: true,
+            actorUserId: userId,
+            reason: 'Delivery marked DELIVERED; closed open compartment telemetry assignments',
+          },
+        );
         const routeHistory = await this.recordRouteHistory(
           delivery,
           delivered.deliveredAt as Date,
@@ -260,6 +271,16 @@ export class DeliveriesService {
       );
       await this.driversRepository.updateAvailabilityStatus(driver.id, 'ONLINE', tx);
       const failed = await this.deliveriesRepository.markFailed(delivery.id, dto.failureReason, tx);
+      await closeOpenCompartmentAssignmentsForDelivery(
+        tx,
+        delivery.id,
+        failed.failedAt as Date,
+        {
+          markRemainingAsHandedOver: false,
+          actorUserId: userId,
+          reason: `Delivery marked FAILED: ${dto.failureReason}`,
+        },
+      );
       const routeHistory = await this.recordRouteHistory(delivery, failed.failedAt as Date, tx);
       return { ...failed, routeHistory };
     });

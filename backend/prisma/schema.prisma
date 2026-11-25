@@ -95,6 +95,9 @@ model User {
   approvedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryApprover")
   rejectedSuspectRecoveries    ProductSuspectRecovery[]           @relation("SuspectRecoveryRejector")
   vendorSettlementAuditLogs    VendorSettlementAuditLog[]         @relation("VendorSettlementAuditActor")
+  createdTelemetryCredentials  TelemetryDeviceCredential[]        @relation("TelemetryCredentialCreatedBy")
+  revokedTelemetryCredentials  TelemetryDeviceCredential[]        @relation("TelemetryCredentialRevokedBy")
+  recordedCargoAssignments     CargoCompartmentAssignment[]       @relation("CargoAssignmentRecordedBy")
 
   @@map("users")
 }
@@ -831,6 +834,7 @@ model VendorOrder {
   reviews           Review[]
   refundAllocations RefundVendorOrderAllocation[]
   refundObligations RefundObligation[]
+  cargoAssignments  CargoCompartmentAssignment[]
 
   @@index([vendorId])
   @@index([orderId])
@@ -1674,8 +1678,11 @@ model Delivery {
   settlement        DriverSettlement?
   exceptions        DeliveryException[]
   slaBreaches       SLABreach[]
-  runStop           DeliveryRunStop?
-  routeHistory      RouteHistory?
+  runStop             DeliveryRunStop?
+  routeHistory        RouteHistory?
+  cargoAssignments    CargoCompartmentAssignment[]
+  temperatureReadings TemperatureReading[]
+  custodyEvents       ChainOfCustodyEvent[]
 
   @@index([driverId])
   @@map("deliveries")
@@ -2144,6 +2151,7 @@ model SeafoodLot {
   custodyEvents        ChainOfCustodyEvent[]
   wasteDisposalRecords WasteDisposalRecord[]
   orderItems           OrderItem[]
+  cargoAssignments     CargoCompartmentAssignment[]
 
   @@index([vendorId])
   @@index([catchItemId])
@@ -2163,24 +2171,43 @@ enum TemperatureCheckpoint {
 }
 
 model TemperatureReading {
-  id           String                @id @default(uuid())
-  lotId        String
-  deviceId     String?
-  checkpoint   TemperatureCheckpoint
-  temperatureC Decimal               @db.Decimal(5, 2)
-  recordedById String
-  latitude     Float?
-  longitude    Float?
-  photoUrl     String?
-  recordedAt   DateTime              @default(now())
+  id               String                    @id @default(uuid())
+  lotId            String
+  deviceId         String?
+  checkpoint       TemperatureCheckpoint
+  temperatureC     Decimal                   @db.Decimal(5, 2)
+  recordedById     String?
+  origin           TemperatureReadingOrigin  @default(MANUAL_PRODUCT_CHECK)
+  capturedAt       DateTime?
+  receivedAt       DateTime                  @default(now())
+  isDelayed        Boolean                   @default(false)
+  deliveryId       String?
+  fleetAssetId     String?
+  compartmentId    String?
+  trackerId        String?
+  telemetryFrameId String?
+  dedupeKey        String?                   @unique
+  latitude         Float?
+  longitude        Float?
+  photoUrl         String?
+  recordedAt       DateTime                  @default(now())
 
-  lot        SeafoodLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
-  device     TemperatureDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-  recordedBy User               @relation(fields: [recordedById], references: [id], onDelete: Restrict)
-  alert      TemperatureAlert?
+  lot            SeafoodLot             @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  device         TemperatureDevice?     @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  recordedBy     User?                  @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  delivery       Delivery?              @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+  fleetAsset     FleetAsset?            @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  compartment    VehicleCompartment?    @relation(fields: [compartmentId], references: [id], onDelete: SetNull)
+  tracker        VehicleTracker?        @relation(fields: [trackerId], references: [id], onDelete: SetNull)
+  telemetryFrame VehicleTelemetryFrame? @relation(fields: [telemetryFrameId], references: [id], onDelete: SetNull)
+  alert          TemperatureAlert?
 
   @@index([lotId])
+  @@index([lotId, capturedAt])
   @@index([deviceId])
+  @@index([deliveryId])
+  @@index([origin])
+  @@index([telemetryFrameId])
   @@map("temperature_readings")
 }
 
@@ -2536,21 +2563,40 @@ enum DeviceStatus {
 }
 
 model TemperatureDevice {
-  id               String       @id @default(uuid())
-  vendorId         String
-  deviceCode       String       @unique
-  status           DeviceStatus @default(ACTIVE)
-  lastSeenAt       DateTime?
-  lastCalibratedAt DateTime?
-  calibrationDueAt DateTime?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  id                  String                 @id @default(uuid())
+  vendorId            String?
+  compartmentId       String?
+  deviceCode          String                 @unique
+  hardwareModel       TemperatureSensorModel @default(GENERIC_BLE_PROBE)
+  bleMacAddress       String?                @unique
+  sensorSlot          Int?
+  firmwareVersion     String?
+  status              DeviceStatus           @default(ACTIVE)
+  lastSeenAt          DateTime?
+  lastTemperatureC    Decimal?               @db.Decimal(5, 2)
+  lastCapturedAt      DateTime?
+  lastReceivedAt      DateTime?
+  lastDelaySeconds    Int?
+  lastHumidityPct     Decimal?               @db.Decimal(5, 2)
+  lastBatteryMv       Int?
+  lastDoorOpen        Boolean?
+  lastMovement        Boolean?
+  lastGapKind         TelemetryGapKind?
+  lastSignalMissingAt DateTime?
+  lastCalibratedAt    DateTime?
+  calibrationDueAt    DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
 
-  vendor     Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  readings   TemperatureReading[]
-  thresholds TemperatureThreshold[]
+  vendor           Vendor?                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  compartment      VehicleCompartment?          @relation(fields: [compartmentId], references: [id], onDelete: SetNull)
+  readings         TemperatureReading[]
+  thresholds       TemperatureThreshold[]
+  telemetryFrames  VehicleTelemetryFrame[]
+  cargoAssignments CargoCompartmentAssignment[]
 
   @@index([vendorId])
+  @@index([compartmentId])
   @@map("temperature_devices")
 }
 
@@ -2650,25 +2696,35 @@ enum CustodyEventType {
 // recipient), INSPECTION sets both to the inspector (a checkpoint, not a
 // transfer).
 model ChainOfCustodyEvent {
-  id         String           @id @default(uuid())
-  catchId    String?
-  lotId      String?
-  eventType  CustodyEventType
-  fromUserId String?
-  toUserId   String?
-  location   String?
-  latitude   Float?
-  longitude  Float?
-  notes      String?
-  occurredAt DateTime         @default(now())
+  id            String           @id @default(uuid())
+  catchId       String?
+  lotId         String?
+  deliveryId    String?
+  compartmentId String?
+  fleetAssetId  String?
+  eventType     CustodyEventType
+  fromUserId    String?
+  toUserId      String?
+  location      String?
+  latitude      Float?
+  longitude     Float?
+  notes         String?
+  occurredAt    DateTime         @default(now())
 
-  catch    Catch?      @relation(fields: [catchId], references: [id], onDelete: SetNull)
-  lot      SeafoodLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
-  fromUser User?       @relation("CustodyEventFrom", fields: [fromUserId], references: [id], onDelete: SetNull)
-  toUser   User?       @relation("CustodyEventTo", fields: [toUserId], references: [id], onDelete: SetNull)
+  catch                    Catch?                       @relation(fields: [catchId], references: [id], onDelete: SetNull)
+  lot                      SeafoodLot?                  @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  delivery                 Delivery?                    @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+  compartment              VehicleCompartment?          @relation(fields: [compartmentId], references: [id], onDelete: SetNull)
+  fleetAsset               FleetAsset?                  @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  fromUser                 User?                        @relation("CustodyEventFrom", fields: [fromUserId], references: [id], onDelete: SetNull)
+  toUser                   User?                        @relation("CustodyEventTo", fields: [toUserId], references: [id], onDelete: SetNull)
+  pickupCargoAssignments   CargoCompartmentAssignment[] @relation("CargoPickupCustody")
+  handoverCargoAssignments CargoCompartmentAssignment[] @relation("CargoHandoverCustody")
 
   @@index([catchId])
   @@index([lotId])
+  @@index([deliveryId])
+  @@index([compartmentId])
   @@map("chain_of_custody_events")
 }
 
@@ -3662,24 +3718,39 @@ enum FleetAssetStatus {
 }
 
 model FleetAsset {
-  id               String           @id @default(uuid())
-  zoneId           String
-  assetType        FleetAssetType
-  ownership        FleetOwnership
-  licensePlate     String           @unique
-  capacityLbs      Decimal          @db.Decimal(10, 2)
-  coldChainCapable Boolean          @default(false)
-  status           FleetAssetStatus @default(ACTIVE)
-  currentDriverId  String?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id                      String           @id @default(uuid())
+  zoneId                  String
+  assetType               FleetAssetType
+  ownership               FleetOwnership
+  licensePlate            String           @unique
+  capacityLbs             Decimal          @db.Decimal(10, 2)
+  coldChainCapable        Boolean          @default(false)
+  status                  FleetAssetStatus @default(ACTIVE)
+  currentDriverId         String?
+  lastLatitude            Float?
+  lastLongitude           Float?
+  lastSpeedKph            Int?
+  lastHeadingDeg          Int?
+  lastSatellites          Int?
+  lastGpsCapturedAt       DateTime?
+  lastTelemetryReceivedAt DateTime?
+  lastTelemetryDelayed    Boolean          @default(false)
+  lastGpsNoFixAt          DateTime?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
 
   zone              DeliveryZone            @relation(fields: [zoneId], references: [id], onDelete: Restrict)
   currentDriver     Driver?                 @relation("FleetAssetCurrentDriver", fields: [currentDriverId], references: [id], onDelete: SetNull)
   trips             FleetTrip[]
   maintenance       FleetMaintenance[]
-  deliveryRuns      DeliveryRun[]
-  sanitationRecords FleetSanitationRecord[]
+  deliveryRuns        DeliveryRun[]
+  sanitationRecords   FleetSanitationRecord[]
+  compartments        VehicleCompartment[]
+  trackers            VehicleTracker[]
+  cargoAssignments    CargoCompartmentAssignment[]
+  telemetryFrames     VehicleTelemetryFrame[]
+  temperatureReadings TemperatureReading[]
+  custodyEvents       ChainOfCustodyEvent[]
 
   @@index([zoneId])
   @@map("fleet_assets")
@@ -4719,4 +4790,201 @@ model ProductSuspectRecoveryTarget {
   @@unique([recoveryId, syncStateId], map: "product_suspect_recovery_targets_recoveryId_syncStateId_key")
   @@index([productId, recoveryId], map: "product_suspect_recovery_targets_product_recovery_idx")
   @@map("product_suspect_recovery_targets")
+}
+
+// ---------------------------------------------------------------------------
+// Live Vehicle GPS & Cold-Chain Telemetry (Teltonika FMC130 + EYE BTSMP1)
+// ---------------------------------------------------------------------------
+
+enum TelemetryProtocol {
+  TELTONIKA_CODEC_8E
+  TELTONIKA_CODEC_JSON
+  HTTP_JSON
+  EYE_APP_CSV
+}
+
+enum TrackerHardwareModel {
+  TELTONIKA_FMC130
+  GENERIC_GNSS_LTE
+}
+
+enum TemperatureSensorModel {
+  TELTONIKA_EYE_BTSMP1_EN12830
+  GENERIC_BLE_PROBE
+}
+
+enum TemperatureReadingOrigin {
+  MANUAL_PRODUCT_CHECK
+  CARGO_AIR_SENSOR
+  EYE_APP_RECOVERY_CSV
+}
+
+enum TelemetryGapKind {
+  LTE_BUFFERED_RECOVERY
+  SENSOR_SIGNAL_MISSING
+  GNSS_NO_FIX
+}
+
+enum TelemetryCredentialScope {
+  DEVICE_TRACKER
+  GATEWAY
+}
+
+model VehicleCompartment {
+  id              String             @id @default(uuid())
+  fleetAssetId    String
+  compartmentCode String
+  label           String
+  storageType     SeafoodStorageType @default(FRESH)
+  targetMinC      Decimal?           @db.Decimal(5, 2)
+  targetMaxC      Decimal?           @db.Decimal(5, 2)
+  active          Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  fleetAsset          FleetAsset                   @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+  sensors             TemperatureDevice[]
+  cargoAssignments    CargoCompartmentAssignment[]
+  telemetryFrames     VehicleTelemetryFrame[]
+  temperatureReadings TemperatureReading[]
+  custodyEvents       ChainOfCustodyEvent[]
+
+  @@unique([fleetAssetId, compartmentCode])
+  @@index([fleetAssetId])
+  @@map("vehicle_compartments")
+}
+
+model VehicleTracker {
+  id              String               @id @default(uuid())
+  fleetAssetId    String
+  imei            String               @unique
+  hardwareModel   TrackerHardwareModel @default(TELTONIKA_FMC130)
+  firmwareVersion String?
+  simIccid        String?
+  simCarrier      String?
+  protocol        TelemetryProtocol    @default(TELTONIKA_CODEC_8E)
+  status          DeviceStatus         @default(ACTIVE)
+  lastSeenAt      DateTime?
+  lastCapturedAt  DateTime?
+  lastReceivedAt  DateTime?
+  lastPacketCrc   String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  fleetAsset          FleetAsset                   @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+  credentials         TelemetryDeviceCredential[]
+  telemetryFrames     VehicleTelemetryFrame[]
+  temperatureReadings TemperatureReading[]
+  cargoAssignments    CargoCompartmentAssignment[]
+
+  @@index([fleetAssetId])
+  @@map("vehicle_trackers")
+}
+
+model TelemetryDeviceCredential {
+  id            String                   @id @default(uuid())
+  scope         TelemetryCredentialScope @default(DEVICE_TRACKER)
+  trackerId     String?
+  label         String
+  keyPrefix     String
+  secretHash    String                   @unique
+  active        Boolean                  @default(true)
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+  lastUsedAt    DateTime?
+  createdById   String
+  revokedById   String?
+  createdAt     DateTime                 @default(now())
+
+  tracker   VehicleTracker? @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  createdBy User            @relation("TelemetryCredentialCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  revokedBy User?           @relation("TelemetryCredentialRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([trackerId])
+  @@index([active, expiresAt])
+  @@map("telemetry_device_credentials")
+}
+
+model VehicleTelemetryFrame {
+  id                String                   @id @default(uuid())
+  trackerId         String?
+  sensorDeviceId    String?
+  fleetAssetId      String?
+  compartmentId     String?
+  protocol          TelemetryProtocol
+  origin            TemperatureReadingOrigin @default(CARGO_AIR_SENSOR)
+  dedupeKey         String                   @unique
+  capturedAt        DateTime
+  receivedAt        DateTime                 @default(now())
+  delaySeconds      Int                      @default(0)
+  isDelayed         Boolean                  @default(false)
+  latitude          Float?
+  longitude         Float?
+  altitudeM         Int?
+  speedKph          Int?
+  angleDeg          Int?
+  satellites        Int?
+  gnssValid         Boolean                  @default(false)
+  cargoTempC        Decimal?                 @db.Decimal(5, 2)
+  humidityPct       Decimal?                 @db.Decimal(5, 2)
+  doorOpen          Boolean?
+  movement          Boolean?
+  batteryMv         Int?
+  externalVoltageMv Int?
+  gsmSignal         Int?
+  gapKind           TelemetryGapKind?
+  rawPayload        Json?
+  createdAt         DateTime                 @default(now())
+
+  tracker             VehicleTracker?      @relation(fields: [trackerId], references: [id], onDelete: SetNull)
+  sensorDevice        TemperatureDevice?   @relation(fields: [sensorDeviceId], references: [id], onDelete: SetNull)
+  fleetAsset          FleetAsset?          @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
+  compartment         VehicleCompartment?  @relation(fields: [compartmentId], references: [id], onDelete: SetNull)
+  temperatureReadings TemperatureReading[]
+
+  @@index([fleetAssetId, capturedAt])
+  @@index([trackerId, capturedAt])
+  @@index([sensorDeviceId, capturedAt])
+  @@index([compartmentId, capturedAt])
+  @@map("vehicle_telemetry_frames")
+}
+
+model CargoCompartmentAssignment {
+  id                     String    @id @default(uuid())
+  deliveryId             String
+  vendorOrderId          String
+  lotId                  String
+  fleetAssetId           String
+  compartmentId          String
+  trackerId              String?
+  sensorDeviceId         String?
+  quantityUnits          Int
+  handedOverQuantity     Int       @default(0)
+  loadedAt               DateTime
+  unloadedAt             DateTime?
+  pickupCustodyEventId   String?
+  handoverCustodyEventId String?
+  recordedById           String?
+  notes                  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  delivery             Delivery             @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  vendorOrder          VendorOrder          @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  lot                  SeafoodLot           @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  fleetAsset           FleetAsset           @relation(fields: [fleetAssetId], references: [id], onDelete: Restrict)
+  compartment          VehicleCompartment   @relation(fields: [compartmentId], references: [id], onDelete: Restrict)
+  tracker              VehicleTracker?      @relation(fields: [trackerId], references: [id], onDelete: SetNull)
+  sensorDevice         TemperatureDevice?   @relation(fields: [sensorDeviceId], references: [id], onDelete: SetNull)
+  pickupCustodyEvent   ChainOfCustodyEvent? @relation("CargoPickupCustody", fields: [pickupCustodyEventId], references: [id], onDelete: SetNull)
+  handoverCustodyEvent ChainOfCustodyEvent? @relation("CargoHandoverCustody", fields: [handoverCustodyEventId], references: [id], onDelete: SetNull)
+  recordedBy           User?                @relation("CargoAssignmentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([compartmentId, loadedAt, unloadedAt])
+  @@index([trackerId, loadedAt, unloadedAt])
+  @@index([sensorDeviceId, loadedAt, unloadedAt])
+  @@index([deliveryId])
+  @@index([lotId])
+  @@map("cargo_compartment_assignments")
 }

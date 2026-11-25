@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { TemperatureCheckpoint, TemperatureReading } from '@prisma/client';
+import { TemperatureCheckpoint, TemperatureReading, TemperatureReadingOrigin } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -8,10 +8,21 @@ export interface CreateReadingInput {
   deviceId?: string;
   checkpoint: TemperatureCheckpoint;
   temperatureC: number;
-  recordedById: string;
+  recordedById?: string | null;
+  origin?: TemperatureReadingOrigin;
+  capturedAt?: Date | null;
+  receivedAt?: Date;
+  isDelayed?: boolean;
+  deliveryId?: string | null;
+  fleetAssetId?: string | null;
+  compartmentId?: string | null;
+  trackerId?: string | null;
+  telemetryFrameId?: string | null;
+  dedupeKey?: string | null;
   latitude?: number;
   longitude?: number;
   photoUrl?: string;
+  recordedAt?: Date;
 }
 
 export interface Page {

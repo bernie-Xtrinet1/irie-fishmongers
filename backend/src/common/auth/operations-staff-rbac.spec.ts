@@ -53,6 +53,9 @@ import { VendorDocumentsController } from '../../modules/vendor-tiers/controller
 import { VendorPermissionsController } from '../../modules/vendor-tiers/controllers/vendor-permissions.controller';
 import { VendorTiersController } from '../../modules/vendor-tiers/controllers/vendor-tiers.controller';
 import { VendorsController } from '../../modules/vendors/controllers/vendors.controller';
+import { TelemetryIngestionController } from '../../modules/telemetry/controllers/telemetry-ingestion.controller';
+import { TelemetryOperationsController } from '../../modules/telemetry/controllers/telemetry-operations.controller';
+import { TelemetryGatewayAuthGuard } from '../../modules/telemetry/guards/telemetry-gateway-auth.guard';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { HealthController } from '../health/health.controller';
 
@@ -225,12 +228,48 @@ describe('Operations Staff & Primary Administrator RBAC Matrix', () => {
       [TemperatureMonitoringController, 'resolveAlert'],
       [WasteDisposalRecordsController, 'create'],
       [WasteDisposalRecordsController, 'list'],
+      [TelemetryOperationsController, 'getActiveRunsLiveOverview'],
+      [TelemetryOperationsController, 'getTelemetryDevicesOverview'],
+      [TelemetryOperationsController, 'getSensorHistory'],
+      [TelemetryOperationsController, 'importEyeAppCsv'],
+      [TelemetryOperationsController, 'getDeliveryTelemetryDetail'],
+      [TelemetryOperationsController, 'recordPickup'],
+      [TelemetryOperationsController, 'recordHandover'],
     ];
 
     for (const [ctrl, method] of methodChecks) {
       const roles = effectiveRolesFor(ctrl, method) ?? [];
       expect(roles).toContain(RoleName.OPERATIONS_STAFF);
       expect(roles).toContain(RoleName.ADMINISTRATOR);
+    }
+  });
+
+  it('keeps telemetry hardware provisioning and credential management strictly ADMINISTRATOR-only and device ingestion isolated from User JWTs', () => {
+    for (const adminOnlyMethod of [
+      'createCompartment',
+      'registerTracker',
+      'registerSensor',
+      'issueCredential',
+      'listCredentials',
+      'rotateCredential',
+      'revokeCredential',
+    ]) {
+      expect(effectiveRolesFor(TelemetryOperationsController, adminOnlyMethod)).toEqual([
+        RoleName.ADMINISTRATOR,
+      ]);
+    }
+
+    for (const driverAllowedMethod of ['getDeliveryTelemetryDetail', 'recordPickup', 'recordHandover']) {
+      expect(effectiveRolesFor(TelemetryOperationsController, driverAllowedMethod)).toContain(
+        RoleName.DRIVER,
+      );
+    }
+
+    const ingestionGuards =
+      reflector.get<unknown[]>(GUARDS_METADATA, TelemetryIngestionController) ?? [];
+    expect(ingestionGuards).toContain(TelemetryGatewayAuthGuard);
+    for (const method of routeMethodNames(TelemetryIngestionController)) {
+      expect(effectiveRolesFor(TelemetryIngestionController, method)).toBeUndefined();
     }
   });
 });

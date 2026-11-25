@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { TemperatureCheckpoint } from '@prisma/client';
+import { TemperatureCheckpoint, TemperatureReadingOrigin } from '@prisma/client';
 
 export class TemperatureReadingResponseEntity {
   @ApiProperty()
@@ -16,6 +16,36 @@ export class TemperatureReadingResponseEntity {
 
   @ApiProperty()
   temperatureC!: string;
+
+  @ApiProperty({ enum: TemperatureReadingOrigin, required: false })
+  origin?: TemperatureReadingOrigin;
+
+  @ApiProperty({ required: false, nullable: true })
+  capturedAt?: Date | null;
+
+  @ApiProperty({ required: false })
+  receivedAt?: Date;
+
+  @ApiProperty({ required: false })
+  isDelayed?: boolean;
+
+  @ApiProperty({ required: false, nullable: true })
+  deliveryId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  fleetAssetId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  compartmentId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  trackerId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  telemetryFrameId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  recordedById?: string | null;
 
   @ApiProperty({ required: false, nullable: true })
   latitude!: number | null;

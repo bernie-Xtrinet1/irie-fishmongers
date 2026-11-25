@@ -7,6 +7,10 @@ import { useDeliveryRuns } from '@/lib/hooks/use-delivery-operations';
 import { ActiveRunsSection } from './active-runs-section';
 
 jest.mock('@/lib/hooks/use-delivery-operations');
+jest.mock('@/lib/hooks/use-telemetry', () => ({
+  useActiveRunsLiveOverview: jest.fn(() => ({ data: undefined, isPending: false, isError: false })),
+  useDeliveryTelemetryDetail: jest.fn(() => ({ data: undefined, isPending: false, isError: false })),
+}));
 jest.mock('@/lib/hooks/use-delivery-zones');
 
 const push = jest.fn();

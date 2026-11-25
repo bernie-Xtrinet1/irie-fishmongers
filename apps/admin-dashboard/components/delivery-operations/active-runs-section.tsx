@@ -1,16 +1,22 @@
 'use client';
 
 import { DeliveryRunStatus } from '@iriefishmongers/types';
+import * as React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
+import { DeliveryTelemetryDialog } from '@/components/delivery-operations/delivery-telemetry-dialog';
+import { LiveFleetMap } from '@/components/delivery-operations/live-fleet-map';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { PaginationControls } from '@/components/pagination-controls';
-import { useDeliveryZones } from '@/lib/hooks/use-delivery-zones';
+import { formatEnumLabel } from '@/lib/format';
 import { useDeliveryRuns } from '@/lib/hooks/use-delivery-operations';
+import { useActiveRunsLiveOverview } from '@/lib/hooks/use-telemetry';
+import { useDeliveryZones } from '@/lib/hooks/use-delivery-zones';
+import { formatTelemetryDateTime, GPS_STATUS_META } from '@/lib/telemetry-ui';
 
 const PAGE_SIZE = 20;
 
@@ -25,7 +31,10 @@ export function ActiveRunsSection(): React.ReactElement {
   const page = Number(searchParams.get('activePage') ?? '1') || 1;
 
   const query = useDeliveryRuns({ page, pageSize: PAGE_SIZE, status: DeliveryRunStatus.IN_PROGRESS });
+  const liveQuery = useActiveRunsLiveOverview();
   const zonesQuery = useDeliveryZones();
+  const [selectedDeliveryId, setSelectedDeliveryId] = React.useState<string | null>(null);
+  const [selectedFleetAssetId, setSelectedFleetAssetId] = React.useState<string | null>(null);
 
   function zoneName(zoneId: string): string {
     return zonesQuery.data?.find((zone) => zone.id === zoneId)?.name ?? zoneId;
@@ -121,6 +130,99 @@ export function ActiveRunsSection(): React.ReactElement {
           </>
         ) : null}
       </Card>
+
+      {liveQuery?.data ? (
+        <>
+          <LiveFleetMap
+            vehicles={liveQuery.data.vehicles}
+            selectedFleetAssetId={selectedFleetAssetId}
+            onSelectVehicle={(fleetAssetId) => setSelectedFleetAssetId(fleetAssetId)}
+          />
+
+          <Card className="p-0">
+            <div className="border-b border-gray-200 px-4 py-3">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Active Deliveries &amp; Live Vehicle Telemetry
+              </h3>
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Delivery</TableHead>
+                  <TableHead>Vehicle / Driver</TableHead>
+                  <TableHead>GPS Status &amp; Position Time</TableHead>
+                  <TableHead>Onboard Cargo</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Details</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {liveQuery.data.activeDeliveries.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-gray-500">
+                      No active deliveries require live telemetry tracking right now.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  liveQuery.data.activeDeliveries.map((item) => {
+                    const gpsMeta = GPS_STATUS_META[item.gpsStatus];
+                    return (
+                      <TableRow key={item.deliveryId}>
+                        <TableCell>
+                          <div className="font-medium text-gray-900">{item.vendorName}</div>
+                          <div className="text-xs text-gray-500">
+                            {item.deliveryAddress ?? 'Destination pending'}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="font-medium">{item.licensePlate ?? 'Unassigned vehicle'}</div>
+                          <div className="text-gray-500">{item.driverName ?? 'No driver'}</div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant={gpsMeta.variant}>{gpsMeta.label}</Badge>
+                            {item.lastTelemetryDelayed ? (
+                              <Badge variant="warning">Buffered</Badge>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-gray-500">
+                            {formatTelemetryDateTime(item.lastGpsCapturedAt)}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div>{item.onboardLotCount} onboard lot(s)</div>
+                          <div className="text-gray-600">
+                            {item.latestCargoTempC !== null
+                              ? `${item.latestCargoTempC.toFixed(2)} °C`
+                              : 'No temp'}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="info">{formatEnumLabel(item.status)}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setSelectedDeliveryId(item.deliveryId)}
+                          >
+                            Inspect Telemetry
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        </>
+      ) : null}
+
+      <DeliveryTelemetryDialog
+        deliveryId={selectedDeliveryId}
+        onClose={() => setSelectedDeliveryId(null)}
+      />
     </section>
   );
 }

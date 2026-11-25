@@ -11,6 +11,15 @@ export class CustodyEventResponseEntity {
   @ApiProperty({ required: false, nullable: true })
   lotId!: string | null;
 
+  @ApiProperty({ required: false, nullable: true })
+  deliveryId!: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  compartmentId!: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  fleetAssetId!: string | null;
+
   @ApiProperty({ enum: CustodyEventType })
   eventType!: CustodyEventType;
 

@@ -42,6 +42,11 @@ import { TemperatureThresholdsService } from './services/temperature-thresholds.
     TemperatureThresholdsRepository,
     EmergencyResponsesRepository,
   ],
-  exports: [TemperatureDevicesRepository, TemperatureThresholdsRepository, TemperatureReadingsRepository],
+  exports: [
+    TemperatureDevicesRepository,
+    TemperatureThresholdsRepository,
+    TemperatureReadingsRepository,
+    TemperatureMonitoringService,
+  ],
 })
 export class ColdChainModule {}

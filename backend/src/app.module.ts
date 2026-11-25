@@ -24,6 +24,7 @@ import { DeliveryModule } from './modules/delivery/delivery.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { DriverSettlementsModule } from './modules/driver-settlements/driver-settlements.module';
 import { FleetModule } from './modules/fleet/fleet.module';
+import { TelemetryModule } from './modules/telemetry/telemetry.module';
 import { FoodSafetyModule } from './modules/food-safety/food-safety.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
@@ -90,6 +91,7 @@ import { VendorsModule } from './modules/vendors/vendors.module';
     FoodSafetyModule,
     PassportModule,
     FleetModule,
+    TelemetryModule,
     NotificationsModule,
     MarketplaceModule,
     AnalyticsModule,

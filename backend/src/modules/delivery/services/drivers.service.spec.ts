@@ -316,6 +316,7 @@ describe('DriversService', () => {
       expect(prisma.temperatureReading.findMany).toHaveBeenCalledWith({
         where: {
           recordedById: 'user-1',
+          origin: 'MANUAL_PRODUCT_CHECK',
           checkpoint: {
             in: ['DRIVER_PICKUP', 'IN_TRANSIT', 'DELIVERY', 'VEHICLE_LOADING', 'CUSTOMER_ACCEPTANCE'],
           },

@@ -1,6 +1,8 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { RoleName, TemperatureDevice } from '@prisma/client';
 
+import { computeSensorReportingStatus } from '../../telemetry/telemetry-status.util';
+
 import { RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { VendorsRepository } from '../../vendors/repositories/vendors.repository';
 import { RegisterTemperatureDeviceDto } from '../dto/register-temperature-device.dto';
@@ -82,12 +84,28 @@ export class TemperatureDevicesService {
     return {
       id: device.id,
       vendorId: device.vendorId,
+      compartmentId: device.compartmentId,
       deviceCode: device.deviceCode,
+      hardwareModel: device.hardwareModel,
+      bleMacAddress: device.bleMacAddress,
+      sensorSlot: device.sensorSlot,
+      firmwareVersion: device.firmwareVersion,
       status: device.status,
       lastSeenAt: device.lastSeenAt,
       isOffline:
         device.status !== 'DECOMMISSIONED' &&
         (!device.lastSeenAt || Date.now() - device.lastSeenAt.getTime() > OFFLINE_AFTER_MS),
+      lastTemperatureC: device.lastTemperatureC ? Number(device.lastTemperatureC.toString()) : null,
+      lastCapturedAt: device.lastCapturedAt,
+      lastReceivedAt: device.lastReceivedAt,
+      lastDelaySeconds: device.lastDelaySeconds,
+      lastHumidityPct: device.lastHumidityPct ? Number(device.lastHumidityPct.toString()) : null,
+      lastBatteryMv: device.lastBatteryMv,
+      lastDoorOpen: device.lastDoorOpen,
+      lastMovement: device.lastMovement,
+      lastGapKind: device.lastGapKind,
+      lastSignalMissingAt: device.lastSignalMissingAt,
+      reportingStatus: computeSensorReportingStatus(device),
       lastCalibratedAt: device.lastCalibratedAt,
       calibrationDueAt: device.calibrationDueAt,
       isCalibrationOverdue: !!device.calibrationDueAt && Date.now() > device.calibrationDueAt.getTime(),

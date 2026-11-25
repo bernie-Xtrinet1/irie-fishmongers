@@ -207,6 +207,7 @@ export class DriversService {
     const readings = await this.prisma.temperatureReading.findMany({
       where: {
         recordedById: driverUserId,
+        origin: 'MANUAL_PRODUCT_CHECK',
         checkpoint: { in: TEMPERATURE_COMPLIANCE_CHECKPOINTS },
         lotId: { in: Array.from(lotIds) },
       },

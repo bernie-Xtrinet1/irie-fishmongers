@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { TemperatureCheckpoint } from '@prisma/client';
-import { IsEnum, IsLatitude, IsLongitude, IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsDateString, IsEnum, IsLatitude, IsLongitude, IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class CreateTemperatureReadingDto {
   @ApiProperty()
@@ -34,4 +34,9 @@ export class CreateTemperatureReadingDto {
   @IsOptional()
   @IsString()
   photoUrl?: string;
+
+  @ApiProperty({ required: false, description: 'Optional original capture timestamp (UTC ISO-8601)' })
+  @IsOptional()
+  @IsDateString()
+  capturedAt?: string;
 }

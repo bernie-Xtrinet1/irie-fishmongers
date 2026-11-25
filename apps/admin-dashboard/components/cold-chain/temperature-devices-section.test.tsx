@@ -7,6 +7,11 @@ import { useCalibrateTemperatureDevice, useTemperatureDevices } from '@/lib/hook
 import { TemperatureDevicesSection } from './temperature-devices-section';
 
 jest.mock('@/lib/hooks/use-cold-chain');
+jest.mock('@/lib/hooks/use-telemetry', () => ({
+  useTelemetryDevicesOverview: jest.fn(() => ({ data: undefined, isPending: false, isError: false })),
+  useSensorTelemetryHistory: jest.fn(() => ({ data: undefined, isPending: false, isError: false })),
+  useUploadEyeAppCsvRecovery: jest.fn(() => ({ mutateAsync: jest.fn(), isPending: false, isError: false, data: undefined })),
+}));
 
 const mockUseTemperatureDevices = useTemperatureDevices as jest.MockedFunction<typeof useTemperatureDevices>;
 const mockUseCalibrateTemperatureDevice = useCalibrateTemperatureDevice as jest.MockedFunction<
