@@ -215,6 +215,7 @@ jobs:
             -e JWT_ACCESS_EXPIRES_IN=15m \
             -e JWT_REFRESH_SECRET="validation-refresh-secret-not-a-real-secret-32c" \
             -e JWT_REFRESH_EXPIRES_IN=7d \
+            -e CHECKOUT_QUOTE_SIGNING_SECRET="validation-quote-signing-secret-not-a-real-32c" \
             -e APP_BASE_URL="http://localhost:3001" \
             -e CORS_ORIGIN="http://localhost:3000" \
             -e WIPAY_API_URL="https://jmsb.wipayfinancial.com/plugins/payments" \
