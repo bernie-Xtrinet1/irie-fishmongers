@@ -12,6 +12,7 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
+  icons: { icon: '/irie-fishmongers-logo.webp' },
   title: 'Irie Fishmongers — Admin',
   description: 'Operator dashboard for the Irie Fishmongers marketplace.',
 };

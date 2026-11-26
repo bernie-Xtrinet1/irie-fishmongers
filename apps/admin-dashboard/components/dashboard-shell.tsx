@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+
 import {
   Activity,
   AlertTriangle,
@@ -74,6 +76,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
     <div className="flex min-h-screen bg-gray-50">
       <aside className="flex w-64 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
         <div className="flex h-16 items-center gap-2 border-b border-gray-200 px-6">
+          <Image src="/irie-fishmongers-logo.webp" alt="" width={48} height={34} />
           <span className="text-lg font-semibold text-irie-green">Irie Fishmongers</span>
         </div>
         <nav aria-label="Admin navigation" className="flex flex-1 flex-col gap-1 p-3">

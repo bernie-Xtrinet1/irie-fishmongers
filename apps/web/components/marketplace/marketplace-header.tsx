@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 
 import { UserRole } from '@iriefishmongers/types';
@@ -12,9 +13,7 @@ export function MarketplaceHeader(): React.ReactElement {
   const isCustomer = user?.roles.includes(UserRole.CUSTOMER) ?? false;
   const isVendor = user?.roles.includes(UserRole.VENDOR) ?? false;
   const isDriver = user?.roles.includes(UserRole.DRIVER) ?? false;
-  const displayName = user
-    ? `${user.firstName} ${user.lastName}`.trim() || user.email
-    : '';
+  const displayName = user ? `${user.firstName} ${user.lastName}`.trim() || user.email : '';
 
   return (
     <header className="border-b border-gray-200 bg-white">
@@ -24,15 +23,28 @@ export function MarketplaceHeader(): React.ReactElement {
             href="/"
             className="text-xl font-semibold text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
           >
-            Irie Fishmongers
+            <span className="inline-flex items-center gap-2">
+              <Image src="/irie-fishmongers-logo.webp" alt="" width={56} height={40} />
+              <span>Irie Fishmongers</span>
+            </span>
           </Link>
 
-          <nav aria-label="Marketplace navigation" className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <nav
+            aria-label="Marketplace navigation"
+            className="flex flex-wrap items-center gap-x-4 gap-y-1"
+          >
             <Link
               href="/"
               className="text-sm font-medium text-gray-700 hover:text-irie-green focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
             >
               Marketplace
+            </Link>
+
+            <Link
+              href="/platform"
+              className="text-sm font-medium text-gray-700 hover:text-irie-green"
+            >
+              Platform access
             </Link>
 
             {status === 'unauthenticated' || (status === 'authenticated' && isCustomer) ? (

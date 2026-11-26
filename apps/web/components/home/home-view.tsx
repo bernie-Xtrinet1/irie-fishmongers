@@ -21,6 +21,8 @@ import { formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
 import { useAvailableToday } from '@/lib/hooks/use-available-today';
 import { useProducts } from '@/lib/hooks/use-products';
 
+import { SeafoodShowcase } from './seafood-showcase';
+
 function formatPrice(product: ProductResponse): string {
   const amount = Number(product.price).toLocaleString('en-JM', { minimumFractionDigits: 0 });
   return `${product.currency} $${amount} / ${formatEnumLabel(product.unit).toLowerCase()}`;
@@ -109,16 +111,7 @@ export function HomeView(): React.ReactElement {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 space-y-12">
-      {/* Hero / Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Fresh seafood marketplace
-        </h1>
-        <p className="mt-2 text-base text-gray-600 max-w-2xl">
-          Traceable seafood caught in Jamaica&apos;s waters by certified vendors. Inspect today&apos;s
-          fresh catch, compare licensed sellers, and discover verified local seafood.
-        </p>
-      </div>
+      <SeafoodShowcase />
 
       {/* Available Today Discovery Subsystem */}
       <section id="available-today" aria-labelledby="available-today-heading" className="space-y-6">
