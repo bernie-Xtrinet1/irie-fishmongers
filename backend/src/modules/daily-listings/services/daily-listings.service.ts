@@ -15,6 +15,10 @@ import {
   VendorStatus,
 } from '@prisma/client';
 
+import {
+  isCataloguePhotoPathUrl,
+  normalizeUrlCandidatePaths,
+} from '../../../common/utils/catalogue-image.util';
 import { PrismaService } from '../../../database/prisma.service';
 import { SeafoodLotsRepository } from '../../food-safety/repositories/seafood-lots.repository';
 import { RegulatoryEligibilityService } from '../../catalogue/services/regulatory-eligibility.service';
@@ -259,13 +263,21 @@ export class DailyListingsService {
       throw new BadRequestException('Cannot publish an already expired listing');
     }
 
-    // Photo governance check: at least one approved non-withdrawn photo
+    // Photo governance check: at least one approved non-withdrawn actual-catch photo
     const activePhotos = listing.photos.filter(
       (p) => !p.withdrawnAt && p.moderationStatus === ListingPhotoModerationStatus.APPROVED,
     );
-    if (activePhotos.length === 0) {
+    const nonCataloguePhotos: typeof activePhotos = [];
+    for (const photo of activePhotos) {
+      if (!(await this.isCatalogueReferencePhotoUrl(photo.url))) {
+        nonCataloguePhotos.push(photo);
+      }
+    }
+    if (nonCataloguePhotos.length === 0) {
       throw new BadRequestException(
-        'Listing must have at least one approved actual-catch photograph before publication',
+        activePhotos.length > 0
+          ? 'Catalogue reference photos cannot satisfy Catch of the Day; attach a real photograph of the actual lot before publishing.'
+          : 'Listing must have at least one approved actual-catch photograph before publication',
       );
     }
 
@@ -471,6 +483,12 @@ export class DailyListingsService {
     dto: AddListingPhotoDto,
   ): Promise<ListingPhotoResponseEntity> {
     await this.assertOwnership(userId, listingId);
+
+    if (await this.isCatalogueReferencePhotoUrl(dto.url)) {
+      throw new BadRequestException(
+        'Catalogue reference photos cannot be used for Catch of the Day; attach an actual photograph of the lot.',
+      );
+    }
 
     const captureDate = dto.captureDate ? new Date(dto.captureDate) : undefined;
     const photo = await this.dailyListingsRepository.addPhoto(listingId, {
@@ -1009,5 +1027,20 @@ export class DailyListingsService {
       lot: listing.lot,
       landingSite: listing.landingSite,
     };
+  }
+
+  private async isCatalogueReferencePhotoUrl(url: string): Promise<boolean> {
+    if (isCataloguePhotoPathUrl(url)) {
+      return true;
+    }
+    if (!this.prisma?.cataloguePhoto?.findFirst) {
+      return false;
+    }
+    const candidates = normalizeUrlCandidatePaths(url);
+    const match = await this.prisma.cataloguePhoto.findFirst({
+      where: { imageUrl: { in: candidates } },
+      select: { id: true },
+    });
+    return Boolean(match);
   }
 }

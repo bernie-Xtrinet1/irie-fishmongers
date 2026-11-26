@@ -15,6 +15,7 @@ import { CreateCatalogueItemDto } from '../dto/create-catalogue-item.dto';
 import { CreateRegulatoryOverrideDto } from '../dto/create-regulatory-override.dto';
 import { LinkSpeciesDto } from '../dto/link-species.dto';
 import { QueryCatalogueDto } from '../dto/query-catalogue.dto';
+import { QueryCataloguePhotosDto } from '../dto/query-catalogue-photos.dto';
 import { RetireCatalogueItemDto } from '../dto/retire-catalogue-item.dto';
 import { UpdateCatalogueItemDto } from '../dto/update-catalogue-item.dto';
 import {
@@ -482,5 +483,12 @@ export class SeafoodCatalogueService {
         throw new BadRequestException('One or more supplied species IDs do not exist');
       }
     }
+  }
+
+  async findApprovedPhotos(query: QueryCataloguePhotosDto) {
+    return this.repository.findApprovedPhotos({
+      speciesId: query.speciesId,
+      search: query.search,
+    });
   }
 }

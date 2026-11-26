@@ -1085,4 +1085,32 @@ describe('DailyListingsService', () => {
       expect(result.total).toBe(0);
     });
   });
+
+  describe('Catalogue reference photo guard on Catch of the Day', () => {
+    it('rejects adding a /catalogue-photos/* library reference image to Catch of the Day', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+
+      await expect(
+        service.addPhoto('user-1', 'listing-1', {
+          url: 'https://ca-irie-web.agreeablerock-458effa7.eastus2.azurecontainerapps.io/catalogue-photos/oreochromis-niloticus.png',
+        }),
+      ).rejects.toThrow(/Catalogue reference photos cannot be used for Catch of the Day/i);
+    });
+
+    it('rejects publishing if the only attached active photo is a catalogue reference photo', async () => {
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        photos: [
+          {
+            ...mockPhoto,
+            url: '/catalogue-photos/lutjanus-analis.png',
+          },
+        ],
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(
+        /Catalogue reference photos cannot satisfy Catch of the Day/i,
+      );
+    });
+  });
 });

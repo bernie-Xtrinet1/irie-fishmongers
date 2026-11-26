@@ -28,6 +28,8 @@ function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
     lotId: null,
     lot: null,
     catalogueItemId: null,
+    speciesId: null,
+    cataloguePhotoId: null,
     inventoryMode: 'LEGACY_PRODUCT',
     name: 'Fresh Snapper',
     description: 'Caught this morning.',

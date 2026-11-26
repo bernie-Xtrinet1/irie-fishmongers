@@ -82,7 +82,7 @@ export function AvailableTodayCard({
               className="bg-gray-800/80 text-white backdrop-blur-xs shadow-xs"
               data-testid="reference-photo-badge"
             >
-              Catalogue Reference
+              Catalogue reference photo
             </Badge>
           )}
 

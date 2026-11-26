@@ -187,6 +187,8 @@ describe('Product Catalogue Anchoring Integration (Phase 16A.2)', () => {
       vendorId: 'v-1',
       categoryId: 'cat-1',
       catalogueItemId: null,
+      speciesId: null,
+      cataloguePhotoId: null,
       isActive: true,
       quantityAvailable: 10,
       lot: null,

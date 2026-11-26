@@ -288,12 +288,48 @@ model SeafoodCatalogueItem {
   consolidatedInto    SeafoodCatalogueItem?     @relation("CatalogueConsolidation", fields: [consolidatedIntoId], references: [id])
   consolidatedFrom    SeafoodCatalogueItem[]    @relation("CatalogueConsolidation")
   dailyListings       VendorDailyListing[]
+  cataloguePhotos     CataloguePhoto[]
 
   @@index([categoryId])
   @@index([lifecycleStatus])
   @@index([compositionMode])
   @@index([consolidatedIntoId])
   @@map("seafood_catalogue_items")
+}
+
+enum CataloguePhotoApprovalStatus {
+  APPROVED
+  PENDING
+  REJECTED
+}
+
+model CataloguePhoto {
+  id                  String                       @id @default(uuid())
+  speciesId           String
+  catalogueItemId     String?
+  title               String
+  scientificName      String
+  jamaicanAliases     String[]                     @default([])
+  imageUrl            String
+  sourceName          String
+  sourceUrl           String
+  photographer        String
+  licenseName         String
+  licenseUrl          String
+  modifications       String
+  requiresAttribution Boolean                      @default(true)
+  approvalStatus      CataloguePhotoApprovalStatus @default(APPROVED)
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+
+  species       Species               @relation(fields: [speciesId], references: [id], onDelete: Restrict)
+  catalogueItem SeafoodCatalogueItem? @relation(fields: [catalogueItemId], references: [id], onDelete: SetNull)
+  products      Product[]
+
+  @@unique([speciesId, imageUrl])
+  @@index([speciesId, approvalStatus])
+  @@index([catalogueItemId])
+  @@map("catalogue_photos")
 }
 
 model CatalogueItemSpecies {
@@ -454,6 +490,8 @@ model Product {
   categoryId        String
   lotId             String?
   catalogueItemId   String?
+  speciesId         String?
+  cataloguePhotoId  String?
   inventoryMode     InventoryMode @default(LEGACY_PRODUCT)
   name              String
   description       String
@@ -479,6 +517,8 @@ model Product {
   category                        Category                      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   lot                             SeafoodLot?                   @relation(fields: [lotId], references: [id], onDelete: Restrict)
   catalogueItem                   SeafoodCatalogueItem?         @relation(fields: [catalogueItemId], references: [id], onDelete: Restrict)
+  species                         Species?                      @relation(fields: [speciesId], references: [id], onDelete: SetNull)
+  cataloguePhoto                  CataloguePhoto?               @relation(fields: [cataloguePhotoId], references: [id], onDelete: SetNull)
   cartItems                       CartItem[]
   orderItems                      OrderItem[]
   requestedInFulfillmentDecisions FulfillmentDecision[]
@@ -497,6 +537,8 @@ model Product {
   @@index([categoryId])
   @@index([lotId])
   @@index([catalogueItemId])
+  @@index([speciesId])
+  @@index([cataloguePhotoId])
   @@map("products")
 }
 
@@ -2464,6 +2506,8 @@ model Species {
   lots                        SeafoodLot[]
   catalogueItemLinks          CatalogueItemSpecies[]
   listingSpeciesDeclarations  VendorDailyListingSpecies[]
+  cataloguePhotos             CataloguePhoto[]
+  products                    Product[]
 
   @@map("species")
 }

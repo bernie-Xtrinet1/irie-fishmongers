@@ -58,6 +58,7 @@ docs
 readme.md
 **/*.md
 !apps/web/public/demo-products/SOURCES.md
+!apps/web/public/catalogue-photos/SOURCES.md
 Irie-Fishmongers-Logo.jpg
 Personal info
 git-repository

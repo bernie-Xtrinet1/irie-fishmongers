@@ -55,6 +55,8 @@ function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWithLot {
     lotId: null,
     lot: null,
     catalogueItemId: null,
+    speciesId: null,
+    cataloguePhotoId: null,
     inventoryMode: 'LEGACY_PRODUCT',
     name: 'Fresh Snapper',
     description: 'Caught this morning off the north coast.',
@@ -484,6 +486,179 @@ describe('ProductsService', () => {
     it('throws when the product does not exist', async () => {
       productsRepository.findById.mockResolvedValue(null);
       await expect(service.getAvailability('missing')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('species and catalogue reference photo library rules', () => {
+    const tilapiaSpecies = {
+      id: 'sp-tilapia',
+      commercialName: 'Tilapia',
+      scientificName: 'Oreochromis niloticus',
+      regulatoryStatus: 'UNRESTRICTED' as const,
+      seasonalStartMonth: null,
+      seasonalEndMonth: null,
+      minimumSizeCm: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const conchSpecies = {
+      ...tilapiaSpecies,
+      id: 'sp-conch',
+      commercialName: 'Conch',
+      scientificName: 'Lobatus gigas',
+      regulatoryStatus: 'RESTRICTED' as const,
+    };
+
+    const tilapiaPhoto = {
+      id: 'photo-tilapia-1',
+      speciesId: 'sp-tilapia',
+      catalogueItemId: 'cat-tilapia',
+      title: 'Nile Tilapia / Red Belly (Oreochromis niloticus)',
+      scientificName: 'Oreochromis niloticus',
+      jamaicanAliases: ['Tilapia', 'Red Belly'],
+      imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+      sourceName: 'Wikimedia Commons',
+      sourceUrl: 'https://commons.wikimedia.org/wiki/File:Oreochromis-niloticus-Nairobi.JPG',
+      photographer: 'Bjørn Christian Tørrissen',
+      licenseName: 'CC BY-SA 3.0',
+      licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0/',
+      modifications: 'Cropped/resized to 900x600 PNG',
+      requiresAttribution: true,
+      approvalStatus: 'APPROVED' as const,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      species: tilapiaSpecies,
+    };
+
+    function createServiceWithPrisma(prismaMock: Record<string, unknown>): ProductsService {
+      return new ProductsService(
+        productsRepository as unknown as ProductsRepository,
+        categoriesRepository as unknown as CategoriesRepository,
+        vendorsRepository as unknown as VendorsRepository,
+        seafoodLotsRepository as unknown as SeafoodLotsRepository,
+        seafoodLotsService as unknown as SeafoodLotsService,
+        vendorPermissionsService as unknown as VendorPermissionsService,
+        vendorDocumentsService as unknown as VendorDocumentsService,
+        marketplaceConfigService as unknown as MarketplaceConfigService,
+        inventoryEventsRepository as unknown as InventoryEventsRepository,
+        inventoryReservations as unknown as InventoryReservationsService,
+        reviewsQueryService as unknown as ReviewsQueryService,
+        prismaMock as any,
+      );
+    }
+
+    it('creates a product with an approved Tilapia catalogue photo and preserves it on price edits', async () => {
+      const prismaMock = {
+        species: { findUnique: jest.fn().mockResolvedValue(tilapiaSpecies) },
+        cataloguePhoto: { findUnique: jest.fn().mockResolvedValue(tilapiaPhoto) },
+      };
+      const svc = createServiceWithPrisma(prismaMock);
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+      const createdRow = buildProduct({
+        name: 'Whole Fresh Tilapia',
+        speciesId: 'sp-tilapia',
+        cataloguePhotoId: 'photo-tilapia-1',
+        imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+      });
+      productsRepository.create.mockResolvedValue({
+        ...createdRow,
+        species: tilapiaSpecies,
+        cataloguePhoto: tilapiaPhoto,
+      });
+
+      const created = await svc.create('user-1', {
+        categoryId: 'cat-1',
+        speciesId: 'sp-tilapia',
+        cataloguePhotoId: 'photo-tilapia-1',
+        name: 'Whole Fresh Tilapia',
+        description: 'Fresh pond-raised Tilapia from St. Elizabeth.',
+        unit: 'PER_POUND',
+        price: 750,
+        quantityAvailable: 20,
+        imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+      });
+
+      expect(created.isCatalogueReferencePhoto).toBe(true);
+      expect(created.cataloguePhotoId).toBe('photo-tilapia-1');
+      expect(created.speciesId).toBe('sp-tilapia');
+      expect(created.cataloguePhoto?.licenseName).toBe('CC BY-SA 3.0');
+
+      productsRepository.findById.mockResolvedValue({
+        ...createdRow,
+        species: tilapiaSpecies,
+        cataloguePhoto: tilapiaPhoto,
+      });
+      productsRepository.update.mockResolvedValue({
+        ...createdRow,
+        price: { toString: () => '800' } as unknown as ProductWithLot['price'],
+        species: tilapiaSpecies,
+        cataloguePhoto: tilapiaPhoto,
+      });
+
+      const updated = await svc.update('user-1', 'product-1', { price: 800 });
+      expect(productsRepository.update).toHaveBeenCalledWith(
+        'product-1',
+        expect.not.objectContaining({ cataloguePhotoId: null }),
+      );
+      expect(updated.cataloguePhotoId).toBe('photo-tilapia-1');
+      expect(updated.isCatalogueReferencePhoto).toBe(true);
+    });
+
+    it('rejects RESTRICTED species such as Conch on standard product creation', async () => {
+      const prismaMock = {
+        species: { findUnique: jest.fn().mockResolvedValue(conchSpecies) },
+        cataloguePhoto: { findUnique: jest.fn() },
+      };
+      const svc = createServiceWithPrisma(prismaMock);
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+
+      await expect(
+        svc.create('user-1', {
+          categoryId: 'cat-1',
+          speciesId: 'sp-conch',
+          name: 'Queen Conch',
+          description: 'Restricted queen conch harvest attempt.',
+          unit: 'PER_POUND',
+          price: 1500,
+          quantityAvailable: 5,
+          imageUrl: 'https://cdn.example.com/conch.jpg',
+        }),
+      ).rejects.toThrow(/RESTRICTED/i);
+    });
+
+    it('clears cataloguePhotoId when switching back to a custom HTTPS image URL', async () => {
+      const prismaMock = {
+        species: { findUnique: jest.fn().mockResolvedValue(tilapiaSpecies) },
+        cataloguePhoto: { findUnique: jest.fn().mockResolvedValue(tilapiaPhoto) },
+      };
+      const svc = createServiceWithPrisma(prismaMock);
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      productsRepository.findById.mockResolvedValue(
+        buildProduct({
+          speciesId: 'sp-tilapia',
+          cataloguePhotoId: 'photo-tilapia-1',
+          imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+        }),
+      );
+      productsRepository.update.mockResolvedValue(
+        buildProduct({
+          speciesId: 'sp-tilapia',
+          cataloguePhotoId: null,
+          imageUrl: 'https://cdn.example.com/vendor-tilapia.jpg',
+        }),
+      );
+
+      const res = await svc.update('user-1', 'product-1', {
+        imageUrl: 'https://cdn.example.com/vendor-tilapia.jpg',
+      });
+      expect(productsRepository.update).toHaveBeenCalledWith(
+        'product-1',
+        expect.objectContaining({ cataloguePhotoId: null }),
+      );
+      expect(res.isCatalogueReferencePhoto).toBe(false);
     });
   });
 });

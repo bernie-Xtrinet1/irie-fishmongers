@@ -1,4 +1,5 @@
 import type {
+  CataloguePhotoOption,
   LandingSite,
   ManagedSpecies,
   Paginated,
@@ -47,6 +48,21 @@ export function fetchLandingSites(): Promise<LandingSite[]> {
 
 export function fetchManagedSpecies(): Promise<ManagedSpecies[]> {
   return apiGet<ManagedSpecies[]>('/species');
+}
+
+export function fetchCataloguePhotos(query?: {
+  speciesId?: string;
+  search?: string;
+}): Promise<CataloguePhotoOption[]> {
+  const params = new URLSearchParams();
+  if (query?.speciesId) {
+    params.set('speciesId', query.speciesId);
+  }
+  if (query?.search?.trim()) {
+    params.set('search', query.search.trim());
+  }
+  const qs = params.toString();
+  return apiGet<CataloguePhotoOption[]>(qs ? `/catalogue/photos?${qs}` : '/catalogue/photos');
 }
 
 export function evaluateRegulatoryEligibility(input: {

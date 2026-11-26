@@ -75,6 +75,8 @@ function buildAffectedOrderItem(overrides: Partial<AffectedOrderItem> = {}): Aff
       categoryId: 'cat-1',
       lotId: 'lot-1',
       catalogueItemId: null,
+      speciesId: null,
+      cataloguePhotoId: null,
       inventoryMode: 'LEGACY_PRODUCT',
       name: 'Fresh Snapper',
       description: 'Caught this morning',

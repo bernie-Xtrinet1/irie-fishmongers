@@ -69,6 +69,8 @@ describe('PriceLockService (createPriceLock structural failures and race-loss re
       categoryId: 'category-1',
       lotId: null,
       catalogueItemId: null,
+      speciesId: null,
+      cataloguePhotoId: null,
       inventoryMode: 'LEGACY_PRODUCT',
       name: 'Snapper',
       description: 'Fresh snapper',

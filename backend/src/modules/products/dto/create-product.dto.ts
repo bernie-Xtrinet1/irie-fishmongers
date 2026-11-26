@@ -1,6 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { ProductUnit } from '@prisma/client';
-import { IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUrl, IsUUID, Min, MinLength } from 'class-validator';
+import { IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min, MinLength } from 'class-validator';
+
+import { IsProductImageUrl } from '../../../common/utils/catalogue-image.util';
 
 export class CreateProductDto {
   @ApiProperty({ required: false, description: 'Category ID - derived from master catalogue item if linked' })
@@ -48,8 +50,24 @@ export class CreateProductDto {
   @Min(0)
   quantityAvailable!: number;
 
+  @ApiProperty({
+    required: false,
+    description: 'Seafood species ID from the managed species catalogue',
+  })
+  @IsOptional()
+  @IsUUID()
+  speciesId?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Approved catalogue reference photo ID selected for this product',
+  })
+  @IsOptional()
+  @IsUUID()
+  cataloguePhotoId?: string;
+
   @ApiProperty({ example: 'https://cdn.iriefishmongers.com/products/snapper.jpg' })
-  @IsUrl()
+  @IsProductImageUrl()
   imageUrl!: string;
 
   @ApiProperty({

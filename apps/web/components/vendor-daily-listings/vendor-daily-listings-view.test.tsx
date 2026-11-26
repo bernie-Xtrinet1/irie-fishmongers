@@ -657,4 +657,70 @@ describe('VendorDailyListingsView', () => {
       /Sample Photo \(Demo\)/i,
     );
   });
+
+  it('rejects catalogue library reference photos on Catch of the Day so actual catch photos remain mandatory', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: vendorUser,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+    const draftWithoutPhotos: DailyListingResponse = {
+      id: 'dl-ref-block',
+      vendorId: 'vendor-1',
+      productId: 'prod-1',
+      catalogueItemId: 'cat-1',
+      lotId: 'lot-safe-1',
+      landingSiteId: null,
+      listingTitle: 'Catch of the Day Draft',
+      description: null,
+      catchDate: safeLot.catchDate,
+      availableFrom: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(),
+      unit: ProductUnit.PER_POUND,
+      price: 1200,
+      currency: 'JMD',
+      quantityUploaded: 10,
+      quantityAvailable: 10,
+      quantityReserved: 0,
+      quantitySold: 0,
+      deliveryAvailable: true,
+      pickupAvailable: true,
+      status: ListingLifecycleStatus.DRAFT,
+      derivedStatus: 'DRAFT',
+      publishedAt: null,
+      withdrawnAt: null,
+      withdrawnReason: null,
+      suspendedAt: null,
+      suspensionReason: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      primaryPhoto: null,
+      photos: [],
+      speciesDeclarations: [],
+    };
+    mockFetchMyListings.mockResolvedValueOnce({
+      items: [draftWithoutPhotos],
+      total: 1,
+      page: 1,
+      limit: 100,
+      totalPages: 1,
+    });
+    mockFetchMyListing.mockResolvedValue(draftWithoutPhotos);
+
+    renderWithQuery();
+    fireEvent.click(await screen.findByRole('button', { name: /Photos \(0\)/i }));
+
+    fireEvent.change(screen.getByLabelText('Actual catch photograph URL *'), {
+      target: {
+        value: 'https://staging.iriefishmongers.com/catalogue-photos/oreochromis-niloticus.png',
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Add catch photo/i }));
+
+    expect(
+      await screen.findByText(/Catalogue reference photos cannot be used for Catch of the Day/i),
+    ).toBeInTheDocument();
+    expect(mockAddPhoto).not.toHaveBeenCalled();
+  });
 });

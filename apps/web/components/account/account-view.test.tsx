@@ -152,7 +152,7 @@ describe('AccountView', () => {
     );
   });
 
-  it('renders a Catch of the Day link to /vendor/daily-listings for signed-in vendors', () => {
+  it('renders Catch of the Day and My Products links for signed-in vendors', () => {
     mockUseAuth.mockReturnValue({
       status: 'authenticated',
       user: vendor,
@@ -163,6 +163,10 @@ describe('AccountView', () => {
     render(<AccountView />);
 
     expect(screen.getByText('Vendor')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'My Products' })).toHaveAttribute(
+      'href',
+      '/vendor/products',
+    );
     expect(screen.getByRole('link', { name: 'Catch of the Day' })).toHaveAttribute(
       'href',
       '/vendor/daily-listings',
@@ -180,6 +184,7 @@ describe('AccountView', () => {
 
     render(<AccountView />);
 
+    expect(screen.queryByRole('link', { name: 'My Products' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Catch of the Day' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'My Deliveries' })).not.toBeInTheDocument();
   });

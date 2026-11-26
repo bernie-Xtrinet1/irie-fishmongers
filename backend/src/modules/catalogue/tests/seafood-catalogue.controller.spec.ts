@@ -84,6 +84,31 @@ describe('SeafoodCatalogue Controllers (Phase 16A)', () => {
       retire: jest.fn().mockResolvedValue({ ...mockItem, lifecycleStatus: CatalogueLifecycleStatus.RETIRED }),
       requestRegulatoryOverride: jest.fn().mockResolvedValue({ id: 'override-1' }),
       approveRegulatoryOverride: jest.fn().mockResolvedValue({ id: 'override-1' }),
+      findApprovedPhotos: jest.fn().mockResolvedValue([
+        {
+          id: 'photo-tilapia-1',
+          speciesId: 'sp-tilapia',
+          catalogueItemId: 'cat-tilapia',
+          title: 'Nile Tilapia / Red Belly (Oreochromis niloticus)',
+          scientificName: 'Oreochromis niloticus',
+          jamaicanAliases: ['Tilapia', 'Red Belly', 'Pond Fish'],
+          imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+          sourceName: 'Wikimedia Commons',
+          sourceUrl: 'https://commons.wikimedia.org/wiki/File:Oreochromis-niloticus-Nairobi.JPG',
+          photographer: 'Bjørn Christian Tørrissen',
+          licenseName: 'CC BY-SA 3.0',
+          licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0/',
+          modifications: 'Cropped/resized to 900x600 PNG',
+          requiresAttribution: true,
+          approvalStatus: 'APPROVED',
+          species: {
+            id: 'sp-tilapia',
+            commercialName: 'Tilapia',
+            scientificName: 'Oreochromis niloticus',
+            regulatoryStatus: RegulatoryStatus.UNRESTRICTED,
+          },
+        },
+      ]),
     };
 
     mockRegulatoryService = {
@@ -116,6 +141,16 @@ describe('SeafoodCatalogue Controllers (Phase 16A)', () => {
       const res = await publicController.getById('item-1');
       expect(res.id).toBe('item-1');
       expect(mockCatalogueService.findById).toHaveBeenCalledWith('item-1', true);
+    });
+
+    it('lists approved species catalogue photos with rights and aliases', async () => {
+      const res = await publicController.browsePhotos({ search: 'Red Belly' });
+      expect(res).toHaveLength(1);
+      expect(res[0]!.imageUrl).toBe('/catalogue-photos/oreochromis-niloticus.png');
+      expect(res[0]!.licenseName).toBe('CC BY-SA 3.0');
+      expect(mockCatalogueService.findApprovedPhotos).toHaveBeenCalledWith({
+        search: 'Red Belly',
+      });
     });
 
     it('evaluates regulatory eligibility', async () => {

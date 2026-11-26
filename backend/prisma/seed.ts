@@ -3,12 +3,13 @@ import {
   NotificationEventType,
   Parish,
   PrismaClient,
-  RegulatoryStatus,
   RoleName,
   SeafoodStorageType,
   VendorTier,
   VendorTierFeatureFlag,
 } from '@prisma/client';
+
+import { seedCataloguePhotoLibrary } from './catalogue-photo-seed';
 
 const prisma = new PrismaClient();
 
@@ -374,20 +375,8 @@ const NOTIFICATION_TEMPLATES: {
   },
 ];
 
-// seafood-compliance-rules.md's own species examples; Conch is seeded
-// RESTRICTED per the same doc's regulatory-status example.
-const SPECIES: {
-  scientificName: string;
-  commercialName: string;
-  regulatoryStatus: RegulatoryStatus;
-}[] = [
-  { scientificName: 'Lutjanus analis', commercialName: 'Snapper', regulatoryStatus: 'UNRESTRICTED' },
-  { scientificName: 'Scomberomorus cavalla', commercialName: 'King Fish', regulatoryStatus: 'UNRESTRICTED' },
-  { scientificName: 'Scomber scombrus', commercialName: 'Mackerel', regulatoryStatus: 'UNRESTRICTED' },
-  { scientificName: 'Panulirus argus', commercialName: 'Lobster', regulatoryStatus: 'UNRESTRICTED' },
-  { scientificName: 'Penaeus spp.', commercialName: 'Shrimp', regulatoryStatus: 'UNRESTRICTED' },
-  { scientificName: 'Lobatus gigas', commercialName: 'Conch', regulatoryStatus: 'RESTRICTED' },
-];
+// Note: Species list, master catalogue items (including Jamaican market aliases),
+// and verified CataloguePhoto library live in ./catalogue-photo-seed.ts.
 
 // seafood-compliance-rules.md's own regulatory-alignment examples -
 // starting reference rows so RegulatoryCertification.issuingAuthorityId
@@ -524,13 +513,7 @@ async function main(): Promise<void> {
     }
   }
 
-  for (const species of SPECIES) {
-    await prisma.species.upsert({
-      where: { scientificName: species.scientificName },
-      update: { commercialName: species.commercialName, regulatoryStatus: species.regulatoryStatus },
-      create: species,
-    });
-  }
+  await seedCataloguePhotoLibrary(prisma);
 
   for (const authority of REGULATORY_AUTHORITIES) {
     await prisma.regulatoryAuthority.upsert({

@@ -143,7 +143,7 @@ export function VendorListingPhotoStep({
             <p>
               The platform does not have cloud object storage / multipart upload wired yet; the{' '}
               <code>/api/v1/vendor/daily-listings/:id/photos</code> endpoint records hosted{' '}
-              <code>https://</code> image URLs for storefront rendering.
+              <code>https://</code> image URLs of today&apos;s actual catch (library catalogue reference photos cannot be used here).
             </p>
           </div>
         </div>

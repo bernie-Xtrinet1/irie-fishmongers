@@ -74,6 +74,8 @@ describe('PriceLockService (createPriceLock)', () => {
       categoryId: 'category-1',
       lotId: null,
       catalogueItemId: null,
+      speciesId: null,
+      cataloguePhotoId: null,
       inventoryMode: 'LEGACY_PRODUCT',
       name: 'Snapper',
       description: 'Fresh snapper',

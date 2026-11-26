@@ -15,6 +15,8 @@ export function buildProduct(overrides: Partial<ProductWithLot> = {}): ProductWi
     lotId: null,
     lot: null,
     catalogueItemId: null,
+    speciesId: null,
+    cataloguePhotoId: null,
     inventoryMode: 'LEGACY_PRODUCT',
     name: 'Fresh Snapper',
     description: 'Caught this morning.',

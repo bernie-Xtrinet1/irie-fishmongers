@@ -5,9 +5,15 @@ import Image from 'next/image';
 import Link from 'next/link';
 
 import { ApiError } from '@/lib/api-client';
-import { formatComplianceBand, formatEnumLabel, formatRelativeTime } from '@/lib/format';
+import {
+  formatComplianceBand,
+  formatEnumLabel,
+  formatRelativeTime,
+  getProductImageBadgeKind,
+} from '@/lib/format';
 import { useVendorProducts } from '@/lib/hooks/use-vendor-products';
 import { useVendorProfile } from '@/lib/hooks/use-vendor-profile';
+import { ProductPhotoBadge } from '@/components/marketplace/product-photo-badge';
 import { ReviewList } from '@/components/reviews/review-list';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -121,6 +127,10 @@ export function VendorProfileView({ vendorId }: { vendorId: string }): React.Rea
               >
                 <div className="relative aspect-square overflow-hidden rounded-md bg-gray-100">
                   <Image src={product.imageUrl} alt={product.name} fill className="object-cover" />
+                  <ProductPhotoBadge
+                    kind={getProductImageBadgeKind(product)}
+                    className="absolute bottom-1.5 left-1.5"
+                  />
                 </div>
                 <p className="mt-2 truncate text-sm font-medium text-gray-900">{product.name}</p>
                 <p className="text-sm text-irie-green">

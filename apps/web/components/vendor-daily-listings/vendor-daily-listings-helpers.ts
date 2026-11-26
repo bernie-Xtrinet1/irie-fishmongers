@@ -12,6 +12,8 @@ import {
   type VendorComplianceStatus,
 } from '@iriefishmongers/types';
 
+import { isCatalogueReferencePhotoUrl } from '@/lib/format';
+
 export type WorkflowStep = 'draft' | 'photo' | 'review' | 'publish';
 
 export const WORKFLOW_STEPS: ReadonlyArray<{ id: WorkflowStep; number: number; label: string }> = [
@@ -132,6 +134,10 @@ export function validateCatchPhotoUrl(rawUrl: string): string | null {
 
   if (parsed.protocol !== 'https:') {
     return 'Storefront catch images require an https:// URL (local file uploads and http:// URLs are not supported).';
+  }
+
+  if (isCatalogueReferencePhotoUrl(trimmed)) {
+    return 'Catalogue reference photos cannot be used for Catch of the Day. Upload an actual photograph of this seafood lot before publishing.';
   }
 
   return null;

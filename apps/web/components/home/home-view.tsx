@@ -12,12 +12,14 @@ import Image from 'next/image';
 import Link from 'next/link';
 
 import { AvailableTodayCard } from '@/components/marketplace/available-today-card';
+import { StorefrontPhotoCreditsNotice } from '@/components/marketplace/demo-photo-credit';
 import { ListingDetailModal } from '@/components/marketplace/listing-detail-modal';
+import { ProductPhotoBadge } from '@/components/marketplace/product-photo-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
+import { formatEnumLabel, getProductImageBadgeKind } from '@/lib/format';
 import { useAvailableToday } from '@/lib/hooks/use-available-today';
 import { useProducts } from '@/lib/hooks/use-products';
 
@@ -30,7 +32,7 @@ function formatPrice(product: ProductResponse): string {
 
 function ProductCard({ product }: { product: ProductResponse }): React.ReactElement {
   const outOfStock = product.availability !== ProductAvailability.ACTIVE;
-  const isSamplePhoto = isDemoSamplePhotoUrl(product.imageUrl);
+  const badgeKind = getProductImageBadgeKind(product);
   return (
     <Link href={`/products/${product.id}`} className="group focus:outline-none">
       <Card className="h-full overflow-hidden transition-shadow group-hover:shadow-md group-focus-visible:ring-2 group-focus-visible:ring-irie-green">
@@ -42,14 +44,7 @@ function ProductCard({ product }: { product: ProductResponse }): React.ReactElem
             className="object-cover"
             sizes="(max-width: 768px) 50vw, 25vw"
           />
-          {isSamplePhoto ? (
-            <Badge
-              variant="warning"
-              className="absolute left-2 top-2 bg-amber-600/95 text-white shadow-xs"
-            >
-              Sample Photo (Demo)
-            </Badge>
-          ) : null}
+          <ProductPhotoBadge kind={badgeKind} className="absolute bottom-2 left-2" />
         </div>
         <CardContent className="space-y-1 p-4">
           <h2 className="line-clamp-1 font-medium text-gray-900">{product.name}</h2>
@@ -289,6 +284,8 @@ export function HomeView(): React.ReactElement {
           </ul>
         )}
       </section>
+
+      <StorefrontPhotoCreditsNotice />
     </main>
   );
 }

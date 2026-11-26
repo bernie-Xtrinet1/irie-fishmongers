@@ -11,10 +11,12 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { EvaluateRegulatoryEligibilityDto } from '../dto/evaluate-regulatory.dto';
 import { QueryCatalogueDto } from '../dto/query-catalogue.dto';
+import { QueryCataloguePhotosDto } from '../dto/query-catalogue-photos.dto';
 import {
   LinkedSpeciesEntity,
   SeafoodCatalogueItemResponseEntity,
 } from '../entities/catalogue-item-response.entity';
+import { CataloguePhotoEntity } from '../entities/catalogue-photo.entity';
 import { RegulatoryEvaluationResultEntity } from '../entities/regulatory-evaluation.entity';
 import { CatalogueItemWithDetails } from '../repositories/seafood-catalogue.repository';
 import { RegulatoryEligibilityService } from '../services/regulatory-eligibility.service';
@@ -40,6 +42,40 @@ export class SeafoodCatalogueController {
         limit: result.limit,
       },
     };
+  }
+
+  @Get('photos')
+  @ApiOperation({
+    summary:
+      'Search approved species catalogue reference photos by speciesId or English/Jamaican/scientific term',
+  })
+  async browsePhotos(@Query() query: QueryCataloguePhotosDto): Promise<CataloguePhotoEntity[]> {
+    const photos = await this.catalogueService.findApprovedPhotos(query);
+    return photos.map((photo) => ({
+      id: photo.id,
+      speciesId: photo.speciesId,
+      catalogueItemId: photo.catalogueItemId,
+      title: photo.title,
+      scientificName: photo.scientificName,
+      jamaicanAliases: photo.jamaicanAliases,
+      imageUrl: photo.imageUrl,
+      sourceName: photo.sourceName,
+      sourceUrl: photo.sourceUrl,
+      photographer: photo.photographer,
+      licenseName: photo.licenseName,
+      licenseUrl: photo.licenseUrl,
+      modifications: photo.modifications,
+      requiresAttribution: photo.requiresAttribution,
+      approvalStatus: photo.approvalStatus,
+      species: photo.species
+        ? {
+            id: photo.species.id,
+            commercialName: photo.species.commercialName,
+            scientificName: photo.species.scientificName,
+            regulatoryStatus: photo.species.regulatoryStatus,
+          }
+        : undefined,
+    }));
   }
 
   @Get(':id')

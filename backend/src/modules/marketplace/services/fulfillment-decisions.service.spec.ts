@@ -45,6 +45,8 @@ function buildCandidate(overrides: Partial<ProductCandidate> = {}): ProductCandi
     categoryId: 'cat-1',
     lotId: null,
     catalogueItemId: null,
+    speciesId: null,
+    cataloguePhotoId: null,
     inventoryMode: 'LEGACY_PRODUCT',
     name: 'Fresh Snapper',
     description: 'desc',

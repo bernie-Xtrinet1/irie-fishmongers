@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 
+import { DemoPhotoCreditLine } from '@/components/marketplace/demo-photo-credit';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -264,9 +265,10 @@ export function ListingDetailModal({
 
                     {/* Listing Photographs */}
                     {activeListing.photos && activeListing.photos.length > 0 && (() => {
-                      const hasSampleDemoPhoto = activeListing.photos.some((photo) =>
+                      const firstSamplePhotoUrl = activeListing.photos.find((photo) =>
                         isDemoSamplePhotoUrl(photo.url),
-                      );
+                      )?.url;
+                      const hasSampleDemoPhoto = Boolean(firstSamplePhotoUrl);
                       return (
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
@@ -284,9 +286,12 @@ export function ListingDetailModal({
                             )}
                           </div>
                           {hasSampleDemoPhoto && (
-                            <p className="mt-1 text-xs text-amber-800">
-                              Sample photo shown for demonstration purposes.
-                            </p>
+                            <div className="mt-1 space-y-1">
+                              <p className="text-xs text-amber-800">
+                                Sample photo shown for demonstration purposes.
+                              </p>
+                              <DemoPhotoCreditLine imageUrl={firstSamplePhotoUrl} />
+                            </div>
                           )}
                           <div className="mt-2 flex gap-3 overflow-x-auto pb-2">
                             {activeListing.photos.map((photo) => {

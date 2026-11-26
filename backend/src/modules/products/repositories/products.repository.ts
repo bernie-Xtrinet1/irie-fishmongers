@@ -1,5 +1,11 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { InventoryMode, Prisma, ProductUnit } from '@prisma/client';
+import {
+  CataloguePhoto,
+  InventoryMode,
+  Prisma,
+  ProductUnit,
+  Species,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -9,13 +15,29 @@ const productWithLot = Prisma.validator<Prisma.ProductDefaultArgs>()({
   include: { lot: true },
 });
 
+const productWithCatalogueDetails = Prisma.validator<Prisma.ProductDefaultArgs>()({
+  include: {
+    lot: true,
+    species: true,
+    cataloguePhoto: {
+      include: { species: true },
+    },
+  },
+});
+
 export type ProductWithLot = Prisma.ProductGetPayload<typeof productWithLot>;
+export type ProductWithCatalogue = ProductWithLot & {
+  species?: Species | null;
+  cataloguePhoto?: (CataloguePhoto & { species?: Species | null }) | null;
+};
 
 export interface CreateProductInput {
   vendorId: string;
   categoryId: string;
   lotId?: string;
   catalogueItemId?: string;
+  speciesId?: string | null;
+  cataloguePhotoId?: string | null;
   name: string;
   description: string;
   unit: ProductUnit;
@@ -28,6 +50,9 @@ export interface CreateProductInput {
 export interface UpdateProductInput {
   categoryId?: string;
   catalogueItemId?: string;
+  lotId?: string | null;
+  speciesId?: string | null;
+  cataloguePhotoId?: string | null;
   name?: string;
   description?: string;
   unit?: ProductUnit;
@@ -52,34 +77,43 @@ export interface Page {
 export class ProductsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(input: CreateProductInput): Promise<ProductWithLot> {
-    return this.prisma.product.create({ data: input, include: productWithLot.include });
-  }
-
-  findById(id: string, client: PrismaClientOrTx = this.prisma): Promise<ProductWithLot | null> {
-    return client.product.findUnique({ where: { id }, include: productWithLot.include });
-  }
-
-  update(id: string, input: UpdateProductInput): Promise<ProductWithLot> {
-    return this.prisma.product.update({
-      where: { id },
+  create(input: CreateProductInput): Promise<ProductWithCatalogue> {
+    return this.prisma.product.create({
       data: input,
-      include: productWithLot.include,
+      include: productWithCatalogueDetails.include,
     });
   }
 
-  setActive(id: string, isActive: boolean): Promise<ProductWithLot> {
+  findById(
+    id: string,
+    client: PrismaClientOrTx = this.prisma,
+  ): Promise<ProductWithCatalogue | null> {
+    return client.product.findUnique({
+      where: { id },
+      include: productWithCatalogueDetails.include,
+    });
+  }
+
+  update(id: string, input: UpdateProductInput): Promise<ProductWithCatalogue> {
+    return this.prisma.product.update({
+      where: { id },
+      data: input,
+      include: productWithCatalogueDetails.include,
+    });
+  }
+
+  setActive(id: string, isActive: boolean): Promise<ProductWithCatalogue> {
     return this.prisma.product.update({
       where: { id },
       data: { isActive },
-      include: productWithLot.include,
+      include: productWithCatalogueDetails.include,
     });
   }
 
   async findMany(
     filters: ProductSearchFilters,
     page: Page,
-  ): Promise<{ items: ProductWithLot[]; total: number }> {
+  ): Promise<{ items: ProductWithCatalogue[]; total: number }> {
     const conditions: Prisma.ProductWhereInput[] = [];
 
     if (filters.activeOnly) {
@@ -109,7 +143,7 @@ export class ProductsRepository {
     const [items, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: productWithLot.include,
+        include: productWithCatalogueDetails.include,
         skip: page.skip,
         take: page.take,
         orderBy: [{ quantityAvailable: 'desc' }, { createdAt: 'desc' }],
@@ -130,7 +164,7 @@ export class ProductsRepository {
     id: string,
     delta: number,
     client: PrismaClientOrTx = this.prisma,
-  ): Promise<ProductWithLot> {
+  ): Promise<ProductWithCatalogue> {
     if (delta < 0) {
       const result = await client.product.updateMany({
         where: { id, quantityAvailable: { gte: -delta } },
@@ -146,7 +180,10 @@ export class ProductsRepository {
       });
     }
 
-    return client.product.findUniqueOrThrow({ where: { id }, include: productWithLot.include });
+    return client.product.findUniqueOrThrow({
+      where: { id },
+      include: productWithCatalogueDetails.include,
+    });
   }
 
   // 12B Inventory Analytics: narrow select of exactly the fields

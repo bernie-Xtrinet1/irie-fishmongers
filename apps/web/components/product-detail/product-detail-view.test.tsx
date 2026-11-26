@@ -373,4 +373,49 @@ describe('ProductDetailView', () => {
     ).toBeInTheDocument();
     expect(mockAddCartItem).not.toHaveBeenCalled();
   });
+
+  it('displays Catalogue reference photo badge and photo rights credits on library-linked products', async () => {
+    mockFetchProductDetail.mockResolvedValue({
+      ...baseProduct,
+      id: 'prod-tilapia-1',
+      name: 'Fresh Whole Red Tilapia',
+      speciesId: 'sp-tilapia',
+      speciesName: 'Tilapia (Oreochromis niloticus)',
+      cataloguePhotoId: 'cp-tilapia-1',
+      isCatalogueReferencePhoto: true,
+      imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+      cataloguePhoto: {
+        id: 'cp-tilapia-1',
+        speciesId: 'sp-tilapia',
+        catalogueItemId: null,
+        title: 'Nile / Red Tilapia (Oreochromis niloticus)',
+        scientificName: 'Oreochromis niloticus',
+        jamaicanAliases: ['Tilapia', 'Red Tilapia', 'Red Belly'],
+        imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+        sourceName: 'Wikimedia Commons · File:Oreochromis-niloticus-Nairobi.JPG',
+        sourceUrl: 'https://commons.wikimedia.org/wiki/File:Oreochromis-niloticus-Nairobi.JPG',
+        photographer: 'Bjørn Christian Tørrissen',
+        licenseName: 'CC BY-SA 3.0',
+        licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0/',
+        modifications: 'Cropped/resized to 900x600 landscape PNG with neutral border padding',
+        requiresAttribution: true,
+        approvalStatus: 'APPROVED',
+      },
+      lot: null,
+    });
+
+    renderWithClient(<ProductDetailView productId="prod-tilapia-1" />);
+
+    expect(await screen.findByText('Fresh Whole Red Tilapia')).toBeInTheDocument();
+    expect(screen.getByTestId('product-catalogue-reference-badge')).toHaveTextContent(
+      'Catalogue reference photo',
+    );
+    const creditLine = screen.getByTestId('demo-photo-credit-line');
+    expect(creditLine).toHaveTextContent('Bjørn Christian Tørrissen');
+    expect(creditLine).toHaveTextContent('CC BY-SA 3.0');
+    expect(screen.getByRole('link', { name: 'Photo credits & licences' })).toHaveAttribute(
+      'href',
+      '/photo-credits',
+    );
+  });
 });

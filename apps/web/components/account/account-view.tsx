@@ -126,15 +126,23 @@ export function AccountView(): React.ReactElement {
                 Vendor workspace
               </h2>
               <p className="mt-1 text-sm text-gray-600">
-                Create daily seafood listings from your verified lots, attach catch photos, and publish to Available Today.
+                Manage standard seafood products or publish daily Catch of the Day listings from verified lots.
               </p>
             </div>
-            <Link
-              href="/vendor/daily-listings"
-              className="inline-flex h-11 shrink-0 items-center justify-center rounded-button bg-irie-green px-5 text-sm font-medium text-white transition-colors hover:bg-irie-green/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-irie-green focus-visible:ring-offset-2"
-            >
-              Catch of the Day
-            </Link>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                href="/vendor/products"
+                className="inline-flex h-11 shrink-0 items-center justify-center rounded-button border border-irie-green bg-white px-5 text-sm font-medium text-irie-green transition-colors hover:bg-irie-green/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-irie-green focus-visible:ring-offset-2"
+              >
+                My Products
+              </Link>
+              <Link
+                href="/vendor/daily-listings"
+                className="inline-flex h-11 shrink-0 items-center justify-center rounded-button bg-irie-green px-5 text-sm font-medium text-white transition-colors hover:bg-irie-green/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-irie-green focus-visible:ring-offset-2"
+              >
+                Catch of the Day
+              </Link>
+            </div>
           </div>
         </section>
       ) : null}

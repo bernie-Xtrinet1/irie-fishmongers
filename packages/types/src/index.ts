@@ -77,11 +77,79 @@ export enum ReviewModerationStatus {
   REMOVED_BY_ADMIN = 'REMOVED_BY_ADMIN',
 }
 
+export interface CataloguePhotoSpecies {
+  id: string;
+  commercialName: string;
+  scientificName: string;
+  regulatoryStatus: string;
+}
+
+export interface CataloguePhotoOption {
+  id: string;
+  speciesId: string;
+  catalogueItemId: string | null;
+  title: string;
+  scientificName: string;
+  jamaicanAliases: string[];
+  imageUrl: string;
+  sourceName: string;
+  sourceUrl: string;
+  photographer: string;
+  licenseName: string;
+  licenseUrl: string;
+  modifications: string;
+  requiresAttribution: boolean;
+  approvalStatus: 'APPROVED' | 'PENDING' | 'REJECTED';
+  species?: CataloguePhotoSpecies;
+}
+
+export interface CategoryOption {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface CreateProductInput {
+  categoryId?: string;
+  catalogueItemId?: string;
+  lotId?: string;
+  speciesId?: string;
+  cataloguePhotoId?: string;
+  name: string;
+  description: string;
+  unit: ProductUnit;
+  price: number;
+  quantityAvailable: number;
+  imageUrl: string;
+  weightLbs?: number;
+}
+
+export interface UpdateProductInput {
+  categoryId?: string;
+  catalogueItemId?: string;
+  lotId?: string;
+  speciesId?: string | null;
+  cataloguePhotoId?: string | null;
+  name?: string;
+  description?: string;
+  unit?: ProductUnit;
+  price?: number;
+  imageUrl?: string;
+  weightLbs?: number;
+}
+
 export interface ProductResponse {
   id: string;
   vendorId: string;
   categoryId: string;
   lotId: string | null;
+  catalogueItemId?: string | null;
+  speciesId?: string | null;
+  speciesName?: string | null;
+  cataloguePhotoId?: string | null;
+  isCatalogueReferencePhoto?: boolean;
+  cataloguePhoto?: CataloguePhotoOption | null;
+  weightLbs?: string | null;
   name: string;
   description: string;
   unit: ProductUnit;

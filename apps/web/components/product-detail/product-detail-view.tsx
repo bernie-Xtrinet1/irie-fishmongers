@@ -17,10 +17,11 @@ import { ApiError } from '@/lib/api-client';
 import { addCartItem } from '@/lib/api/cart';
 import { useAuth } from '@/lib/auth/auth-context';
 import { resolveBestVendor } from '@/lib/api/marketplace';
-import { formatComplianceBand, formatDate, formatEnumLabel, isDemoSamplePhotoUrl } from '@/lib/format';
+import { formatComplianceBand, formatDate, formatEnumLabel, getProductImageBadgeKind } from '@/lib/format';
 import { useProductDetail } from '@/lib/hooks/use-product-detail';
 import { ProductReviewsSection } from './product-reviews-section';
-import { Badge } from '@/components/ui/badge';
+import { DemoPhotoCreditLine } from '@/components/marketplace/demo-photo-credit';
+import { ProductPhotoBadge } from '@/components/marketplace/product-photo-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -102,27 +103,30 @@ export function ProductDetailView({ productId }: { productId: string }): React.R
   }
 
   const product = data;
+  const badgeKind = getProductImageBadgeKind(product);
   const purchaseDisabled = purchaseOption === 'BEST_AVAILABLE_VENDOR' && !deliveryParish;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10">
       <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
-        <div className="relative aspect-square overflow-hidden rounded-card bg-gray-100">
-          <Image src={product.imageUrl} alt={product.name} fill className="object-cover" />
-          {isDemoSamplePhotoUrl(product.imageUrl) ? (
-            <Badge
-              variant="warning"
-              className="absolute left-3 top-3 bg-amber-600/95 text-white shadow-xs"
-              data-testid="product-sample-photo-badge"
-            >
-              Sample Photo (Demo)
-            </Badge>
-          ) : null}
+        <div className="space-y-2">
+          <div className="relative aspect-square overflow-hidden rounded-card bg-gray-100">
+            <Image src={product.imageUrl} alt={product.name} fill className="object-cover" />
+            <ProductPhotoBadge kind={badgeKind} className="absolute left-3 top-3" />
+          </div>
+          <DemoPhotoCreditLine
+            imageUrl={product.imageUrl}
+            catalogueCredit={product.cataloguePhoto}
+          />
         </div>
 
         <div>
           <h1 className="text-3xl font-semibold text-gray-900">{product.name}</h1>
-          {product.lot ? <p className="mt-1 text-gray-500">{product.lot.species}</p> : null}
+          {product.lot ? (
+            <p className="mt-1 text-gray-500">{product.lot.species}</p>
+          ) : product.speciesName ? (
+            <p className="mt-1 text-gray-500">{product.speciesName}</p>
+          ) : null}
           <p className="mt-4 text-2xl font-semibold text-irie-green">
             {product.currency} ${product.price}
           </p>

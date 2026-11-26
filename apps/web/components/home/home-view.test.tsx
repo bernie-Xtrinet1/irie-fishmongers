@@ -204,4 +204,34 @@ describe('HomeView', () => {
     expect(parishSelect).toHaveValue('');
     expect(deliveryCheckbox).not.toBeChecked();
   });
+
+  it('labels catalogue library products as Catalogue reference photo and demo products as Sample Photo (Demo)', async () => {
+    mockFetchProducts.mockResolvedValue(
+      page([
+        product({
+          id: 'p-tilapia',
+          name: 'Fresh Red Tilapia',
+          imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+          cataloguePhotoId: 'photo-tilapia-1',
+          isCatalogueReferencePhoto: true,
+        }),
+        product({
+          id: 'p-demo',
+          name: 'Demo Snapper Pack',
+          imageUrl: '/demo-products/red-snapper.png',
+        }),
+      ]),
+    );
+    mockFetchAvailableToday.mockResolvedValue(availablePage([]));
+
+    renderView();
+
+    await waitFor(() => expect(screen.getByText('Fresh Red Tilapia')).toBeInTheDocument());
+    expect(screen.getByTestId('product-catalogue-reference-badge')).toHaveTextContent(
+      'Catalogue reference photo',
+    );
+    expect(screen.getByTestId('product-sample-photo-badge')).toHaveTextContent(
+      'Sample Photo (Demo)',
+    );
+  });
 });

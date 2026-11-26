@@ -2,10 +2,12 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   CatalogueCompositionMode,
   CatalogueLifecycleStatus,
+  CataloguePhotoApprovalStatus,
   CatalogueRetirementReason,
   Prisma,
   ProductUnit,
   RegulatoryOverrideReason,
+  RegulatoryStatus,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
@@ -350,14 +352,76 @@ export class SeafoodCatalogueRepository {
 
     if (filters.search) {
       const term = filters.search.trim();
+      const aliasVariants = Array.from(
+        new Set([
+          term,
+          term.toLowerCase(),
+          term.toUpperCase(),
+          term.replace(/\b\w/g, (ch) => ch.toUpperCase()),
+        ]),
+      );
       where.OR = [
         { name: { contains: term, mode: 'insensitive' } },
         { commonName: { contains: term, mode: 'insensitive' } },
         { scientificName: { contains: term, mode: 'insensitive' } },
-        { jamaicanNames: { has: term } },
+        { jamaicanNames: { hasSome: aliasVariants } },
+        {
+          speciesLinks: {
+            some: {
+              species: {
+                OR: [
+                  { commercialName: { contains: term, mode: 'insensitive' } },
+                  { scientificName: { contains: term, mode: 'insensitive' } },
+                ],
+              },
+            },
+          },
+        },
       ];
     }
 
     return where;
+  }
+
+  async findApprovedPhotos(filters: { speciesId?: string; search?: string }) {
+    const photos = await this.prisma.cataloguePhoto.findMany({
+      where: {
+        approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+        ...(filters.speciesId ? { speciesId: filters.speciesId } : {}),
+        species: {
+          regulatoryStatus: RegulatoryStatus.UNRESTRICTED,
+        },
+      },
+      include: {
+        species: true,
+        catalogueItem: {
+          select: {
+            id: true,
+            commonName: true,
+            jamaicanNames: true,
+            lifecycleStatus: true,
+          },
+        },
+      },
+      orderBy: [{ species: { commercialName: 'asc' } }, { title: 'asc' }],
+    });
+
+    const term = filters.search?.trim().toLowerCase();
+    if (!term) {
+      return photos;
+    }
+
+    return photos.filter((photo) => {
+      const haystacks: string[] = [
+        photo.title,
+        photo.scientificName,
+        photo.species.commercialName,
+        photo.species.scientificName,
+        ...photo.jamaicanAliases,
+        ...(photo.catalogueItem?.jamaicanNames ?? []),
+        photo.catalogueItem?.commonName ?? '',
+      ];
+      return haystacks.some((value) => value.toLowerCase().includes(term));
+    });
   }
 }

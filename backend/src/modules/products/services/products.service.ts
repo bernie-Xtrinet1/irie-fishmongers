@@ -5,7 +5,12 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { InventoryEventType, SeafoodLot } from '@prisma/client';
+import {
+  CataloguePhotoApprovalStatus,
+  InventoryEventType,
+  RegulatoryStatus,
+  SeafoodLot,
+} from '@prisma/client';
 
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { PrismaService } from '../../../database/prisma.service';
@@ -28,7 +33,11 @@ import { PaginatedProductsEntity } from '../entities/paginated-products.entity';
 import { ProductDetailEntity } from '../entities/product-detail.entity';
 import { ProductAvailability, ProductResponseEntity } from '../entities/product-response.entity';
 import { CategoriesRepository } from '../repositories/categories.repository';
-import { ProductsRepository, ProductWithLot } from '../repositories/products.repository';
+import {
+  ProductsRepository,
+  ProductWithCatalogue,
+  ProductWithLot,
+} from '../repositories/products.repository';
 
 // Structural subset of ProductWithLot that computeAvailability() actually
 // needs - lets 12B Inventory Analytics pass a narrow Prisma `select`
@@ -96,22 +105,26 @@ export class ProductsService {
     await this.vendorPermissionsService.assertListingLimitNotExceeded(vendor.id, vendor.tier);
 
     if (dto.lotId) {
-      const lot = await this.seafoodLotsRepository.findById(dto.lotId);
-      if (!lot || lot.vendorId !== vendor.id) {
-        throw new BadRequestException('Seafood lot does not exist or does not belong to you');
-      }
-      if (lot.foodSafetyStatus !== 'SAFE') {
-        throw new BadRequestException(
-          'This seafood lot is not currently cleared for sale (must be SAFE)',
-        );
-      }
-      this.seafoodLotsService.assertSellable(lot);
+      await this.assertOwnedSellableLot(vendor.id, dto.lotId);
     }
+
+    const mediaAndSpecies = await this.resolveSpeciesAndCataloguePhoto({
+      requestedSpeciesId: dto.speciesId,
+      requestedCataloguePhotoId: dto.cataloguePhotoId,
+      requestedImageUrl: dto.imageUrl,
+    });
 
     const product = await this.productsRepository.create({
       ...dto,
       categoryId: finalCategoryId,
       vendorId: vendor.id,
+      ...(mediaAndSpecies.speciesId !== undefined
+        ? { speciesId: mediaAndSpecies.speciesId }
+        : {}),
+      ...(mediaAndSpecies.cataloguePhotoId !== undefined
+        ? { cataloguePhotoId: mediaAndSpecies.cataloguePhotoId }
+        : {}),
+      imageUrl: mediaAndSpecies.imageUrl ?? dto.imageUrl,
     });
     return ProductsService.toResponse(product);
   }
@@ -153,11 +166,142 @@ export class ProductsService {
       }
     }
 
+    if (dto.lotId) {
+      await this.assertOwnedSellableLot(product.vendorId, dto.lotId);
+    }
+
+    const mediaAndSpecies = await this.resolveSpeciesAndCataloguePhoto({
+      requestedSpeciesId: dto.speciesId,
+      requestedCataloguePhotoId: dto.cataloguePhotoId,
+      requestedImageUrl: dto.imageUrl,
+      existingProduct: product,
+    });
+
     const updated = await this.productsRepository.update(product.id, {
       ...dto,
       categoryId: finalCategoryId,
+      ...(mediaAndSpecies.speciesId !== undefined
+        ? { speciesId: mediaAndSpecies.speciesId }
+        : {}),
+      ...(mediaAndSpecies.cataloguePhotoId !== undefined
+        ? { cataloguePhotoId: mediaAndSpecies.cataloguePhotoId }
+        : {}),
+      ...(mediaAndSpecies.imageUrl !== undefined
+        ? { imageUrl: mediaAndSpecies.imageUrl }
+        : {}),
     });
     return ProductsService.toResponse(updated);
+  }
+
+  private async assertOwnedSellableLot(vendorId: string, lotId: string): Promise<void> {
+    const lot = await this.seafoodLotsRepository.findById(lotId);
+    if (!lot || lot.vendorId !== vendorId) {
+      throw new BadRequestException('Seafood lot does not exist or does not belong to you');
+    }
+    if (lot.foodSafetyStatus !== 'SAFE') {
+      throw new BadRequestException(
+        'This seafood lot is not currently cleared for sale (must be SAFE)',
+      );
+    }
+    this.seafoodLotsService.assertSellable(lot);
+  }
+
+  private async resolveSpeciesAndCataloguePhoto(params: {
+    requestedSpeciesId?: string | null;
+    requestedCataloguePhotoId?: string | null;
+    requestedImageUrl?: string;
+    existingProduct?: ProductWithCatalogue | ProductWithLot;
+  }): Promise<{
+    speciesId?: string | null;
+    cataloguePhotoId?: string | null;
+    imageUrl?: string;
+  }> {
+    const {
+      requestedSpeciesId,
+      requestedCataloguePhotoId,
+      requestedImageUrl,
+      existingProduct,
+    } = params;
+
+    let resolvedSpeciesId: string | null | undefined = requestedSpeciesId;
+
+    if (typeof requestedSpeciesId === 'string') {
+      if (!this.prisma) {
+        throw new BadRequestException('Species verification unavailable');
+      }
+      const species = await this.prisma.species.findUnique({ where: { id: requestedSpeciesId } });
+      if (!species) {
+        throw new BadRequestException('Selected seafood species does not exist');
+      }
+      if (species.regulatoryStatus !== RegulatoryStatus.UNRESTRICTED) {
+        throw new BadRequestException(
+          `Species ${species.commercialName} (${species.scientificName}) is ${species.regulatoryStatus} and cannot be listed without regulatory clearance`,
+        );
+      }
+    }
+
+    if (typeof requestedCataloguePhotoId === 'string') {
+      if (!this.prisma) {
+        throw new BadRequestException('Catalogue photo verification unavailable');
+      }
+      const photo = await this.prisma.cataloguePhoto.findUnique({
+        where: { id: requestedCataloguePhotoId },
+        include: { species: true },
+      });
+      if (!photo) {
+        throw new BadRequestException('Selected catalogue reference photo does not exist');
+      }
+      if (photo.approvalStatus !== CataloguePhotoApprovalStatus.APPROVED) {
+        throw new BadRequestException('Only APPROVED catalogue reference photos may be used');
+      }
+      if (photo.species.regulatoryStatus !== RegulatoryStatus.UNRESTRICTED) {
+        throw new BadRequestException(
+          `Species ${photo.species.commercialName} (${photo.species.scientificName}) is ${photo.species.regulatoryStatus} and cannot be listed without regulatory clearance`,
+        );
+      }
+
+      const targetSpeciesId =
+        requestedSpeciesId === null
+          ? null
+          : requestedSpeciesId ?? existingProduct?.speciesId ?? null;
+      if (targetSpeciesId && targetSpeciesId !== photo.speciesId) {
+        throw new BadRequestException(
+          'Selected catalogue reference photo does not match the selected species',
+        );
+      }
+
+      resolvedSpeciesId = requestedSpeciesId === undefined ? photo.speciesId : requestedSpeciesId;
+      return {
+        speciesId: resolvedSpeciesId,
+        cataloguePhotoId: photo.id,
+        imageUrl: photo.imageUrl,
+      };
+    }
+
+    if (requestedCataloguePhotoId === null) {
+      return {
+        speciesId: resolvedSpeciesId,
+        cataloguePhotoId: null,
+        imageUrl: requestedImageUrl,
+      };
+    }
+
+    if (
+      existingProduct &&
+      requestedImageUrl !== undefined &&
+      requestedImageUrl.trim() !== existingProduct.imageUrl
+    ) {
+      return {
+        speciesId: resolvedSpeciesId,
+        cataloguePhotoId: null,
+        imageUrl: requestedImageUrl,
+      };
+    }
+
+    return {
+      speciesId: resolvedSpeciesId,
+      imageUrl: requestedImageUrl,
+    };
   }
 
   async adjustStock(
@@ -354,13 +498,50 @@ export class ProductsService {
     return ProductAvailability.ACTIVE;
   }
 
-  private static toResponse(product: ProductWithLot): ProductResponseEntity {
+  private static toResponse(
+    product: ProductWithCatalogue | ProductWithLot,
+  ): ProductResponseEntity {
+    const withCatalogue = product as Partial<ProductWithCatalogue>;
+    const species = withCatalogue.species ?? withCatalogue.cataloguePhoto?.species ?? null;
+    const photo = withCatalogue.cataloguePhoto ?? null;
+
     return {
       id: product.id,
       vendorId: product.vendorId,
       categoryId: product.categoryId,
       lotId: product.lotId,
       catalogueItemId: product.catalogueItemId,
+      speciesId: product.speciesId ?? null,
+      speciesName: species ? `${species.commercialName} (${species.scientificName})` : null,
+      cataloguePhotoId: product.cataloguePhotoId ?? null,
+      isCatalogueReferencePhoto: Boolean(product.cataloguePhotoId),
+      cataloguePhoto: photo
+        ? {
+            id: photo.id,
+            speciesId: photo.speciesId,
+            catalogueItemId: photo.catalogueItemId,
+            title: photo.title,
+            scientificName: photo.scientificName,
+            jamaicanAliases: photo.jamaicanAliases,
+            imageUrl: photo.imageUrl,
+            sourceName: photo.sourceName,
+            sourceUrl: photo.sourceUrl,
+            photographer: photo.photographer,
+            licenseName: photo.licenseName,
+            licenseUrl: photo.licenseUrl,
+            modifications: photo.modifications,
+            requiresAttribution: photo.requiresAttribution,
+            approvalStatus: photo.approvalStatus,
+            species: photo.species
+              ? {
+                  id: photo.species.id,
+                  commercialName: photo.species.commercialName,
+                  scientificName: photo.species.scientificName,
+                  regulatoryStatus: photo.species.regulatoryStatus,
+                }
+              : undefined,
+          }
+        : null,
       inventoryMode: product.inventoryMode,
       name: product.name,
       description: product.description,
