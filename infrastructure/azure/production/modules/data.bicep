@@ -141,7 +141,7 @@ resource postgresPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZ
   }
 }
 
-resource redis 'Microsoft.Cache/redisEnterprise@2025-04-01' = {
+resource redis 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   name: redisName
   location: location
   tags: tags
@@ -155,7 +155,7 @@ resource redis 'Microsoft.Cache/redisEnterprise@2025-04-01' = {
   }
 }
 
-resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-04-01' = {
+resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-07-01' = {
   parent: redis
   name: 'default'
   properties: {

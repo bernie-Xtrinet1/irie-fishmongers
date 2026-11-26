@@ -277,13 +277,11 @@ resource apps 'Microsoft.App/containerApps@2024-03-01' = [
         },
         deployApplications
           ? {
-              secrets: [
-                for secretName in spec.secretNames: {
-                  name: secretName
-                  keyVaultUrl: '${keyVaultUri}secrets/${secretName}'
-                  identity: identityId
-                }
-              ]
+              secrets: map(spec.secretNames, secretName => {
+                name: secretName
+                keyVaultUrl: '${keyVaultUri}secrets/${secretName}'
+                identity: identityId
+              })
               registries: [
                 {
                   server: registryServer
@@ -422,5 +420,5 @@ output backendFqdn string = apps[0].properties.configuration.ingress.fqdn
 output webFqdn string = apps[1].properties.configuration.ingress.fqdn
 output adminFqdn string = apps[2].properties.configuration.ingress.fqdn
 output environmentStaticIp string = containerEnv.properties.staticIp
-output customDomainVerificationId string = containerEnv.properties.customDomainVerificationId
+output customDomainVerificationId string = containerEnv.properties.customDomainConfiguration.customDomainVerificationId
 output requiredKeyVaultSecretNames array = backendKeyVaultSecretNames
