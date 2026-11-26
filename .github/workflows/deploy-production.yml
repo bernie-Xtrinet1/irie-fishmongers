@@ -1,0 +1,410 @@
+# Production deployment workflow for iriefishmongers.com (GHCR-direct, digest-pinned).
+#
+# Guardrails:
+#   - Manual workflow_dispatch only; requires GitHub `production` environment
+#     protection approval + explicit `confirm_production == 'PRODUCTION'`.
+#   - Uses an environment-scoped Azure OIDC service principal (federated subject
+#     `environment:production`) with access scoped solely to `rg-iriefishmongers-prod`
+#     — completely isolated from the staging OIDC identity and resource group.
+#   - Resolves `prod-<sha>` tags built by build-images.yml (`target_environment=production`)
+#     into immutable `@sha256:<digest>` refs and fails closed if any are missing.
+#   - Verifies private data-plane posture (PostgreSQL & Redis publicNetworkAccess=Disabled,
+#     zero 0.0.0.0 PostgreSQL firewall rules) and admin IP access restrictions before rollout.
+#   - Runs `prisma migrate deploy` via `ca-irie-db-migrate-prod` (inside the VNet) BEFORE
+#     updating any app revision; NEVER seeds demo/UAT records.
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Source commit SHA (7-40 hex chars) previously built via build-images.yml with target_environment=production."
+        required: true
+        type: string
+      confirm_production:
+        description: "Type PRODUCTION to confirm live production deployment."
+        required: true
+        type: string
+      skip_migration:
+        description: "Skip migrator Job (only when redeploying an already-migrated SHA). Default false."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # OIDC federation to production Azure Entra identity
+  contents: read
+  packages: read    # Resolve/verify private GHCR images
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE || 'ghcr.io/bernie-xtrinet1/irie-fishmongers' }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-iriefishmongers-prod' }}
+  BACKEND_APP: ${{ vars.AZURE_BACKEND_APP || 'ca-irie-backend-prod' }}
+  WEB_APP: ${{ vars.AZURE_WEB_APP || 'ca-irie-web-prod' }}
+  ADMIN_APP: ${{ vars.AZURE_ADMIN_APP || 'ca-irie-admin-prod' }}
+  MIGRATOR_JOB: ${{ vars.AZURE_MIGRATOR_JOB || 'ca-irie-db-migrate-prod' }}
+  POSTGRES_SERVER: ${{ vars.AZURE_POSTGRES_SERVER || 'psql-irie-prod' }}
+  REDIS_CLUSTER: ${{ vars.AZURE_REDIS_CLUSTER || 'redis-irie-prod' }}
+  BACKEND_HEALTH_PATH: /api/v1/health
+  WEB_HEALTH_PATH: /
+  ADMIN_HEALTH_PATH: /login
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    outputs:
+      admin_fqdn: ${{ steps.verify_admin.outputs.fqdn }}
+      admin_restricted: ${{ steps.verify_admin.outputs.restricted }}
+      admin_verified_from_runner: ${{ steps.verify_admin.outputs.verified }}
+    steps:
+      - name: Validate deployment confirmation and target isolation
+        id: input
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CONFIRM_TEXT: ${{ inputs.confirm_production }}
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_TEXT" != "PRODUCTION" ]; then
+            echo "::error::Confirmation failed: input confirm_production must equal 'PRODUCTION'."
+            exit 1
+          fi
+          case "$RG" in
+            *staging*|*uat*|*demo*)
+              echo "::error::Refusing to deploy production workflow against non-production resource group '${RG}'."
+              exit 1
+              ;;
+          esac
+          tag="${IMAGE_TAG## }"; tag="${tag%% }"
+          if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
+            echo "::error::image_tag must be a specific commit SHA, never empty or 'latest'."
+            exit 1
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::image_tag '$tag' is not a hex git SHA (7-40 hex chars)."
+            exit 1
+          fi
+          echo "sha=$tag" >> "$GITHUB_OUTPUT"
+          echo "ghcr_tag=prod-${tag}" >> "$GITHUB_OUTPUT"
+          echo "Deploying source SHA ${tag} (GHCR tag prod-${tag}) to ${RG}"
+
+      - name: Checkout (read-only, for verification script)
+        uses: actions/checkout@v7
+
+      - name: Resolve GHCR production image digests
+        id: digests
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_PAT || secrets.GITHUB_TOKEN }}
+          GHCR_TAG: ${{ steps.input.outputs.ghcr_tag }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>&1
+          missing=0
+          for svc in backend migrator web admin; do
+            ref="${IMAGE_NAMESPACE}/${svc}:${GHCR_TAG}"
+            if digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" && [ -n "$digest" ]; then
+              echo "${svc}=${IMAGE_NAMESPACE}/${svc}@${digest}" >> "$GITHUB_OUTPUT"
+              echo "ok: ${svc} -> ${IMAGE_NAMESPACE}/${svc}@${digest}"
+            else
+              echo "::error::Missing GHCR image '${ref}'. Run build-images.yml with target_environment=production and include_frontend=true on commit '${{ steps.input.outputs.sha }}'."
+              missing=1
+            fi
+          done
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          [ "$missing" -eq 0 ]
+
+      - name: Azure login (separate production OIDC identity)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify production Azure resources, private networking, and admin restrictions
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          az group show -n "$RG" --only-show-errors -o none
+          for app in "$BACKEND_APP" "$WEB_APP" "$ADMIN_APP"; do
+            az containerapp show -n "$app" -g "$RG" --only-show-errors -o none \
+              || { echo "::error::Container App '$app' not found in '$RG'."; exit 1; }
+            server="$(az containerapp registry list -n "$app" -g "$RG" --only-show-errors \
+              --query "[?server=='ghcr.io'].server | [0]" -o tsv 2>/dev/null || true)"
+            if [ "$server" != "ghcr.io" ]; then
+              echo "::error::'$app' is missing ghcr.io registry configuration (ghcr-pat Key Vault ref)."
+              exit 1
+            fi
+          done
+
+          az containerapp job show -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors -o none \
+            || { echo "::error::Migrator Job '$MIGRATOR_JOB' not found in '$RG'."; exit 1; }
+
+          pg_pub="$(az postgres flexible-server show -n "$POSTGRES_SERVER" -g "$RG" --only-show-errors \
+            --query network.publicNetworkAccess -o tsv)"
+          if [ "$pg_pub" != "Disabled" ]; then
+            echo "::error::PostgreSQL '${POSTGRES_SERVER}' publicNetworkAccess='${pg_pub}'; production requires Disabled + Private Link."
+            exit 1
+          fi
+          pg_fw_count="$(az postgres flexible-server firewall-rule list -n "$POSTGRES_SERVER" -g "$RG" \
+            --only-show-errors --query "length([])" -o tsv)"
+          if [ "${pg_fw_count:-0}" -gt 0 ]; then
+            echo "::error::PostgreSQL '${POSTGRES_SERVER}' still has public firewall rules (count=${pg_fw_count}); remove before deploying."
+            exit 1
+          fi
+
+          redis_pub="$(az resource show -g "$RG" -n "$REDIS_CLUSTER" \
+            --resource-type 'Microsoft.Cache/redisEnterprise' --only-show-errors \
+            --query properties.publicNetworkAccess -o tsv)"
+          if [ "$redis_pub" != "Disabled" ]; then
+            echo "::error::Redis '${REDIS_CLUSTER}' publicNetworkAccess='${redis_pub}'; production requires Disabled + Private Link."
+            exit 1
+          fi
+
+          admin_allow="$(az containerapp ingress access-restriction list -n "$ADMIN_APP" -g "$RG" \
+            --only-show-errors --query "length([?action=='Allow'])" -o tsv 2>/dev/null || echo 0)"
+          if [ "${admin_allow:-0}" -lt 1 ]; then
+            echo "::error::Admin app '${ADMIN_APP}' has no Allow IP access restriction configured; refusing open public rollout."
+            exit 1
+          fi
+          echo "Verified private PG/Redis, GHCR auth, and ${admin_allow} admin IP restriction rule(s)."
+
+      - name: Verify production frontend build-time API URL guard
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          PROD_API_URL: ${{ vars.PROD_NEXT_PUBLIC_API_URL }}
+          EXPECTED_API_URL: ${{ vars.PROD_EXPECTED_API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PROD_API_URL" ]; then
+            echo "::error::vars.PROD_NEXT_PUBLIC_API_URL is unset for production environment."
+            exit 1
+          fi
+          case "$PROD_API_URL" in
+            *localhost*|*127.0.0.1*|*staging*|*agreeablerock-458effa7*)
+              echo "::error::Invalid PROD_NEXT_PUBLIC_API_URL='${PROD_API_URL}'."
+              exit 1
+              ;;
+          esac
+          be_fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          default_custom="https://api.iriefishmongers.com/api/v1"
+          azure_default="https://${be_fqdn}/api/v1"
+          normalized="${PROD_API_URL%/}"
+          if [ -n "$EXPECTED_API_URL" ]; then
+            if [ "$normalized" != "${EXPECTED_API_URL%/}" ]; then
+              echo "::error::PROD_NEXT_PUBLIC_API_URL='${normalized}' != PROD_EXPECTED_API_URL='${EXPECTED_API_URL%/}'. Rebuild via build-images.yml."
+              exit 1
+            fi
+          elif [ "$normalized" != "$default_custom" ] && [ "$normalized" != "$azure_default" ]; then
+            echo "::error::PROD_NEXT_PUBLIC_API_URL='${normalized}' matches neither '${default_custom}' nor '${azure_default}'. Set PROD_EXPECTED_API_URL if intentional or rebuild images."
+            exit 1
+          fi
+          echo "Verified baked frontend API URL: ${normalized}"
+
+      - name: Capture rollback state
+        id: rollback
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Rollback state (captured before production deploy)"
+            echo ""
+            echo "| app | previous image | previous active revision |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pair in "backend:$BACKEND_APP" "web:$WEB_APP" "admin:$ADMIN_APP"; do
+            key="${pair%%:*}"; app="${pair#*:}"
+            img="$(az containerapp show -n "$app" -g "$RG" --only-show-errors \
+              --query 'properties.template.containers[0].image' -o tsv)"
+            rev="$(az containerapp show -n "$app" -g "$RG" --only-show-errors \
+              --query properties.latestReadyRevisionName -o tsv)"
+            echo "prev_${key}_image=${img}" >> "$GITHUB_OUTPUT"
+            echo "prev_${key}_rev=${rev}" >> "$GITHUB_OUTPUT"
+            echo "| ${app} | \`${img}\` | ${rev} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Run migrator Job inside production VNet (prisma migrate deploy)
+        if: ${{ !inputs.skip_migration }}
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          MIGRATOR_IMAGE: ${{ steps.digests.outputs.migrator }}
+        run: |
+          set -euo pipefail
+          az containerapp job update -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors \
+            --image "$MIGRATOR_IMAGE" -o none
+          exec_name="$(az containerapp job start -n "$MIGRATOR_JOB" -g "$RG" --only-show-errors \
+            --query name -o tsv)"
+          echo "Started migrator execution: ${exec_name}"
+          deadline=$(( SECONDS + 1200 ))
+          status="Unknown"
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            status="$(az containerapp job execution show -n "$MIGRATOR_JOB" -g "$RG" \
+              --job-execution-name "$exec_name" --only-show-errors \
+              --query properties.status -o tsv 2>/dev/null || echo Unknown)"
+            case "$status" in
+              Succeeded) echo "Production migration succeeded."; break ;;
+              Failed|Degraded) echo "::error::Migrator execution '${exec_name}' status=${status}. Deployment aborted."; exit 1 ;;
+              *) echo "  ...migrator status=${status}"; sleep 15 ;;
+            esac
+          done
+          [ "$status" = "Succeeded" ] || { echo "::error::Migrator timed out (last status=${status})."; exit 1; }
+
+      - name: Prepare revision verification helper
+        run: |
+          cat <<'HELPER' > "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision() {
+            local app="$1" rg="$2" expected_img="$3"
+            local latest_rev="" ready_rev="" rev_img="" rev_running="" rev_health=""
+            local app_fields rev_fields
+            for attempt in $(seq 1 24); do
+              mapfile -t app_fields < <(
+                az containerapp show -n "$app" -g "$rg" --only-show-errors \
+                  --query "[properties.latestRevisionName||'none',properties.latestReadyRevisionName||'none']" -o tsv | tr -d '\r'
+              )
+              latest_rev="${app_fields[0]:-none}"
+              ready_rev="${app_fields[1]:-none}"
+              if [ "${latest_rev}" != "none" ]; then
+                mapfile -t rev_fields < <(
+                  az containerapp revision show -n "$app" -g "$rg" --revision "$latest_rev" \
+                    --only-show-errors \
+                    --query "[properties.template.containers[0].image||'none',properties.runningState||'none',properties.healthState||'none']" -o tsv | tr -d '\r'
+                )
+                rev_img="${rev_fields[0]:-none}"
+                rev_running="${rev_fields[1]:-none}"
+                rev_health="${rev_fields[2]:-none}"
+                if [ "${rev_img}" = "${expected_img}" ]; then
+                  case "${rev_running}" in
+                    ActivationFailed|Failed)
+                      echo "::error::${app} revision '${latest_rev}' failed: running=${rev_running}, health=${rev_health}."
+                      return 1 ;;
+                  esac
+                  if [ "${ready_rev}" = "${latest_rev}" ] && [ "${rev_health}" = "Healthy" ]; then
+                    echo "${app} ready revision '${ready_rev}': image=${rev_img}, running=${rev_running}, health=${rev_health}"
+                    return 0
+                  fi
+                fi
+              fi
+              echo "  attempt ${attempt}/24: ${app} latest=${latest_rev} (running=${rev_running:-none}, health=${rev_health:-none})"
+              sleep 5
+            done
+            echo "::error::${app} timed out waiting for healthy revision serving '${expected_img}'."
+            return 1
+          }
+          HELPER
+
+      - name: Deploy production backend
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          BACKEND_IMAGE: ${{ steps.digests.outputs.backend }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --image "$BACKEND_IMAGE" -o none
+
+      - name: Verify production backend health
+        id: backend_health
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          BACKEND_IMAGE: ${{ steps.digests.outputs.backend }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$BACKEND_APP" "$RG" "$BACKEND_IMAGE"
+          fqdn="$(az containerapp show -n "$BACKEND_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          bash scripts/verify-azure-staging.sh health "https://${fqdn}${BACKEND_HEALTH_PATH}"
+
+      - name: Deploy production web storefront
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          WEB_IMAGE: ${{ steps.digests.outputs.web }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$WEB_APP" -g "$RG" --only-show-errors \
+            --image "$WEB_IMAGE" -o none
+
+      - name: Verify production web storefront
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          WEB_IMAGE: ${{ steps.digests.outputs.web }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$WEB_APP" "$RG" "$WEB_IMAGE"
+          fqdn="$(az containerapp show -n "$WEB_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          bash scripts/verify-azure-staging.sh frontend "https://${fqdn}${WEB_HEALTH_PATH}" web
+
+      - name: Deploy production admin portal
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          ADMIN_IMAGE: ${{ steps.digests.outputs.admin }}
+        run: |
+          set -euo pipefail
+          az containerapp update -n "$ADMIN_APP" -g "$RG" --only-show-errors \
+            --image "$ADMIN_IMAGE" -o none
+
+      - name: Verify production admin ingress isolation
+        id: verify_admin
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          ADMIN_IMAGE: ${{ steps.digests.outputs.admin }}
+          APPROVED_RUNNER: ${{ vars.PROD_ADMIN_VERIFY_RUNNER }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/verify_revision.sh"
+          verify_app_revision "$ADMIN_APP" "$RG" "$ADMIN_IMAGE"
+          fqdn="$(az containerapp show -n "$ADMIN_APP" -g "$RG" --only-show-errors \
+            --query properties.configuration.ingress.fqdn -o tsv)"
+          echo "fqdn=${fqdn}" >> "$GITHUB_OUTPUT"
+          echo "restricted=true" >> "$GITHUB_OUTPUT"
+          echo "verified=false" >> "$GITHUB_OUTPUT"
+          code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "https://${fqdn}${ADMIN_HEALTH_PATH}" || echo 000)"
+          if [ "$code" != "403" ]; then
+            echo "::error::Expected HTTP 403 on public GitHub runner for restricted admin app, got HTTP ${code}."
+            exit 1
+          fi
+          echo "Confirmed admin IP restriction active (HTTP 403 to public runner)."
+
+      - name: Production deploy summary
+        if: ${{ always() }}
+        env:
+          RG: ${{ env.AZURE_RESOURCE_GROUP }}
+          SHA: ${{ steps.input.outputs.sha }}
+          ADMIN_FQDN: ${{ steps.verify_admin.outputs.fqdn }}
+        run: |
+          {
+            echo "### Production Deploy — SHA ${SHA}"
+            echo ""
+            echo "| service | deployed digest |"
+            echo "|---|---|"
+            echo "| backend  | \`${{ steps.digests.outputs.backend }}\` |"
+            echo "| migrator | \`${{ steps.digests.outputs.migrator }}\` |"
+            echo "| web      | \`${{ steps.digests.outputs.web }}\` |"
+            echo "| admin    | \`${{ steps.digests.outputs.admin }}\` |"
+            echo ""
+            echo "Rollback command: \`az containerapp update -n <app> -g ${RG} --image <previous-image-from-rollback-state>\`"
+            echo "Admin workstation check: \`bash scripts/verify-azure-staging.sh frontend https://${ADMIN_FQDN}${ADMIN_HEALTH_PATH} admin\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify-admin-approved-network:
+    needs: deploy
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.admin_restricted == 'true' && vars.PROD_ADMIN_VERIFY_RUNNER != '' }}
+    runs-on: ${{ vars.PROD_ADMIN_VERIFY_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v7
+      - name: Verify production admin /login from approved network runner
+        run: |
+          set -euo pipefail
+          bash scripts/verify-azure-staging.sh frontend "https://${{ needs.deploy.outputs.admin_fqdn }}${{ env.ADMIN_HEALTH_PATH }}" admin

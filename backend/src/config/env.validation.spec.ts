@@ -84,6 +84,30 @@ describe('validateEnv', () => {
     expect(result.CORS_ORIGIN).toBe('http://localhost:3000,http://localhost:3002');
   });
 
+  it('accepts the production iriefishmongers.com CORS allowlist and strict same-site config', () => {
+    const result = validateEnv({
+      ...validConfig,
+      NODE_ENV: 'production',
+      APP_BASE_URL: 'https://api.iriefishmongers.com',
+      CORS_ORIGIN: 'https://iriefishmongers.com,https://www.iriefishmongers.com,https://admin.iriefishmongers.com',
+      REFRESH_COOKIE_SAMESITE: 'strict',
+      EMAIL_ENABLED: 'true',
+      ENABLE_SCHEDULER: 'true',
+      WIPAY_API_URL: 'https://jm.wipayfinancial.com/plugins/payments',
+      WIPAY_FEE_STRUCTURE: 'customer_pay',
+    });
+    expect(result.CORS_ORIGIN).toBe(
+      'https://iriefishmongers.com,https://www.iriefishmongers.com,https://admin.iriefishmongers.com',
+    );
+    expect(result.REFRESH_COOKIE_SAMESITE).toBe('strict');
+  });
+
+  it('rejects wildcard CORS_ORIGIN=* because credentialed cookies forbid wildcard origins', () => {
+    expect(() => validateEnv({ ...validConfig, CORS_ORIGIN: '*' })).toThrow(
+      /Environment validation failed/,
+    );
+  });
+
   it('throws when CORS_ORIGIN is not a valid http(s) URL list', () => {
     expect(() => validateEnv({ ...validConfig, CORS_ORIGIN: 'not-a-url' })).toThrow(
       /Environment validation failed/,

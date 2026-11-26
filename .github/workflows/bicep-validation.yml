@@ -86,6 +86,54 @@ jobs:
           set -euo pipefail
           az bicep build-params --file infrastructure/azure/tier3/staging.bicepparam --stdout > /dev/null
 
+      # ---- Production IaC (iriefishmongers.com) ----
+      - name: Lint Production Bicep (linter errors fail the job)
+        run: |
+          set -euo pipefail
+          az bicep lint --file infrastructure/azure/production/main.bicep
+          az bicep lint --file infrastructure/azure/production/deployment.bicep
+          az bicep lint --file infrastructure/azure/production/modules/network.bicep
+          az bicep lint --file infrastructure/azure/production/modules/monitoring.bicep
+          az bicep lint --file infrastructure/azure/production/modules/security.bicep
+          az bicep lint --file infrastructure/azure/production/modules/data.bicep
+          az bicep lint --file infrastructure/azure/production/modules/containerApps.bicep
+
+      - name: Compile Production main + modules
+        run: |
+          set -euo pipefail
+          az bicep build --file infrastructure/azure/production/main.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/deployment.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/modules/network.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/modules/monitoring.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/modules/security.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/modules/data.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/production/modules/containerApps.bicep --stdout > /dev/null
+
+      - name: Compile + resolve Production bicepparam presets
+        run: |
+          set -euo pipefail
+          az bicep build-params --file infrastructure/azure/production/production.cost-optimized.bicepparam --stdout > /dev/null
+          az bicep build-params --file infrastructure/azure/production/production.ha.bicepparam --stdout > /dev/null
+          az bicep build-params --file infrastructure/azure/production/production.bicepparam --stdout > /dev/null
+
+      - name: Static safety gate — Production private networking & resource allowlist
+        run: |
+          set -euo pipefail
+          allowed="Microsoft.Resources/resourceGroups Microsoft.Network/virtualNetworks Microsoft.Network/networkSecurityGroups Microsoft.Network/privateDnsZones Microsoft.Network/privateDnsZones/virtualNetworkLinks Microsoft.Network/privateEndpoints Microsoft.Network/privateEndpoints/privateDnsZoneGroups Microsoft.OperationalInsights/workspaces Microsoft.Insights/components Microsoft.Consumption/budgets Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers/databases Microsoft.Cache/redisEnterprise Microsoft.Cache/redisEnterprise/databases Microsoft.App/managedEnvironments Microsoft.App/containerApps Microsoft.App/jobs"
+          declared=$(grep -rhE "^[[:space:]]*resource[[:space:]]" infrastructure/azure/production --include=*.bicep \
+            | grep -oE "'Microsoft\.[A-Za-z0-9]+(/[A-Za-z0-9]+)+@[0-9a-z-]+'" \
+            | sed -E "s/^'//; s/@[0-9a-z-]+'\$//" | sort -u)
+          for t in $declared; do
+            case " $allowed " in
+              *" $t "*) : ;;
+              *) echo "FAIL: unexpected or disallowed resource type in production IaC: $t"; exit 1 ;;
+            esac
+          done
+          if grep -rn "publicNetworkAccess:[[:space:]]*'Enabled'" infrastructure/azure/production/modules/data.bicep; then
+            echo "FAIL: data services in production must disable public network access"; exit 1
+          fi
+          echo "Production resource-type and private-networking gates OK"
+
       - name: Static safety gate — only the five approved Tier-1 resource types
         run: |
           set -euo pipefail

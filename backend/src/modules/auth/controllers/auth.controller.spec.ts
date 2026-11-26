@@ -115,6 +115,40 @@ describe('AuthController', () => {
     );
   });
 
+  it('sets a strict Secure httpOnly refresh cookie in production when frontend and API share iriefishmongers.com', async () => {
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'NODE_ENV') return 'production';
+      if (key === 'REFRESH_COOKIE_SAMESITE') return 'strict';
+      return undefined;
+    });
+    authService.login.mockResolvedValue(session);
+    const res = createResponse();
+
+    await controller.login(
+      { email: 'jane@example.com', password: 'StrongPass1' },
+      res as unknown as Response,
+    );
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      REFRESH_TOKEN_COOKIE_NAME,
+      'refresh-token',
+      expect.objectContaining({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'strict',
+        path: REFRESH_TOKEN_COOKIE_PATH,
+      }),
+    );
+
+    await controller.logout({}, { cookies: { [REFRESH_TOKEN_COOKIE_NAME]: 'cookie-token' } } as unknown as Request, res as unknown as Response);
+    expect(res.clearCookie).toHaveBeenCalledWith(REFRESH_TOKEN_COOKIE_NAME, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict',
+      path: REFRESH_TOKEN_COOKIE_PATH,
+    });
+  });
+
   it('logs out using the cookie token and clears the cookie', async () => {
     const req = { cookies: { [REFRESH_TOKEN_COOKIE_NAME]: 'cookie-token' } } as unknown as Request;
     const res = createResponse();

@@ -1,28 +1,46 @@
 # Phase 17D.1 — Image PUBLISHING + migrator readiness (credential-free half).
 #
-# Builds and pushes the four production images (backend, migrator, web, admin)
-# to GHCR, tagged by the FULL commit SHA, and validates the migrator image
-# against a DISPOSABLE PostgreSQL. It NEVER touches Azure, OIDC, Key Vault,
-# Container Apps, a staging database, or any deployment/traffic action. All
-# NEXT_PUBLIC_* values are PUBLIC build configuration sourced from repository
-# `vars` (not secrets). Runtime-image validation stays owned by
-# docker-validation.yml — this workflow does not duplicate it.
+# Builds and pushes backend, migrator, web, and admin images to GHCR, and
+# validates the migrator image against a DISPOSABLE PostgreSQL. It NEVER
+# touches Azure, OIDC, Key Vault, Container Apps, any database, or any
+# deployment/traffic action.
 #
-# Trigger: workflow_dispatch only. It runs from the branch/tag chosen in the UI;
-# github.sha is exactly that commit, actions/checkout (default) checks out that
-# commit, and images are tagged :${{ github.sha }} — so checkout, tag, OCI
-# revision metadata, and reported digest all refer to the SAME commit. No `ref`
-# input is accepted, so there is no way to tag a build from one ref with an
-# unrelated SHA.
+# Parameterized across staging and production:
+#   - target_environment=staging    -> tags :<sha>, reads STAGING_NEXT_PUBLIC_*
+#   - target_environment=production -> tags :prod-<sha>, reads PROD_NEXT_PUBLIC_*
+#     (or explicit non-secret workflow_dispatch overrides) so production-baked
+#     frontend URLs never overwrite staging SHA tags.
 name: build-images
 
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "Target runtime environment for baked frontend NEXT_PUBLIC_* build args and GHCR tag namespace."
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       include_frontend:
-        description: "Also build & publish web + admin (Gate B2 — requires the STAGING_NEXT_PUBLIC_* repo vars). Leave false for Gate B1 (backend + migrator only)."
+        description: "Also build & publish web + admin (Gate B2 — requires NEXT_PUBLIC_* build args for the selected target_environment). Leave false for Gate B1 (backend + migrator only)."
         type: boolean
         default: false
+      api_url:
+        description: "Optional override for NEXT_PUBLIC_API_URL (https://.../api/v1). Leave blank to use target environment repo vars."
+        type: string
+        required: false
+        default: ""
+      web_app_url:
+        description: "Optional override for web NEXT_PUBLIC_APP_URL (https://iriefishmongers.com for prod). Leave blank to use target environment repo vars."
+        type: string
+        required: false
+        default: ""
+      admin_app_url:
+        description: "Optional override for admin NEXT_PUBLIC_APP_URL (https://admin.iriefishmongers.com for prod). Leave blank to use target environment repo vars."
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -54,7 +72,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # Disposable, non-secret local test connection to the service Postgres.
       MIGRATOR_DATABASE_URL: postgresql://iriemig:iriemig@localhost:5432/iriemig?schema=public
     steps:
       - name: Checkout (read-only)
@@ -73,9 +90,6 @@ jobs:
       - name: migrate deploy against fresh disposable Postgres (expect exit 0)
         run: |
           set -euo pipefail
-          # --network host so the container reaches the service Postgres on
-          # localhost:5432. The image runs the LOCAL prisma binary directly;
-          # there is no npm/npx install step at runtime.
           docker run --rm --network host \
             -e DATABASE_URL="$MIGRATOR_DATABASE_URL" \
             irie-migrator:val
@@ -83,15 +97,11 @@ jobs:
       - name: migrate status is up-to-date, read-only (expect exit 0)
         run: |
           set -euo pipefail
-          # `prisma migrate status` inspects the _prisma_migrations table and
-          # does NOT modify the database. Overriding the entrypoint command to
-          # run status against the same already-migrated disposable DB.
           docker run --rm --network host \
             -e DATABASE_URL="$MIGRATOR_DATABASE_URL" \
             irie-migrator:val node_modules/.bin/prisma migrate status
 
-  # ---- publish all four images to GHCR by full commit SHA, with BuildKit-
-  #      native provenance + SBOM attestations. Digests are captured/echoed.
+  # ---- publish images to GHCR with BuildKit-native provenance + SBOM attestations ----
   publish:
     needs: migrator-validation
     runs-on: ubuntu-latest
@@ -99,6 +109,79 @@ jobs:
     steps:
       - name: Checkout (read-only)
         uses: actions/checkout@v7
+
+      - name: Resolve & validate build configuration
+        id: build_cfg
+        env:
+          TARGET_ENV: ${{ inputs.target_environment }}
+          INCLUDE_FRONTEND: ${{ inputs.include_frontend }}
+          INPUT_API_URL: ${{ inputs.api_url }}
+          INPUT_WEB_APP_URL: ${{ inputs.web_app_url }}
+          INPUT_ADMIN_APP_URL: ${{ inputs.admin_app_url }}
+          STAGING_API_URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+          STAGING_WEB_URL: ${{ vars.STAGING_NEXT_PUBLIC_WEB_APP_URL }}
+          STAGING_ADMIN_URL: ${{ vars.STAGING_NEXT_PUBLIC_APP_URL }}
+          STAGING_ENV_NAME: ${{ vars.STAGING_NEXT_PUBLIC_ENVIRONMENT }}
+          PROD_API_URL: ${{ vars.PROD_NEXT_PUBLIC_API_URL }}
+          PROD_WEB_URL: ${{ vars.PROD_NEXT_PUBLIC_WEB_APP_URL }}
+          PROD_ADMIN_URL: ${{ vars.PROD_NEXT_PUBLIC_ADMIN_APP_URL }}
+          PROD_ENV_NAME: ${{ vars.PROD_NEXT_PUBLIC_ENVIRONMENT }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_ENV" = "production" ]; then
+            image_tag="prod-${GITHUB_SHA}"
+            api_url="${INPUT_API_URL:-$PROD_API_URL}"
+            web_app_url="${INPUT_WEB_APP_URL:-$PROD_WEB_URL}"
+            admin_app_url="${INPUT_ADMIN_APP_URL:-$PROD_ADMIN_URL}"
+            next_env="${PROD_ENV_NAME:-production}"
+          else
+            image_tag="${GITHUB_SHA}"
+            api_url="${INPUT_API_URL:-$STAGING_API_URL}"
+            web_app_url="${INPUT_WEB_APP_URL:-$STAGING_WEB_URL}"
+            admin_app_url="${INPUT_ADMIN_APP_URL:-$STAGING_ADMIN_URL}"
+            next_env="${STAGING_ENV_NAME:-staging}"
+          fi
+
+          if [ "$INCLUDE_FRONTEND" = "true" ]; then
+            for pair in "api_url:$api_url" "admin_app_url:$admin_app_url"; do
+              key="${pair%%:*}"
+              val="${pair#*:}"
+              if [ -z "$val" ]; then
+                echo "::error::Missing required build URL '${key}' for target_environment='${TARGET_ENV}'."
+                exit 1
+              fi
+            done
+            if [ "$TARGET_ENV" = "production" ] && [ -z "$web_app_url" ]; then
+              echo "::error::Missing web_app_url (or vars.PROD_NEXT_PUBLIC_WEB_APP_URL) for target_environment='production'."
+              exit 1
+            fi
+            for val in "$api_url" "$web_app_url" "$admin_app_url"; do
+              [ -n "$val" ] || continue
+              case "$val" in
+                https://*) ;;
+                *) echo "::error::Frontend build URL must use https:// (got '${val}')."; exit 1 ;;
+              esac
+              case "$val" in
+                *localhost*|*127.0.0.1*)
+                  echo "::error::Frontend build URL must not reference localhost (${val})."; exit 1 ;;
+              esac
+              if [ "$TARGET_ENV" = "production" ]; then
+                case "$val" in
+                  *staging*|*agreeablerock-458effa7*)
+                    echo "::error::Production build URL must not reference staging hostnames (${val})."; exit 1 ;;
+                esac
+              fi
+            done
+          fi
+
+          {
+            echo "image_tag=${image_tag}"
+            echo "api_url=${api_url}"
+            echo "web_app_url=${web_app_url}"
+            echo "admin_app_url=${admin_app_url}"
+            echo "next_env=${next_env}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Target=${TARGET_ENV}, tag=${image_tag}, next_env=${next_env}, api_url=${api_url:-unset}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -118,14 +201,11 @@ jobs:
           file: backend/Dockerfile
           target: runner
           push: true
-          # The SHA tag is a SOURCE-REVISION pointer only, NOT an immutable
-          # artifact id: rebuilding the same commit later (changed base layers,
-          # repo vars, etc.) can yield a different digest. The authoritative
-          # immutable identity captured below is <image>@sha256:<digest>.
-          tags: ${{ env.IMAGE_NAMESPACE }}/backend:${{ github.sha }}
+          tags: ${{ env.IMAGE_NAMESPACE }}/backend:${{ steps.build_cfg.outputs.image_tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.iriefishmongers.env=${{ inputs.target_environment }}
           provenance: true
           sbom: true
 
@@ -137,14 +217,15 @@ jobs:
           file: backend/Dockerfile
           target: migrator
           push: true
-          tags: ${{ env.IMAGE_NAMESPACE }}/migrator:${{ github.sha }}
+          tags: ${{ env.IMAGE_NAMESPACE }}/migrator:${{ steps.build_cfg.outputs.image_tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.iriefishmongers.env=${{ inputs.target_environment }}
           provenance: true
           sbom: true
 
-      - name: Build & push web (staging-specific, public NEXT_PUBLIC_* from vars)
+      - name: Build & push web (target-specific public NEXT_PUBLIC_* baked at build time)
         id: web
         if: ${{ inputs.include_frontend }}
         uses: docker/build-push-action@v7
@@ -152,20 +233,19 @@ jobs:
           context: .
           file: apps/web/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_NAMESPACE }}/web:${{ github.sha }}
-          # These images are STAGING-SPECIFIC by construction: NEXT_PUBLIC_* are
-          # inlined into the client bundle at build time. The env label records
-          # that. No secret values appear in labels.
+          tags: ${{ env.IMAGE_NAMESPACE }}/web:${{ steps.build_cfg.outputs.image_tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.iriefishmongers.env=staging
+            org.iriefishmongers.env=${{ steps.build_cfg.outputs.next_env }}
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_API_URL=${{ steps.build_cfg.outputs.api_url }}
+            NEXT_PUBLIC_APP_URL=${{ steps.build_cfg.outputs.web_app_url }}
+            NEXT_PUBLIC_ENVIRONMENT=${{ steps.build_cfg.outputs.next_env }}
           provenance: true
           sbom: true
 
-      - name: Build & push admin (staging-specific, public NEXT_PUBLIC_* from vars)
+      - name: Build & push admin (target-specific public NEXT_PUBLIC_* baked at build time)
         id: admin
         if: ${{ inputs.include_frontend }}
         uses: docker/build-push-action@v7
@@ -173,20 +253,22 @@ jobs:
           context: .
           file: apps/admin-dashboard/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_NAMESPACE }}/admin:${{ github.sha }}
+          tags: ${{ env.IMAGE_NAMESPACE }}/admin:${{ steps.build_cfg.outputs.image_tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.iriefishmongers.env=staging
+            org.iriefishmongers.env=${{ steps.build_cfg.outputs.next_env }}
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
-            NEXT_PUBLIC_APP_URL=${{ vars.STAGING_NEXT_PUBLIC_APP_URL }}
-            NEXT_PUBLIC_ENVIRONMENT=${{ vars.STAGING_NEXT_PUBLIC_ENVIRONMENT }}
+            NEXT_PUBLIC_API_URL=${{ steps.build_cfg.outputs.api_url }}
+            NEXT_PUBLIC_APP_URL=${{ steps.build_cfg.outputs.admin_app_url }}
+            NEXT_PUBLIC_ENVIRONMENT=${{ steps.build_cfg.outputs.next_env }}
           provenance: true
           sbom: true
 
       - name: Record immutable image@digest identities (published images only)
         env:
+          TARGET_ENV: ${{ inputs.target_environment }}
+          IMAGE_TAG: ${{ steps.build_cfg.outputs.image_tag }}
           INCLUDE_FRONTEND: ${{ inputs.include_frontend }}
           BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
           MIGRATOR_DIGEST: ${{ steps.migrator.outputs.digest }}
@@ -194,28 +276,17 @@ jobs:
           ADMIN_DIGEST: ${{ steps.admin.outputs.digest }}
         run: |
           set -euo pipefail
-          # The SHA tag is only a source-revision pointer. The authoritative
-          # immutable deployment identity is <image>@sha256:<digest>. Fail closed
-          # if any REQUIRED digest is empty (a push that did not yield a digest is
-          # not a publishable artifact and must not be reported as one).
-          #
-          # Required set is mode-dependent:
-          #  - always: backend, migrator (Gate B1);
-          #  - additionally when include_frontend==true: web, admin (Gate B2).
-          # Skipped frontend steps (B1) have empty digests and must NOT fail.
           images="backend:${BACKEND_DIGEST} migrator:${MIGRATOR_DIGEST}"
           if [ "$INCLUDE_FRONTEND" = "true" ]; then
             images="${images} web:${WEB_DIGEST} admin:${ADMIN_DIGEST}"
           fi
           fail=0
           {
-            echo "### Published images — source commit ${GITHUB_SHA}"
+            echo "### Published images — target ${TARGET_ENV}, source commit ${GITHUB_SHA}"
             echo ""
-            echo "Mode: include_frontend=${INCLUDE_FRONTEND} (B1 = backend+migrator; B2 also web+admin)."
-            echo "The immutable identity is the digest; the SHA tag is a"
-            echo "source-revision pointer only. Deployment consumes image@digest."
+            echo "Tag pointer: \`${IMAGE_TAG}\`. Authoritative immutable identity: \`image@sha256:<digest>\`."
             echo ""
-            echo "| image | source tag | immutable identity |"
+            echo "| image | tag pointer | immutable identity |"
             echo "|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           for entry in $images; do
@@ -224,11 +295,11 @@ jobs:
             if [ -z "$digest" ]; then
               echo "FAIL: empty digest for required image ${name}"
               fail=1
-              echo "| ${name} | ${GITHUB_SHA} | (MISSING DIGEST) |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| ${name} | ${IMAGE_TAG} | (MISSING DIGEST) |" >> "$GITHUB_STEP_SUMMARY"
             else
               ref="${IMAGE_NAMESPACE}/${name}@${digest}"
               echo "published ${name}: ${ref}"
-              echo "| ${name} | ${GITHUB_SHA} | \`${ref}\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| ${name} | ${IMAGE_TAG} | \`${ref}\` |" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
           [ "$fail" -eq 0 ]
