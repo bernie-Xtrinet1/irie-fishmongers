@@ -49,8 +49,9 @@ RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs nextjs
 # Traced standalone tree → /app/apps/admin-dashboard/server.js, /app/node_modules...
 COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/.next/standalone ./
-# Standalone does NOT include static assets — copy them in. admin has no public/.
+# Standalone does not include static or public assets.
 COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/.next/static ./apps/admin-dashboard/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/public ./apps/admin-dashboard/public
 USER nextjs
 EXPOSE 3002
 # Stable proven route for the probe: GET /login (see Phase 17B.1 runtime proof).

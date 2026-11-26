@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -48,6 +50,7 @@ export default function LoginPage(): React.ReactElement {
     <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <Image src="/irie-fishmongers-logo.webp" alt="" width={112} height={80} />
           <CardTitle>Irie Fishmongers Admin</CardTitle>
           <p className="text-sm text-gray-500">
             Sign in with your administrator or operations staff account.

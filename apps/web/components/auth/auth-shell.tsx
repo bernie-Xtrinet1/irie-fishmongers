@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Link from 'next/link';
 
 import { Card } from '@/components/ui/card';
@@ -22,7 +23,16 @@ export function AuthShell({
               href="/"
               className="text-2xl font-semibold text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-irie-green"
             >
-              Irie Fishmongers
+              <span className="inline-flex items-center gap-2">
+                <Image
+                  src="/irie-fishmongers-logo.webp"
+                  alt=""
+                  width={56}
+                  height={40}
+                  unoptimized
+                />
+                <span>Irie Fishmongers</span>
+              </span>
             </Link>
             <p className="mt-1 text-sm text-gray-500">
               Fresh seafood from Jamaica&apos;s waters to your table.

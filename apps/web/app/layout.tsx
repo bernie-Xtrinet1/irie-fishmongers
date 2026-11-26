@@ -11,6 +11,8 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://iriefishmongers.com'),
+  icons: { icon: '/irie-fishmongers-logo.webp' },
   title: 'Irie Fishmongers',
   description: "Fresh seafood from Jamaica's waters to your table.",
 };
