@@ -6,7 +6,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Driver, Prisma } from '@prisma/client';
+import {
+  CustomerAcceptanceStatus,
+  Driver,
+  Prisma,
+  VendorOrderStatus,
+} from '@prisma/client';
 
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
@@ -443,8 +448,17 @@ export class DeliveriesService {
     }
 
     const stage = DeliveriesService.computeStage(delivery);
+    const locationStopped =
+      delivery.deliveredAt !== null ||
+      delivery.failedAt !== null ||
+      delivery.customerRejectedAt !== null ||
+      delivery.customerAcceptanceStatus === CustomerAcceptanceStatus.REJECTED ||
+      delivery.vendorOrder.status === VendorOrderStatus.CANCELLED ||
+      delivery.vendorOrder.status === VendorOrderStatus.REJECTED ||
+      delivery.vendorOrder.status === VendorOrderStatus.DELIVERED ||
+      delivery.vendorOrder.status === VendorOrderStatus.DELIVERY_FAILED;
     // Privacy gate: customers may only see live location while their order is actively on board.
-    if (stage !== 'PICKED_UP') {
+    if (stage !== 'PICKED_UP' || locationStopped) {
       return DeliveriesService.toTrackingEntity(delivery, null);
     }
 

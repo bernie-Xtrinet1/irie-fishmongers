@@ -3,6 +3,7 @@
 import { UserRole } from '@iriefishmongers/types';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
+import { useRef, useState } from 'react';
 
 import { ApiError } from '@/lib/api-client';
 import {
@@ -11,6 +12,7 @@ import {
 } from '@/lib/api/orders';
 import { useAuth } from '@/lib/auth/auth-context';
 import { Button } from '@/components/ui/button';
+import { DeliveryTrackingSection } from './delivery-tracking-section';
 
 function formatAmount(value: string): string {
   const amount = Number(value);
@@ -79,6 +81,9 @@ export function OrderDetailView({
   orderId: string;
 }): React.ReactElement {
   const { status, user } = useAuth();
+  const [trackingOpen, setTrackingOpen] = useState(false);
+  const [selectedVendorOrderId, setSelectedVendorOrderId] = useState<string | null>(null);
+  const trackingContainerRef = useRef<HTMLDivElement | null>(null);
 
   const isCustomer =
     status === 'authenticated' &&
@@ -180,6 +185,16 @@ export function OrderDetailView({
   }
 
   const order = orderQuery.data;
+  const isSplitOrder = order.vendorOrders.length > 1;
+  const hasInTransitHint = order.vendorOrders.some(
+    (vendorOrder) => vendorOrder.status === 'IN_TRANSIT',
+  );
+
+  const handleTrackVendorOrder = (vendorOrderId: string): void => {
+    setSelectedVendorOrderId(vendorOrderId);
+    setTrackingOpen(true);
+    trackingContainerRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
@@ -238,28 +253,57 @@ export function OrderDetailView({
         </dl>
       </section>
 
+      <div ref={trackingContainerRef}>
+        <DeliveryTrackingSection
+          orderId={order.id}
+          isSplitOrder={isSplitOrder}
+          hasInTransitHint={hasInTransitHint}
+          isOpen={trackingOpen}
+          selectedVendorOrderId={selectedVendorOrderId}
+          onToggleOpen={setTrackingOpen}
+          onSelectVendorOrderId={setSelectedVendorOrderId}
+        />
+      </div>
+
       <section className="mt-8">
         <h2 className="text-xl font-semibold text-gray-900">Order items</h2>
 
         <div className="mt-4 space-y-5">
-          {order.vendorOrders.map((vendorOrder) => (
+          {order.vendorOrders.map((vendorOrder, index) => (
             <article
               key={vendorOrder.id}
               className="rounded-card border border-gray-200 bg-white p-6"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
+                  {isSplitOrder ? (
+                    <p className="text-xs font-medium uppercase tracking-wide text-irie-green">
+                      Delivery {index + 1} of {order.vendorOrders.length}
+                    </p>
+                  ) : null}
                   <p className="text-sm text-gray-500">Status</p>
                   <p className="font-medium text-gray-900">
                     {formatEnum(vendorOrder.status)}
                   </p>
                 </div>
 
-                <div className="text-right">
-                  <p className="text-sm text-gray-500">Vendor subtotal</p>
-                  <p className="font-semibold text-gray-900">
-                    {formatAmount(vendorOrder.subtotal)}
-                  </p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-sm text-gray-500">Vendor subtotal</p>
+                    <p className="font-semibold text-gray-900">
+                      {formatAmount(vendorOrder.subtotal)}
+                    </p>
+                  </div>
+                  {isSplitOrder ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="min-h-[44px]"
+                      onClick={() => handleTrackVendorOrder(vendorOrder.id)}
+                    >
+                      Track part {index + 1}
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 

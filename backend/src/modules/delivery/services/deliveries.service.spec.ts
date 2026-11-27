@@ -1115,6 +1115,15 @@ describe('DeliveriesService', () => {
         ForbiddenException,
       );
     });
+
+    it('stops sharing location once delivered, failed, returned, or cancelled', async () => {
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ deliveredAt: new Date() }),
+      );
+      const result = await service.track('customer-1', 'vo-1');
+      expect(result.latestLocation).toBeNull();
+      expect(driverLocationsRepository.findLatestByDriverId).not.toHaveBeenCalled();
+    });
   });
 
   describe('parish service-area dispatch verification', () => {
