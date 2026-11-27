@@ -1,4 +1,22 @@
+import type {
+  CustomerDeliveryTrackingStage,
+  CustomerTrackedDeliveryItem,
+  CustomerTrackedDeliveryPart,
+  CustomerTrackedLocation,
+  CustomerTrackedLocationStatus,
+  OrderDeliveryTracking,
+} from '@iriefishmongers/types';
+
 import { apiGet } from '../api-client';
+
+export type {
+  CustomerDeliveryTrackingStage,
+  CustomerTrackedDeliveryItem,
+  CustomerTrackedDeliveryPart,
+  CustomerTrackedLocation,
+  CustomerTrackedLocationStatus,
+  OrderDeliveryTracking,
+};
 
 export interface OrderItemResponse {
   id: string;
@@ -52,4 +70,12 @@ export function getCustomerOrders(
 
 export function getCustomerOrder(orderId: string): Promise<OrderResponse> {
   return apiGet<OrderResponse>(`/orders/${encodeURIComponent(orderId)}`);
+}
+
+export function getOrderDeliveryTracking(
+  orderId: string,
+): Promise<OrderDeliveryTracking> {
+  return apiGet<OrderDeliveryTracking>(
+    `/orders/${encodeURIComponent(orderId)}/tracking`,
+  );
 }

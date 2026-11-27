@@ -17,6 +17,7 @@ import { VendorOrdersController } from './controllers/vendor-orders.controller';
 import { OrdersRepository } from './repositories/orders.repository';
 import { VendorOrdersRepository } from './repositories/vendor-orders.repository';
 import { CheckoutQuoteService } from './services/checkout-quote.service';
+import { CustomerOrderTrackingService } from './services/customer-order-tracking.service';
 import { OrdersService } from './services/orders.service';
 import { SeafoodCheckoutRecoveryService } from './services/seafood-checkout-recovery.service';
 import { VendorOrdersService } from './services/vendor-orders.service';
@@ -49,10 +50,17 @@ import { VendorOrdersService } from './services/vendor-orders.service';
     VendorOrdersRepository,
     CheckoutQuoteService,
     SeafoodCheckoutRecoveryService,
+    CustomerOrderTrackingService,
   ],
   // OrdersService added to exports in Phase 16A.0-D, Unit D.4: the first
   // consumer outside this module (CheckoutModule) needs it through Nest DI.
   // Still owned and instantiated only here.
-  exports: [OrdersRepository, VendorOrdersRepository, OrdersService, SeafoodCheckoutRecoveryService],
+  exports: [
+    OrdersRepository,
+    VendorOrdersRepository,
+    OrdersService,
+    SeafoodCheckoutRecoveryService,
+    CustomerOrderTrackingService,
+  ],
 })
 export class OrdersModule {}

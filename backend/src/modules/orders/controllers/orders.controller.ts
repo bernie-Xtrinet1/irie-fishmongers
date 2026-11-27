@@ -1,4 +1,16 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  InternalServerErrorException,
+  Optional,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -13,8 +25,10 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CheckoutDto } from '../dto/checkout.dto';
+import { OrderDeliveryTrackingEntity } from '../entities/order-delivery-tracking.entity';
 import { OrderResponseEntity } from '../entities/order-response.entity';
 import { PaginatedOrdersEntity } from '../entities/paginated-orders.entity';
+import { CustomerOrderTrackingService } from '../services/customer-order-tracking.service';
 import { OrdersService } from '../services/orders.service';
 
 @ApiTags('orders')
@@ -23,7 +37,10 @@ import { OrdersService } from '../services/orders.service';
 @Roles(RoleName.CUSTOMER)
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    @Optional() private readonly customerOrderTrackingService?: CustomerOrderTrackingService,
+  ) {}
 
   @Post('checkout')
   @ApiOperation({ summary: 'Convert the current cart into an order' })
@@ -53,6 +70,21 @@ export class OrdersController {
     @Param('id') id: string,
   ): Promise<OrderResponseEntity> {
     return this.ordersService.getCustomerOrderById(user.id, id);
+  }
+
+  @Get(':id/tracking')
+  @ApiOperation({
+    summary: 'Get live delivery tracking scoped strictly to deliveries owned by the authenticated customer',
+  })
+  @ApiResponseDoc({ status: 200, type: OrderDeliveryTrackingEntity })
+  trackDelivery(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ): Promise<OrderDeliveryTrackingEntity> {
+    if (!this.customerOrderTrackingService) {
+      throw new InternalServerErrorException('Customer delivery tracking service is not configured');
+    }
+    return this.customerOrderTrackingService.getOrderTracking(user.id, id);
   }
 
   @Post(':id/cancel')
