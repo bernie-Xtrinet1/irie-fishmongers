@@ -38,19 +38,20 @@ export interface CustomerDeliveryMapProps {
 }
 
 /**
- * Renders a customer-scoped Jamaica map containing only active delivery pin(s)
- * owned by the authenticated customer.
+ * Renders a customer-scoped Jamaica map containing only the selected delivery part's
+ * active pin when location is currently shared for that part.
  */
 export function CustomerDeliveryMap({
   deliveries,
   selectedVendorOrderId,
   onSelectDelivery,
 }: CustomerDeliveryMapProps): React.ReactElement {
-  const plotted = deliveries.filter(
-    (part) => part.isLocationShared && part.location !== null,
-  );
   const selectedPart =
     deliveries.find((part) => part.vendorOrderId === selectedVendorOrderId) ?? deliveries[0];
+  const plotted =
+    selectedPart && selectedPart.isLocationShared && selectedPart.location !== null
+      ? [selectedPart]
+      : [];
 
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200 bg-ocean-blue/5">
