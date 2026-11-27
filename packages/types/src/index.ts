@@ -174,9 +174,18 @@ export interface AdminCataloguePhotoListResponse {
   storageConfigured: boolean;
 }
 
+export interface CataloguePhotoLinkedListing {
+  id: string;
+  name: string;
+  vendorId: string;
+  vendorName: string;
+  isActive: boolean;
+}
+
 export interface AdminCataloguePhotoHistoryResponse {
   photo: AdminCataloguePhotoItem;
   versions: AdminCataloguePhotoItem[];
+  versionListings?: Record<string, CataloguePhotoLinkedListing[]>;
   auditLogs: CataloguePhotoAuditEntry[];
 }
 

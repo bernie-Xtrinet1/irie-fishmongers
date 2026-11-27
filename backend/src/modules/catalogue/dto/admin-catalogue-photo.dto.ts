@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsIn,
@@ -253,4 +254,15 @@ export class BulkSwitchListingPhotosDto {
   @ApiProperty({ description: 'Explicit confirmation required to update existing vendor product images.' })
   @IsBoolean()
   confirmBulkSwitch!: boolean;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Optional subset of product listing IDs to switch from fromPhotoId; defaults to all listings using fromPhotoId.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsUUID(undefined, { each: true })
+  productIds?: string[];
 }

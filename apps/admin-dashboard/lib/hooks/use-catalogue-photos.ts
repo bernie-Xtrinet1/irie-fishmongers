@@ -77,8 +77,15 @@ export function useCataloguePhotoMutations() {
       onSuccess: invalidate,
     }),
     bulkSwitch: useMutation({
-      mutationFn: ({ toPhotoId, fromPhotoId }: { toPhotoId: string; fromPhotoId: string }) =>
-        bulkSwitchCatalogueListings(toPhotoId, fromPhotoId),
+      mutationFn: ({
+        toPhotoId,
+        fromPhotoId,
+        productIds,
+      }: {
+        toPhotoId: string;
+        fromPhotoId: string;
+        productIds?: string[];
+      }) => bulkSwitchCatalogueListings(toPhotoId, fromPhotoId, productIds),
       onSuccess: invalidate,
     }),
   };

@@ -214,4 +214,104 @@ describe('CataloguePhotosView', () => {
     });
     expect(screen.queryByTestId('bulk-switch-panel')).not.toBeInTheDocument();
   });
+
+  it('switches only selected listings and displays affected listings in audit history', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'admin-1',
+        email: 'admin@test.local',
+        firstName: 'Ada',
+        lastName: 'Admin',
+        status: 'ACTIVE',
+        roles: ['ADMINISTRATOR'],
+        canManageCataloguePhotos: true,
+      },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    const mockBulkSwitch = api.bulkSwitchCatalogueListings as jest.MockedFunction<
+      typeof api.bulkSwitchCatalogueListings
+    >;
+    mockBulkSwitch.mockResolvedValue({
+      fromPhotoId: 'photo-tilapia-0',
+      toPhotoId: 'photo-tilapia-1',
+      switchedCount: 1,
+      affectedProductIds: ['listing-selected'],
+    });
+
+    const firstPhoto = samplePhotos[0]!;
+    mockFetchHistory.mockResolvedValue({
+      photo: firstPhoto,
+      versions: [
+        firstPhoto,
+        {
+          ...firstPhoto,
+          id: 'photo-tilapia-0',
+          versionNumber: 0,
+          lifecycleStatus: 'RETIRED',
+          usageCount: 2,
+        },
+      ],
+      versionListings: {
+        'photo-tilapia-0': [
+          {
+            id: 'listing-selected',
+            name: 'Tilapia Whole (Selected)',
+            vendorId: 'v-1',
+            vendorName: 'Harbour Fresh',
+            isActive: true,
+          },
+          {
+            id: 'listing-unselected',
+            name: 'Tilapia Fillet (Keep)',
+            vendorId: 'v-2',
+            vendorName: 'Port Royal Catch',
+            isActive: true,
+          },
+        ],
+      },
+      auditLogs: [
+        {
+          id: 'audit-switch-1',
+          cataloguePhotoId: 'photo-tilapia-1',
+          versionGroupId: 'grp-1',
+          action: 'BULK_SWITCH_LISTINGS',
+          actorUserId: 'admin-1',
+          actorEmail: 'admin@test.local',
+          affectedCount: 1,
+          details: {
+            affectedProductIds: ['listing-selected'],
+            affectedListings: [{ id: 'listing-selected', name: 'Tilapia Whole (Selected)', vendorId: 'v-1' }],
+          },
+          createdAt: '2026-11-27T08:00:00.000Z',
+        },
+      ],
+    });
+
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByText('Nile Tilapia / Red Belly')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByTestId('history-photo-btn-photo-tilapia-1'));
+    await waitFor(() => {
+      expect(screen.getByTestId('bulk-switch-listing-selector')).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText(/Tilapia Whole \(Selected\)/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/Affected listings: Tilapia Whole \(Selected\)/)).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('bulk-switch-listing-checkbox-listing-unselected'));
+    await userEvent.click(screen.getByTestId('confirm-bulk-switch-checkbox'));
+    await userEvent.click(screen.getByTestId('execute-bulk-switch-btn'));
+
+    await waitFor(() => {
+      expect(mockBulkSwitch).toHaveBeenCalledWith(
+        'photo-tilapia-1',
+        'photo-tilapia-0',
+        ['listing-selected'],
+      );
+    });
+  });
 });

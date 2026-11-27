@@ -32,6 +32,7 @@ export function CataloguePhotoHistoryDialog({
   const mutations = useCataloguePhotoMutations();
 
   const [switchSourceId, setSwitchSourceId] = useState('');
+  const [selectedProductIds, setSelectedProductIds] = useState<string[] | null>(null);
   const [confirmBulkSwitch, setConfirmBulkSwitch] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
@@ -43,16 +44,39 @@ export function CataloguePhotoHistoryDialog({
     ) ?? [];
   const effectiveSource =
     switchableSources.find((v) => v.id === switchSourceId) ?? switchableSources[0] ?? null;
+  const sourceListings = effectiveSource
+    ? (data?.versionListings?.[effectiveSource.id] ?? [])
+    : [];
+  const effectiveSelectedIds =
+    selectedProductIds === null
+      ? sourceListings.map((item) => item.id)
+      : selectedProductIds.filter((id) => sourceListings.some((item) => item.id === id));
+  const selectedListingCount =
+    sourceListings.length > 0 ? effectiveSelectedIds.length : (effectiveSource?.usageCount ?? 0);
+
+  function toggleListingSelection(listingId: string): void {
+    const current = new Set(effectiveSelectedIds);
+    if (current.has(listingId)) {
+      current.delete(listingId);
+    } else {
+      current.add(listingId);
+    }
+    setSelectedProductIds(Array.from(current));
+    setConfirmBulkSwitch(false);
+  }
 
   async function handleBulkSwitch(): Promise<void> {
     if (!activeVersion || !effectiveSource || !confirmBulkSwitch) return;
+    if (sourceListings.length > 0 && effectiveSelectedIds.length === 0) return;
     setSwitchError(null);
     try {
       const res = await mutations.bulkSwitch.mutateAsync({
         toPhotoId: activeVersion.id,
         fromPhotoId: effectiveSource.id,
+        ...(sourceListings.length > 0 ? { productIds: effectiveSelectedIds } : {}),
       });
       setConfirmBulkSwitch(false);
+      setSelectedProductIds(null);
       onFeedback(
         `Switched ${res.switchedCount} existing listing(s) from v${effectiveSource.versionNumber} to v${activeVersion.versionNumber}.`,
       );
@@ -69,6 +93,7 @@ export function CataloguePhotoHistoryDialog({
           setConfirmBulkSwitch(false);
           setSwitchError(null);
           setSwitchSourceId('');
+          setSelectedProductIds(null);
         }
         onOpenChange(next);
       }}
@@ -160,6 +185,7 @@ export function CataloguePhotoHistoryDialog({
                       value={effectiveSource.id}
                       onChange={(e) => {
                         setSwitchSourceId(e.target.value);
+                        setSelectedProductIds(null);
                         setConfirmBulkSwitch(false);
                       }}
                       className="h-9 rounded-button border border-gray-300 bg-white px-2 text-xs"
@@ -172,6 +198,39 @@ export function CataloguePhotoHistoryDialog({
                     </select>
                   </label>
 
+                  {sourceListings.length > 0 ? (
+                    <div
+                      className="space-y-1.5 rounded-md border border-gray-200 bg-white p-2.5"
+                      data-testid="bulk-switch-listing-selector"
+                    >
+                      <p className="text-[11px] font-medium text-gray-700">
+                        Select listings to switch ({effectiveSelectedIds.length} of{' '}
+                        {sourceListings.length} selected)
+                      </p>
+                      <div className="max-h-32 space-y-1 overflow-y-auto">
+                        {sourceListings.map((listing) => (
+                          <label
+                            key={listing.id}
+                            className="flex items-center gap-2 text-xs text-gray-800"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={effectiveSelectedIds.includes(listing.id)}
+                              onChange={() => toggleListingSelection(listing.id)}
+                              className="h-3.5 w-3.5 rounded border-gray-300"
+                              data-testid={`bulk-switch-listing-checkbox-${listing.id}`}
+                            />
+                            <span className="truncate font-medium">{listing.name}</span>
+                            <span className="text-[11px] text-gray-500">
+                              · {listing.vendorName}
+                              {listing.isActive ? '' : ' (Inactive)'}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <label className="flex items-start gap-2 text-xs text-gray-800">
                     <input
                       type="checkbox"
@@ -182,7 +241,7 @@ export function CataloguePhotoHistoryDialog({
                     />
                     <span>
                       I explicitly confirm switching{' '}
-                      <strong>{effectiveSource.usageCount}</strong> existing product listing(s) from
+                      <strong>{selectedListingCount}</strong> selected product listing(s) from
                       v{effectiveSource.versionNumber} to v{activeVersion.versionNumber}.
                     </span>
                   </label>
@@ -192,12 +251,16 @@ export function CataloguePhotoHistoryDialog({
                       type="button"
                       size="sm"
                       variant="danger"
-                      disabled={!confirmBulkSwitch || mutations.bulkSwitch.isPending}
+                      disabled={
+                        !confirmBulkSwitch ||
+                        (sourceListings.length > 0 && effectiveSelectedIds.length === 0) ||
+                        mutations.bulkSwitch.isPending
+                      }
                       loading={mutations.bulkSwitch.isPending}
                       onClick={() => void handleBulkSwitch()}
                       data-testid="execute-bulk-switch-btn"
                     >
-                      Switch Existing Listings to v{activeVersion.versionNumber}
+                      Switch Selected Listings to v{activeVersion.versionNumber}
                     </Button>
                   </div>
                 </div>
@@ -226,6 +289,18 @@ export function CataloguePhotoHistoryDialog({
                           <span className="ml-2 text-gray-700">
                             ({log.affectedCount} listing(s))
                           </span>
+                        ) : null}
+                        {Array.isArray(log.details?.affectedListings) &&
+                        log.details.affectedListings.length > 0 ? (
+                          <p className="mt-0.5 text-[11px] text-gray-600">
+                            Affected listings:{' '}
+                            {(
+                              log.details.affectedListings as Array<{ id?: string; name?: string }>
+                            )
+                              .map((entry) => entry.name || entry.id || '')
+                              .filter(Boolean)
+                              .join(', ')}
+                          </p>
                         ) : null}
                       </div>
                       <span className="text-gray-500">

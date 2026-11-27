@@ -195,6 +195,10 @@ describe('AdminCataloguePhotosService & RBAC Guards', () => {
           create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
         },
         product: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 'prod-1', name: 'Synthetic Listing 1', vendorId: 'vendor-1' },
+            { id: 'prod-2', name: 'Synthetic Listing 2', vendorId: 'vendor-2' },
+          ]),
           updateMany: jest.fn().mockResolvedValue({ count: 2 }),
         },
       };
@@ -417,6 +421,7 @@ describe('AdminCataloguePhotosService & RBAC Guards', () => {
         confirmBulkSwitch: true,
       });
       expect(switched.switchedCount).toBe(2);
+      expect(switched.affectedProductIds).toEqual(['prod-1', 'prod-2']);
       expect(txMock.product.updateMany).toHaveBeenCalledWith({
         where: { cataloguePhotoId: 'from-id' },
         data: {
@@ -428,10 +433,56 @@ describe('AdminCataloguePhotosService & RBAC Guards', () => {
         expect.objectContaining({
           data: expect.objectContaining({
             action: CataloguePhotoAuditAction.BULK_SWITCH_LISTINGS,
+            actorUserId: adminWithPerm.id,
+            actorEmail: adminWithPerm.email,
             affectedCount: 2,
+            details: expect.objectContaining({
+              affectedProductIds: ['prod-1', 'prod-2'],
+              affectedListings: [
+                { id: 'prod-1', name: 'Synthetic Listing 1', vendorId: 'vendor-1' },
+                { id: 'prod-2', name: 'Synthetic Listing 2', vendorId: 'vendor-2' },
+              ],
+            }),
           }),
         }),
       );
+
+      // Partial selection switches only chosen productIds and records exact affected IDs
+      txMock.product.findMany.mockResolvedValueOnce([
+        { id: 'prod-1', name: 'Synthetic Listing 1', vendorId: 'vendor-1' },
+      ]);
+      txMock.product.updateMany.mockResolvedValueOnce({ count: 1 });
+      prisma.cataloguePhoto.findUnique
+        .mockResolvedValueOnce({
+          id: 'from-id',
+          speciesId: 'sp-tilapia',
+          versionGroupId: 'group-1',
+          versionNumber: 1,
+        })
+        .mockResolvedValueOnce({
+          id: 'to-id',
+          speciesId: 'sp-tilapia',
+          versionGroupId: 'group-1',
+          versionNumber: 2,
+          approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+          retiredAt: null,
+          imageUrl: 'https://stiriestaging.blob.core.windows.net/catalogue-photos/published/tilapia/group-1/v2.png',
+        });
+
+      const partialSwitched = await service.bulkSwitchListings(adminWithPerm, 'to-id', {
+        fromPhotoId: 'from-id',
+        confirmBulkSwitch: true,
+        productIds: ['prod-1'],
+      });
+      expect(partialSwitched.switchedCount).toBe(1);
+      expect(partialSwitched.affectedProductIds).toEqual(['prod-1']);
+      expect(txMock.product.updateMany).toHaveBeenLastCalledWith({
+        where: { cataloguePhotoId: 'from-id', id: { in: ['prod-1'] } },
+        data: {
+          cataloguePhotoId: 'to-id',
+          imageUrl: 'https://stiriestaging.blob.core.windows.net/catalogue-photos/published/tilapia/group-1/v2.png',
+        },
+      });
 
       // Retire preserves existing references and logs count
       prisma.cataloguePhoto.findUnique.mockResolvedValueOnce({

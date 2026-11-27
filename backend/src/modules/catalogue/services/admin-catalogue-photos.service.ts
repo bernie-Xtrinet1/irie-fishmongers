@@ -253,9 +253,44 @@ export class AdminCataloguePhotosService {
       }),
     ]);
 
+    const versionIds = versions.map((v) => v.id);
+    const linkedProducts =
+      versionIds.length > 0 && typeof this.prisma.product?.findMany === 'function'
+        ? await this.prisma.product.findMany({
+            where: { cataloguePhotoId: { in: versionIds } },
+            select: {
+              id: true,
+              name: true,
+              vendorId: true,
+              isActive: true,
+              cataloguePhotoId: true,
+              vendor: { select: { businessName: true } },
+            },
+            orderBy: [{ name: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+
+    const versionListings: Record<
+      string,
+      Array<{ id: string; name: string; vendorId: string; vendorName: string; isActive: boolean }>
+    > = {};
+    for (const product of linkedProducts) {
+      if (!product.cataloguePhotoId) continue;
+      const bucket = versionListings[product.cataloguePhotoId] ?? [];
+      bucket.push({
+        id: product.id,
+        name: product.name,
+        vendorId: product.vendorId,
+        vendorName: product.vendor.businessName,
+        isActive: product.isActive,
+      });
+      versionListings[product.cataloguePhotoId] = bucket;
+    }
+
     return {
       photo: AdminCataloguePhotosService.serialize(target),
       versions: versions.map((v) => AdminCataloguePhotosService.serialize(v)),
+      versionListings,
       auditLogs: auditLogs.map((entry) => ({
         ...entry,
         createdAt: entry.createdAt.toISOString(),
@@ -960,9 +995,45 @@ export class AdminCataloguePhotosService {
       throw new BadRequestException('Source and replacement photos must belong to the same species.');
     }
 
-    const switchedCount = await this.prisma.$transaction(async (tx) => {
+    const requestedProductIds = dto.productIds
+      ? Array.from(new Set(dto.productIds.map((item) => item.trim()).filter(Boolean)))
+      : null;
+    if (requestedProductIds !== null && requestedProductIds.length === 0) {
+      throw new BadRequestException(
+        'Select at least one listing when specifying productIds for bulk switch.',
+      );
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const targetListings =
+        typeof tx.product?.findMany === 'function'
+          ? await tx.product.findMany({
+              where: {
+                cataloguePhotoId: fromPhoto.id,
+                ...(requestedProductIds ? { id: { in: requestedProductIds } } : {}),
+              },
+              select: { id: true, name: true, vendorId: true },
+              orderBy: [{ name: 'asc' }, { id: 'asc' }],
+            })
+          : [];
+
+      if (requestedProductIds && targetListings.length !== requestedProductIds.length) {
+        const matched = new Set(targetListings.map((item) => item.id));
+        const missingIds = requestedProductIds.filter((productId) => !matched.has(productId));
+        throw new BadRequestException(
+          `Selected listing(s) do not reference the source catalogue photo version: ${missingIds.join(', ')}`,
+        );
+      }
+
+      const affectedProductIds =
+        targetListings.length > 0
+          ? targetListings.map((item) => item.id)
+          : requestedProductIds ?? [];
       const res = await tx.product.updateMany({
-        where: { cataloguePhotoId: fromPhoto.id },
+        where: {
+          cataloguePhotoId: fromPhoto.id,
+          ...(requestedProductIds ? { id: { in: requestedProductIds } } : {}),
+        },
         data: {
           cataloguePhotoId: toPhoto.id,
           imageUrl: toPhoto.imageUrl,
@@ -982,17 +1053,28 @@ export class AdminCataloguePhotosService {
             fromVersionNumber: fromPhoto.versionNumber,
             toPhotoId: toPhoto.id,
             toVersionNumber: toPhoto.versionNumber,
+            selectionMode: requestedProductIds ? 'SELECTED_LISTINGS' : 'ALL_SOURCE_LISTINGS',
+            affectedProductIds,
+            affectedListings: targetListings.map((item) => ({
+              id: item.id,
+              name: item.name,
+              vendorId: item.vendorId,
+            })),
           },
         },
       });
 
-      return res.count;
+      return {
+        switchedCount: res.count,
+        affectedProductIds,
+      };
     });
 
     return {
       fromPhotoId: fromPhoto.id,
       toPhotoId: toPhoto.id,
-      switchedCount,
+      switchedCount: result.switchedCount,
+      affectedProductIds: result.affectedProductIds,
     };
   }
 

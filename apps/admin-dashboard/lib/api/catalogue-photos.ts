@@ -97,9 +97,16 @@ export async function restoreCataloguePhoto(id: string): Promise<AdminCatalogueP
 export async function bulkSwitchCatalogueListings(
   toPhotoId: string,
   fromPhotoId: string,
-): Promise<{ fromPhotoId: string; toPhotoId: string; switchedCount: number }> {
+  productIds?: string[],
+): Promise<{
+  fromPhotoId: string;
+  toPhotoId: string;
+  switchedCount: number;
+  affectedProductIds?: string[];
+}> {
   return apiPost(`/admin/catalogue-photos/${toPhotoId}/switch-listings`, {
     fromPhotoId,
     confirmBulkSwitch: true,
+    ...(productIds && productIds.length > 0 ? { productIds } : {}),
   });
 }
