@@ -365,6 +365,95 @@ describe('OrderDetailView', () => {
         'Vehicle location will appear once this delivery is picked up and on board.',
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText('No vehicle pin is currently displayed for this delivery.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('delivery-map-pin-vendor-order-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('delivery-map-pin-vendor-order-2')).not.toBeInTheDocument();
+  });
+
+  it('shows only the selected split delivery pin when multiple deliveries are active', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: customer,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+    mockGetCustomerOrder.mockResolvedValue(order);
+
+    mockGetOrderDeliveryTracking.mockResolvedValue({
+      orderId: 'order-1',
+      deliveryParish: Parish.KINGSTON,
+      isSplitOrder: true,
+      hasActiveTracking: true,
+      checkedAt: '2026-11-26T12:00:00.000Z',
+      deliveries: [
+        {
+          vendorOrderId: 'vendor-order-1',
+          deliveryIndex: 1,
+          totalDeliveries: 2,
+          deliveryLabel: 'Part 1 of 2 · Harbour Fresh Seafood',
+          vendorName: 'Harbour Fresh Seafood',
+          itemsSummary: '2x Fresh Red Snapper',
+          items: [{ productName: 'Fresh Red Snapper', quantity: 2 }],
+          vendorStatus: 'IN_TRANSIT',
+          stage: 'IN_TRANSIT',
+          statusLabel: 'Picked up / In transit',
+          onBoard: true,
+          isLocationShared: true,
+          locationStatus: 'LIVE',
+          locationMessage: 'Live vehicle location is active while your order is in transit.',
+          location: {
+            latitude: 17.997,
+            longitude: -76.7936,
+            capturedAt: '2026-11-26T11:59:30.000Z',
+            stale: false,
+            label: 'Live vehicle location',
+          },
+          pickedUpAt: '2026-11-26T11:45:00.000Z',
+          customerDeliveryWindowStart: null,
+          customerDeliveryWindowEnd: null,
+        },
+        {
+          vendorOrderId: 'vendor-order-2',
+          deliveryIndex: 2,
+          totalDeliveries: 2,
+          deliveryLabel: 'Part 2 of 2 · Port Royal Catch',
+          vendorName: 'Port Royal Catch',
+          itemsSummary: '1x Jumbo Shrimp',
+          items: [{ productName: 'Jumbo Shrimp', quantity: 1 }],
+          vendorStatus: 'IN_TRANSIT',
+          stage: 'IN_TRANSIT',
+          statusLabel: 'Picked up / In transit',
+          onBoard: true,
+          isLocationShared: true,
+          locationStatus: 'LIVE',
+          locationMessage: 'Live vehicle location is active while your order is in transit.',
+          location: {
+            latitude: 17.9414,
+            longitude: -77.1089,
+            capturedAt: '2026-11-26T11:59:45.000Z',
+            stale: false,
+            label: 'Live vehicle location',
+          },
+          pickedUpAt: '2026-11-26T11:48:00.000Z',
+          customerDeliveryWindowStart: null,
+          customerDeliveryWindowEnd: null,
+        },
+      ],
+    });
+
+    renderOrderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Track delivery' }));
+
+    expect(await screen.findByTestId('delivery-map-pin-vendor-order-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('delivery-map-pin-vendor-order-2')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Track part 2' }));
+
+    expect(screen.queryByTestId('delivery-map-pin-vendor-order-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('delivery-map-pin-vendor-order-2')).toBeInTheDocument();
   });
 
   it('labels stale GPS as Last reported location and stops sharing on handover', async () => {
