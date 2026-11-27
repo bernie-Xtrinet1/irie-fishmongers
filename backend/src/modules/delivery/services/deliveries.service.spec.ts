@@ -58,7 +58,7 @@ function buildUser(overrides: Partial<User> = {}): User {
   };
 }
 
-function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
+function buildVendor(overrides: Partial<Vendor> = {}): AvailableVendorOrder['vendor'] {
   return {
     id: 'vendor-1',
     userId: 'vendor-user-1',
@@ -75,11 +75,12 @@ function buildVendor(overrides: Partial<Vendor> = {}): Vendor {
     primaryZoneId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    secondaryZones: [],
     ...overrides,
   };
 }
 
-function buildOrder(overrides: Partial<Order> = {}): Order {
+function buildOrder(overrides: Partial<Order> = {}): DeliveryWithDetails['vendorOrder']['order'] {
   return {
     id: 'order-1',
     customerId: 'customer-1',
@@ -91,11 +92,12 @@ function buildOrder(overrides: Partial<Order> = {}): Order {
     currency: null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    deliveryZone: { active: true },
     ...overrides,
   };
 }
 
-function buildItem(overrides: Partial<OrderItem> = {}): OrderItem {
+function buildItem(overrides: Partial<OrderItem> = {}): AvailableVendorOrder['items'][number] {
   return {
     id: 'item-1',
     vendorOrderId: 'vo-1',
@@ -110,6 +112,8 @@ function buildItem(overrides: Partial<OrderItem> = {}): OrderItem {
     originalListingId: null,
     purchaseSnapshot: null,
     createdAt: new Date(),
+    originalLot: null,
+    product: { lotId: null, lot: null },
     ...overrides,
   };
 }
@@ -133,6 +137,7 @@ function buildAvailableVendorOrder(
   return {
     ...buildVendorOrder(),
     vendor: buildVendor(),
+    order: buildOrder(),
     items: [buildItem()],
     ...overrides,
   };
@@ -1037,8 +1042,10 @@ describe('DeliveriesService', () => {
   });
 
   describe('track', () => {
-    it("returns tracking info for the order's owning customer", async () => {
-      deliveriesRepository.findByVendorOrderId.mockResolvedValue(buildDeliveryWithDetails());
+    it('returns live location for the owning customer while the order is on board (PICKED_UP)', async () => {
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt: new Date() }),
+      );
       driverLocationsRepository.findLatestByDriverId.mockResolvedValue({
         id: 'loc-1',
         driverId: 'driver-1',
@@ -1049,13 +1056,44 @@ describe('DeliveriesService', () => {
 
       const result = await service.track('customer-1', 'vo-1');
 
-      expect(result.stage).toBe('ASSIGNED');
+      expect(result.stage).toBe('PICKED_UP');
       expect(result.driverFirstName).toBe('Dana');
       expect(result.latestLocation).toMatchObject({ latitude: 17.9714, longitude: -76.7931 });
     });
 
-    it('returns a null location when the driver has not reported one yet', async () => {
+    it('hides live location before pickup (ASSIGNED) and after handover (DELIVERED/FAILED)', async () => {
+      driverLocationsRepository.findLatestByDriverId.mockResolvedValue({
+        id: 'loc-1',
+        driverId: 'driver-1',
+        latitude: 17.9714,
+        longitude: -76.7931,
+        recordedAt: new Date(),
+      });
+
       deliveriesRepository.findByVendorOrderId.mockResolvedValue(buildDeliveryWithDetails());
+      const assignedResult = await service.track('customer-1', 'vo-1');
+      expect(assignedResult.stage).toBe('ASSIGNED');
+      expect(assignedResult.latestLocation).toBeNull();
+
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt: new Date(Date.now() - 600_000), deliveredAt: new Date() }),
+      );
+      const deliveredResult = await service.track('customer-1', 'vo-1');
+      expect(deliveredResult.stage).toBe('DELIVERED');
+      expect(deliveredResult.latestLocation).toBeNull();
+
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt: new Date(Date.now() - 600_000), failedAt: new Date() }),
+      );
+      const failedResult = await service.track('customer-1', 'vo-1');
+      expect(failedResult.stage).toBe('FAILED');
+      expect(failedResult.latestLocation).toBeNull();
+    });
+
+    it('returns a null location when picked up but no GPS reading has been recorded yet', async () => {
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt: new Date() }),
+      );
       driverLocationsRepository.findLatestByDriverId.mockResolvedValue(null);
 
       const result = await service.track('customer-1', 'vo-1');
@@ -1070,10 +1108,31 @@ describe('DeliveriesService', () => {
     });
 
     it('throws when the requester does not own the order', async () => {
-      deliveriesRepository.findByVendorOrderId.mockResolvedValue(buildDeliveryWithDetails());
+      deliveriesRepository.findByVendorOrderId.mockResolvedValue(
+        buildDeliveryWithDetails({ pickedUpAt: new Date() }),
+      );
       await expect(service.track('someone-else', 'vo-1')).rejects.toBeInstanceOf(
         ForbiddenException,
       );
+    });
+  });
+
+  describe('parish service-area dispatch verification', () => {
+    it('rejects claiming a delivery outside the vendor configured service parish', async () => {
+      const onlineDriver = buildDriver({ availabilityStatus: 'ONLINE', coldChainCapable: true });
+      driversRepository.findByUserId.mockResolvedValue(onlineDriver);
+      deliveriesRepository.countActiveByDriverId.mockResolvedValue(0);
+      deliveriesRepository.findVendorOrderForPickup.mockResolvedValue(
+        buildAvailableVendorOrder({
+          vendor: buildVendor({ parish: 'KINGSTON' }),
+          order: buildOrder({ deliveryParish: 'ST_JAMES' }),
+        } as unknown as Partial<AvailableVendorOrder>),
+      );
+
+      await expect(
+        service.assign('driver-user-1', { vendorOrderId: 'vo-1' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(deliveriesRepository.create).not.toHaveBeenCalled();
     });
   });
 });

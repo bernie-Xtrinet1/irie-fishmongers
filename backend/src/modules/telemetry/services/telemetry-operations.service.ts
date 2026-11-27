@@ -6,13 +6,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CompartmentKind,
   CustodyEventType,
   DeliveryRunStatus,
+  FleetAssetType,
   Prisma,
   RoleName,
   SeafoodStorageType,
   TemperatureDevice,
   TemperatureReadingOrigin,
+  TelemetryGapKind,
   TelemetryProtocol,
   TrackerHardwareModel,
   TemperatureSensorModel,
@@ -29,6 +32,7 @@ import {
   VehicleGpsStatus,
 } from '../telemetry-status.util';
 import {
+  AssignCoolerVehicleDto,
   CreateVehicleCompartmentDto,
   ListTelemetryHistoryQueryDto,
   RecordCompartmentHandoverDto,
@@ -36,6 +40,7 @@ import {
   RecordCompartmentTransferDto,
   RegisterCargoSensorDto,
   RegisterVehicleTrackerDto,
+  UnassignCoolerVehicleDto,
 } from '../dto/telemetry.dto';
 
 const ACTIVE_ORDER_DELIVERY_STATUSES: VendorOrderStatus[] = [
@@ -120,48 +125,444 @@ export async function closeOpenCompartmentAssignmentsForDelivery(
 export class TelemetryOperationsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createCompartment(dto: CreateVehicleCompartmentDto) {
+  private async assertVehicleAcceptsCooler(
+    fleetAssetId: string,
+    compartmentKind: CompartmentKind,
+    excludeCompartmentId?: string,
+  ): Promise<{ id: string; assetType: FleetAssetType; coldChainCapable: boolean; licensePlate: string }> {
     const asset = await this.prisma.fleetAsset.findUnique({
-      where: { id: dto.fleetAssetId },
-      select: { id: true, coldChainCapable: true },
+      where: { id: fleetAssetId },
+      select: { id: true, assetType: true, coldChainCapable: true, licensePlate: true, status: true },
     });
     if (!asset) {
       throw new NotFoundException('Fleet asset not found');
     }
+    if (asset.status === 'RETIRED') {
+      throw new BadRequestException('Cannot assign cold-chain equipment to a retired fleet asset');
+    }
 
-    const code = dto.compartmentCode.trim().toUpperCase();
-    const existing = await this.prisma.vehicleCompartment.findUnique({
+    if (
+      compartmentKind === CompartmentKind.PORTABLE_COOLER &&
+      asset.assetType === FleetAssetType.MOTORBIKE
+    ) {
+      const existingCoolers = await this.prisma.vehicleCompartment.count({
+        where: {
+          fleetAssetId,
+          compartmentKind: CompartmentKind.PORTABLE_COOLER,
+          active: true,
+          ...(excludeCompartmentId ? { id: { not: excludeCompartmentId } } : {}),
+        },
+      });
+      if (existingCoolers >= 1) {
+        throw new ConflictException(
+          `Motorbike ${asset.licensePlate} already has 1 active portable cooler assigned; motorbikes support one cooler at a time`,
+        );
+      }
+    }
+
+    return asset;
+  }
+
+  private async resolveVehicleSensorSlot(
+    fleetAssetId: string,
+    requestedSlot?: number | null,
+    preferredSlot?: number | null,
+    excludeCompartmentId?: string,
+  ): Promise<number> {
+    const activeSensors = await this.prisma.temperatureDevice.findMany({
       where: {
-        fleetAssetId_compartmentCode: {
+        status: 'ACTIVE',
+        compartment: {
+          fleetAssetId,
+          active: true,
+          ...(excludeCompartmentId ? { id: { not: excludeCompartmentId } } : {}),
+        },
+      },
+      select: { sensorSlot: true },
+    });
+    const usedSlots = new Set<number>(
+      activeSensors.map((s) => s.sensorSlot).filter((slot): slot is number => typeof slot === 'number'),
+    );
+
+    if (requestedSlot !== undefined && requestedSlot !== null) {
+      if (usedSlots.has(requestedSlot)) {
+        throw new ConflictException(
+          `BLE sensor slot #${requestedSlot} is already occupied by another cooler or compartment on this vehicle`,
+        );
+      }
+      return requestedSlot;
+    }
+
+    if (preferredSlot && !usedSlots.has(preferredSlot)) {
+      return preferredSlot;
+    }
+
+    for (const candidate of [1, 2, 3, 4]) {
+      if (!usedSlots.has(candidate)) {
+        return candidate;
+      }
+    }
+
+    throw new ConflictException('All 4 Teltonika EYE BLE sensor slots on this vehicle are already occupied');
+  }
+
+  async createCompartment(dto: CreateVehicleCompartmentDto, actorUserId?: string) {
+    const kind =
+      dto.compartmentKind ??
+      (dto.coolerCode ? CompartmentKind.PORTABLE_COOLER : CompartmentKind.FIXED_COMPARTMENT);
+    const normalizedCoolerCode = dto.coolerCode
+      ? dto.coolerCode.trim().toUpperCase()
+      : kind === CompartmentKind.PORTABLE_COOLER && dto.compartmentCode
+        ? dto.compartmentCode.trim().toUpperCase()
+        : null;
+    const code = (dto.compartmentCode?.trim() || normalizedCoolerCode || '').toUpperCase();
+
+    if (!code) {
+      throw new BadRequestException('compartmentCode or coolerCode is required');
+    }
+    if (kind === CompartmentKind.FIXED_COMPARTMENT && !dto.fleetAssetId) {
+      throw new BadRequestException('fleetAssetId is required for a fixed vehicle compartment');
+    }
+    if (kind === CompartmentKind.PORTABLE_COOLER && !normalizedCoolerCode) {
+      throw new BadRequestException('coolerCode is required for a portable cooler');
+    }
+
+    if (normalizedCoolerCode) {
+      const existingCooler = await this.prisma.vehicleCompartment.findUnique({
+        where: { coolerCode: normalizedCoolerCode },
+        select: { id: true },
+      });
+      if (existingCooler) {
+        throw new ConflictException(`Portable cooler ${normalizedCoolerCode} is already registered`);
+      }
+    }
+
+    let asset: { id: string; assetType: FleetAssetType; coldChainCapable: boolean } | null = null;
+    let allocatedSlot: number | null = dto.sensorSlot ?? null;
+
+    if (dto.fleetAssetId) {
+      asset = await this.assertVehicleAcceptsCooler(dto.fleetAssetId, kind);
+
+      const existing = await this.prisma.vehicleCompartment.findFirst({
+        where: {
           fleetAssetId: dto.fleetAssetId,
           compartmentCode: code,
         },
-      },
-    });
-    if (existing) {
-      throw new ConflictException(`Compartment ${code} is already registered on this vehicle`);
-    }
-
-    const compartment = await this.prisma.vehicleCompartment.create({
-      data: {
-        fleetAssetId: dto.fleetAssetId,
-        compartmentCode: code,
-        label: dto.label.trim(),
-        storageType: dto.storageType ?? SeafoodStorageType.FRESH,
-        targetMinC: dto.targetMinC ?? null,
-        targetMaxC: dto.targetMaxC ?? null,
-        active: true,
-      },
-    });
-
-    if (!asset.coldChainCapable) {
-      await this.prisma.fleetAsset.update({
-        where: { id: asset.id },
-        data: { coldChainCapable: true },
+        select: { id: true },
       });
+      if (existing) {
+        throw new ConflictException(`Compartment ${code} is already registered on this vehicle`);
+      }
+
+      if (dto.sensorSlot !== undefined && dto.sensorSlot !== null) {
+        allocatedSlot = await this.resolveVehicleSensorSlot(dto.fleetAssetId, dto.sensorSlot, null);
+      }
     }
+
+    const compartment = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.vehicleCompartment.create({
+        data: {
+          fleetAssetId: dto.fleetAssetId ?? null,
+          compartmentKind: kind,
+          coolerCode: normalizedCoolerCode,
+          compartmentCode: code,
+          label: dto.label.trim(),
+          storageType: dto.storageType ?? SeafoodStorageType.FRESH,
+          targetMinC: dto.targetMinC ?? null,
+          targetMaxC: dto.targetMaxC ?? null,
+          notes: dto.notes?.trim() || null,
+          active: true,
+        },
+      });
+
+      if (dto.fleetAssetId) {
+        await tx.coolerVehicleAssignment.create({
+          data: {
+            compartmentId: created.id,
+            fleetAssetId: dto.fleetAssetId,
+            sensorSlot: allocatedSlot,
+            assignedAt: new Date(),
+            assignedById: actorUserId ?? null,
+            notes: dto.notes?.trim() || 'Initial registration assignment',
+          },
+        });
+
+        if (asset && !asset.coldChainCapable) {
+          await tx.fleetAsset.update({
+            where: { id: asset.id },
+            data: { coldChainCapable: true },
+          });
+        }
+      }
+
+      return created;
+    });
 
     return compartment;
+  }
+
+  async assignCoolerToVehicle(compartmentId: string, dto: AssignCoolerVehicleDto, user?: RequestUser) {
+    const compartment = await this.prisma.vehicleCompartment.findUnique({
+      where: { id: compartmentId },
+      include: {
+        sensors: {
+          where: { status: 'ACTIVE' },
+          orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    if (!compartment) {
+      throw new NotFoundException('Compartment or portable cooler not found');
+    }
+    if (!compartment.active) {
+      throw new BadRequestException('Inactive compartments cannot be assigned to vehicles');
+    }
+    if (compartment.compartmentKind !== CompartmentKind.PORTABLE_COOLER) {
+      throw new BadRequestException('Only portable coolers can be reassigned across fleet vehicles');
+    }
+
+    const codeCollision = await this.prisma.vehicleCompartment.findFirst({
+      where: {
+        fleetAssetId: dto.fleetAssetId,
+        compartmentCode: compartment.compartmentCode,
+        id: { not: compartment.id },
+      },
+      select: { id: true },
+    });
+    if (codeCollision) {
+      throw new ConflictException(
+        `Compartment code ${compartment.compartmentCode} is already in use on the target vehicle`,
+      );
+    }
+
+    const targetAsset = await this.assertVehicleAcceptsCooler(
+      dto.fleetAssetId,
+      CompartmentKind.PORTABLE_COOLER,
+      compartment.id,
+    );
+
+    const primarySensor = compartment.sensors[0] ?? null;
+    const assignedSlot =
+      primarySensor || dto.sensorSlot !== undefined
+        ? await this.resolveVehicleSensorSlot(
+            dto.fleetAssetId,
+            dto.sensorSlot,
+            primarySensor?.sensorSlot ?? 1,
+            compartment.id,
+          )
+        : null;
+
+    const assignedAt = dto.assignedAt ? new Date(dto.assignedAt) : new Date();
+    const openCargoAssignments = await this.prisma.cargoCompartmentAssignment.findMany({
+      where: { compartmentId: compartment.id, unloadedAt: null },
+      orderBy: { loadedAt: 'asc' },
+    });
+
+    const destinationTracker =
+      openCargoAssignments.length > 0
+        ? await this.prisma.vehicleTracker.findFirst({
+            where: { fleetAssetId: dto.fleetAssetId, status: 'ACTIVE' },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true },
+          })
+        : null;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.coolerVehicleAssignment.updateMany({
+        where: { compartmentId: compartment.id, unassignedAt: null },
+        data: {
+          unassignedAt: assignedAt,
+          unassignedById: user?.id ?? null,
+        },
+      });
+
+      const historyEntry = await tx.coolerVehicleAssignment.create({
+        data: {
+          compartmentId: compartment.id,
+          fleetAssetId: dto.fleetAssetId,
+          sensorSlot: assignedSlot,
+          assignedAt,
+          assignedById: user?.id ?? null,
+          notes:
+            dto.notes?.trim() ||
+            (compartment.fleetAssetId
+              ? `Reassigned cooler ${compartment.coolerCode ?? compartment.compartmentCode} to ${targetAsset.licensePlate}`
+              : `Assigned cooler ${compartment.coolerCode ?? compartment.compartmentCode} to ${targetAsset.licensePlate}`),
+        },
+      });
+
+      const updatedCompartment = await tx.vehicleCompartment.update({
+        where: { id: compartment.id },
+        data: { fleetAssetId: dto.fleetAssetId },
+      });
+
+      if (primarySensor && assignedSlot !== null && primarySensor.sensorSlot !== assignedSlot) {
+        await tx.temperatureDevice.update({
+          where: { id: primarySensor.id },
+          data: { sensorSlot: assignedSlot },
+        });
+      }
+
+      if (!targetAsset.coldChainCapable) {
+        await tx.fleetAsset.update({
+          where: { id: targetAsset.id },
+          data: { coldChainCapable: true },
+        });
+      }
+
+      // Preserve time-windowed cargo attribution if a loaded cooler physically
+      // moves between vehicles in transit.
+      for (const cargo of openCargoAssignments) {
+        if (cargo.fleetAssetId === dto.fleetAssetId) continue;
+        const custody = await tx.chainOfCustodyEvent.create({
+          data: {
+            lotId: cargo.lotId,
+            deliveryId: cargo.deliveryId,
+            compartmentId: compartment.id,
+            fleetAssetId: dto.fleetAssetId,
+            eventType: CustodyEventType.TRANSIT,
+            fromUserId: user?.id ?? null,
+            notes:
+              dto.notes?.trim() ||
+              `Cooler ${compartment.coolerCode ?? compartment.compartmentCode} reassigned to ${targetAsset.licensePlate}`,
+            occurredAt: assignedAt,
+          },
+          select: { id: true },
+        });
+
+        await tx.cargoCompartmentAssignment.update({
+          where: { id: cargo.id },
+          data: { unloadedAt: assignedAt, handoverCustodyEventId: custody.id },
+        });
+
+        await tx.cargoCompartmentAssignment.create({
+          data: {
+            deliveryId: cargo.deliveryId,
+            vendorOrderId: cargo.vendorOrderId,
+            lotId: cargo.lotId,
+            fleetAssetId: dto.fleetAssetId,
+            compartmentId: compartment.id,
+            trackerId: destinationTracker?.id ?? null,
+            sensorDeviceId: cargo.sensorDeviceId,
+            quantityUnits: cargo.quantityUnits - cargo.handedOverQuantity,
+            handedOverQuantity: 0,
+            loadedAt: assignedAt,
+            pickupCustodyEventId: custody.id,
+            recordedById: user?.id ?? null,
+            notes: `Transferred onboard cooler ${compartment.coolerCode ?? compartment.compartmentCode}`,
+          },
+        });
+      }
+
+      return { compartment: updatedCompartment, assignment: historyEntry };
+    });
+
+    return updated;
+  }
+
+  async unassignCoolerFromVehicle(
+    compartmentId: string,
+    dto: UnassignCoolerVehicleDto,
+    user?: RequestUser,
+  ) {
+    const compartment = await this.prisma.vehicleCompartment.findUnique({
+      where: { id: compartmentId },
+      select: { id: true, compartmentKind: true, fleetAssetId: true, coolerCode: true, compartmentCode: true },
+    });
+    if (!compartment) {
+      throw new NotFoundException('Compartment or portable cooler not found');
+    }
+    if (compartment.compartmentKind !== CompartmentKind.PORTABLE_COOLER) {
+      throw new BadRequestException('Fixed compartments cannot be detached from their host vehicle');
+    }
+    if (!compartment.fleetAssetId) {
+      throw new BadRequestException('This portable cooler is not currently assigned to any vehicle');
+    }
+
+    const openCargoCount = await this.prisma.cargoCompartmentAssignment.count({
+      where: { compartmentId: compartment.id, unloadedAt: null },
+    });
+    if (openCargoCount > 0) {
+      throw new ConflictException(
+        'This cooler currently holds open seafood lots; hand over or transfer open lots before detaching it',
+      );
+    }
+
+    const unassignedAt = dto.unassignedAt ? new Date(dto.unassignedAt) : new Date();
+    return this.prisma.$transaction(async (tx) => {
+      await tx.coolerVehicleAssignment.updateMany({
+        where: { compartmentId: compartment.id, unassignedAt: null },
+        data: {
+          unassignedAt,
+          unassignedById: user?.id ?? null,
+          ...(dto.notes?.trim() ? { notes: dto.notes.trim() } : {}),
+        },
+      });
+
+      return tx.vehicleCompartment.update({
+        where: { id: compartment.id },
+        data: { fleetAssetId: null },
+      });
+    });
+  }
+
+  async listCompartments(now = new Date()) {
+    const compartments = await this.prisma.vehicleCompartment.findMany({
+      include: {
+        fleetAsset: {
+          select: { id: true, licensePlate: true, assetType: true },
+        },
+        sensors: {
+          orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
+        },
+        vehicleAssignments: {
+          include: {
+            fleetAsset: {
+              select: { id: true, licensePlate: true, assetType: true },
+            },
+          },
+          orderBy: { assignedAt: 'desc' },
+        },
+      },
+      orderBy: [{ compartmentKind: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    return compartments.map((c) => ({
+      id: c.id,
+      compartmentCode: c.compartmentCode,
+      coolerCode: c.coolerCode,
+      compartmentKind: c.compartmentKind,
+      label: c.label,
+      storageType: c.storageType,
+      targetMinC: c.targetMinC ? Number(c.targetMinC.toString()) : null,
+      targetMaxC: c.targetMaxC ? Number(c.targetMaxC.toString()) : null,
+      active: c.active,
+      fleetAssetId: c.fleetAssetId,
+      licensePlate: c.fleetAsset?.licensePlate ?? null,
+      assetType: c.fleetAsset?.assetType ?? null,
+      sensors: c.sensors.map((s) => ({
+        id: s.id,
+        deviceCode: s.deviceCode,
+        hardwareModel: s.hardwareModel,
+        bleMacAddress: s.bleMacAddress,
+        sensorSlot: s.sensorSlot,
+        status: s.status,
+        lastTemperatureC: s.lastTemperatureC ? Number(s.lastTemperatureC.toString()) : null,
+        lastCapturedAt: s.lastCapturedAt,
+        reportingStatus: computeSensorReportingStatus(s, now),
+      })),
+      assignmentHistory: c.vehicleAssignments.map((h) => ({
+        id: h.id,
+        compartmentId: h.compartmentId,
+        fleetAssetId: h.fleetAssetId,
+        licensePlate: h.fleetAsset.licensePlate,
+        assetType: h.fleetAsset.assetType,
+        sensorSlot: h.sensorSlot,
+        assignedAt: h.assignedAt,
+        unassignedAt: h.unassignedAt,
+        notes: h.notes,
+      })),
+    }));
   }
 
   async registerTracker(dto: RegisterVehicleTrackerDto) {
@@ -197,10 +598,20 @@ export class TelemetryOperationsService {
   async registerCargoSensor(dto: RegisterCargoSensorDto) {
     const compartment = await this.prisma.vehicleCompartment.findUnique({
       where: { id: dto.compartmentId },
-      select: { id: true },
+      select: { id: true, fleetAssetId: true },
     });
     if (!compartment) {
       throw new NotFoundException('Vehicle compartment not found');
+    }
+
+    const requestedSlot = dto.sensorSlot ?? 1;
+    if (compartment.fleetAssetId) {
+      await this.resolveVehicleSensorSlot(
+        compartment.fleetAssetId,
+        requestedSlot,
+        requestedSlot,
+        compartment.id,
+      );
     }
 
     const code = dto.deviceCode.trim();
@@ -240,10 +651,29 @@ export class TelemetryOperationsService {
         deviceCode: code,
         hardwareModel: dto.hardwareModel ?? TemperatureSensorModel.TELTONIKA_EYE_BTSMP1_EN12830,
         bleMacAddress: normalizedMac,
-        sensorSlot: dto.sensorSlot ?? 1,
+        sensorSlot: requestedSlot,
         firmwareVersion: dto.firmwareVersion?.trim() || null,
       },
     });
+
+    if (compartment.fleetAssetId) {
+      const coolerAssignmentDelegate = (
+        this.prisma as unknown as {
+          coolerVehicleAssignment?: { updateMany: (args: unknown) => Promise<unknown> };
+        }
+      ).coolerVehicleAssignment;
+      if (coolerAssignmentDelegate && typeof coolerAssignmentDelegate.updateMany === 'function') {
+        await coolerAssignmentDelegate.updateMany({
+          where: {
+            compartmentId: compartment.id,
+            fleetAssetId: compartment.fleetAssetId,
+            unassignedAt: null,
+            sensorSlot: null,
+          },
+          data: { sensorSlot: requestedSlot },
+        });
+      }
+    }
 
     return {
       ...sensor,
@@ -274,6 +704,7 @@ export class TelemetryOperationsService {
                 deliveryAddressLine1: true,
                 deliveryAddressLine2: true,
                 deliveryParish: true,
+                deliveryZoneId: true,
               },
             },
             items: {
@@ -282,7 +713,16 @@ export class TelemetryOperationsService {
                 quantity: true,
                 productName: true,
                 originalLotId: true,
-                product: { select: { id: true, lotId: true } },
+                originalLot: {
+                  select: { id: true, lotNumber: true, species: true, storageType: true },
+                },
+                product: {
+                  select: {
+                    id: true,
+                    lotId: true,
+                    lot: { select: { id: true, lotNumber: true, species: true, storageType: true } },
+                  },
+                },
               },
             },
           },
@@ -579,16 +1019,37 @@ export class TelemetryOperationsService {
         sensors: {
           where: { status: 'ACTIVE' },
           orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
-          select: { id: true },
+          select: { id: true, sensorSlot: true },
         },
       },
     });
-    if (!toCompartment || toCompartment.fleetAssetId !== dto.toFleetAssetId || !toCompartment.active) {
+    const isMovingSamePortableCooler =
+      toCompartment?.compartmentKind === CompartmentKind.PORTABLE_COOLER &&
+      openAssignments.some(
+        (a) => a.compartmentId === toCompartment.id && a.fleetAssetId !== dto.toFleetAssetId,
+      );
+
+    if (!toCompartment || !toCompartment.active) {
+      throw new BadRequestException('Destination compartment is inactive or not found');
+    }
+    if (!isMovingSamePortableCooler && toCompartment.fleetAssetId !== dto.toFleetAssetId) {
       throw new BadRequestException('Destination compartment is inactive or does not belong to destination vehicle');
     }
 
-    if (openAssignments.some((a) => a.compartmentId === toCompartment.id)) {
-      throw new BadRequestException('Cannot transfer cargo to the same compartment it is already in');
+    if (
+      openAssignments.some(
+        (a) => a.compartmentId === toCompartment.id && a.fleetAssetId === dto.toFleetAssetId,
+      )
+    ) {
+      throw new BadRequestException('Cannot transfer cargo to the same compartment on the same vehicle');
+    }
+
+    if (isMovingSamePortableCooler) {
+      await this.assertVehicleAcceptsCooler(
+        dto.toFleetAssetId,
+        CompartmentKind.PORTABLE_COOLER,
+        toCompartment.id,
+      );
     }
 
     const toTracker = dto.toTrackerId
@@ -664,7 +1125,49 @@ export class TelemetryOperationsService {
     const transferredAt = dto.transferredAt ? new Date(dto.transferredAt) : new Date();
     const actorUserId = delivery.driver?.userId ?? user.id;
 
+    const assignedDestSlot = isMovingSamePortableCooler
+      ? await this.resolveVehicleSensorSlot(
+          dto.toFleetAssetId,
+          null,
+          toCompartment.sensors[0]?.sensorSlot ?? 1,
+          toCompartment.id,
+        )
+      : null;
+
     const createdAssignments = await this.prisma.$transaction(async (tx) => {
+      if (isMovingSamePortableCooler) {
+        await tx.coolerVehicleAssignment.updateMany({
+          where: { compartmentId: toCompartment.id, unassignedAt: null },
+          data: {
+            unassignedAt: transferredAt,
+            unassignedById: user.id,
+          },
+        });
+        await tx.coolerVehicleAssignment.create({
+          data: {
+            compartmentId: toCompartment.id,
+            fleetAssetId: dto.toFleetAssetId,
+            sensorSlot: assignedDestSlot,
+            assignedAt: transferredAt,
+            assignedById: user.id,
+            notes:
+              dto.notes?.trim() ||
+              `In-transit cooler transfer onto destination vehicle for delivery ${delivery.id}`,
+          },
+        });
+        await tx.vehicleCompartment.update({
+          where: { id: toCompartment.id },
+          data: { fleetAssetId: dto.toFleetAssetId },
+        });
+        const primarySensor = toCompartment.sensors[0];
+        if (primarySensor && assignedDestSlot !== null && primarySensor.sensorSlot !== assignedDestSlot) {
+          await tx.temperatureDevice.update({
+            where: { id: primarySensor.id },
+            data: { sensorSlot: assignedDestSlot },
+          });
+        }
+      }
+
       const destinationRows = [];
       for (const step of transferPlan) {
         const custody = await tx.chainOfCustodyEvent.create({
@@ -726,7 +1229,7 @@ export class TelemetryOperationsService {
       return destinationRows;
     });
 
-    return {
+      return {
       deliveryId: delivery.id,
       toFleetAssetId: dto.toFleetAssetId,
       toCompartmentId: toCompartment.id,
@@ -734,6 +1237,130 @@ export class TelemetryOperationsService {
       toSensorDeviceId: resolvedToSensorId,
       transferredAt,
       createdAssignments,
+    };
+  }
+
+  async getDeliveryLoadingContext(user: RequestUser, deliveryId: string, now = new Date()) {
+    const delivery = await this.assertCanOperateDelivery(user, deliveryId);
+
+    const openAssignmentsRaw = await this.prisma.cargoCompartmentAssignment.findMany({
+      where: { deliveryId: delivery.id, unloadedAt: null },
+      include: {
+        lot: {
+          select: { id: true, lotNumber: true, species: true, storageType: true, foodSafetyStatus: true },
+        },
+        compartment: {
+          select: { id: true, compartmentCode: true, coolerCode: true, compartmentKind: true, label: true },
+        },
+        tracker: { select: { id: true, imei: true } },
+        sensorDevice: true,
+      },
+      orderBy: { loadedAt: 'asc' },
+    });
+
+    const referencedVehicleIds = Array.from(new Set(openAssignmentsRaw.map((a) => a.fleetAssetId)));
+    const zoneId = delivery.vendorOrder.order.deliveryZoneId;
+
+    const fleetAssets = await this.prisma.fleetAsset.findMany({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          ...(delivery.driverId ? [{ currentDriverId: delivery.driverId }] : []),
+          ...(referencedVehicleIds.length > 0 ? [{ id: { in: referencedVehicleIds } }] : []),
+          ...(zoneId ? [{ zoneId, coldChainCapable: true }] : [{ coldChainCapable: true }]),
+        ],
+      },
+      include: {
+        trackers: {
+          where: { status: 'ACTIVE' },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true, imei: true, hardwareModel: true },
+        },
+        compartments: {
+          where: { active: true },
+          include: {
+            sensors: {
+              where: { status: 'ACTIVE' },
+              orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
+            },
+          },
+          orderBy: [{ compartmentKind: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+      orderBy: [{ assetType: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    const sortedAssets = [...fleetAssets].sort((a, b) => {
+      const aMine = delivery.driverId && a.currentDriverId === delivery.driverId ? 0 : 1;
+      const bMine = delivery.driverId && b.currentDriverId === delivery.driverId ? 0 : 1;
+      if (aMine !== bMine) return aMine - bMine;
+      return a.licensePlate.localeCompare(b.licensePlate);
+    });
+
+    return {
+      deliveryId: delivery.id,
+      vendorOrderId: delivery.vendorOrderId,
+      driverId: delivery.driverId,
+      fleetAssets: sortedAssets.map((asset) => ({
+        id: asset.id,
+        licensePlate: asset.licensePlate,
+        assetType: asset.assetType,
+        status: asset.status,
+        trackers: asset.trackers,
+        compartments: asset.compartments.map((comp) => ({
+          id: comp.id,
+          compartmentCode: comp.compartmentCode,
+          coolerCode: comp.coolerCode,
+          compartmentKind: comp.compartmentKind,
+          label: comp.label,
+          storageType: comp.storageType,
+          sensors: comp.sensors.map((s) => ({
+            id: s.id,
+            deviceCode: s.deviceCode,
+            sensorSlot: s.sensorSlot,
+            reportingStatus: computeSensorReportingStatus(s, now),
+            lastTemperatureC: s.lastTemperatureC ? Number(s.lastTemperatureC.toString()) : null,
+          })),
+        })),
+      })),
+      items: delivery.vendorOrder.items.map((item) => {
+        const lot = item.originalLot ?? item.product.lot ?? null;
+        return {
+          orderItemId: item.id,
+          productName: item.productName,
+          quantity: item.quantity,
+          lotId: item.originalLotId ?? item.product.lotId ?? null,
+          lotNumber: lot?.lotNumber ?? null,
+          species: lot?.species ?? null,
+          storageType: lot?.storageType ?? null,
+        };
+      }),
+      openAssignments: openAssignmentsRaw.map((a) => ({
+        id: a.id,
+        lotId: a.lot.id,
+        lotNumber: a.lot.lotNumber,
+        species: a.lot.species,
+        storageType: a.lot.storageType,
+        foodSafetyStatus: a.lot.foodSafetyStatus,
+        compartmentId: a.compartment.id,
+        compartmentCode: a.compartment.compartmentCode,
+        compartmentLabel: a.compartment.label,
+        trackerImei: a.tracker?.imei ?? null,
+        sensorId: a.sensorDevice?.id ?? null,
+        sensorDeviceCode: a.sensorDevice?.deviceCode ?? null,
+        sensorReportingStatus: a.sensorDevice
+          ? computeSensorReportingStatus(a.sensorDevice, now)
+          : null,
+        sensorLastTempC: a.sensorDevice?.lastTemperatureC
+          ? Number(a.sensorDevice.lastTemperatureC.toString())
+          : null,
+        quantityUnits: a.quantityUnits,
+        handedOverQuantity: a.handedOverQuantity,
+        loadedAt: a.loadedAt,
+        unloadedAt: a.unloadedAt,
+        pickupCustodyEventId: a.pickupCustodyEventId,
+        handoverCustodyEventId: a.handoverCustodyEventId,
+      })),
     };
   }
 
@@ -890,6 +1517,8 @@ export class TelemetryOperationsService {
         compartments: Array<{
           id: string;
           compartmentCode: string;
+          coolerCode: string | null;
+          compartmentKind: CompartmentKind;
           label: string;
           storageType: string;
           sensors: Array<{
@@ -922,6 +1551,8 @@ export class TelemetryOperationsService {
         compartments: Array<{
           id: string;
           compartmentCode: string;
+          coolerCode?: string | null;
+          compartmentKind?: CompartmentKind;
           label: string;
           storageType: string;
           sensors: TemperatureDevice[];
@@ -946,6 +1577,8 @@ export class TelemetryOperationsService {
         compartments: asset.compartments.map((comp) => ({
           id: comp.id,
           compartmentCode: comp.compartmentCode,
+          coolerCode: comp.coolerCode ?? null,
+          compartmentKind: comp.compartmentKind ?? CompartmentKind.FIXED_COMPARTMENT,
           label: comp.label,
           storageType: comp.storageType,
           sensors: comp.sensors.map((s) => ({
@@ -970,8 +1603,16 @@ export class TelemetryOperationsService {
     }
 
     const deliveryRows = activeDeliveries.map((d) => {
-      const firstAssignment = d.cargoAssignments[0];
-      const vehicleSummary = firstAssignment ? vehicleMap.get(firstAssignment.fleetAssetId) ?? null : null;
+      const preferredAssignment =
+        d.cargoAssignments.find((a) => a.unloadedAt === null) ?? d.cargoAssignments[0];
+      const vehicleSummary = preferredAssignment
+        ? vehicleMap.get(preferredAssignment.fleetAssetId) ?? null
+        : null;
+      const matchedCompartment = preferredAssignment
+        ? vehicleSummary?.compartments.find((c) => c.id === preferredAssignment.compartmentId)
+        : undefined;
+      const matchedSensor =
+        matchedCompartment?.sensors[0] ?? vehicleSummary?.compartments[0]?.sensors[0] ?? null;
       return {
         deliveryId: d.id,
         vendorOrderId: d.vendorOrderId,
@@ -989,10 +1630,8 @@ export class TelemetryOperationsService {
         lastGpsCapturedAt: vehicleSummary?.lastGpsCapturedAt ?? null,
         lastTelemetryDelayed: vehicleSummary?.lastTelemetryDelayed ?? false,
         onboardLotCount: d.cargoAssignments.filter((a) => a.unloadedAt === null).length,
-        latestCargoTempC:
-          vehicleSummary?.compartments[0]?.sensors[0]?.lastTemperatureC ?? null,
-        sensorReportingStatus:
-          vehicleSummary?.compartments[0]?.sensors[0]?.reportingStatus ?? null,
+        latestCargoTempC: matchedSensor?.lastTemperatureC ?? null,
+        sensorReportingStatus: matchedSensor?.reportingStatus ?? null,
       };
     });
 
@@ -1298,46 +1937,112 @@ export class TelemetryOperationsService {
   }
 
   async getTelemetryDevicesOverview(now = new Date()) {
-    const [trackers, sensors] = await Promise.all([
-      this.prisma.vehicleTracker.findMany({
-        include: {
-          fleetAsset: {
-            select: {
-              id: true,
-              licensePlate: true,
-              assetType: true,
-              status: true,
-              lastLatitude: true,
-              lastLongitude: true,
-              lastGpsCapturedAt: true,
-              lastTelemetryReceivedAt: true,
-              lastTelemetryDelayed: true,
-              lastGpsNoFixAt: true,
-            },
-          },
-          credentials: {
-            where: { active: true, revokedAt: null },
-            select: { id: true, keyPrefix: true, expiresAt: true },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.temperatureDevice.findMany({
-        include: {
-          compartment: {
-            include: {
-              fleetAsset: {
-                select: { id: true, licensePlate: true, assetType: true },
+    const [trackers, sensors, openCargoAssignments, unmatchedFramesRaw, compartments] =
+      await Promise.all([
+        this.prisma.vehicleTracker.findMany({
+          include: {
+            fleetAsset: {
+              select: {
+                id: true,
+                licensePlate: true,
+                assetType: true,
+                status: true,
+                lastLatitude: true,
+                lastLongitude: true,
+                lastGpsCapturedAt: true,
+                lastTelemetryReceivedAt: true,
+                lastTelemetryDelayed: true,
+                lastGpsNoFixAt: true,
               },
             },
+            credentials: {
+              where: { active: true, revokedAt: null },
+              select: { id: true, keyPrefix: true, expiresAt: true },
+            },
           },
-          vendor: {
-            select: { id: true, businessName: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.temperatureDevice.findMany({
+          include: {
+            compartment: {
+              include: {
+                fleetAsset: {
+                  select: {
+                    id: true,
+                    licensePlate: true,
+                    assetType: true,
+                    lastLatitude: true,
+                    lastLongitude: true,
+                    lastGpsCapturedAt: true,
+                    lastTelemetryReceivedAt: true,
+                    lastTelemetryDelayed: true,
+                    lastGpsNoFixAt: true,
+                  },
+                },
+              },
+            },
+            vendor: {
+              select: { id: true, businessName: true },
+            },
           },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
+          orderBy: { createdAt: 'desc' },
+        }),
+        typeof this.prisma.cargoCompartmentAssignment?.findMany === 'function'
+          ? this.prisma.cargoCompartmentAssignment.findMany({
+              where: { unloadedAt: null },
+              include: {
+                lot: { select: { id: true, lotNumber: true, species: true } },
+              },
+              orderBy: { loadedAt: 'asc' },
+            })
+          : Promise.resolve([]),
+        typeof this.prisma.vehicleTelemetryFrame?.findMany === 'function'
+          ? this.prisma.vehicleTelemetryFrame.findMany({
+              where: { unmatchedLot: true },
+              include: {
+                sensorDevice: { select: { id: true, deviceCode: true } },
+                compartment: {
+                  select: { id: true, compartmentCode: true, coolerCode: true },
+                },
+                fleetAsset: { select: { id: true, licensePlate: true } },
+              },
+              orderBy: { capturedAt: 'desc' },
+              take: 25,
+            })
+          : Promise.resolve([]),
+        typeof this.prisma.vehicleCompartment?.findMany === 'function'
+          ? this.listCompartments(now)
+          : Promise.resolve([]),
+      ]);
+
+    const onboardLotsByCompartment = new Map<
+      string,
+      Array<{
+        assignmentId: string;
+        lotId: string;
+        lotNumber: string;
+        species: string;
+        quantityUnits: number;
+        remainingUnits: number;
+        deliveryId: string;
+        loadedAt: Date;
+      }>
+    >();
+
+    for (const a of openCargoAssignments) {
+      const list = onboardLotsByCompartment.get(a.compartmentId) ?? [];
+      list.push({
+        assignmentId: a.id,
+        lotId: a.lot.id,
+        lotNumber: a.lot.lotNumber,
+        species: a.lot.species,
+        quantityUnits: a.quantityUnits,
+        remainingUnits: Math.max(0, a.quantityUnits - a.handedOverQuantity),
+        deliveryId: a.deliveryId,
+        loadedAt: a.loadedAt,
+      });
+      onboardLotsByCompartment.set(a.compartmentId, list);
+    }
 
     return {
       generatedAt: now,
@@ -1356,33 +2061,85 @@ export class TelemetryOperationsService {
         lastReceivedAt: t.lastReceivedAt,
         activeCredentialCount: t.credentials.length,
       })),
-      sensors: sensors.map((s) => ({
-        id: s.id,
-        deviceCode: s.deviceCode,
-        hardwareModel: s.hardwareModel,
-        bleMacAddress: s.bleMacAddress,
-        sensorSlot: s.sensorSlot,
-        firmwareVersion: s.firmwareVersion,
-        status: s.status,
-        vendorId: s.vendorId,
-        vendorName: s.vendor?.businessName ?? null,
-        compartmentId: s.compartmentId,
-        compartmentCode: s.compartment?.compartmentCode ?? null,
-        compartmentLabel: s.compartment?.label ?? null,
-        storageType: s.compartment?.storageType ?? null,
-        fleetAssetId: s.compartment?.fleetAsset.id ?? null,
-        licensePlate: s.compartment?.fleetAsset.licensePlate ?? null,
-        lastTemperatureC: s.lastTemperatureC ? Number(s.lastTemperatureC.toString()) : null,
-        lastCapturedAt: s.lastCapturedAt,
-        lastReceivedAt: s.lastReceivedAt,
-        lastDelaySeconds: s.lastDelaySeconds,
-        lastHumidityPct: s.lastHumidityPct ? Number(s.lastHumidityPct.toString()) : null,
-        lastBatteryMv: s.lastBatteryMv,
-        lastDoorOpen: s.lastDoorOpen,
-        lastMovement: s.lastMovement,
-        lastGapKind: s.lastGapKind,
-        lastSignalMissingAt: s.lastSignalMissingAt,
-        reportingStatus: computeSensorReportingStatus(s, now),
+      sensors: sensors.map((s) => {
+        const reportingStatus = computeSensorReportingStatus(s, now);
+        const vehicleGpsStatus = s.compartment?.fleetAsset
+          ? computeVehicleGpsStatus(s.compartment.fleetAsset, now)
+          : null;
+
+        let gapClassification:
+          | 'NORMAL'
+          | 'SENSOR_SIGNAL_MISSING'
+          | 'VEHICLE_OFFLINE'
+          | 'LTE_BUFFERED_RECOVERY'
+          | 'STALE_SENSOR' = 'NORMAL';
+
+        if (reportingStatus === 'SENSOR_SIGNAL_MISSING') {
+          gapClassification = 'SENSOR_SIGNAL_MISSING';
+        } else if (
+          vehicleGpsStatus === 'OFFLINE' ||
+          (vehicleGpsStatus === 'STALE' && reportingStatus !== 'REPORTING')
+        ) {
+          gapClassification = 'VEHICLE_OFFLINE';
+        } else if (
+          reportingStatus === 'DELAYED' ||
+          s.lastGapKind === TelemetryGapKind.LTE_BUFFERED_RECOVERY
+        ) {
+          gapClassification = 'LTE_BUFFERED_RECOVERY';
+        } else if (reportingStatus === 'STALE' || reportingStatus === 'OFFLINE') {
+          gapClassification = 'STALE_SENSOR';
+        }
+
+        return {
+          id: s.id,
+          deviceCode: s.deviceCode,
+          hardwareModel: s.hardwareModel,
+          bleMacAddress: s.bleMacAddress,
+          sensorSlot: s.sensorSlot,
+          firmwareVersion: s.firmwareVersion,
+          status: s.status,
+          vendorId: s.vendorId,
+          vendorName: s.vendor?.businessName ?? null,
+          compartmentId: s.compartmentId,
+          compartmentCode: s.compartment?.compartmentCode ?? null,
+          coolerCode: s.compartment?.coolerCode ?? null,
+          compartmentKind: s.compartment?.compartmentKind ?? CompartmentKind.FIXED_COMPARTMENT,
+          compartmentLabel: s.compartment?.label ?? null,
+          storageType: s.compartment?.storageType ?? null,
+          fleetAssetId: s.compartment?.fleetAsset?.id ?? null,
+          licensePlate: s.compartment?.fleetAsset?.licensePlate ?? null,
+          vehicleAssetType: s.compartment?.fleetAsset?.assetType ?? null,
+          vehicleGpsStatus,
+          vehicleLastGpsCapturedAt: s.compartment?.fleetAsset?.lastGpsCapturedAt ?? null,
+          lastTemperatureC: s.lastTemperatureC ? Number(s.lastTemperatureC.toString()) : null,
+          lastCapturedAt: s.lastCapturedAt,
+          lastReceivedAt: s.lastReceivedAt,
+          lastDelaySeconds: s.lastDelaySeconds,
+          lastHumidityPct: s.lastHumidityPct ? Number(s.lastHumidityPct.toString()) : null,
+          lastBatteryMv: s.lastBatteryMv,
+          lastDoorOpen: s.lastDoorOpen,
+          lastMovement: s.lastMovement,
+          lastGapKind: s.lastGapKind,
+          lastSignalMissingAt: s.lastSignalMissingAt,
+          reportingStatus,
+          gapClassification,
+          onboardLots: s.compartmentId ? onboardLotsByCompartment.get(s.compartmentId) ?? [] : [],
+        };
+      }),
+      compartments,
+      unmatchedFrames: unmatchedFramesRaw.map((f) => ({
+        id: f.id,
+        capturedAt: f.capturedAt,
+        receivedAt: f.receivedAt,
+        cargoTempC: f.cargoTempC ? Number(f.cargoTempC.toString()) : null,
+        reason: f.unmatchedReason ?? null,
+        sensorId: f.sensorDevice?.id ?? f.sensorDeviceId ?? null,
+        sensorDeviceCode: f.sensorDevice?.deviceCode ?? null,
+        compartmentId: f.compartment?.id ?? f.compartmentId ?? null,
+        compartmentCode: f.compartment?.compartmentCode ?? null,
+        coolerCode: f.compartment?.coolerCode ?? null,
+        fleetAssetId: f.fleetAsset?.id ?? f.fleetAssetId ?? null,
+        licensePlate: f.fleetAsset?.licensePlate ?? null,
       })),
     };
   }
@@ -1433,8 +2190,8 @@ export class TelemetryOperationsService {
         hardwareModel: sensor.hardwareModel,
         bleMacAddress: sensor.bleMacAddress,
         sensorSlot: sensor.sensorSlot,
-        fleetAssetId: sensor.compartment?.fleetAsset.id ?? null,
-        licensePlate: sensor.compartment?.fleetAsset.licensePlate ?? null,
+        fleetAssetId: sensor.compartment?.fleetAsset?.id ?? null,
+        licensePlate: sensor.compartment?.fleetAsset?.licensePlate ?? null,
         compartmentCode: sensor.compartment?.compartmentCode ?? null,
         compartmentLabel: sensor.compartment?.label ?? null,
         lastTemperatureC: sensor.lastTemperatureC ? Number(sensor.lastTemperatureC.toString()) : null,
@@ -1460,6 +2217,8 @@ export class TelemetryOperationsService {
         longitude: f.longitude,
         gnssValid: f.gnssValid,
         gapKind: f.gapKind,
+        unmatchedLot: f.unmatchedLot,
+        unmatchedReason: f.unmatchedReason,
         linkedLotsCount: f.temperatureReadings.length,
         alertsCount: f.temperatureReadings.filter((r) => Boolean(r.alert)).length,
       })),

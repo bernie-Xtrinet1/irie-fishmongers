@@ -158,14 +158,18 @@ export function LiveFleetMap({
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {vehicles.map((vehicle) => {
             const meta = GPS_STATUS_META[vehicle.gpsStatus];
-            const primarySensor = vehicle.compartments[0]?.sensors[0] ?? null;
             return (
               <div
                 key={vehicle.fleetAssetId}
                 className="flex flex-col gap-1.5 rounded-md border border-gray-200 bg-white p-3 text-xs"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-gray-900">{vehicle.licensePlate}</span>
+                  <div>
+                    <span className="font-semibold text-gray-900">{vehicle.licensePlate}</span>
+                    <span className="ml-1.5 text-[11px] text-gray-500">
+                      ({vehicle.assetType.replace(/_/g, ' ')})
+                    </span>
+                  </div>
                   <Badge variant={meta.variant}>{meta.label}</Badge>
                 </div>
                 <div className="text-gray-600">
@@ -175,16 +179,20 @@ export function LiveFleetMap({
                 <div className="text-gray-500">
                   Captured: {formatTelemetryDateTime(vehicle.lastGpsCapturedAt)}
                 </div>
-                {primarySensor ? (
-                  <div className="text-gray-700">
-                    Cargo Air ({primarySensor.deviceCode}):{' '}
-                    <span className="font-medium">
-                      {primarySensor.lastTemperatureC !== null
-                        ? `${primarySensor.lastTemperatureC.toFixed(2)} °C`
-                        : 'Pending'}
-                    </span>
-                  </div>
-                ) : null}
+                {vehicle.compartments.map((comp) => {
+                  const sensor = comp.sensors[0] ?? null;
+                  return (
+                    <div key={comp.id} className="text-gray-700">
+                      {comp.coolerCode ?? comp.compartmentCode}
+                      {sensor ? ` (${sensor.deviceCode})` : ''}:{' '}
+                      <span className="font-medium">
+                        {sensor && sensor.lastTemperatureC !== null
+                          ? `${sensor.lastTemperatureC.toFixed(2)} °C`
+                          : 'Pending'}
+                      </span>
+                    </div>
+                  );
+                })}
                 {vehicle.gpsStatus === 'STALE' || vehicle.gpsStatus === 'OFFLINE' ? (
                   <p className="font-medium text-irie-red">
                     Location is stale — check cellular coverage or tracker ignition power.

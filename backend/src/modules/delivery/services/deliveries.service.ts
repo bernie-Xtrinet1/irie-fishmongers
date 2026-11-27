@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Driver, DriverLocation, Prisma } from '@prisma/client';
+import { Driver, Prisma } from '@prisma/client';
 
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
@@ -30,6 +30,7 @@ import { PaginatedAvailableDeliveriesEntity } from '../entities/paginated-availa
 import { PaginatedDriverDeliveriesEntity } from '../entities/paginated-driver-deliveries.entity';
 import { DriverLocationsRepository } from '../repositories/driver-locations.repository';
 import { closeOpenCompartmentAssignmentsForDelivery } from '../../telemetry/services/telemetry-operations.service';
+import { isDeliveryParishEligibleForVendor } from '../parish-service-area.util';
 import { DriversRepository } from '../repositories/drivers.repository';
 import { RouteHistoryRepository } from '../repositories/route-history.repository';
 import { SLABreachesRepository } from '../repositories/sla-breaches.repository';
@@ -107,6 +108,33 @@ export class DeliveriesService {
       }
       if (vendorOrder.status !== 'READY_FOR_PICKUP') {
         throw new BadRequestException('This vendor order is not ready for pickup');
+      }
+
+      const vendorOrderWithOrder = vendorOrder as AvailableVendorOrder & {
+        order?: { deliveryParish?: DeliveryWithDetails['vendorOrder']['order']['deliveryParish']; deliveryZone?: { active?: boolean } | null };
+      };
+      if (vendorOrderWithOrder.order?.deliveryParish) {
+        const parishMapping =
+          typeof this.prisma.deliveryZoneParish?.findUnique === 'function'
+            ? await this.prisma.deliveryZoneParish.findUnique({
+                where: { parish: vendorOrderWithOrder.order.deliveryParish },
+                select: { zone: { select: { active: true } } },
+              })
+            : null;
+        const parishMap = parishMapping
+          ? new Map([[vendorOrderWithOrder.order.deliveryParish, parishMapping.zone.active]])
+          : undefined;
+        if (
+          !isDeliveryParishEligibleForVendor(
+            vendorOrder.vendor,
+            vendorOrderWithOrder.order,
+            parishMap,
+          )
+        ) {
+          throw new ForbiddenException(
+            `Delivery parish ${vendorOrderWithOrder.order.deliveryParish} is outside ${vendorOrder.vendor.businessName}'s configured service parish or delivery zone is inactive`,
+          );
+        }
       }
 
       const requiresColdChain = await this.deliveriesRepository.vendorOrderRequiresColdChain(
@@ -414,11 +442,30 @@ export class DeliveriesService {
       throw new ForbiddenException('You do not have access to this delivery');
     }
 
-    const latestLocation = await this.driverLocationsRepository.findLatestByDriverId(
-      delivery.driverId,
-    );
+    const stage = DeliveriesService.computeStage(delivery);
+    // Privacy gate: customers may only see live location while their order is actively on board.
+    if (stage !== 'PICKED_UP') {
+      return DeliveriesService.toTrackingEntity(delivery, null);
+    }
 
-    return DeliveriesService.toTrackingEntity(delivery, latestLocation);
+    const [driverLocation, telemetryLocation] = await Promise.all([
+      this.driverLocationsRepository.findLatestByDriverId(delivery.driverId),
+      typeof this.deliveriesRepository.findActiveFleetLocationForDelivery === 'function'
+        ? this.deliveriesRepository.findActiveFleetLocationForDelivery(delivery.id)
+        : Promise.resolve(null),
+    ]);
+
+    let latestPoint: { latitude: number; longitude: number; recordedAt: Date } | null = null;
+    if (driverLocation && telemetryLocation) {
+      latestPoint =
+        telemetryLocation.recordedAt.getTime() >= driverLocation.recordedAt.getTime()
+          ? telemetryLocation
+          : driverLocation;
+    } else {
+      latestPoint = telemetryLocation ?? driverLocation;
+    }
+
+    return DeliveriesService.toTrackingEntity(delivery, latestPoint);
   }
 
   private assertOpenForTransition(delivery: DeliveryWithDetails): void {
@@ -506,16 +553,35 @@ export class DeliveriesService {
     return 'ASSIGNED';
   }
 
+  private static mapDeliveryItemSummary(
+    item: AvailableVendorOrder['items'][number] | DeliveryWithDetails['vendorOrder']['items'][number],
+  ) {
+    const withLot = item as typeof item & {
+      originalLotId?: string | null;
+      originalLot?: { id: string; lotNumber: string; species: string; storageType: string } | null;
+      product?: {
+        lotId?: string | null;
+        lot?: { id: string; lotNumber: string; species: string; storageType: string } | null;
+      } | null;
+    };
+    const lot = withLot.originalLot ?? withLot.product?.lot ?? null;
+    return {
+      productName: item.productName,
+      unit: item.unit,
+      quantity: item.quantity,
+      lotId: lot?.id ?? withLot.originalLotId ?? withLot.product?.lotId ?? null,
+      lotNumber: lot?.lotNumber ?? null,
+      species: lot?.species ?? null,
+      storageType: lot?.storageType ?? null,
+    };
+  }
+
   private static toAvailableEntity(vendorOrder: AvailableVendorOrder): AvailableDeliveryEntity {
     return {
       vendorOrderId: vendorOrder.id,
       pickupVendorName: vendorOrder.vendor.businessName,
       pickupParish: vendorOrder.vendor.parish,
-      items: vendorOrder.items.map((item) => ({
-        productName: item.productName,
-        unit: item.unit,
-        quantity: item.quantity,
-      })),
+      items: vendorOrder.items.map((item) => DeliveriesService.mapDeliveryItemSummary(item)),
       readyForPickupAt: vendorOrder.updatedAt,
     };
   }
@@ -528,11 +594,7 @@ export class DeliveriesService {
       stage: DeliveriesService.computeStage(delivery),
       pickupVendorName: delivery.vendorOrder.vendor.businessName,
       pickupParish: delivery.vendorOrder.vendor.parish,
-      items: delivery.vendorOrder.items.map((item) => ({
-        productName: item.productName,
-        unit: item.unit,
-        quantity: item.quantity,
-      })),
+      items: delivery.vendorOrder.items.map((item) => DeliveriesService.mapDeliveryItemSummary(item)),
       deliveryAddressLine1: delivery.vendorOrder.order.deliveryAddressLine1,
       deliveryAddressLine2: delivery.vendorOrder.order.deliveryAddressLine2,
       deliveryParish: delivery.vendorOrder.order.deliveryParish,
@@ -582,7 +644,7 @@ export class DeliveriesService {
 
   private static toTrackingEntity(
     delivery: DeliveryWithDetails,
-    latestLocation: DriverLocation | null,
+    latestLocation: { latitude: number; longitude: number; recordedAt: Date } | null,
   ): DeliveryTrackingEntity {
     return {
       vendorOrderId: delivery.vendorOrderId,

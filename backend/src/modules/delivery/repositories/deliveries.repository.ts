@@ -1,12 +1,43 @@
 import { Injectable } from '@nestjs/common';
-import { CustomerAcceptanceStatus, Prisma, ProofOfDeliveryType } from '@prisma/client';
+import { CustomerAcceptanceStatus, Parish, Prisma, ProofOfDeliveryType } from '@prisma/client';
 
 import { PrismaClientOrTx } from '../../orders/repositories/orders.repository';
 import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
+import { isDeliveryParishEligibleForVendor } from '../parish-service-area.util';
+
+const vendorWithServiceParishes = Prisma.validator<Prisma.VendorDefaultArgs>()({
+  include: {
+    secondaryZones: {
+      include: {
+        zone: {
+          include: {
+            parishes: { select: { parish: true } },
+          },
+        },
+      },
+    },
+  },
+});
+
+const orderItemWithLot = Prisma.validator<Prisma.OrderItemDefaultArgs>()({
+  include: {
+    originalLot: { select: { id: true, lotNumber: true, species: true, storageType: true } },
+    product: {
+      select: {
+        lotId: true,
+        lot: { select: { id: true, lotNumber: true, species: true, storageType: true } },
+      },
+    },
+  },
+});
 
 const availableVendorOrder = Prisma.validator<Prisma.VendorOrderDefaultArgs>()({
-  include: { vendor: true, items: true },
+  include: {
+    vendor: vendorWithServiceParishes,
+    order: { include: { deliveryZone: { select: { active: true } } } },
+    items: orderItemWithLot,
+  },
 });
 
 export type AvailableVendorOrder = Prisma.VendorOrderGetPayload<typeof availableVendorOrder>;
@@ -14,7 +45,13 @@ export type AvailableVendorOrder = Prisma.VendorOrderGetPayload<typeof available
 const deliveryWithDetails = Prisma.validator<Prisma.DeliveryDefaultArgs>()({
   include: {
     driver: { include: { user: true } },
-    vendorOrder: { include: { order: true, vendor: true, items: true } },
+    vendorOrder: {
+      include: {
+        order: { include: { deliveryZone: { select: { active: true } } } },
+        vendor: vendorWithServiceParishes,
+        items: orderItemWithLot,
+      },
+    },
     exceptions: { orderBy: { createdAt: 'desc' } },
     routeHistory: true,
   },
@@ -66,18 +103,68 @@ export class DeliveriesRepository {
   ): Promise<{ items: AvailableVendorOrder[]; total: number }> {
     const where: Prisma.VendorOrderWhereInput = { status: 'READY_FOR_PICKUP', delivery: null };
 
-    const [items, total] = await Promise.all([
+    const [candidates, parishZones] = await Promise.all([
       this.prisma.vendorOrder.findMany({
         where,
         include: availableVendorOrder.include,
         orderBy: { updatedAt: 'asc' },
-        skip: page.skip,
-        take: page.take,
       }),
-      this.prisma.vendorOrder.count({ where }),
+      typeof this.prisma.deliveryZoneParish?.findMany === 'function'
+        ? this.prisma.deliveryZoneParish.findMany({
+            select: { parish: true, zone: { select: { active: true } } },
+          })
+        : Promise.resolve([]),
     ]);
 
-    return { items, total };
+    const parishZoneActiveMap = new Map<Parish, boolean>(
+      parishZones.map((pz) => [pz.parish, pz.zone.active]),
+    );
+    const eligible = candidates.filter((vo) =>
+      isDeliveryParishEligibleForVendor(vo.vendor, vo.order, parishZoneActiveMap),
+    );
+
+    return {
+      items: eligible.slice(page.skip, page.skip + page.take),
+      total: eligible.length,
+    };
+  }
+
+  async findActiveFleetLocationForDelivery(deliveryId: string): Promise<{
+    latitude: number;
+    longitude: number;
+    recordedAt: Date;
+  } | null> {
+    if (typeof this.prisma.cargoCompartmentAssignment?.findMany !== 'function') {
+      return null;
+    }
+    const openAssignments = await this.prisma.cargoCompartmentAssignment.findMany({
+      where: { deliveryId, unloadedAt: null },
+      include: {
+        fleetAsset: {
+          select: {
+            lastLatitude: true,
+            lastLongitude: true,
+            lastGpsCapturedAt: true,
+          },
+        },
+      },
+      orderBy: { loadedAt: 'desc' },
+      take: 1,
+    });
+    const asset = openAssignments[0]?.fleetAsset;
+    if (
+      asset &&
+      asset.lastLatitude !== null &&
+      asset.lastLongitude !== null &&
+      asset.lastGpsCapturedAt !== null
+    ) {
+      return {
+        latitude: asset.lastLatitude,
+        longitude: asset.lastLongitude,
+        recordedAt: asset.lastGpsCapturedAt,
+      };
+    }
+    return null;
   }
 
   findVendorOrderForPickup(

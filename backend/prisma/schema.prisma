@@ -104,6 +104,8 @@ model User {
   rejectedCataloguePhotos      CataloguePhoto[]                   @relation("CataloguePhotoRejectedBy")
   retiredCataloguePhotos       CataloguePhoto[]                   @relation("CataloguePhotoRetiredBy")
   cataloguePhotoAuditLogs      CataloguePhotoAuditLog[]           @relation("CataloguePhotoAuditActor")
+  assignedCoolerVehicles       CoolerVehicleAssignment[]          @relation("CoolerAssignmentCreatedBy")
+  unassignedCoolerVehicles     CoolerVehicleAssignment[]          @relation("CoolerAssignmentClosedBy")
 
   @@map("users")
 }
@@ -3815,6 +3817,7 @@ enum FleetAssetType {
   REFRIGERATED_TRUCK
   TRUCK
   VAN
+  MOTORBIKE
 }
 
 enum FleetOwnership {
@@ -3862,6 +3865,7 @@ model FleetAsset {
   telemetryFrames     VehicleTelemetryFrame[]
   temperatureReadings TemperatureReading[]
   custodyEvents       ChainOfCustodyEvent[]
+  coolerAssignments   CoolerVehicleAssignment[]
 
   @@index([zoneId])
   @@map("fleet_assets")
@@ -4916,6 +4920,7 @@ enum TelemetryProtocol {
 
 enum TrackerHardwareModel {
   TELTONIKA_FMC130
+  TELTONIKA_FMC234
   GENERIC_GNSS_LTE
 }
 
@@ -4936,6 +4941,11 @@ enum TelemetryGapKind {
   GNSS_NO_FIX
 }
 
+enum CompartmentKind {
+  FIXED_COMPARTMENT
+  PORTABLE_COOLER
+}
+
 enum TelemetryCredentialScope {
   DEVICE_TRACKER
   GATEWAY
@@ -4943,26 +4953,54 @@ enum TelemetryCredentialScope {
 
 model VehicleCompartment {
   id              String             @id @default(uuid())
-  fleetAssetId    String
+  fleetAssetId    String?
   compartmentCode String
+  compartmentKind CompartmentKind    @default(FIXED_COMPARTMENT)
+  coolerCode      String?            @unique
   label           String
   storageType     SeafoodStorageType @default(FRESH)
   targetMinC      Decimal?           @db.Decimal(5, 2)
   targetMaxC      Decimal?           @db.Decimal(5, 2)
+  notes           String?
   active          Boolean            @default(true)
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
-  fleetAsset          FleetAsset                   @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+  fleetAsset          FleetAsset?                  @relation(fields: [fleetAssetId], references: [id], onDelete: SetNull)
   sensors             TemperatureDevice[]
   cargoAssignments    CargoCompartmentAssignment[]
   telemetryFrames     VehicleTelemetryFrame[]
   temperatureReadings TemperatureReading[]
   custodyEvents       ChainOfCustodyEvent[]
+  vehicleAssignments  CoolerVehicleAssignment[]
 
   @@unique([fleetAssetId, compartmentCode])
   @@index([fleetAssetId])
+  @@index([compartmentKind])
   @@map("vehicle_compartments")
+}
+
+model CoolerVehicleAssignment {
+  id             String    @id @default(uuid())
+  compartmentId  String
+  fleetAssetId   String
+  sensorSlot     Int?
+  assignedAt     DateTime  @default(now())
+  unassignedAt   DateTime?
+  assignedById   String?
+  unassignedById String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  compartment  VehicleCompartment @relation(fields: [compartmentId], references: [id], onDelete: Cascade)
+  fleetAsset   FleetAsset         @relation(fields: [fleetAssetId], references: [id], onDelete: Cascade)
+  assignedBy   User?              @relation("CoolerAssignmentCreatedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+  unassignedBy User?              @relation("CoolerAssignmentClosedBy", fields: [unassignedById], references: [id], onDelete: SetNull)
+
+  @@index([compartmentId, assignedAt])
+  @@index([fleetAssetId, unassignedAt])
+  @@map("cooler_vehicle_assignments")
 }
 
 model VehicleTracker {
@@ -5045,6 +5083,8 @@ model VehicleTelemetryFrame {
   externalVoltageMv Int?
   gsmSignal         Int?
   gapKind           TelemetryGapKind?
+  unmatchedLot      Boolean                  @default(false)
+  unmatchedReason   String?
   rawPayload        Json?
   createdAt         DateTime                 @default(now())
 
@@ -5058,6 +5098,7 @@ model VehicleTelemetryFrame {
   @@index([trackerId, capturedAt])
   @@index([sensorDeviceId, capturedAt])
   @@index([compartmentId, capturedAt])
+  @@index([unmatchedLot, capturedAt])
   @@map("vehicle_telemetry_frames")
 }
 

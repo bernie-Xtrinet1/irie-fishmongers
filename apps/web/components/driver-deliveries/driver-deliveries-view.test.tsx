@@ -1,7 +1,10 @@
 import {
+  CompartmentKind,
   CustomerAcceptanceStatus,
   DriverAvailabilityStatus,
   DriverStatus,
+  FleetAssetStatus,
+  FleetAssetType,
   Parish,
   ProductUnit,
   ProofOfDeliveryType,
@@ -21,8 +24,12 @@ import userEvent from '@testing-library/user-event';
 import {
   claimAvailableDelivery,
   fetchAvailableDeliveries,
+  fetchDriverLoadingContext,
   fetchMyDeliveries,
   fetchMyDriverProfile,
+  recordCargoHandover,
+  recordCargoPickup,
+  recordManualTemperatureCheck,
   updateDeliverySchedule,
   updateDeliveryStatus,
   updateMyDriverAvailability,
@@ -44,6 +51,10 @@ const mockClaim = jest.mocked(claimAvailableDelivery);
 const mockFetchMine = jest.mocked(fetchMyDeliveries);
 const mockUpdateSchedule = jest.mocked(updateDeliverySchedule);
 const mockUpdateStatus = jest.mocked(updateDeliveryStatus);
+const mockFetchLoadingContext = jest.mocked(fetchDriverLoadingContext);
+const mockRecordCargoPickup = jest.mocked(recordCargoPickup);
+const mockRecordCargoHandover = jest.mocked(recordCargoHandover);
+const mockRecordManualTemp = jest.mocked(recordManualTemperatureCheck);
 
 const driverUser: AuthUser = {
   id: 'driver-user-1',
@@ -456,4 +467,108 @@ describe('DriverDeliveriesView', () => {
       ).toBeInTheDocument();
     });
   });
+
+  it('confirms pickup cooler ID & lot custody and keeps manual product checks distinct', async () => {
+    const user = userEvent.setup();
+    const assigned = makeDelivery({
+      id: 'del-cooler',
+      stage: 'ASSIGNED',
+      items: [
+        {
+          productName: 'Red Snapper',
+          unit: ProductUnit.PER_POUND,
+          quantity: 4,
+          lotId: 'lot-1',
+          lotNumber: 'LOT-SNAPPER-01',
+          species: 'Red Snapper',
+          storageType: 'FRESH',
+        },
+      ],
+    });
+    mockFetchProfile.mockResolvedValue({ ...baseProfile, availabilityStatus: DriverAvailabilityStatus.BUSY });
+    mockFetchMine.mockResolvedValue({ items: [assigned], total: 1, page: 1, pageSize: 50 });
+    mockFetchLoadingContext.mockResolvedValue({
+      deliveryId: 'del-cooler',
+      vendorOrderId: 'vo-1',
+      driverId: 'driver-1',
+      fleetAssets: [
+        {
+          id: 'bike-1',
+          licensePlate: 'MB-101',
+          assetType: FleetAssetType.MOTORBIKE,
+          status: FleetAssetStatus.ACTIVE,
+          trackers: [{ id: 'trk-1', imei: '356307042449901', hardwareModel: 'TELTONIKA_FMC234' }],
+          compartments: [
+            {
+              id: 'comp-1',
+              compartmentCode: 'IGLOO-MOTO-01',
+              coolerCode: 'IGLOO-MOTO-01',
+              compartmentKind: CompartmentKind.PORTABLE_COOLER,
+              label: 'Igloo Marine 48qt',
+              storageType: 'FRESH',
+              sensors: [
+                {
+                  id: 'sens-1',
+                  deviceCode: 'EYE-MOTO-01',
+                  sensorSlot: 1,
+                  reportingStatus: 'REPORTING',
+                  lastTemperatureC: 2.3,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      items: [
+        {
+          orderItemId: 'oi-1',
+          productName: 'Red Snapper',
+          quantity: 4,
+          lotId: 'lot-1',
+          lotNumber: 'LOT-SNAPPER-01',
+          species: 'Red Snapper',
+          storageType: 'FRESH',
+        },
+      ],
+      openAssignments: [],
+    });
+    mockRecordCargoPickup.mockResolvedValue({});
+    mockRecordCargoHandover.mockResolvedValue({});
+    mockRecordManualTemp.mockResolvedValue({});
+
+    renderWithQueryClient();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Cooler & Lot Cold-Chain Custody/i })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /Cooler & Lot Cold-Chain Custody/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Confirm Pickup & Cooler Loading/i)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Confirm Pickup & Cooler ID/i }));
+    await waitFor(() => {
+      expect(mockRecordCargoPickup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deliveryId: 'del-cooler',
+          fleetAssetId: 'bike-1',
+          compartmentId: 'comp-1',
+          lots: [{ lotId: 'lot-1', quantityUnits: 4 }],
+        }),
+      );
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/Core °C/i), { target: { value: '2.1' } });
+    await user.click(screen.getByRole('button', { name: /Save Manual Product Check/i }));
+    await waitFor(() => {
+      expect(mockRecordManualTemp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lotId: 'lot-1',
+          checkpoint: 'DRIVER_PICKUP',
+          temperatureC: 2.1,
+        }),
+      );
+    });
+  }, 15_000);
 });

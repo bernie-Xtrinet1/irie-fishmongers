@@ -3,6 +3,7 @@
 import { useDeliveryZones } from '@/lib/hooks/use-delivery-zones';
 import { FleetAssetsSection } from './fleet-assets-section';
 import { FleetTripsSection } from './fleet-trips-section';
+import { PortableCoolersSection } from './portable-coolers-section';
 import { ZonesSection } from './zones-section';
 
 export function DeliveryZonesView(): React.ReactElement {
@@ -18,6 +19,7 @@ export function DeliveryZonesView(): React.ReactElement {
 
       <ZonesSection />
       <FleetAssetsSection zones={zones} />
+      <PortableCoolersSection zones={zones} />
       <FleetTripsSection zones={zones} />
     </div>
   );

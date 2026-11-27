@@ -10,4 +10,16 @@ export class DeliveryItemSummaryEntity {
 
   @ApiProperty()
   quantity!: number;
+
+  @ApiProperty({ required: false, nullable: true })
+  lotId?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  lotNumber?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  species?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  storageType?: string | null;
 }

@@ -19,6 +19,9 @@ async function main(): Promise<void> {
   const imei = readArg('--imei') || process.env.SIM_TRACKER_IMEI || '356307042441013';
   const mode = readArg('--mode') || 'burst';
   const tempC = Number(readArg('--temp') ?? '2.35');
+  const slot = Math.min(4, Math.max(1, Number(readArg('--slot') ?? '1') || 1));
+  const slot2TempArg = readArg('--slot2-temp');
+  const slot2TempC = slot2TempArg !== undefined ? Number(slot2TempArg) : undefined;
   const capturedAtArg = readArg('--captured-at');
 
   if (!token) {
@@ -44,11 +47,34 @@ async function main(): Promise<void> {
         latitude: point.lat,
         longitude: point.lng,
         speedKph: point.speedKph,
+        sensorSlot: slot,
         cargoTempC: tempC,
         humidityPct: 78,
         doorOpen: false,
         movement: true,
         batteryMv: 2950,
+        ...(slot2TempC !== undefined
+          ? {
+              eyeSensors: [
+                {
+                  sensorSlot: slot,
+                  cargoTempC: tempC,
+                  humidityPct: 78,
+                  doorOpen: false,
+                  movement: true,
+                  batteryMv: 2950,
+                },
+                {
+                  sensorSlot: slot === 1 ? 2 : 1,
+                  cargoTempC: slot2TempC,
+                  humidityPct: 74,
+                  doorOpen: false,
+                  movement: true,
+                  batteryMv: 2910,
+                },
+              ],
+            }
+          : {}),
         gsmSignal: 4,
       };
       const res = await client.sendCodec8e(imei, [sample]);
@@ -69,11 +95,20 @@ async function main(): Promise<void> {
       latitude: point.lat,
       longitude: point.lng,
       speedKph: 32,
+      sensorSlot: slot,
       cargoTempC: tempC,
       humidityPct: 76,
       doorOpen: false,
       movement: true,
       batteryMv: 2950,
+      ...(slot2TempC !== undefined
+        ? {
+            eyeSensors: [
+              { sensorSlot: slot, cargoTempC: tempC, humidityPct: 76, doorOpen: false, movement: true, batteryMv: 2950 },
+              { sensorSlot: slot === 1 ? 2 : 1, cargoTempC: slot2TempC, humidityPct: 74, doorOpen: false, movement: true, batteryMv: 2910 },
+            ],
+          }
+        : {}),
       gsmSignal: 4,
     },
     {

@@ -34,6 +34,7 @@ import {
   toJamaicaDateTimeInput,
   validateProofOfDeliveryUrl,
 } from './driver-deliveries-helpers';
+import { CoolerCustodyPanel } from './cooler-custody-panel';
 
 export interface MyDeliveriesSectionProps {
   deliveries: DriverDelivery[];
@@ -222,6 +223,7 @@ function DeliveryCard({
             {delivery.items.map((item, idx) => (
               <li key={`${delivery.id}-item-${idx}`}>
                 {item.quantity} × {item.productName} ({formatEnumLabel(item.unit).toLowerCase()})
+                {item.lotNumber ? ` · Lot ${item.lotNumber}` : ''}
               </li>
             ))}
           </ul>
@@ -231,6 +233,8 @@ function DeliveryCard({
             </p>
           ) : null}
         </div>
+
+        <CoolerCustodyPanel delivery={delivery} isApproved={isApproved} />
 
         <div className="space-y-1">
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">

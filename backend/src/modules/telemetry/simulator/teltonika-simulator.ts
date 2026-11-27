@@ -1,5 +1,14 @@
 import { encodeTeltonikaCodec8ePacket } from '../parsers/teltonika-codec8e.parser';
 
+export interface EyeSensorSimReading {
+  sensorSlot: number;
+  cargoTempC?: number | null;
+  humidityPct?: number;
+  doorOpen?: boolean;
+  movement?: boolean;
+  batteryMv?: number;
+}
+
 export interface TelemetrySimulateSample {
   capturedAt: Date;
   latitude: number | null;
@@ -14,6 +23,7 @@ export interface TelemetrySimulateSample {
   doorOpen?: boolean;
   movement?: boolean;
   batteryMv?: number;
+  eyeSensors?: EyeSensorSimReading[];
   externalVoltageMv?: number;
   gsmSignal?: number;
 }
@@ -46,39 +56,55 @@ export class TeltonikaSimulatorClient {
   } {
     const packet = encodeTeltonikaCodec8ePacket(
       samples.map((sample) => {
-        const slot = sample.sensorSlot ?? 1;
-        const offset = slot - 1;
         const io1: Array<{ id: number; value: number }> = [];
         const io2: Array<{ id: number; value: number; signed?: boolean }> = [];
 
         if (sample.gsmSignal !== undefined) {
           io1.push({ id: 21, value: sample.gsmSignal });
         }
-        if (sample.humidityPct !== undefined) {
-          io1.push({ id: 10804 + offset, value: Math.round(sample.humidityPct) });
-        }
-        if (sample.doorOpen !== undefined) {
-          io1.push({ id: 10808 + offset, value: sample.doorOpen ? 1 : 0 });
-        }
-        if (sample.movement !== undefined) {
-          io1.push({ id: 10812 + offset, value: sample.movement ? 1 : 0 });
-        }
-        if (sample.batteryMv !== undefined) {
-          const encodedBatt = Math.max(0, Math.min(200, Math.round((sample.batteryMv - 2000) / 10)));
-          io1.push({ id: 10816 + offset, value: encodedBatt });
-        }
         if (sample.externalVoltageMv !== undefined) {
           io2.push({ id: 66, value: sample.externalVoltageMv });
         }
-        if (sample.cargoTempC === null) {
-          // Sentinel 0x8000 (-32768) triggers SENSOR_SIGNAL_MISSING
-          io2.push({ id: 10800 + offset, value: -32768, signed: true });
-        } else if (sample.cargoTempC !== undefined) {
-          io2.push({
-            id: 10800 + offset,
-            value: Math.round(sample.cargoTempC * 100),
-            signed: true,
-          });
+
+        const eyeList: EyeSensorSimReading[] =
+          sample.eyeSensors && sample.eyeSensors.length > 0
+            ? sample.eyeSensors
+            : [
+                {
+                  sensorSlot: sample.sensorSlot ?? 1,
+                  cargoTempC: sample.cargoTempC,
+                  humidityPct: sample.humidityPct,
+                  doorOpen: sample.doorOpen,
+                  movement: sample.movement,
+                  batteryMv: sample.batteryMv,
+                },
+              ];
+
+        for (const eye of eyeList) {
+          const offset = (eye.sensorSlot ?? 1) - 1;
+          if (eye.humidityPct !== undefined) {
+            io1.push({ id: 10804 + offset, value: Math.round(eye.humidityPct) });
+          }
+          if (eye.doorOpen !== undefined) {
+            io1.push({ id: 10808 + offset, value: eye.doorOpen ? 1 : 0 });
+          }
+          if (eye.movement !== undefined) {
+            io1.push({ id: 10812 + offset, value: eye.movement ? 1 : 0 });
+          }
+          if (eye.batteryMv !== undefined) {
+            const encodedBatt = Math.max(0, Math.min(200, Math.round((eye.batteryMv - 2000) / 10)));
+            io1.push({ id: 10816 + offset, value: encodedBatt });
+          }
+          if (eye.cargoTempC === null) {
+            // Sentinel 0x8000 (-32768) triggers SENSOR_SIGNAL_MISSING
+            io2.push({ id: 10800 + offset, value: -32768, signed: true });
+          } else if (eye.cargoTempC !== undefined) {
+            io2.push({
+              id: 10800 + offset,
+              value: Math.round(eye.cargoTempC * 100),
+              signed: true,
+            });
+          }
         }
 
         return {
@@ -132,6 +158,7 @@ export class TeltonikaSimulatorClient {
         doorOpen: s.doorOpen ?? false,
         movement: s.movement ?? true,
         batteryMv: s.batteryMv ?? 2950,
+        ...(s.eyeSensors ? { eyeSensors: s.eyeSensors } : {}),
         externalVoltageMv: s.externalVoltageMv ?? 13800,
         gsmSignal: s.gsmSignal ?? 4,
       })),
