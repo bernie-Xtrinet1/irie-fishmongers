@@ -1,4 +1,6 @@
+import { OrderDeliveryTrackingEntity } from '../entities/order-delivery-tracking.entity';
 import { OrderResponseEntity } from '../entities/order-response.entity';
+import { CustomerOrderTrackingService } from '../services/customer-order-tracking.service';
 import { OrdersService } from '../services/orders.service';
 import { OrdersController } from './orders.controller';
 
@@ -14,12 +16,22 @@ const order: OrderResponseEntity = {
   createdAt: new Date(),
 };
 
+const tracking: OrderDeliveryTrackingEntity = {
+  orderId: 'order-1',
+  deliveryParish: 'KINGSTON',
+  isSplitOrder: false,
+  hasActiveTracking: false,
+  deliveries: [],
+  checkedAt: new Date().toISOString(),
+};
+
 const user = { id: 'user-1', email: 'a@b.com', roles: ['CUSTOMER' as const] };
 
 describe('OrdersController', () => {
   let ordersService: jest.Mocked<
     Pick<OrdersService, 'checkout' | 'getCustomerOrders' | 'getCustomerOrderById' | 'cancelOrder' | 'cancelVendorOrder'>
   >;
+  let trackingService: jest.Mocked<Pick<CustomerOrderTrackingService, 'getOrderTracking'>>;
   let controller: OrdersController;
 
   beforeEach(() => {
@@ -30,7 +42,13 @@ describe('OrdersController', () => {
       cancelOrder: jest.fn().mockResolvedValue(order),
       cancelVendorOrder: jest.fn().mockResolvedValue(order),
     };
-    controller = new OrdersController(ordersService as unknown as OrdersService);
+    trackingService = {
+      getOrderTracking: jest.fn().mockResolvedValue(tracking),
+    };
+    controller = new OrdersController(
+      ordersService as unknown as OrdersService,
+      trackingService as unknown as CustomerOrderTrackingService,
+    );
   });
 
   const checkoutDto = {
@@ -52,6 +70,11 @@ describe('OrdersController', () => {
 
   it('finds an order by id', async () => {
     await expect(controller.findById(user, 'order-1')).resolves.toEqual(order);
+  });
+
+  it('returns delivery tracking for an owned order', async () => {
+    await expect(controller.trackDelivery(user, 'order-1')).resolves.toEqual(tracking);
+    expect(trackingService.getOrderTracking).toHaveBeenCalledWith('user-1', 'order-1');
   });
 
   it('cancels an order', async () => {

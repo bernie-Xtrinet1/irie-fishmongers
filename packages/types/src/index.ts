@@ -1828,3 +1828,65 @@ export interface DeliveryTelemetryDetail {
   }>;
 }
 
+// --- Customer Order Delivery Tracking ---
+// Hand-mirrored from backend/src/modules/orders/entities/order-delivery-tracking.entity.ts
+export type CustomerDeliveryTrackingStage =
+  | 'AWAITING_PICKUP'
+  | 'IN_TRANSIT'
+  | 'HANDED_OVER'
+  | 'DELIVERED'
+  | 'RETURNED'
+  | 'CANCELLED'
+  | 'FAILED';
+
+export type CustomerTrackedLocationStatus =
+  | 'NOT_STARTED'
+  | 'LIVE'
+  | 'STALE'
+  | 'UNAVAILABLE'
+  | 'ENDED';
+
+export interface CustomerTrackedLocation {
+  latitude: number;
+  longitude: number;
+  capturedAt: string;
+  stale: boolean;
+  label: string;
+}
+
+export interface CustomerTrackedDeliveryItem {
+  productName: string;
+  quantity: number;
+}
+
+export interface CustomerTrackedDeliveryPart {
+  vendorOrderId: string;
+  deliveryIndex: number;
+  totalDeliveries: number;
+  deliveryLabel: string;
+  vendorName: string;
+  itemsSummary: string;
+  items: CustomerTrackedDeliveryItem[];
+  vendorStatus: string;
+  stage: CustomerDeliveryTrackingStage;
+  statusLabel: string;
+  onBoard: boolean;
+  isLocationShared: boolean;
+  locationStatus: CustomerTrackedLocationStatus;
+  locationMessage: string;
+  location: CustomerTrackedLocation | null;
+  pickedUpAt: string | null;
+  customerDeliveryWindowStart: string | null;
+  customerDeliveryWindowEnd: string | null;
+}
+
+export interface OrderDeliveryTracking {
+  orderId: string;
+  deliveryParish: Parish;
+  isSplitOrder: boolean;
+  hasActiveTracking: boolean;
+  deliveries: CustomerTrackedDeliveryPart[];
+  checkedAt: string;
+}
+
+

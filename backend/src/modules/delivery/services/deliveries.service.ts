@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Driver, DriverLocation, Prisma } from '@prisma/client';
+import { CustomerAcceptanceStatus, Driver, DriverLocation, Prisma, VendorOrderStatus } from '@prisma/client';
 
 import { AwaitingCustomerAcceptanceEvent } from '../../../common/events/awaiting-customer-acceptance.event';
 import { DeliveryRejectedEvent } from '../../../common/events/delivery-rejected.event';
@@ -414,9 +414,19 @@ export class DeliveriesService {
       throw new ForbiddenException('You do not have access to this delivery');
     }
 
-    const latestLocation = await this.driverLocationsRepository.findLatestByDriverId(
-      delivery.driverId,
-    );
+    const locationStopped =
+      delivery.deliveredAt !== null ||
+      delivery.failedAt !== null ||
+      delivery.customerRejectedAt !== null ||
+      delivery.customerAcceptanceStatus === CustomerAcceptanceStatus.REJECTED ||
+      delivery.vendorOrder.status === VendorOrderStatus.CANCELLED ||
+      delivery.vendorOrder.status === VendorOrderStatus.REJECTED ||
+      delivery.vendorOrder.status === VendorOrderStatus.DELIVERED ||
+      delivery.vendorOrder.status === VendorOrderStatus.DELIVERY_FAILED;
+
+    const latestLocation = locationStopped
+      ? null
+      : await this.driverLocationsRepository.findLatestByDriverId(delivery.driverId);
 
     return DeliveriesService.toTrackingEntity(delivery, latestLocation);
   }

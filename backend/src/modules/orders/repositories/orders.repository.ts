@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Parish, Prisma, ProductUnit } from '@prisma/client';
+import { FleetAssetStatus, Parish, Prisma, ProductUnit } from '@prisma/client';
 
 import { DateRange } from '../../../common/dto/date-range.type';
 import { PrismaService } from '../../../database/prisma.service';
@@ -11,6 +11,89 @@ const orderWithDetails = Prisma.validator<Prisma.OrderDefaultArgs>()({
 });
 
 export type OrderWithDetails = Prisma.OrderGetPayload<typeof orderWithDetails>;
+
+const fleetAssetLocationSelect = Prisma.validator<Prisma.FleetAssetSelect>()({
+  id: true,
+  status: true,
+  lastLatitude: true,
+  lastLongitude: true,
+  lastGpsCapturedAt: true,
+  lastTelemetryReceivedAt: true,
+  lastTelemetryDelayed: true,
+  lastGpsNoFixAt: true,
+});
+
+// Scoped strictly to customer-safe fields so internal telemetry, fleet route history,
+// driver contact details, and other customers' stops are never loaded for customer tracking.
+const orderTrackingSelect = Prisma.validator<Prisma.OrderSelect>()({
+  id: true,
+  customerId: true,
+  deliveryParish: true,
+  vendorOrders: {
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      status: true,
+      vendor: {
+        select: {
+          businessName: true,
+        },
+      },
+      items: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          productName: true,
+          quantity: true,
+        },
+      },
+      cargoAssignments: {
+        orderBy: { loadedAt: 'desc' },
+        select: {
+          quantityUnits: true,
+          handedOverQuantity: true,
+          unloadedAt: true,
+          fleetAsset: {
+            select: fleetAssetLocationSelect,
+          },
+        },
+      },
+      delivery: {
+        select: {
+          pickedUpAt: true,
+          deliveredAt: true,
+          failedAt: true,
+          customerAcceptanceStatus: true,
+          customerRejectedAt: true,
+          customerDeliveryWindowStart: true,
+          customerDeliveryWindowEnd: true,
+          runStop: {
+            select: {
+              deliveryRun: {
+                select: {
+                  fleetAsset: {
+                    select: fleetAssetLocationSelect,
+                  },
+                },
+              },
+            },
+          },
+          driver: {
+            select: {
+              operatedFleetAssets: {
+                where: { status: FleetAssetStatus.ACTIVE },
+                take: 1,
+                orderBy: { updatedAt: 'desc' },
+                select: fleetAssetLocationSelect,
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
+export type OrderTrackingRecord = Prisma.OrderGetPayload<{ select: typeof orderTrackingSelect }>;
 
 export interface VendorOrderItemInput {
   id?: string;
@@ -71,6 +154,10 @@ export class OrdersRepository {
 
   findById(id: string): Promise<OrderWithDetails | null> {
     return this.prisma.order.findUnique({ where: { id }, include: orderWithDetails.include });
+  }
+
+  findOrderTrackingById(id: string): Promise<OrderTrackingRecord | null> {
+    return this.prisma.order.findUnique({ where: { id }, select: orderTrackingSelect });
   }
 
   async findManyByCustomer(
