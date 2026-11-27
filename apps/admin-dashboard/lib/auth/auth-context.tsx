@@ -22,6 +22,7 @@ export interface AuthUser {
   status?: 'PENDING_VERIFICATION' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
   roles: UserRole[];
   canAuthorizeVendorSettlements?: boolean;
+  canManageCataloguePhotos?: boolean;
 }
 
 interface AuthTokensResponse {
@@ -96,6 +97,8 @@ export function AuthProvider({
             roles: refreshedUser.roles as UserRole[],
             canAuthorizeVendorSettlements:
               refreshedUser.canAuthorizeVendorSettlements ?? prev?.canAuthorizeVendorSettlements,
+            canManageCataloguePhotos:
+              refreshedUser.canManageCataloguePhotos ?? prev?.canManageCataloguePhotos,
           }));
         }
       },

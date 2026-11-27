@@ -61,6 +61,18 @@ export class CataloguePhotoEntity {
   @ApiProperty({ enum: CataloguePhotoApprovalStatus })
   approvalStatus!: CataloguePhotoApprovalStatus;
 
+  @ApiProperty({ required: false })
+  isDefault?: boolean;
+
+  @ApiProperty({ required: false })
+  versionGroupId?: string;
+
+  @ApiProperty({ required: false })
+  versionNumber?: number;
+
+  @ApiProperty({ required: false, nullable: true })
+  retiredAt?: Date | string | null;
+
   @ApiProperty({ required: false, type: CataloguePhotoSpeciesEntity })
   species?: CataloguePhotoSpeciesEntity;
 }

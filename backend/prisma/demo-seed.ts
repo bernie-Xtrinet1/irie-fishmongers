@@ -40,15 +40,22 @@ const ACCOUNTS: DemoAccount[] = [
 
 async function upsertAccount(account: DemoAccount, passwordHash: string): Promise<string> {
   const role = await prisma.role.findUniqueOrThrow({ where: { name: account.role } });
+  const canManageCataloguePhotos = account.role === RoleName.ADMINISTRATOR;
   const user = await prisma.user.upsert({
     where: { email: account.email },
-    update: { status: UserStatus.ACTIVE, firstName: account.firstName, lastName: account.lastName },
+    update: {
+      status: UserStatus.ACTIVE,
+      firstName: account.firstName,
+      lastName: account.lastName,
+      ...(canManageCataloguePhotos ? { canManageCataloguePhotos: true } : {}),
+    },
     create: {
       email: account.email,
       passwordHash,
       firstName: account.firstName,
       lastName: account.lastName,
       status: UserStatus.ACTIVE,
+      canManageCataloguePhotos,
       emailVerifiedAt: new Date(),
     },
   });

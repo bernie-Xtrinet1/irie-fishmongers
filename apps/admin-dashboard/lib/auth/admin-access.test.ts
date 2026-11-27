@@ -1,6 +1,9 @@
 import {
   canAccessAdminPath,
+  canAccessCataloguePhotos,
   canAuthorizeVendorSettlements,
+  canManageCataloguePhotos,
+  canPublishOrRetireCataloguePhotos,
   getAdminRoleLabel,
   isActiveAdminPortalUser,
   isActiveAdminUser,
@@ -54,6 +57,19 @@ describe('admin-access helpers', () => {
     expect(canAccessAdminPath(staff, '/vendor-settlements')).toBe(false);
 
     expect(canAccessAdminPath(admin, '/sales-analytics')).toBe(true);
+    expect(canAccessAdminPath(admin, '/catalogue-photos')).toBe(true);
+    expect(canAccessAdminPath(staff, '/catalogue-photos')).toBe(false);
+
+    const catalogueEditor = {
+      roles: ['OPERATIONS_STAFF'],
+      status: 'ACTIVE',
+      canManageCataloguePhotos: true,
+    };
+    expect(canManageCataloguePhotos(catalogueEditor)).toBe(true);
+    expect(canAccessCataloguePhotos(catalogueEditor)).toBe(true);
+    expect(canPublishOrRetireCataloguePhotos(catalogueEditor)).toBe(false);
+    expect(canAccessAdminPath(catalogueEditor, '/catalogue-photos')).toBe(true);
+    expect(canPublishOrRetireCataloguePhotos(admin)).toBe(true);
   });
 
   it('denies suspended or pending portal users', () => {

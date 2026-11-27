@@ -4,7 +4,11 @@ import { Reflector } from '@nestjs/core';
 import { RoleName } from '@prisma/client';
 
 import { AnalyticsController } from '../../modules/analytics/controllers/analytics.controller';
+import { AdminCataloguePhotosController } from '../../modules/catalogue/controllers/admin-catalogue-photos.controller';
 import { AdminSeafoodCatalogueController } from '../../modules/catalogue/controllers/admin-seafood-catalogue.controller';
+import { CataloguePhotoAdminGuard } from '../../modules/catalogue/guards/catalogue-photo-admin.guard';
+import { CataloguePhotoManageGuard } from '../../modules/catalogue/guards/catalogue-photo-manage.guard';
+import { CataloguePhotoViewGuard } from '../../modules/catalogue/guards/catalogue-photo-view.guard';
 import { CatchesController } from '../../modules/catches/controllers/catches.controller';
 import { FishermenController } from '../../modules/catches/controllers/fishermen.controller';
 import { LandingSitesController } from '../../modules/catches/controllers/landing-sites.controller';
@@ -276,6 +280,54 @@ describe('Operations Staff & Primary Administrator RBAC Matrix', () => {
     expect(ingestionGuards).toContain(TelemetryGatewayAuthGuard);
     for (const method of routeMethodNames(TelemetryIngestionController)) {
       expect(effectiveRolesFor(TelemetryIngestionController, method)).toBeUndefined();
+    }
+  });
+
+  it('enforces explicit permission and administrator-only boundaries on AdminCataloguePhotosController', () => {
+    type MethodFn = (...args: unknown[]) => unknown;
+    for (const viewMethod of ['list', 'getHistory', 'streamImage']) {
+      expect(effectiveRolesFor(AdminCataloguePhotosController, viewMethod)).toEqual([
+        RoleName.ADMINISTRATOR,
+        RoleName.OPERATIONS_STAFF,
+      ]);
+      const guards =
+        reflector.get<unknown[]>(
+          GUARDS_METADATA,
+          Reflect.get(AdminCataloguePhotosController.prototype, viewMethod) as MethodFn,
+        ) ?? [];
+      expect(guards).toContain(CataloguePhotoViewGuard);
+    }
+
+    for (const manageMethod of ['uploadDraft', 'updateMetadata', 'replacePhoto']) {
+      expect(effectiveRolesFor(AdminCataloguePhotosController, manageMethod)).toEqual([
+        RoleName.ADMINISTRATOR,
+        RoleName.OPERATIONS_STAFF,
+      ]);
+      const guards =
+        reflector.get<unknown[]>(
+          GUARDS_METADATA,
+          Reflect.get(AdminCataloguePhotosController.prototype, manageMethod) as MethodFn,
+        ) ?? [];
+      expect(guards).toContain(CataloguePhotoManageGuard);
+    }
+
+    for (const adminOnlyMethod of [
+      'approveAndPublish',
+      'rejectDraft',
+      'setDefault',
+      'retire',
+      'restore',
+      'bulkSwitchListings',
+    ]) {
+      expect(effectiveRolesFor(AdminCataloguePhotosController, adminOnlyMethod)).toEqual([
+        RoleName.ADMINISTRATOR,
+      ]);
+      const guards =
+        reflector.get<unknown[]>(
+          GUARDS_METADATA,
+          Reflect.get(AdminCataloguePhotosController.prototype, adminOnlyMethod) as MethodFn,
+        ) ?? [];
+      expect(guards).toContain(CataloguePhotoAdminGuard);
     }
   });
 });

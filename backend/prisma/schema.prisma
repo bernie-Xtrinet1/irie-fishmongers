@@ -32,6 +32,7 @@ model User {
   phone                           String?
   status                          UserStatus @default(PENDING_VERIFICATION)
   canAuthorizeVendorSettlements   Boolean    @default(false)
+  canManageCataloguePhotos        Boolean    @default(false)
   emailVerifiedAt                 DateTime?
   emailVerificationTokenHash      String?
   emailVerificationTokenExpiresAt DateTime?
@@ -98,6 +99,11 @@ model User {
   createdTelemetryCredentials  TelemetryDeviceCredential[]        @relation("TelemetryCredentialCreatedBy")
   revokedTelemetryCredentials  TelemetryDeviceCredential[]        @relation("TelemetryCredentialRevokedBy")
   recordedCargoAssignments     CargoCompartmentAssignment[]       @relation("CargoAssignmentRecordedBy")
+  uploadedCataloguePhotos      CataloguePhoto[]                   @relation("CataloguePhotoUploadedBy")
+  publishedCataloguePhotos     CataloguePhoto[]                   @relation("CataloguePhotoPublishedBy")
+  rejectedCataloguePhotos      CataloguePhoto[]                   @relation("CataloguePhotoRejectedBy")
+  retiredCataloguePhotos       CataloguePhoto[]                   @relation("CataloguePhotoRetiredBy")
+  cataloguePhotoAuditLogs      CataloguePhotoAuditLog[]           @relation("CataloguePhotoAuditActor")
 
   @@map("users")
 }
@@ -303,14 +309,37 @@ enum CataloguePhotoApprovalStatus {
   REJECTED
 }
 
+enum CataloguePhotoAuditAction {
+  UPLOAD_DRAFT
+  UPDATE_METADATA
+  UPLOAD_REPLACEMENT_DRAFT
+  APPROVE_AND_PUBLISH
+  REJECT_DRAFT
+  SET_DEFAULT
+  RETIRE
+  BULK_SWITCH_LISTINGS
+  ROLLBACK_RESTORE
+}
+
 model CataloguePhoto {
   id                  String                       @id @default(uuid())
   speciesId           String
   catalogueItemId     String?
+  versionGroupId      String                       @default(uuid())
+  versionNumber       Int                          @default(1)
+  replacesPhotoId     String?
+  isDefault           Boolean                      @default(false)
   title               String
   scientificName      String
   jamaicanAliases     String[]                     @default([])
   imageUrl            String
+  storageProvider     String                       @default("BUNDLED")
+  storageContainer    String?
+  storageKey          String?
+  mimeType            String?
+  fileSizeBytes       Int?
+  widthPx             Int?
+  heightPx            Int?
   sourceName          String
   sourceUrl           String
   photographer        String
@@ -319,17 +348,55 @@ model CataloguePhoto {
   modifications       String
   requiresAttribution Boolean                      @default(true)
   approvalStatus      CataloguePhotoApprovalStatus @default(APPROVED)
+  uploadedByUserId    String?
+  publishedAt         DateTime?
+  publishedByUserId   String?
+  rejectedAt          DateTime?
+  rejectedByUserId    String?
+  rejectionReason     String?
+  retiredAt           DateTime?
+  retiredByUserId     String?
+  retirementReason    String?
   createdAt           DateTime                     @default(now())
   updatedAt           DateTime                     @updatedAt
 
-  species       Species               @relation(fields: [speciesId], references: [id], onDelete: Restrict)
-  catalogueItem SeafoodCatalogueItem? @relation(fields: [catalogueItemId], references: [id], onDelete: SetNull)
-  products      Product[]
+  species         Species                  @relation(fields: [speciesId], references: [id], onDelete: Restrict)
+  catalogueItem   SeafoodCatalogueItem?    @relation(fields: [catalogueItemId], references: [id], onDelete: SetNull)
+  replacesPhoto   CataloguePhoto?          @relation("CataloguePhotoReplacementLineage", fields: [replacesPhotoId], references: [id], onDelete: SetNull)
+  replacedBy      CataloguePhoto[]         @relation("CataloguePhotoReplacementLineage")
+  uploadedByUser  User?                    @relation("CataloguePhotoUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  publishedByUser User?                    @relation("CataloguePhotoPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  rejectedByUser  User?                    @relation("CataloguePhotoRejectedBy", fields: [rejectedByUserId], references: [id], onDelete: SetNull)
+  retiredByUser   User?                    @relation("CataloguePhotoRetiredBy", fields: [retiredByUserId], references: [id], onDelete: SetNull)
+  products        Product[]
+  auditLogs       CataloguePhotoAuditLog[]
 
   @@unique([speciesId, imageUrl])
   @@index([speciesId, approvalStatus])
   @@index([catalogueItemId])
+  @@index([versionGroupId])
+  @@index([retiredAt])
   @@map("catalogue_photos")
+}
+
+model CataloguePhotoAuditLog {
+  id               String                    @id @default(uuid())
+  cataloguePhotoId String
+  versionGroupId   String
+  action           CataloguePhotoAuditAction
+  actorUserId      String
+  actorEmail       String
+  affectedCount    Int                       @default(0)
+  details          Json?
+  createdAt        DateTime                  @default(now())
+
+  cataloguePhoto CataloguePhoto @relation(fields: [cataloguePhotoId], references: [id], onDelete: Restrict)
+  actorUser      User           @relation("CataloguePhotoAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([cataloguePhotoId, createdAt])
+  @@index([versionGroupId, createdAt])
+  @@index([actorUserId])
+  @@map("catalogue_photo_audit_logs")
 }
 
 model CatalogueItemSpecies {

@@ -526,6 +526,26 @@ describe('ProductsService', () => {
       modifications: 'Cropped/resized to 900x600 PNG',
       requiresAttribution: true,
       approvalStatus: 'APPROVED' as const,
+      versionGroupId: 'photo-tilapia-1',
+      versionNumber: 1,
+      replacesPhotoId: null,
+      isDefault: true,
+      storageProvider: 'BUNDLED',
+      storageContainer: null,
+      storageKey: null,
+      mimeType: 'image/png',
+      fileSizeBytes: null,
+      widthPx: null,
+      heightPx: null,
+      uploadedByUserId: null,
+      publishedAt: new Date(),
+      publishedByUserId: null,
+      rejectedAt: null,
+      rejectedByUserId: null,
+      rejectionReason: null,
+      retiredAt: null,
+      retiredByUserId: null,
+      retirementReason: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       species: tilapiaSpecies,
@@ -659,6 +679,61 @@ describe('ProductsService', () => {
         expect.objectContaining({ cataloguePhotoId: null }),
       );
       expect(res.isCatalogueReferencePhoto).toBe(false);
+    });
+
+    it('rejects selecting a retired catalogue photo on create or photo change while preserving existing products already linked to it', async () => {
+      const retiredPhoto = {
+        ...tilapiaPhoto,
+        id: 'photo-tilapia-v1-retired',
+        retiredAt: new Date(),
+        imageUrl: 'https://stiriestaging.blob.core.windows.net/catalogue-photos/published/tilapia/grp/v1.png',
+      };
+      const prismaMock = {
+        species: { findUnique: jest.fn().mockResolvedValue(tilapiaSpecies) },
+        cataloguePhoto: { findUnique: jest.fn().mockResolvedValue(retiredPhoto) },
+      };
+      const svc = createServiceWithPrisma(prismaMock);
+      vendorsRepository.findByUserId.mockResolvedValue(buildVendor());
+      categoriesRepository.findById.mockResolvedValue(buildCategory());
+
+      await expect(
+        svc.create('user-1', {
+          categoryId: 'cat-1',
+          speciesId: 'sp-tilapia',
+          cataloguePhotoId: retiredPhoto.id,
+          name: 'Tilapia New Listing',
+          description: 'Fresh Tilapia attempt.',
+          unit: 'PER_POUND',
+          price: 850,
+          quantityAvailable: 10,
+          imageUrl: retiredPhoto.imageUrl,
+        }),
+      ).rejects.toThrow(/retired/i);
+
+      // Existing product linked to retiredPhoto BEFORE retirement can still edit price
+      const existingRow = buildProduct({
+        speciesId: 'sp-tilapia',
+        cataloguePhotoId: retiredPhoto.id,
+        imageUrl: retiredPhoto.imageUrl,
+      });
+      productsRepository.findById.mockResolvedValue({
+        ...existingRow,
+        species: tilapiaSpecies,
+        cataloguePhoto: retiredPhoto,
+      });
+      productsRepository.update.mockResolvedValue({
+        ...existingRow,
+        price: { toString: () => '900' } as unknown as ProductWithLot['price'],
+        species: tilapiaSpecies,
+        cataloguePhoto: retiredPhoto,
+      });
+
+      const kept = await svc.update('user-1', 'product-1', {
+        price: 900,
+        cataloguePhotoId: retiredPhoto.id,
+      });
+      expect(kept.cataloguePhotoId).toBe(retiredPhoto.id);
+      expect(kept.imageUrl).toBe(retiredPhoto.imageUrl);
     });
   });
 });

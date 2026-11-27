@@ -125,11 +125,13 @@ describe('JwtAuthGuard', () => {
       email: 'staff@example.com',
       status: UserStatus.ACTIVE,
       canAuthorizeVendorSettlements: true,
+      canManageCataloguePhotos: true,
       roles: [{ role: { name: RoleName.OPERATIONS_STAFF } }],
     });
     await expect(dbGuard.canActivate(activeStaff.ctx)).resolves.toBe(true);
     expect(activeStaff.req.user.roles).toEqual([RoleName.OPERATIONS_STAFF]);
     expect(activeStaff.req.user.canAuthorizeVendorSettlements).toBe(false);
+    expect(activeStaff.req.user.canManageCataloguePhotos).toBe(true);
 
     const primaryAdmin = mkCtx();
     (prismaMock.user.findUnique as jest.Mock).mockResolvedValueOnce({
@@ -137,11 +139,13 @@ describe('JwtAuthGuard', () => {
       email: 'primary@example.com',
       status: UserStatus.ACTIVE,
       canAuthorizeVendorSettlements: true,
+      canManageCataloguePhotos: false,
       roles: [{ role: { name: RoleName.ADMINISTRATOR } }],
     });
     await expect(dbGuard.canActivate(primaryAdmin.ctx)).resolves.toBe(true);
     expect(primaryAdmin.req.user.roles).toEqual([RoleName.ADMINISTRATOR]);
     expect(primaryAdmin.req.user.canAuthorizeVendorSettlements).toBe(true);
+    expect(primaryAdmin.req.user.canManageCataloguePhotos).toBe(false);
   });
 
   it('throws when the token fails verification', async () => {

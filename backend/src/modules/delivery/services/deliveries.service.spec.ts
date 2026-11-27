@@ -46,6 +46,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     phone: '+18765550000',
     status: 'ACTIVE',
     canAuthorizeVendorSettlements: false,
+    canManageCataloguePhotos: false,
     emailVerifiedAt: new Date(),
     emailVerificationTokenHash: null,
     emailVerificationTokenExpiresAt: null,

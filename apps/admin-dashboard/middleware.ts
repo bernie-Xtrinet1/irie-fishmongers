@@ -28,11 +28,14 @@ export function middleware(request: NextRequest): NextResponse {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
   const apiOrigin = apiUrl.startsWith('http') ? new URL(apiUrl).origin : '';
 
+  const isLocalLoopbackApi =
+    apiOrigin.startsWith('http://127.0.0.1') || apiOrigin.startsWith('http://localhost');
+
   const csp = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ''}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: https:",
+    `img-src 'self' data: blob: https:${isDev || isLocalLoopbackApi ? ' http://127.0.0.1:* http://localhost:*' : ''}`,
     "font-src 'self' data:",
     `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ''}`,
     "frame-ancestors 'none'",

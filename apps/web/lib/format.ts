@@ -170,7 +170,18 @@ export function isDemoSamplePhotoUrl(url: string | null | undefined): boolean {
  * species reference asset rather than an actual lot photograph.
  */
 export function isCatalogueReferencePhotoUrl(url: string | null | undefined): boolean {
-  return extractPrefixedAssetPath(url, CATALOGUE_PHOTO_PREFIX) !== null;
+  if (!url) {
+    return false;
+  }
+  if (extractPrefixedAssetPath(url, CATALOGUE_PHOTO_PREFIX) !== null) {
+    return true;
+  }
+  try {
+    const pathname = new URL(url.trim()).pathname.toLowerCase();
+    return pathname.includes('/catalogue-photos/') || /\/published\/[a-z0-9-]+\/[a-z0-9-]+\//.test(pathname);
+  } catch {
+    return false;
+  }
 }
 
 /**

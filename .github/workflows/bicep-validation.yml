@@ -69,6 +69,7 @@ jobs:
           az bicep lint --file infrastructure/azure/tier3/main.bicep
           az bicep lint --file infrastructure/azure/tier3/modules/security.bicep
           az bicep lint --file infrastructure/azure/tier3/modules/data.bicep
+          az bicep lint --file infrastructure/azure/tier3/modules/storage.bicep
           az bicep lint --file infrastructure/azure/tier3/modules/containerApp.bicep
           az bicep lint --file infrastructure/azure/tier3/modules/migratorJob.bicep
 
@@ -78,6 +79,7 @@ jobs:
           az bicep build --file infrastructure/azure/tier3/main.bicep --stdout > /dev/null
           az bicep build --file infrastructure/azure/tier3/modules/security.bicep --stdout > /dev/null
           az bicep build --file infrastructure/azure/tier3/modules/data.bicep --stdout > /dev/null
+          az bicep build --file infrastructure/azure/tier3/modules/storage.bicep --stdout > /dev/null
           az bicep build --file infrastructure/azure/tier3/modules/containerApp.bicep --stdout > /dev/null
           az bicep build --file infrastructure/azure/tier3/modules/migratorJob.bicep --stdout > /dev/null
 
@@ -112,7 +114,7 @@ jobs:
           # are NOT resource declarations and are correctly excluded. `existing`
           # references are included in the scan (Microsoft.App/managedEnvironments
           # is the Tier-1 environment that Tier-3 references, not creates).
-          allowed="Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers/databases Microsoft.DBforPostgreSQL/flexibleServers/firewallRules Microsoft.Cache/redisEnterprise Microsoft.Cache/redisEnterprise/databases Microsoft.App/containerApps Microsoft.App/managedEnvironments Microsoft.App/jobs"
+          allowed="Microsoft.KeyVault/vaults Microsoft.ManagedIdentity/userAssignedIdentities Microsoft.Authorization/roleAssignments Microsoft.DBforPostgreSQL/flexibleServers Microsoft.DBforPostgreSQL/flexibleServers/databases Microsoft.DBforPostgreSQL/flexibleServers/firewallRules Microsoft.Cache/redisEnterprise Microsoft.Cache/redisEnterprise/databases Microsoft.Storage/storageAccounts Microsoft.Storage/storageAccounts/blobServices Microsoft.Storage/storageAccounts/blobServices/containers Microsoft.App/containerApps Microsoft.App/managedEnvironments Microsoft.App/jobs"
           declared=$(grep -rhE "^[[:space:]]*resource[[:space:]]" infrastructure/azure/tier3 --include=*.bicep \
             | grep -oE "'Microsoft\.[A-Za-z0-9]+(/[A-Za-z0-9]+)+@[0-9a-z-]+'" \
             | sed -E "s/^'//; s/@[0-9a-z-]+'\$//" | sort -u)

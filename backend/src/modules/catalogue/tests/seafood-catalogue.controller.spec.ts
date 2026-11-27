@@ -101,6 +101,39 @@ describe('SeafoodCatalogue Controllers (Phase 16A)', () => {
           modifications: 'Cropped/resized to 900x600 PNG',
           requiresAttribution: true,
           approvalStatus: 'APPROVED',
+          isDefault: true,
+          versionGroupId: 'photo-tilapia-1',
+          versionNumber: 1,
+          retiredAt: null,
+          species: {
+            id: 'sp-tilapia',
+            commercialName: 'Tilapia',
+            scientificName: 'Oreochromis niloticus',
+            regulatoryStatus: RegulatoryStatus.UNRESTRICTED,
+          },
+        },
+      ]),
+      findPublicPhotoCredits: jest.fn().mockResolvedValue([
+        {
+          id: 'photo-tilapia-1',
+          speciesId: 'sp-tilapia',
+          catalogueItemId: 'cat-tilapia',
+          title: 'Nile Tilapia / Red Belly (Oreochromis niloticus)',
+          scientificName: 'Oreochromis niloticus',
+          jamaicanAliases: ['Tilapia', 'Red Belly', 'Pond Fish'],
+          imageUrl: '/catalogue-photos/oreochromis-niloticus.png',
+          sourceName: 'Wikimedia Commons',
+          sourceUrl: 'https://commons.wikimedia.org/wiki/File:Oreochromis-niloticus-Nairobi.JPG',
+          photographer: 'Bjørn Christian Tørrissen',
+          licenseName: 'CC BY-SA 3.0',
+          licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0/',
+          modifications: 'Cropped/resized to 900x600 PNG',
+          requiresAttribution: true,
+          approvalStatus: 'APPROVED',
+          isDefault: true,
+          versionGroupId: 'photo-tilapia-1',
+          versionNumber: 1,
+          retiredAt: null,
           species: {
             id: 'sp-tilapia',
             commercialName: 'Tilapia',
@@ -151,6 +184,13 @@ describe('SeafoodCatalogue Controllers (Phase 16A)', () => {
       expect(mockCatalogueService.findApprovedPhotos).toHaveBeenCalledWith({
         search: 'Red Belly',
       });
+    });
+
+    it('lists public photo credits including active referenced versions', async () => {
+      const res = await publicController.browsePhotoCredits();
+      expect(res).toHaveLength(1);
+      expect(res[0]!.isDefault).toBe(true);
+      expect(mockCatalogueService.findPublicPhotoCredits).toHaveBeenCalled();
     });
 
     it('evaluates regulatory eligibility', async () => {

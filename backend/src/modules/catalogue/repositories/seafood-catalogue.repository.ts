@@ -383,10 +383,22 @@ export class SeafoodCatalogueRepository {
     return where;
   }
 
-  async findApprovedPhotos(filters: { speciesId?: string; search?: string }) {
+  async findApprovedPhotos(filters: {
+    speciesId?: string;
+    search?: string;
+    includeReferencedRetired?: boolean;
+  }) {
     const photos = await this.prisma.cataloguePhoto.findMany({
       where: {
         approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+        ...(filters.includeReferencedRetired
+          ? {
+              OR: [
+                { retiredAt: null },
+                { products: { some: { isActive: true } } },
+              ],
+            }
+          : { retiredAt: null }),
         ...(filters.speciesId ? { speciesId: filters.speciesId } : {}),
         species: {
           regulatoryStatus: RegulatoryStatus.UNRESTRICTED,
@@ -403,7 +415,12 @@ export class SeafoodCatalogueRepository {
           },
         },
       },
-      orderBy: [{ species: { commercialName: 'asc' } }, { title: 'asc' }],
+      orderBy: [
+        { isDefault: 'desc' },
+        { species: { commercialName: 'asc' } },
+        { versionNumber: 'desc' },
+        { title: 'asc' },
+      ],
     });
 
     const term = filters.search?.trim().toLowerCase();

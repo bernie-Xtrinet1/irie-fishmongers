@@ -73,6 +73,9 @@ param enableScheduler string = 'true'
 @allowed([ 'true', 'false' ])
 param emailEnabled string = 'true'
 
+@description('Opt-in flag to provision the Azure Blob Storage account for Admin -> Catalogue Photos. Keep false until storage provisioning/cost is approved.')
+param storageEnabled bool = false
+
 // ---- replicas ----
 @description('Backend min replicas. 1 keeps health green and lets the @Cron scheduler fire.')
 param backendMinReplicas int = 1
@@ -160,6 +163,21 @@ module data 'modules/data.bicep' = {
   }
 }
 
+module storage 'modules/storage.bicep' = if (storageEnabled) {
+  name: 'tier3-storage'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    environmentName: environmentName
+    tags: tags
+    runtimeIdentityPrincipalId: security.outputs.identityPrincipalId
+    corsAllowedOrigins: [
+      'https://${webFqdn}'
+      'https://${adminFqdn}'
+    ]
+  }
+}
+
 // ---- Pass 2 only: apps + migrator job ----
 module backendApp 'modules/containerApp.bicep' = if (deployApplications) {
   name: 'tier3-app-backend'
@@ -176,21 +194,31 @@ module backendApp 'modules/containerApp.bicep' = if (deployApplications) {
     registryUsername: registryUsername
     registryPasswordSecretName: ghcrPatSecretName
     keyVaultSecretNames: backendKeyVaultSecretNames
-    plainEnv: [
-      { name: 'NODE_ENV', value: 'production' }
-      { name: 'PORT', value: string(backendPort) }
-      { name: 'API_PREFIX', value: 'api/v1' }
-      { name: 'CORS_ORIGIN', value: corsOrigin }
-      { name: 'APP_BASE_URL', value: appBaseUrl }
-      { name: 'JWT_ACCESS_EXPIRES_IN', value: jwtAccessExpiresIn }
-      { name: 'JWT_REFRESH_EXPIRES_IN', value: jwtRefreshExpiresIn }
-      { name: 'WIPAY_API_URL', value: wipayApiUrl }
-      { name: 'WIPAY_FEE_STRUCTURE', value: wipayFeeStructure }
-      { name: 'SENDGRID_FROM_EMAIL', value: sendgridFromEmail }
-      { name: 'EMAIL_ENABLED', value: emailEnabled }
-      { name: 'REFRESH_COOKIE_SAMESITE', value: refreshCookieSameSite }
-      { name: 'ENABLE_SCHEDULER', value: enableScheduler }
-    ]
+    plainEnv: concat(
+      [
+        { name: 'NODE_ENV', value: 'production' }
+        { name: 'PORT', value: string(backendPort) }
+        { name: 'API_PREFIX', value: 'api/v1' }
+        { name: 'CORS_ORIGIN', value: corsOrigin }
+        { name: 'APP_BASE_URL', value: appBaseUrl }
+        { name: 'JWT_ACCESS_EXPIRES_IN', value: jwtAccessExpiresIn }
+        { name: 'JWT_REFRESH_EXPIRES_IN', value: jwtRefreshExpiresIn }
+        { name: 'WIPAY_API_URL', value: wipayApiUrl }
+        { name: 'WIPAY_FEE_STRUCTURE', value: wipayFeeStructure }
+        { name: 'SENDGRID_FROM_EMAIL', value: sendgridFromEmail }
+        { name: 'EMAIL_ENABLED', value: emailEnabled }
+        { name: 'REFRESH_COOKIE_SAMESITE', value: refreshCookieSameSite }
+        { name: 'ENABLE_SCHEDULER', value: enableScheduler }
+      ],
+      storageEnabled
+        ? [
+            { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storage!.outputs.storageAccountName }
+            { name: 'AZURE_STORAGE_CLIENT_ID', value: security.outputs.identityClientId }
+            { name: 'AZURE_STORAGE_PUBLIC_CONTAINER', value: storage!.outputs.publicContainerName }
+            { name: 'AZURE_STORAGE_PRIVATE_CONTAINER', value: storage!.outputs.privateContainerName }
+          ]
+        : []
+    )
     // SENDGRID_API_KEY is bound ONLY when email is enabled; when disabled the
     // backend never references the sendgrid-api-key secret. Every other secret
     // (DATABASE_URL, REDIS_URL, JWT, WiPay, Firebase, ghcr-pat) is unchanged.
@@ -296,4 +324,6 @@ output postgresAdminLogin string = data.outputs.postgresAdminLogin
 output databaseName string = data.outputs.databaseName
 output redisHostName string = data.outputs.redisHostName
 output redisPort int = data.outputs.redisPort
+output storageAccountName string = storageEnabled ? storage!.outputs.storageAccountName : ''
+output blobPrimaryEndpoint string = storageEnabled ? storage!.outputs.blobPrimaryEndpoint : ''
 output requiredKeyVaultSecretNames array = backendKeyVaultSecretNames

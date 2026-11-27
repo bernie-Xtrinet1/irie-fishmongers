@@ -112,7 +112,7 @@ function refreshAccessToken(): Promise<string> {
 // - retrying them through the refresh flow would loop.
 const RETRY_EXEMPT_PATHS = ['/auth/login', '/auth/refresh'];
 
-async function request<T>(path: string, init: RequestInit, allowRetry = true): Promise<T> {
+async function rawRequest(path: string, init: RequestInit, allowRetry = true): Promise<Response> {
   const accessToken = clientConfig?.getAccessToken() ?? null;
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -135,7 +135,7 @@ async function request<T>(path: string, init: RequestInit, allowRetry = true): P
       throw new ApiError('Session expired', 401);
     }
 
-    return request<T>(path, init, false);
+    return rawRequest(path, init, false);
   }
 
   if (
@@ -148,6 +148,11 @@ async function request<T>(path: string, init: RequestInit, allowRetry = true): P
     clientConfig?.onUnauthorized();
   }
 
+  return response;
+}
+
+async function request<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await rawRequest(path, init);
   return unwrap<T>(response);
 }
 
@@ -182,4 +187,30 @@ export async function apiPatch<T>(path: string, body: unknown, init?: RequestIni
     },
     body: JSON.stringify(body),
   });
+}
+
+export async function apiPostForm<T>(path: string, formData: FormData, init?: RequestInit): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    ...init,
+    headers: { Accept: 'application/json', ...init?.headers },
+    body: formData,
+  });
+}
+
+export async function apiPatchForm<T>(path: string, formData: FormData, init?: RequestInit): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    ...init,
+    headers: { Accept: 'application/json', ...init?.headers },
+    body: formData,
+  });
+}
+
+export async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const response = await rawRequest(path, init ?? {});
+  if (!response.ok) {
+    throw new ApiError(`Failed to load protected asset (${response.status})`, response.status);
+  }
+  return response.blob();
 }

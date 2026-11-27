@@ -6,6 +6,7 @@ export interface RefreshedSessionUser {
   status?: 'PENDING_VERIFICATION' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
   roles: string[];
   canAuthorizeVendorSettlements?: boolean;
+  canManageCataloguePhotos?: boolean;
 }
 
 const ADMIN_PORTAL_ROLES = ['ADMINISTRATOR', 'OPERATIONS_STAFF'] as const;
@@ -66,11 +67,45 @@ export function canAuthorizeVendorSettlements(
 }
 
 /**
- * Enforces the explicit route allowlist for OPERATIONS_STAFF while allowing
- * full ADMINISTRATOR accounts across all portal paths.
+ * Returns true when an active admin portal account holds explicit catalogue
+ * photo upload and editing permission.
+ */
+export function canManageCataloguePhotos(
+  user?: { roles?: readonly string[]; status?: string; canManageCataloguePhotos?: boolean } | null,
+): boolean {
+  return isActiveAdminPortalUser(user) && Boolean(user?.canManageCataloguePhotos);
+}
+
+/**
+ * Returns true when an active user can open the Admin -> Catalogue Photos screen
+ * (either an active ADMINISTRATOR or portal staff with explicit upload/edit permission).
+ */
+export function canAccessCataloguePhotos(
+  user?: { roles?: readonly string[]; status?: string; canManageCataloguePhotos?: boolean } | null,
+): boolean {
+  return isActiveAdminUser(user) || canManageCataloguePhotos(user);
+}
+
+/**
+ * Reserves publishing, default selection, retirement, and bulk listing replacement
+ * strictly for active ADMINISTRATOR accounts.
+ */
+export function canPublishOrRetireCataloguePhotos(
+  user?: { roles?: readonly string[]; status?: string } | null,
+): boolean {
+  return isActiveAdminUser(user);
+}
+
+/**
+ * Enforces the explicit route allowlist for OPERATIONS_STAFF (plus explicit
+ * feature permissions such as catalogue photos) while allowing full ADMINISTRATOR
+ * accounts across all portal paths.
  */
 export function canAccessAdminPath(
-  user: { roles?: readonly string[]; status?: string } | null | undefined,
+  user:
+    | { roles?: readonly string[]; status?: string; canManageCataloguePhotos?: boolean }
+    | null
+    | undefined,
   pathname: string,
 ): boolean {
   if (!isActiveAdminPortalUser(user)) {
@@ -80,6 +115,9 @@ export function canAccessAdminPath(
     return true;
   }
   const normalized = pathname || '/';
+  if (normalized === '/catalogue-photos' || normalized.startsWith('/catalogue-photos/')) {
+    return canManageCataloguePhotos(user);
+  }
   return OPERATIONS_STAFF_ALLOWED_PATHS.some((allowed) =>
     allowed === '/'
       ? normalized === '/'

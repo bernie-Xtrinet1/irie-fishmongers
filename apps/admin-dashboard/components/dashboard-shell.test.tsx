@@ -152,9 +152,38 @@ describe('DashboardShell', () => {
 
     expect(screen.getByText('Operations Staff')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sales Analytics' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Catalogue Photos' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cold Chain' })).toBeInTheDocument();
     expect(screen.queryByText('Restricted Sales Analytics Children')).not.toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('Access Denied');
+  });
+
+  it('shows Catalogue Photos nav for permitted OPERATIONS_STAFF while keeping administrator-only routes blocked', () => {
+    mockHealth({ data: { postgres: 'up', redis: 'up' }, isPending: false });
+    mockUsePathname.mockReturnValue('/catalogue-photos');
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'staff-2',
+        email: 'catalogue.editor@iriefishmongers.test',
+        firstName: 'Cat',
+        lastName: 'Editor',
+        status: 'ACTIVE',
+        roles: ['OPERATIONS_STAFF'],
+        canManageCataloguePhotos: true,
+      },
+      login: jest.fn(),
+      logout,
+    });
+
+    render(
+      <DashboardShell>
+        <div>Catalogue Photos Workbench</div>
+      </DashboardShell>,
+    );
+
+    expect(screen.getByRole('link', { name: 'Catalogue Photos' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByText('Catalogue Photos Workbench')).toBeInTheDocument();
   });
 
   it('displays Primary Administrator role badge when designated', () => {

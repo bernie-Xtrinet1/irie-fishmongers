@@ -51,7 +51,23 @@ export class SeafoodCatalogueController {
   })
   async browsePhotos(@Query() query: QueryCataloguePhotosDto): Promise<CataloguePhotoEntity[]> {
     const photos = await this.catalogueService.findApprovedPhotos(query);
-    return photos.map((photo) => ({
+    return photos.map((photo) => this.toPhotoEntity(photo));
+  }
+
+  @Get('photos/credits')
+  @ApiOperation({
+    summary:
+      'List public attribution and licensing metadata for published and actively-referenced catalogue photos',
+  })
+  async browsePhotoCredits(): Promise<CataloguePhotoEntity[]> {
+    const photos = await this.catalogueService.findPublicPhotoCredits();
+    return photos.map((photo) => this.toPhotoEntity(photo));
+  }
+
+  private toPhotoEntity(
+    photo: Awaited<ReturnType<SeafoodCatalogueService['findApprovedPhotos']>>[number],
+  ): CataloguePhotoEntity {
+    return {
       id: photo.id,
       speciesId: photo.speciesId,
       catalogueItemId: photo.catalogueItemId,
@@ -67,6 +83,10 @@ export class SeafoodCatalogueController {
       modifications: photo.modifications,
       requiresAttribution: photo.requiresAttribution,
       approvalStatus: photo.approvalStatus,
+      isDefault: photo.isDefault,
+      versionGroupId: photo.versionGroupId,
+      versionNumber: photo.versionNumber,
+      retiredAt: photo.retiredAt ?? null,
       species: photo.species
         ? {
             id: photo.species.id,
@@ -75,7 +95,7 @@ export class SeafoodCatalogueController {
             regulatoryStatus: photo.species.regulatoryStatus,
           }
         : undefined,
-    }));
+    };
   }
 
   @Get(':id')

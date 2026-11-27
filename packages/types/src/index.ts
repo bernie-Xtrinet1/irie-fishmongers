@@ -84,6 +84,19 @@ export interface CataloguePhotoSpecies {
   regulatoryStatus: string;
 }
 
+export type CataloguePhotoLifecycleStatus = 'DRAFT' | 'APPROVED' | 'REJECTED' | 'RETIRED';
+
+export type CataloguePhotoAuditAction =
+  | 'UPLOAD_DRAFT'
+  | 'UPDATE_METADATA'
+  | 'UPLOAD_REPLACEMENT_DRAFT'
+  | 'APPROVE_AND_PUBLISH'
+  | 'REJECT_DRAFT'
+  | 'SET_DEFAULT'
+  | 'RETIRE'
+  | 'BULK_SWITCH_LISTINGS'
+  | 'ROLLBACK_RESTORE';
+
 export interface CataloguePhotoOption {
   id: string;
   speciesId: string;
@@ -100,7 +113,71 @@ export interface CataloguePhotoOption {
   modifications: string;
   requiresAttribution: boolean;
   approvalStatus: 'APPROVED' | 'PENDING' | 'REJECTED';
+  isDefault?: boolean;
+  versionGroupId?: string;
+  versionNumber?: number;
+  retiredAt?: string | null;
   species?: CataloguePhotoSpecies;
+}
+
+export interface CataloguePhotoActorSummary {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+}
+
+export interface AdminCataloguePhotoItem extends CataloguePhotoOption {
+  species: CataloguePhotoSpecies;
+  versionGroupId: string;
+  versionNumber: number;
+  replacesPhotoId: string | null;
+  isDefault: boolean;
+  lifecycleStatus: CataloguePhotoLifecycleStatus;
+  storageProvider: string;
+  storageContainer: string | null;
+  storageKey: string | null;
+  mimeType: string | null;
+  fileSizeBytes: number | null;
+  widthPx: number | null;
+  heightPx: number | null;
+  publishedAt: string | null;
+  rejectedAt: string | null;
+  rejectionReason: string | null;
+  retiredAt: string | null;
+  retirementReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  usageCount: number;
+  uploadedBy?: CataloguePhotoActorSummary | null;
+  publishedBy?: CataloguePhotoActorSummary | null;
+  rejectedBy?: CataloguePhotoActorSummary | null;
+  retiredBy?: CataloguePhotoActorSummary | null;
+}
+
+export interface CataloguePhotoAuditEntry {
+  id: string;
+  cataloguePhotoId: string;
+  versionGroupId: string;
+  action: CataloguePhotoAuditAction;
+  actorUserId: string;
+  actorEmail: string;
+  affectedCount: number;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+  actorUser?: CataloguePhotoActorSummary | null;
+}
+
+export interface AdminCataloguePhotoListResponse {
+  items: AdminCataloguePhotoItem[];
+  species: ManagedSpecies[];
+  storageConfigured: boolean;
+}
+
+export interface AdminCataloguePhotoHistoryResponse {
+  photo: AdminCataloguePhotoItem;
+  versions: AdminCataloguePhotoItem[];
+  auditLogs: CataloguePhotoAuditEntry[];
 }
 
 export interface CategoryOption {

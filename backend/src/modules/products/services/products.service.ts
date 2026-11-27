@@ -254,6 +254,14 @@ export class ProductsService {
       if (photo.approvalStatus !== CataloguePhotoApprovalStatus.APPROVED) {
         throw new BadRequestException('Only APPROVED catalogue reference photos may be used');
       }
+      const isChangingToRetiredPhoto =
+        Boolean(photo.retiredAt) &&
+        (!existingProduct || existingProduct.cataloguePhotoId !== photo.id);
+      if (isChangingToRetiredPhoto) {
+        throw new BadRequestException(
+          'This catalogue reference photo has been retired and cannot be selected for new listings',
+        );
+      }
       if (photo.species.regulatoryStatus !== RegulatoryStatus.UNRESTRICTED) {
         throw new BadRequestException(
           `Species ${photo.species.commercialName} (${photo.species.scientificName}) is ${photo.species.regulatoryStatus} and cannot be listed without regulatory clearance`,
@@ -532,6 +540,10 @@ export class ProductsService {
             modifications: photo.modifications,
             requiresAttribution: photo.requiresAttribution,
             approvalStatus: photo.approvalStatus,
+            isDefault: photo.isDefault,
+            versionGroupId: photo.versionGroupId,
+            versionNumber: photo.versionNumber,
+            retiredAt: photo.retiredAt ?? null,
             species: photo.species
               ? {
                   id: photo.species.id,

@@ -7,7 +7,7 @@ import Link from 'next/link';
 
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { fetchCataloguePhotos } from '@/lib/api/vendors';
+import { fetchPublicPhotoCredits } from '@/lib/api/vendors';
 import { DEMO_SAMPLE_PHOTO_CREDITS_LIST, type DemoSamplePhotoCredit } from '@/lib/format';
 
 interface CreditCardRowProps {
@@ -103,11 +103,16 @@ function CreditCardRow({
 }
 
 function mapCataloguePhotoToRow(photo: CataloguePhotoOption): CreditCardRowProps {
+  const badgeText = photo.retiredAt
+    ? 'Archived reference (in use)'
+    : photo.isDefault
+      ? 'Catalogue reference photo · Default'
+      : 'Catalogue reference photo';
   return {
     title: photo.title,
     subtitle: photo.scientificName,
-    badgeText: 'Catalogue reference photo',
-    badgeVariant: 'neutral',
+    badgeText,
+    badgeVariant: photo.retiredAt ? 'warning' : 'neutral',
     imageUrl: photo.imageUrl,
     author: photo.photographer,
     sourceLabel: photo.sourceName,
@@ -136,8 +141,8 @@ function mapDemoCreditToRow(credit: DemoSamplePhotoCredit): CreditCardRowProps {
 
 export function PhotoCreditsView(): React.ReactElement {
   const photosQuery = useQuery({
-    queryKey: ['catalogue', 'photos', 'all'],
-    queryFn: () => fetchCataloguePhotos(),
+    queryKey: ['catalogue', 'photos', 'credits'],
+    queryFn: () => fetchPublicPhotoCredits(),
   });
 
   return (

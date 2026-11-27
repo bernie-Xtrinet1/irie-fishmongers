@@ -11,7 +11,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { RoleName, UserStatus } from '@prisma/client';
 
-import { isAdministratorRole } from '../../../common/auth/admin-roles';
+import { hasAdminPortalRole, isAdministratorRole } from '../../../common/auth/admin-roles';
 import { RegistrationConfirmedEvent } from '../../../common/events/registration-confirmed.event';
 import { ForgotPasswordDto } from '../dto/forgot-password.dto';
 import { LoginDto } from '../dto/login.dto';
@@ -199,6 +199,10 @@ export class AuthService {
         user.status === UserStatus.ACTIVE &&
         Boolean(user.canAuthorizeVendorSettlements) &&
         isAdministratorRole(roles),
+      canManageCataloguePhotos:
+        user.status === UserStatus.ACTIVE &&
+        Boolean(user.canManageCataloguePhotos) &&
+        hasAdminPortalRole(roles),
       createdAt: user.createdAt,
     };
   }

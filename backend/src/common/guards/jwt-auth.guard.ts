@@ -11,7 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { RoleName, UserStatus } from '@prisma/client';
 import { Request } from 'express';
 
-import { ADMIN_PORTAL_ROLES, isAdministratorRole } from '../auth/admin-roles';
+import { ADMIN_PORTAL_ROLES, hasAdminPortalRole, isAdministratorRole } from '../auth/admin-roles';
 import { PrismaService } from '../../database/prisma.service';
 
 export interface RequestUser {
@@ -19,6 +19,7 @@ export interface RequestUser {
   email: string;
   roles: RoleName[];
   canAuthorizeVendorSettlements?: boolean;
+  canManageCataloguePhotos?: boolean;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -64,6 +65,7 @@ export class JwtAuthGuard implements CanActivate {
           email: true,
           status: true,
           canAuthorizeVendorSettlements: true,
+          canManageCataloguePhotos: true,
           roles: {
             select: {
               role: {
@@ -93,12 +95,17 @@ export class JwtAuthGuard implements CanActivate {
         dbUser.status === UserStatus.ACTIVE &&
         Boolean(dbUser.canAuthorizeVendorSettlements) &&
         isAdministratorRole(effectiveRoles);
+      const canManageCataloguePhotos =
+        dbUser.status === UserStatus.ACTIVE &&
+        Boolean(dbUser.canManageCataloguePhotos) &&
+        hasAdminPortalRole(effectiveRoles);
 
       request.user = {
         id: dbUser.id,
         email: dbUser.email,
         roles: effectiveRoles,
         canAuthorizeVendorSettlements,
+        canManageCataloguePhotos,
       };
       return true;
     }

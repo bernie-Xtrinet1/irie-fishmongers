@@ -65,6 +65,10 @@ export function fetchCataloguePhotos(query?: {
   return apiGet<CataloguePhotoOption[]>(qs ? `/catalogue/photos?${qs}` : '/catalogue/photos');
 }
 
+export function fetchPublicPhotoCredits(): Promise<CataloguePhotoOption[]> {
+  return apiGet<CataloguePhotoOption[]>('/catalogue/photos/credits');
+}
+
 export function evaluateRegulatoryEligibility(input: {
   catalogueItemId: string;
   vendorDailyListingId?: string;

@@ -114,6 +114,11 @@ export function CataloguePhotoPicker({
                   Selected catalogue photo
                 </span>
                 <Badge variant="neutral">Catalogue reference photo</Badge>
+                {activeSelectedPhoto.retiredAt ? (
+                  <Badge variant="warning">Archived version · kept for existing listing</Badge>
+                ) : activeSelectedPhoto.isDefault ? (
+                  <Badge variant="info">Default</Badge>
+                ) : null}
               </div>
               <p className="truncate text-sm font-medium text-gray-900">
                 {activeSelectedPhoto.title}
@@ -302,6 +307,14 @@ export function CataloguePhotoPicker({
                     >
                       <Check className="h-3 w-3" aria-hidden="true" />
                       Selected
+                    </Badge>
+                  ) : null}
+                  {photo.isDefault ? (
+                    <Badge
+                      variant="info"
+                      className="absolute right-2 top-2 bg-ocean-blue text-white shadow-xs"
+                    >
+                      Default
                     </Badge>
                   ) : null}
                 </div>

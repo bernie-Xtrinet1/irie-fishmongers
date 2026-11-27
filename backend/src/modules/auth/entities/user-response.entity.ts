@@ -26,6 +26,9 @@ export class UserResponseEntity {
   @ApiProperty({ required: false, default: false })
   canAuthorizeVendorSettlements?: boolean;
 
+  @ApiProperty({ required: false, default: false })
+  canManageCataloguePhotos?: boolean;
+
   @ApiProperty()
   createdAt!: Date;
 }

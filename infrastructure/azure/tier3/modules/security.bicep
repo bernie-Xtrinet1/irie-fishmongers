@@ -65,6 +65,9 @@ output identityId string = identity.id
 @description('Principal ID of the user-assigned managed identity.')
 output identityPrincipalId string = identity.properties.principalId
 
+@description('Client ID of the user-assigned managed identity.')
+output identityClientId string = identity.properties.clientId
+
 @description('Key Vault base URI (ends with a trailing slash), used to build secret keyVaultUrl values.')
 output keyVaultUri string = keyVault.properties.vaultUri
 

@@ -20,10 +20,17 @@ const nextConfig = {
   outputFileTracingRoot: path.join(__dirname, '../../'),
   transpilePackages: ['@iriefishmongers/types', '@iriefishmongers/ui'],
   images: {
-    // Vendor-uploaded product images have no fixed CDN host yet (AWS S3
-    // integration is still unwired per tech-stack.md) - allow any HTTPS
-    // source for now, narrow this once a production image host exists.
-    remotePatterns: [{ protocol: 'https', hostname: '**' }],
+    // Allow HTTPS Blob/CDN origins in staging/prod; allow loopback Blob emulator only when opted in for local E2E.
+    ...(process.env.ALLOW_LOCAL_BLOB_EMULATOR === 'true' ? { unoptimized: true } : {}),
+    remotePatterns: [
+      { protocol: 'https', hostname: '**' },
+      ...(process.env.ALLOW_LOCAL_BLOB_EMULATOR === 'true'
+        ? [
+            { protocol: 'http', hostname: '127.0.0.1' },
+            { protocol: 'http', hostname: 'localhost' },
+          ]
+        : []),
+    ],
   },
   ...(apiProxyTarget
     ? {

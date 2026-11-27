@@ -1097,13 +1097,37 @@ describe('DailyListingsService', () => {
       ).rejects.toThrow(/Catalogue reference photos cannot be used for Catch of the Day/i);
     });
 
-    it('rejects publishing if the only attached active photo is a catalogue reference photo', async () => {
+    it('rejects adding a Blob-hosted catalogue image URL (published, draft, or versioned) to Catch of the Day', async () => {
+      dailyListingsRepo.findById.mockResolvedValue(mockListing);
+
+      await expect(
+        service.addPhoto('user-1', 'listing-1', {
+          url: 'https://stiriestaging.blob.core.windows.net/catalogue-photos/published/tilapia/grp-1/v2-abc123.png?sv=2024',
+        }),
+      ).rejects.toThrow(/Catalogue reference photos cannot be used for Catch of the Day/i);
+    });
+
+    it('rejects publishing if the attached photo is a Blob-hosted catalogue image or bundled catalogue photo', async () => {
       dailyListingsRepo.findById.mockResolvedValue({
         ...mockListing,
         photos: [
           {
             ...mockPhoto,
             url: '/catalogue-photos/lutjanus-analis.png',
+          },
+        ],
+      });
+
+      await expect(service.publish('user-1', 'listing-1')).rejects.toThrow(
+        /Catalogue reference photos cannot satisfy Catch of the Day/i,
+      );
+
+      dailyListingsRepo.findById.mockResolvedValue({
+        ...mockListing,
+        photos: [
+          {
+            ...mockPhoto,
+            url: 'https://stiriestaging.blob.core.windows.net/catalogue-photos/published/tilapia/grp-1/v1-uuid.png',
           },
         ],
       });

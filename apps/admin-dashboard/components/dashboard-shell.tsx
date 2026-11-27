@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   BarChart3,
   Boxes,
+  Images,
   LayoutDashboard,
   LogOut,
   MapPinned,
@@ -24,6 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   canAccessAdminPath,
+  canAccessCataloguePhotos,
   getAdminRoleLabel,
   isActiveAdministratorUser,
   isActiveAdminPortalUser,
@@ -48,6 +50,7 @@ const NAV_ITEMS = [
   { href: '/delivery-operations', label: 'Delivery Operations', icon: Route, adminOnly: false },
   { href: '/delivery-analytics', label: 'Delivery Analytics', icon: Activity, adminOnly: false },
   { href: '/inventory-analytics', label: 'Inventory Analytics', icon: Boxes, adminOnly: false },
+  { href: '/catalogue-photos', label: 'Catalogue Photos', icon: Images, cataloguePermissionOnly: true },
   { href: '/cold-chain', label: 'Cold Chain', icon: Thermometer, adminOnly: false },
   { href: '/recalls', label: 'Recalls', icon: AlertTriangle, adminOnly: false },
   { href: '/reviews', label: 'Review Moderation', icon: MessageSquare, adminOnly: false },
@@ -58,7 +61,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
   const { status, user, logout } = useAuth();
   const hasAdminAccess = status === 'authenticated' && isActiveAdminPortalUser(user);
   const isFullAdministrator = isActiveAdministratorUser(user);
-  const visibleNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isFullAdministrator);
+  const hasCatalogueAccess = canAccessCataloguePhotos(user);
+  const visibleNavItems = NAV_ITEMS.filter((item) => {
+    if ('cataloguePermissionOnly' in item && item.cataloguePermissionOnly) {
+      return hasCatalogueAccess;
+    }
+    return !item.adminOnly || isFullAdministrator;
+  });
   const canAccessCurrentRoute = canAccessAdminPath(user, pathname || '/');
   const health = useHealthStatus(hasAdminAccess);
 

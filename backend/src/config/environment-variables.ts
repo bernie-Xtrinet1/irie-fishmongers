@@ -151,4 +151,28 @@ FIREBASE_CLIENT_EMAIL!: string;
 @IsString()
 @MinLength(1)
 FIREBASE_PRIVATE_KEY!: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_CONNECTION_STRING?: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_ACCOUNT_NAME?: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_CLIENT_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_PUBLIC_CONTAINER?: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_PRIVATE_CONTAINER?: string;
+
+  @IsOptional()
+  @IsString()
+  AZURE_STORAGE_PUBLIC_BASE_URL?: string;
 }

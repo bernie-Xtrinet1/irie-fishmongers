@@ -491,4 +491,10 @@ export class SeafoodCatalogueService {
       search: query.search,
     });
   }
+
+  async findPublicPhotoCredits() {
+    return this.repository.findApprovedPhotos({
+      includeReferencedRetired: true,
+    });
+  }
 }

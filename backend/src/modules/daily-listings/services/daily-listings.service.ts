@@ -16,6 +16,7 @@ import {
 } from '@prisma/client';
 
 import {
+  extractStorageKeyCandidates,
   isCataloguePhotoPathUrl,
   normalizeUrlCandidatePaths,
 } from '../../../common/utils/catalogue-image.util';
@@ -1037,8 +1038,14 @@ export class DailyListingsService {
       return false;
     }
     const candidates = normalizeUrlCandidatePaths(url);
+    const keyCandidates = extractStorageKeyCandidates(url);
     const match = await this.prisma.cataloguePhoto.findFirst({
-      where: { imageUrl: { in: candidates } },
+      where: {
+        OR: [
+          { imageUrl: { in: candidates } },
+          ...(keyCandidates.length > 0 ? [{ storageKey: { in: keyCandidates } }] : []),
+        ],
+      },
       select: { id: true },
     });
     return Boolean(match);

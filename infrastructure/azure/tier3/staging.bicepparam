@@ -12,6 +12,9 @@ param migratorImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/migrator@sha256:
 param webImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/web@sha256:9756dcb4eee284c301fcddc32c1fe6d78f6bdbaa15663dc67166e0b75ff54eb4'
 param adminImage = 'ghcr.io/bernie-xtrinet1/irie-fishmongers/admin@sha256:78ba12f964eace4fd1bb6c41ac3a8769bb16c6700b7755ea72327312d97e636e'
 
+// Keep false until the new Azure Blob Storage resource and cost are approved.
+param storageEnabled = false
+
 // Pass gate: false = Pass 1 (data plane + Key Vault + identity); true = Pass 2
 // (apps + migrator Job), only after the Key Vault secret values are set.
 param deployApplications = false
