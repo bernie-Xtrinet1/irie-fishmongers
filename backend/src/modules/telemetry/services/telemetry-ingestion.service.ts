@@ -273,6 +273,15 @@ export class TelemetryIngestionService {
       alertsCreated += attributed.alertsCreated;
       if (attributed.readingsCreated === 0) {
         unmatchedFrames += 1;
+        await this.prisma.vehicleTelemetryFrame.update({
+          where: { id: frame.id },
+          data: {
+            unmatchedLot: true,
+            unmatchedReason: sensor.compartmentId
+              ? 'NO_ACTIVE_LOT_AT_CAPTURE_TIME'
+              : 'SENSOR_NOT_LINKED_TO_COMPARTMENT',
+          },
+        });
       }
     }
 
@@ -351,6 +360,58 @@ export class TelemetryIngestionService {
       orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
     });
 
+    // Include historical cooler assignments for this vehicle so delayed/buffered
+    // uploads arriving AFTER a portable cooler moved to another vehicle still
+    // resolve to the right cooler & seafood lots at capturedAt.
+    const coolerAssignmentDelegate = (
+      this.prisma as unknown as {
+        coolerVehicleAssignment?: {
+          findMany: (args: unknown) => Promise<
+            Array<{
+              compartmentId: string;
+              sensorSlot: number | null;
+              assignedAt: Date;
+              unassignedAt: Date | null;
+              compartment: {
+                active: boolean;
+                sensors: typeof configuredSensors;
+              };
+            }>
+          >;
+        };
+      }
+    ).coolerVehicleAssignment;
+    const vehicleCoolerWindows =
+      coolerAssignmentDelegate && typeof coolerAssignmentDelegate.findMany === 'function'
+        ? await coolerAssignmentDelegate.findMany({
+            where: { fleetAssetId: tracker.fleetAssetId },
+            include: {
+              compartment: {
+                select: {
+                  active: true,
+                  sensors: {
+                    where: { status: DeviceStatus.ACTIVE },
+                    orderBy: [{ sensorSlot: 'asc' }, { createdAt: 'asc' }],
+                  },
+                },
+              },
+            },
+            orderBy: { assignedAt: 'desc' },
+          })
+        : [];
+
+    const historicalSensorsById = new Map<string, (typeof configuredSensors)[number]>();
+    for (const s of configuredSensors) {
+      historicalSensorsById.set(s.id, s);
+    }
+    for (const w of vehicleCoolerWindows) {
+      for (const s of w.compartment.sensors) {
+        if (!historicalSensorsById.has(s.id)) {
+          historicalSensorsById.set(s.id, s);
+        }
+      }
+    }
+
     const sortedRecords = [...records].sort(
       (a, b) => a.capturedAt.getTime() - b.capturedAt.getTime(),
     );
@@ -368,18 +429,55 @@ export class TelemetryIngestionService {
     let trackedGpsCutoff = tracker.fleetAsset.lastGpsCapturedAt;
     let trackedLastCapture = tracker.lastCapturedAt;
     const sensorCutoffById = new Map<string, Date | null>(
-      configuredSensors.map((sensor) => [sensor.id, sensor.lastCapturedAt]),
+      Array.from(historicalSensorsById.values()).map((sensor) => [sensor.id, sensor.lastCapturedAt]),
     );
+    const currentSensorIds = new Set(configuredSensors.map((s) => s.id));
 
     for (const record of sortedRecords) {
       const { delaySeconds, isDelayed } = computeDelaySeconds(record.capturedAt, receivedAt);
       if (isDelayed) delayedFrames += 1;
       if (!record.gnssValid) noFixFrames += 1;
 
-      const targets: Array<{ sensor: (typeof configuredSensors)[number] | null; slot: number }> =
-        configuredSensors.length > 0
-          ? configuredSensors.map((sensor) => ({ sensor, slot: sensor.sensorSlot ?? 1 }))
-          : [{ sensor: null, slot: 1 }];
+      const capturedMs = record.capturedAt.getTime();
+      const targetBySensorId = new Map<
+        string,
+        { sensor: (typeof configuredSensors)[number]; slot: number; isCurrentVehicle: boolean }
+      >();
+
+      for (const window of vehicleCoolerWindows) {
+        if (!window.compartment.active) continue;
+        const startsBefore = window.assignedAt.getTime() <= capturedMs;
+        const endsAfter = window.unassignedAt === null || window.unassignedAt.getTime() >= capturedMs;
+        if (!startsBefore || !endsAfter) continue;
+        for (const sensor of window.compartment.sensors) {
+          if (!targetBySensorId.has(sensor.id)) {
+            targetBySensorId.set(sensor.id, {
+              sensor,
+              slot: window.sensorSlot ?? sensor.sensorSlot ?? 1,
+              isCurrentVehicle: currentSensorIds.has(sensor.id) && window.unassignedAt === null,
+            });
+          }
+        }
+      }
+
+      if (targetBySensorId.size === 0) {
+        for (const sensor of configuredSensors) {
+          targetBySensorId.set(sensor.id, {
+            sensor,
+            slot: sensor.sensorSlot ?? 1,
+            isCurrentVehicle: true,
+          });
+        }
+      }
+
+      const targets: Array<{
+        sensor: (typeof configuredSensors)[number] | null;
+        slot: number;
+        isCurrentVehicle: boolean;
+      }> =
+        targetBySensorId.size > 0
+          ? Array.from(targetBySensorId.values())
+          : [{ sensor: null, slot: 1, isCurrentVehicle: true }];
 
       for (const target of targets) {
         const sensor = target.sensor;
@@ -479,8 +577,8 @@ export class TelemetryIngestionService {
           });
         }
 
-        // Monotonic sensor live readout update
-        if (sensor) {
+        // Monotonic sensor live readout update (only overwrite live cache from current vehicle host)
+        if (sensor && target.isCurrentVehicle) {
           const sensorCutoff = sensorCutoffById.get(sensor.id) ?? null;
           if (!sensorCutoff || record.capturedAt.getTime() >= sensorCutoff.getTime()) {
             if (cargoTempC !== null) {
@@ -512,7 +610,9 @@ export class TelemetryIngestionService {
               });
             }
           }
+        }
 
+        if (sensor) {
           if (cargoTempC !== null && sensor.compartmentId) {
             const attributed = await this.attributeTemperatureReadingToOnboardLots({
               frameId: createdFrame.id,
@@ -532,12 +632,33 @@ export class TelemetryIngestionService {
             alertsCreated += attributed.alertsCreated;
             if (attributed.readingsCreated === 0) {
               unmatchedFrames += 1;
+              await this.prisma.vehicleTelemetryFrame.update({
+                where: { id: createdFrame.id },
+                data: {
+                  unmatchedLot: true,
+                  unmatchedReason: 'NO_ACTIVE_LOT_AT_CAPTURE_TIME',
+                },
+              });
             }
-          } else {
+          } else if (cargoTempC !== null) {
             unmatchedFrames += 1;
+            await this.prisma.vehicleTelemetryFrame.update({
+              where: { id: createdFrame.id },
+              data: {
+                unmatchedLot: true,
+                unmatchedReason: 'SENSOR_NOT_LINKED_TO_COMPARTMENT',
+              },
+            });
           }
-        } else {
+        } else if (cargoTempC !== null) {
           unmatchedFrames += 1;
+          await this.prisma.vehicleTelemetryFrame.update({
+            where: { id: createdFrame.id },
+            data: {
+              unmatchedLot: true,
+              unmatchedReason: 'UNPAIRED_SLOT_NO_SENSOR',
+            },
+          });
         }
       }
 
@@ -620,11 +741,21 @@ export class TelemetryIngestionService {
           OR: [{ unloadedAt: null }, { unloadedAt: { gte: capturedAt } }],
         };
 
-    const activeAssignments = await this.prisma.cargoCompartmentAssignment.findMany({
+    const activeAssignmentsRaw = await this.prisma.cargoCompartmentAssignment.findMany({
       where: assignmentWhere,
       include: {
         lot: true,
       },
+    });
+    // When a cooler was transferred at exact timestamp T (unloadedAt = T on Vehicle A,
+    // loadedAt = T on Vehicle B), prefer rows matching the frame's fleetAssetId & open status.
+    const activeAssignments = [...activeAssignmentsRaw].sort((a, b) => {
+      const aMatch = fleetAssetId && a.fleetAssetId === fleetAssetId ? 0 : 1;
+      const bMatch = fleetAssetId && b.fleetAssetId === fleetAssetId ? 0 : 1;
+      if (aMatch !== bMatch) return aMatch - bMatch;
+      const aOpen = a.unloadedAt === null ? 0 : 1;
+      const bOpen = b.unloadedAt === null ? 0 : 1;
+      return aOpen - bOpen;
     });
 
     let readingsCreated = 0;

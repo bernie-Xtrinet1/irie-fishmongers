@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  CompartmentKind,
   SeafoodStorageType,
   TelemetryCredentialScope,
   TelemetryProtocol,
@@ -31,15 +32,27 @@ import {
 } from 'class-validator';
 
 export class CreateVehicleCompartmentDto {
-  @ApiProperty()
+  @ApiPropertyOptional({ description: 'Vehicle fleetAssetId; omit to register a standalone depot cooler' })
+  @IsOptional()
   @IsUUID()
-  fleetAssetId!: string;
+  fleetAssetId?: string;
 
-  @ApiProperty({ example: 'CHILLER-MAIN' })
+  @ApiPropertyOptional({ enum: CompartmentKind, default: CompartmentKind.FIXED_COMPARTMENT })
+  @IsOptional()
+  @IsEnum(CompartmentKind)
+  compartmentKind?: CompartmentKind;
+
+  @ApiPropertyOptional({ example: 'IGLOO-MOTO-01' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(64)
-  compartmentCode!: string;
+  coolerCode?: string;
+
+  @ApiPropertyOptional({ example: 'CHILLER-MAIN' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  compartmentCode?: string;
 
   @ApiProperty({ example: 'Main Refrigerated Cargo Box' })
   @IsString()
@@ -65,6 +78,56 @@ export class CreateVehicleCompartmentDto {
   @Min(-40)
   @Max(40)
   targetMaxC?: number;
+
+  @ApiPropertyOptional({ example: 1, minimum: 1, maximum: 4 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(4)
+  sensorSlot?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  notes?: string;
+}
+
+export class AssignCoolerVehicleDto {
+  @ApiProperty()
+  @IsUUID()
+  fleetAssetId!: string;
+
+  @ApiPropertyOptional({ example: 1, minimum: 1, maximum: 4 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(4)
+  sensorSlot?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  assignedAt?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  notes?: string;
+}
+
+export class UnassignCoolerVehicleDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  unassignedAt?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  notes?: string;
 }
 
 export class RegisterVehicleTrackerDto {

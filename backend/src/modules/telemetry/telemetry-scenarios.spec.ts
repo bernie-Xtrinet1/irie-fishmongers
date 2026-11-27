@@ -2,12 +2,14 @@ import { INestApplication } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import {
+  CompartmentKind,
   DeviceStatus,
   FleetAssetStatus,
   RoleName,
   SeafoodStorageType,
   TelemetryCredentialScope,
   TelemetryProtocol,
+  TrackerHardwareModel,
 } from '@prisma/client';
 import * as http from 'http';
 import * as net from 'net';
@@ -47,11 +49,27 @@ import { TeltonikaSimulatorClient } from './simulator/teltonika-simulator';
 describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attribution)', () => {
   interface MemCompartment {
     id: string;
-    fleetAssetId: string;
+    fleetAssetId: string | null;
     compartmentCode: string;
+    compartmentKind?: CompartmentKind;
+    coolerCode?: string | null;
     label: string;
     storageType: SeafoodStorageType;
+    targetMinC?: { toString(): string } | null;
+    targetMaxC?: { toString(): string } | null;
+    notes?: string | null;
     active: boolean;
+  }
+  interface MemCoolerVehicleAssignment {
+    id: string;
+    compartmentId: string;
+    fleetAssetId: string;
+    sensorSlot: number | null;
+    assignedAt: Date;
+    unassignedAt: Date | null;
+    assignedById: string | null;
+    unassignedById: string | null;
+    notes: string | null;
   }
   interface MemTracker {
     id: string;
@@ -134,6 +152,8 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
     movement: boolean | null;
     batteryMv: number | null;
     gapKind: string | null;
+    unmatchedLot?: boolean;
+    unmatchedReason?: string | null;
   }
   interface MemReading {
     id: string;
@@ -183,6 +203,7 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
     }
   >();
   const compartments = new Map<string, MemCompartment>();
+  const coolerVehicleAssignments: MemCoolerVehicleAssignment[] = [];
   const trackers = new Map<string, MemTracker>();
   const sensors = new Map<string, MemSensor>();
   const credentials = new Map<
@@ -433,6 +454,7 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
         findUnique: jest.fn(({ where }: { where: { id: string } }) =>
           Promise.resolve(fleetAssets.get(where.id) ?? null),
         ),
+        findMany: jest.fn(() => Promise.resolve(Array.from(fleetAssets.values()))),
         update: jest.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
           const asset = fleetAssets.get(where.id)!;
           Object.assign(asset, data);
@@ -440,20 +462,201 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
         }),
       },
       vehicleCompartment: {
-        findUnique: jest.fn(({ where }: { where: { id: string }; include?: Record<string, unknown> }) => {
-          const comp = compartments.get(where.id);
-          if (!comp) return Promise.resolve(null);
-          const compSensors = Array.from(sensors.values()).filter(
-            (s) => s.compartmentId === comp.id && s.status === DeviceStatus.ACTIVE,
-          );
-          return Promise.resolve({
-            ...comp,
-            sensors: compSensors,
-            fleetAsset: fleetAssets.get(comp.fleetAssetId),
-          });
+        count: jest.fn(
+          ({
+            where,
+          }: {
+            where?: {
+              fleetAssetId?: string;
+              compartmentKind?: CompartmentKind;
+              active?: boolean;
+              id?: { not?: string };
+            };
+          } = {}) => {
+            const matched = Array.from(compartments.values()).filter((c) => {
+              if (where?.fleetAssetId && c.fleetAssetId !== where.fleetAssetId) return false;
+              if (
+                where?.compartmentKind &&
+                (c.compartmentKind ?? CompartmentKind.FIXED_COMPARTMENT) !== where.compartmentKind
+              ) {
+                return false;
+              }
+              if (where?.active !== undefined && c.active !== where.active) return false;
+              if (where?.id?.not && c.id === where.id.not) return false;
+              return true;
+            });
+            return Promise.resolve(matched.length);
+          },
+        ),
+        findUnique: jest.fn(
+          ({
+            where,
+          }: {
+            where: { id?: string; coolerCode?: string };
+            include?: Record<string, unknown>;
+          }) => {
+            const comp = where.id
+              ? compartments.get(where.id)
+              : Array.from(compartments.values()).find((c) => c.coolerCode === where.coolerCode);
+            if (!comp) return Promise.resolve(null);
+            const compSensors = Array.from(sensors.values()).filter(
+              (s) => s.compartmentId === comp.id && s.status === DeviceStatus.ACTIVE,
+            );
+            return Promise.resolve({
+              compartmentKind: CompartmentKind.FIXED_COMPARTMENT,
+              coolerCode: null,
+              targetMinC: null,
+              targetMaxC: null,
+              notes: null,
+              ...comp,
+              sensors: compSensors,
+              fleetAsset: comp.fleetAssetId ? fleetAssets.get(comp.fleetAssetId) ?? null : null,
+            });
+          },
+        ),
+        findFirst: jest.fn(
+          ({
+            where,
+          }: {
+            where?: { fleetAssetId?: string; compartmentCode?: string; id?: { not?: string } };
+          } = {}) => {
+            const found = Array.from(compartments.values()).find((c) => {
+              if (where?.fleetAssetId && c.fleetAssetId !== where.fleetAssetId) return false;
+              if (where?.compartmentCode && c.compartmentCode !== where.compartmentCode) return false;
+              if (where?.id?.not && c.id === where.id.not) return false;
+              return true;
+            });
+            return Promise.resolve(found ?? null);
+          },
+        ),
+        findMany: jest.fn(() =>
+          Promise.resolve(
+            Array.from(compartments.values()).map((comp) => ({
+              compartmentKind: CompartmentKind.FIXED_COMPARTMENT,
+              coolerCode: null,
+              targetMinC: null,
+              targetMaxC: null,
+              notes: null,
+              ...comp,
+              fleetAsset: comp.fleetAssetId ? fleetAssets.get(comp.fleetAssetId) ?? null : null,
+              sensors: Array.from(sensors.values()).filter((s) => s.compartmentId === comp.id),
+              vehicleAssignments: [...coolerVehicleAssignments]
+                .filter((a) => a.compartmentId === comp.id)
+                .sort((a, b) => b.assignedAt.getTime() - a.assignedAt.getTime())
+                .map((a) => ({
+                  ...a,
+                  fleetAsset: fleetAssets.get(a.fleetAssetId)!,
+                })),
+            })),
+          ),
+        ),
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          const rec: MemCompartment = {
+            id: `comp-${compartments.size + 1}`,
+            fleetAssetId: (data.fleetAssetId as string | null) ?? null,
+            compartmentCode: data.compartmentCode as string,
+            compartmentKind:
+              (data.compartmentKind as CompartmentKind) ?? CompartmentKind.FIXED_COMPARTMENT,
+            coolerCode: (data.coolerCode as string | null) ?? null,
+            label: data.label as string,
+            storageType: (data.storageType as SeafoodStorageType) ?? SeafoodStorageType.FRESH,
+            targetMinC:
+              data.targetMinC !== null && data.targetMinC !== undefined
+                ? { toString: () => String(data.targetMinC) }
+                : null,
+            targetMaxC:
+              data.targetMaxC !== null && data.targetMaxC !== undefined
+                ? { toString: () => String(data.targetMaxC) }
+                : null,
+            notes: (data.notes as string | null) ?? null,
+            active: data.active !== undefined ? Boolean(data.active) : true,
+          };
+          compartments.set(rec.id, rec);
+          return Promise.resolve(rec);
+        }),
+        update: jest.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          const comp = compartments.get(where.id)!;
+          Object.assign(comp, data);
+          return Promise.resolve(comp);
         }),
       },
+      coolerVehicleAssignment: {
+        findMany: jest.fn(({ where }: { where?: { fleetAssetId?: string } } = {}) => {
+          const list = coolerVehicleAssignments.filter(
+            (w) => !where?.fleetAssetId || w.fleetAssetId === where.fleetAssetId,
+          );
+          return Promise.resolve(
+            [...list]
+              .sort((a, b) => b.assignedAt.getTime() - a.assignedAt.getTime())
+              .map((w) => {
+                const comp = compartments.get(w.compartmentId)!;
+                return {
+                  ...w,
+                  compartment: {
+                    ...comp,
+                    sensors: Array.from(sensors.values()).filter(
+                      (s) => s.compartmentId === comp.id && s.status === DeviceStatus.ACTIVE,
+                    ),
+                  },
+                };
+              }),
+          );
+        }),
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          const rec: MemCoolerVehicleAssignment = {
+            id: `cva-${coolerVehicleAssignments.length + 1}`,
+            compartmentId: data.compartmentId as string,
+            fleetAssetId: data.fleetAssetId as string,
+            sensorSlot: (data.sensorSlot as number | null) ?? null,
+            assignedAt: (data.assignedAt as Date) ?? new Date(),
+            unassignedAt: (data.unassignedAt as Date | null) ?? null,
+            assignedById: (data.assignedById as string | null) ?? null,
+            unassignedById: (data.unassignedById as string | null) ?? null,
+            notes: (data.notes as string | null) ?? null,
+          };
+          coolerVehicleAssignments.push(rec);
+          return Promise.resolve(rec);
+        }),
+        updateMany: jest.fn(
+          ({
+            where,
+            data,
+          }: {
+            where?: { compartmentId?: string; fleetAssetId?: string; unassignedAt?: null; sensorSlot?: null };
+            data: Record<string, unknown>;
+          }) => {
+            let count = 0;
+            for (const row of coolerVehicleAssignments) {
+              if (where?.compartmentId && row.compartmentId !== where.compartmentId) continue;
+              if (where?.fleetAssetId && row.fleetAssetId !== where.fleetAssetId) continue;
+              if (where?.unassignedAt === null && row.unassignedAt !== null) continue;
+              if (where?.sensorSlot === null && row.sensorSlot !== null) continue;
+              Object.assign(row, data);
+              count += 1;
+            }
+            return Promise.resolve({ count });
+          },
+        ),
+      },
       vehicleTracker: {
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          const rec: MemTracker = {
+            id: `trk-${trackers.size + 1}`,
+            fleetAssetId: data.fleetAssetId as string,
+            imei: data.imei as string,
+            hardwareModel: (data.hardwareModel as string) ?? 'TELTONIKA_FMC130',
+            firmwareVersion: (data.firmwareVersion as string | null) ?? null,
+            simCarrier: (data.simCarrier as string | null) ?? null,
+            protocol: (data.protocol as TelemetryProtocol) ?? TelemetryProtocol.TELTONIKA_CODEC_8E,
+            status: DeviceStatus.ACTIVE,
+            lastSeenAt: null,
+            lastCapturedAt: null,
+            lastReceivedAt: null,
+            lastPacketCrc: null,
+          };
+          trackers.set(rec.id, rec);
+          return Promise.resolve(rec);
+        }),
         findUnique: jest.fn(({ where }: { where: { id?: string; imei?: string } }) => {
           const found = where.id
             ? trackers.get(where.id)
@@ -490,35 +693,84 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
         }),
       },
       temperatureDevice: {
-        findMany: jest.fn(({ where }: { where?: { compartment?: { fleetAssetId?: string } } } = {}) => {
-          let list = Array.from(sensors.values());
-          if (where?.compartment?.fleetAssetId) {
-            list = list.filter((s) => {
-              const comp = s.compartmentId ? compartments.get(s.compartmentId) : undefined;
-              return comp?.fleetAssetId === where.compartment!.fleetAssetId;
-            });
-          }
-          return Promise.resolve(
-            list.map((s) => {
-              const comp = s.compartmentId ? compartments.get(s.compartmentId) : undefined;
-              return {
-                ...s,
-                compartment: comp
-                  ? { ...comp, fleetAsset: fleetAssets.get(comp.fleetAssetId)! }
-                  : null,
-                vendor: null,
-              };
-            }),
-          );
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          const rec: MemSensor = {
+            id: `sens-${sensors.size + 1}`,
+            vendorId: (data.vendorId as string | null) ?? null,
+            compartmentId: (data.compartmentId as string | null) ?? null,
+            deviceCode: data.deviceCode as string,
+            hardwareModel:
+              (data.hardwareModel as string) ?? 'TELTONIKA_EYE_BTSMP1_EN12830',
+            bleMacAddress: (data.bleMacAddress as string | null) ?? null,
+            sensorSlot: (data.sensorSlot as number | null) ?? 1,
+            firmwareVersion: (data.firmwareVersion as string | null) ?? null,
+            status: DeviceStatus.ACTIVE,
+            lastSeenAt: null,
+            lastTemperatureC: null,
+            lastCapturedAt: null,
+            lastReceivedAt: null,
+            lastDelaySeconds: null,
+            lastHumidityPct: null,
+            lastBatteryMv: null,
+            lastDoorOpen: null,
+            lastMovement: null,
+            lastGapKind: null,
+            lastSignalMissingAt: null,
+          };
+          sensors.set(rec.id, rec);
+          return Promise.resolve(rec);
         }),
-        findUnique: jest.fn(({ where }: { where: { id?: string } }) => {
-          const s = where.id ? sensors.get(where.id) : undefined;
+        findMany: jest.fn(
+          ({
+            where,
+          }: {
+            where?: { compartment?: { fleetAssetId?: string; id?: { not?: string } } };
+          } = {}) => {
+            let list = Array.from(sensors.values());
+            if (where?.compartment?.fleetAssetId) {
+              list = list.filter((s) => {
+                const comp = s.compartmentId ? compartments.get(s.compartmentId) : undefined;
+                if (!comp || comp.fleetAssetId !== where.compartment!.fleetAssetId) return false;
+                if (where.compartment?.id?.not && comp.id === where.compartment.id.not) return false;
+                return true;
+              });
+            }
+            return Promise.resolve(
+              list.map((s) => {
+                const comp = s.compartmentId ? compartments.get(s.compartmentId) : undefined;
+                return {
+                  ...s,
+                  compartment: comp
+                    ? {
+                        compartmentKind: CompartmentKind.FIXED_COMPARTMENT,
+                        coolerCode: null,
+                        ...comp,
+                        fleetAsset: comp.fleetAssetId ? fleetAssets.get(comp.fleetAssetId) ?? null : null,
+                      }
+                    : null,
+                  vendor: null,
+                };
+              }),
+            );
+          },
+        ),
+        findUnique: jest.fn(({ where }: { where: { id?: string; deviceCode?: string; bleMacAddress?: string } }) => {
+          const s = where.id
+            ? sensors.get(where.id)
+            : where.deviceCode
+              ? Array.from(sensors.values()).find((item) => item.deviceCode === where.deviceCode)
+              : where.bleMacAddress
+                ? Array.from(sensors.values()).find((item) => item.bleMacAddress === where.bleMacAddress)
+                : undefined;
           if (!s) return Promise.resolve(null);
           const comp = s.compartmentId ? compartments.get(s.compartmentId) : undefined;
           return Promise.resolve({
             ...s,
             compartment: comp
-              ? { ...comp, fleetAsset: fleetAssets.get(comp.fleetAssetId)! }
+              ? {
+                  ...comp,
+                  fleetAsset: comp.fleetAssetId ? fleetAssets.get(comp.fleetAssetId) ?? null : null,
+                }
               : null,
           });
         }),
@@ -611,14 +863,31 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
             movement: (data.movement as boolean | null) ?? null,
             batteryMv: (data.batteryMv as number | null) ?? null,
             gapKind: (data.gapKind as string | null) ?? null,
+            unmatchedLot: Boolean(data.unmatchedLot),
+            unmatchedReason: (data.unmatchedReason as string | null) ?? null,
           };
           frames.push(rec);
           return Promise.resolve(rec);
         }),
-        findMany: jest.fn(() =>
-          Promise.resolve(
-            [...frames].reverse().map((f) => ({
+        update: jest.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          const found = frames.find((f) => f.id === where.id)!;
+          Object.assign(found, data);
+          return Promise.resolve(found);
+        }),
+        findMany: jest.fn(({ where }: { where?: { sensorDeviceId?: string; unmatchedLot?: boolean } } = {}) => {
+          const filtered = frames.filter((f) => {
+            if (where?.sensorDeviceId && f.sensorDeviceId !== where.sensorDeviceId) return false;
+            if (where?.unmatchedLot !== undefined && Boolean(f.unmatchedLot) !== where.unmatchedLot) {
+              return false;
+            }
+            return true;
+          });
+          return Promise.resolve(
+            [...filtered].reverse().map((f) => ({
               ...f,
+              sensorDevice: f.sensorDeviceId ? sensors.get(f.sensorDeviceId) ?? null : null,
+              compartment: f.compartmentId ? compartments.get(f.compartmentId) ?? null : null,
+              fleetAsset: f.fleetAssetId ? fleetAssets.get(f.fleetAssetId) ?? null : null,
               temperatureReadings: readings
                 .filter((r) => r.telemetryFrameId === f.id)
                 .map((r) => ({
@@ -629,8 +898,8 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
                   alert: alerts.find((a) => a.readingId === r.id) ?? null,
                 })),
             })),
-          ),
-        ),
+          );
+        }),
       },
       cargoCompartmentAssignment: {
         findMany: jest.fn(
@@ -1129,5 +1398,372 @@ describe('Telemetry End-to-End Scenarios (Gateway-to-HTTPS Simulator + Lot Attri
 
     expect(hashTelemetryToken('x')).toHaveLength(64);
     expect(ingestionService).toBeDefined();
+  });
+
+  it('supports motorbike FMC234 + 1 Igloo cooler, small van FMC130 + 2 coolers, cooler transfer with delayed history, excursion alerts, retry deduplication, and unmatched lot flagging', async () => {
+    const startMs = clockMs + 60 * 60_000;
+    clockMs = startMs;
+    jest.setSystemTime(clockMs);
+
+    // 1. Register Motorbike (FMC234) + Small Van (FMC130)
+    fleetAssets.set('bike-1', {
+      id: 'bike-1',
+      licensePlate: 'MB-KGN-01',
+      assetType: 'MOTORBIKE',
+      status: FleetAssetStatus.ACTIVE,
+      coldChainCapable: false,
+      lastLatitude: null,
+      lastLongitude: null,
+      lastSpeedKph: null,
+      lastHeadingDeg: null,
+      lastSatellites: null,
+      lastGpsCapturedAt: null,
+      lastTelemetryReceivedAt: null,
+      lastTelemetryDelayed: false,
+      lastGpsNoFixAt: null,
+    });
+    fleetAssets.set('van-small-1', {
+      id: 'van-small-1',
+      licensePlate: 'VN-KGN-02',
+      assetType: 'VAN',
+      status: FleetAssetStatus.ACTIVE,
+      coldChainCapable: false,
+      lastLatitude: null,
+      lastLongitude: null,
+      lastSpeedKph: null,
+      lastHeadingDeg: null,
+      lastSatellites: null,
+      lastGpsCapturedAt: null,
+      lastTelemetryReceivedAt: null,
+      lastTelemetryDelayed: false,
+      lastGpsNoFixAt: null,
+    });
+
+    await opsService.registerTracker({
+      fleetAssetId: 'bike-1',
+      imei: '356307042449901',
+      hardwareModel: TrackerHardwareModel.TELTONIKA_FMC234,
+      firmwareVersion: '03.29.00.Rev.18',
+      simCarrier: 'Digicel Jamaica LTE',
+      protocol: TelemetryProtocol.TELTONIKA_CODEC_8E,
+    });
+    await opsService.registerTracker({
+      fleetAssetId: 'van-small-1',
+      imei: '356307042449902',
+      hardwareModel: TrackerHardwareModel.TELTONIKA_FMC130,
+      firmwareVersion: '03.29.00.Rev.18',
+      simCarrier: 'Flow Jamaica LTE',
+      protocol: TelemetryProtocol.TELTONIKA_CODEC_8E,
+    });
+
+    // 2. Register reusable portable Igloo cooler for motorbike + pair EYE BTSMP1 sensor
+    const bikeCooler = await opsService.createCompartment({
+      fleetAssetId: 'bike-1',
+      compartmentKind: CompartmentKind.PORTABLE_COOLER,
+      coolerCode: 'IGLOO-MOTO-01',
+      compartmentCode: 'IGLOO-MOTO-01',
+      label: 'Igloo Marine 48qt (Motorbike 1)',
+      storageType: SeafoodStorageType.FRESH,
+      sensorSlot: 1,
+    });
+    await opsService.registerCargoSensor({
+      compartmentId: bikeCooler.id,
+      deviceCode: 'EYE-MOTO-01',
+      bleMacAddress: '7C:D9:F4:AA:00:01',
+      sensorSlot: 1,
+    });
+
+    // Enforce motorbike 1-cooler limit
+    await expect(
+      opsService.createCompartment({
+        fleetAssetId: 'bike-1',
+        compartmentKind: CompartmentKind.PORTABLE_COOLER,
+        coolerCode: 'IGLOO-EXTRA-99',
+        compartmentCode: 'IGLOO-EXTRA-99',
+        label: 'Second cooler should be blocked on bike',
+        storageType: SeafoodStorageType.FRESH,
+      }),
+    ).rejects.toThrow(/already has 1 active portable cooler/i);
+
+    // Small van supports 2 separately monitored portable coolers across Slots #1 and #2
+    const vanCooler1 = await opsService.createCompartment({
+      fleetAssetId: 'van-small-1',
+      compartmentKind: CompartmentKind.PORTABLE_COOLER,
+      coolerCode: 'IGLOO-VAN-01',
+      compartmentCode: 'IGLOO-VAN-01',
+      label: 'Van Portable Cooler #1',
+      storageType: SeafoodStorageType.FRESH,
+      sensorSlot: 1,
+    });
+    const vanCooler2 = await opsService.createCompartment({
+      fleetAssetId: 'van-small-1',
+      compartmentKind: CompartmentKind.PORTABLE_COOLER,
+      coolerCode: 'IGLOO-VAN-02',
+      compartmentCode: 'IGLOO-VAN-02',
+      label: 'Van Portable Cooler #2',
+      storageType: SeafoodStorageType.FRESH,
+      sensorSlot: 2,
+    });
+    await opsService.registerCargoSensor({
+      compartmentId: vanCooler1.id,
+      deviceCode: 'EYE-VAN-S1',
+      bleMacAddress: '7C:D9:F4:AA:00:02',
+      sensorSlot: 1,
+    });
+    await opsService.registerCargoSensor({
+      compartmentId: vanCooler2.id,
+      deviceCode: 'EYE-VAN-S2',
+      bleMacAddress: '7C:D9:F4:AA:00:03',
+      sensorSlot: 2,
+    });
+
+    // 3. Prepare pilot deliveries with fresh lots
+    lots.set('lot-bike-snapper', {
+      id: 'lot-bike-snapper',
+      vendorId: 'vendor-1',
+      lotNumber: 'LOT-BIKE-SNAPPER',
+      species: 'Red Snapper',
+      storageType: SeafoodStorageType.FRESH,
+      foodSafetyStatus: 'SAFE',
+    });
+    lots.set('lot-van-mackerel', {
+      id: 'lot-van-mackerel',
+      vendorId: 'vendor-1',
+      lotNumber: 'LOT-VAN-MACKEREL',
+      species: 'Mackerel',
+      storageType: SeafoodStorageType.FRESH,
+      foodSafetyStatus: 'SAFE',
+    });
+    deliveries.set('del-bike', {
+      id: 'del-bike',
+      vendorOrderId: 'vo-bike',
+      assignedAt: new Date(clockMs - 10 * 60_000),
+      pickedUpAt: new Date(clockMs),
+      deliveredAt: null,
+      failedAt: null,
+      driverId: 'drv-1',
+      driver: {
+        id: 'drv-1',
+        userId: 'driver-user-1',
+        licensePlate: 'MB-KGN-01',
+        vehicleType: 'MOTORBIKE',
+        user: { id: 'driver-user-1', firstName: 'Derrick', lastName: 'Campbell' },
+      },
+      vendorOrder: {
+        id: 'vo-bike',
+        status: 'IN_TRANSIT',
+        vendor: { id: 'vendor-1', userId: 'vendor-user-1', businessName: "Miss Joyce's Catch" },
+        order: {
+          deliveryAddressLine1: '18 Half Way Tree Rd',
+          deliveryAddressLine2: null,
+          deliveryParish: 'KINGSTON',
+        },
+        items: [
+          {
+            id: 'oi-bike-1',
+            quantity: 6,
+            productName: 'Red Snapper',
+            originalLotId: 'lot-bike-snapper',
+            product: { id: 'p-1', lotId: 'lot-bike-snapper' },
+          },
+        ],
+      },
+      runStop: null as unknown as { id: string; deliveryRunId: string; sequence: number },
+    });
+    deliveries.set('del-van', {
+      id: 'del-van',
+      vendorOrderId: 'vo-van',
+      assignedAt: new Date(clockMs - 10 * 60_000),
+      pickedUpAt: new Date(clockMs),
+      deliveredAt: null,
+      failedAt: null,
+      driverId: 'drv-1',
+      driver: {
+        id: 'drv-1',
+        userId: 'driver-user-1',
+        licensePlate: 'VN-KGN-02',
+        vehicleType: 'VAN',
+        user: { id: 'driver-user-1', firstName: 'Derrick', lastName: 'Campbell' },
+      },
+      vendorOrder: {
+        id: 'vo-van',
+        status: 'IN_TRANSIT',
+        vendor: { id: 'vendor-1', userId: 'vendor-user-1', businessName: "Miss Joyce's Catch" },
+        order: {
+          deliveryAddressLine1: '42 Constant Spring Rd',
+          deliveryAddressLine2: null,
+          deliveryParish: 'KINGSTON',
+        },
+        items: [
+          {
+            id: 'oi-van-2',
+            quantity: 4,
+            productName: 'Mackerel',
+            originalLotId: 'lot-van-mackerel',
+            product: { id: 'p-2', lotId: 'lot-van-mackerel' },
+          },
+        ],
+      },
+      runStop: null as unknown as { id: string; deliveryRunId: string; sequence: number },
+    });
+
+    const assignedDriver: RequestUser = {
+      id: 'driver-user-1',
+      email: 'driver1@test',
+      roles: [RoleName.DRIVER],
+    };
+
+    const gatewayCred = await credService.issue('admin-1', {
+      scope: TelemetryCredentialScope.GATEWAY,
+      label: 'pilot-gateway-key',
+    });
+    const sim = new TeltonikaSimulatorClient(baseUrl, gatewayCred.plaintextSecret);
+
+    // Unmatched reading BEFORE pickup load -> explicitly flagged on frame
+    const beforePickupTime = new Date(clockMs - 2 * 60_000);
+    const unmatchedRes = await sim.sendCodec8e('356307042449901', [
+      { capturedAt: beforePickupTime, latitude: 17.997, longitude: -76.793, cargoTempC: 3.1, sensorSlot: 1 },
+    ]);
+    expect(unmatchedRes.data).toMatchObject({ unmatchedFrames: 1, lotReadingsCreated: 0 });
+    const overviewAfterUnmatched = await opsService.getTelemetryDevicesOverview(new Date(clockMs));
+    expect(
+      overviewAfterUnmatched.unmatchedFrames.some(
+        (f) => f.coolerCode === 'IGLOO-MOTO-01' && f.reason === 'NO_ACTIVE_LOT_AT_CAPTURE_TIME',
+      ),
+    ).toBe(true);
+
+    // Pickup lot-bike-snapper (qty 6) into motorbike cooler, and lot-van-mackerel (qty 4) into Van Cooler #2
+    await opsService.recordCompartmentPickup(assignedDriver, {
+      deliveryId: 'del-bike',
+      fleetAssetId: 'bike-1',
+      compartmentId: bikeCooler.id,
+      lots: [{ lotId: 'lot-bike-snapper', quantityUnits: 6 }],
+    });
+    await opsService.recordCompartmentPickup(assignedDriver, {
+      deliveryId: 'del-van',
+      fleetAssetId: 'van-small-1',
+      compartmentId: vanCooler2.id,
+      lots: [{ lotId: 'lot-van-mackerel', quantityUnits: 4 }],
+    });
+
+    // Multi-cooler Van Codec 8E packet: Slot #1 unattributed (IGLOO-VAN-01 empty) + Slot #2 at 1.9C (LOT-VAN-MACKEREL)
+    const vanFrameTime = new Date(clockMs + 30_000);
+    clockMs = vanFrameTime.getTime();
+    jest.setSystemTime(clockMs);
+    const vanMultiRes = await sim.sendCodec8e('356307042449902', [
+      {
+        capturedAt: vanFrameTime,
+        latitude: 18.012,
+        longitude: -76.799,
+        eyeSensors: [
+          { sensorSlot: 1, cargoTempC: 2.0 },
+          { sensorSlot: 2, cargoTempC: 1.9 },
+        ],
+      },
+    ]);
+    expect(vanMultiRes.data).toMatchObject({
+      storedFrames: 2,
+      lotReadingsCreated: 1,
+      unmatchedFrames: 1,
+      alertsCreated: 0,
+    });
+    expect(
+      readings.some((r) => r.lotId === 'lot-van-mackerel' && r.temperatureC.toString() === '1.9'),
+    ).toBe(true);
+
+    // Partial handover of 2 of 6 units on motorbike -> 4 units stay onboard
+    const partialHandoverTime = new Date(clockMs + 60_000);
+    clockMs = partialHandoverTime.getTime();
+    jest.setSystemTime(clockMs);
+    await opsService.recordCompartmentHandover(assignedDriver, {
+      deliveryId: 'del-bike',
+      compartmentId: bikeCooler.id,
+      unloadedAt: partialHandoverTime.toISOString(),
+      items: [{ lotId: 'lot-bike-snapper', handedOverQuantity: 2 }],
+    });
+
+    // Transfer sealed IGLOO-MOTO-01 cooler physically from Bike -> Van (auto-assigns free Slot #3 on Van!)
+    const transferTime = new Date(clockMs + 3 * 60_000);
+    const delayedBikeSampleTime = new Date(clockMs + 90_000); // Captured while STILL on Bike before transferTime!
+    clockMs = transferTime.getTime();
+    jest.setSystemTime(clockMs);
+    await opsService.recordCompartmentTransfer(assignedDriver, {
+      deliveryId: 'del-bike',
+      fromCompartmentId: bikeCooler.id,
+      toFleetAssetId: 'van-small-1',
+      toCompartmentId: bikeCooler.id,
+      transferredAt: transferTime.toISOString(),
+      notes: 'Moved Igloo cooler from motorbike to backup van',
+    });
+
+    // Delayed upload arrives from Bike FMC234 (Slot 1) AFTER cooler already moved to Van!
+    clockMs += 5 * 60_000;
+    jest.setSystemTime(clockMs);
+    const delayedBikeRes = await sim.sendCodec8e('356307042449901', [
+      {
+        capturedAt: delayedBikeSampleTime,
+        latitude: 18.005,
+        longitude: -76.791,
+        cargoTempC: 2.7,
+        sensorSlot: 1,
+      },
+    ]);
+    expect(delayedBikeRes.data).toMatchObject({
+      storedFrames: 1,
+      delayedFrames: 1,
+      lotReadingsCreated: 1,
+      alertsCreated: 0,
+    });
+    const priorBikeReading = readings.find(
+      (r) =>
+        r.lotId === 'lot-bike-snapper' &&
+        r.capturedAt?.getTime() === delayedBikeSampleTime.getTime(),
+    );
+    expect(priorBikeReading?.fleetAssetId).toBe('bike-1');
+    expect(priorBikeReading?.isDelayed).toBe(true);
+
+    // Excursion reading on Van after transfer (now on Van Slot #3) -> triggers EMERGENCY alert & retry dedupes
+    const excursionTime = new Date(clockMs);
+    const vanMovedSensor = Array.from(sensors.values()).find((s) => s.deviceCode === 'EYE-MOTO-01')!;
+    const alertsBefore = alerts.length;
+    const excursionRes = await sim.sendCodec8e('356307042449902', [
+      {
+        capturedAt: excursionTime,
+        latitude: 18.021,
+        longitude: -76.788,
+        cargoTempC: 11.8,
+        sensorSlot: vanMovedSensor.sensorSlot ?? 3,
+      },
+    ]);
+    expect(excursionRes.data).toMatchObject({
+      lotReadingsCreated: 1,
+      alertsCreated: 1,
+    });
+    expect(alerts.length).toBe(alertsBefore + 1);
+    expect(lots.get('lot-bike-snapper')?.foodSafetyStatus).toBe('QUARANTINED');
+
+    // Duplicate retry of excursion packet -> zero duplicate alerts or readings
+    const dupExcursionRes = await sim.sendCodec8e('356307042449902', [
+      {
+        capturedAt: excursionTime,
+        latitude: 18.021,
+        longitude: -76.788,
+        cargoTempC: 11.8,
+        sensorSlot: vanMovedSensor.sensorSlot ?? 3,
+      },
+    ]);
+    expect(dupExcursionRes.data).toMatchObject({
+      deduplicatedFrames: 3,
+      lotReadingsCreated: 0,
+      alertsCreated: 0,
+    });
+    expect(alerts.length).toBe(alertsBefore + 1);
+
+    // Preserved cooler-to-vehicle assignment history shows Bike window (closed) + Van window (open)
+    const coolerList = await opsService.listCompartments(new Date(clockMs));
+    const movedCoolerHistory = coolerList.find((c) => c.id === bikeCooler.id)?.assignmentHistory ?? [];
+    expect(movedCoolerHistory).toHaveLength(2);
+    expect(movedCoolerHistory.some((h) => h.fleetAssetId === 'bike-1' && h.unassignedAt !== null)).toBe(true);
+    expect(movedCoolerHistory.some((h) => h.fleetAssetId === 'van-small-1' && h.unassignedAt === null)).toBe(true);
   });
 });

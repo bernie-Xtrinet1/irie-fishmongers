@@ -16,6 +16,7 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { JwtAuthGuard, RequestUser } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import {
+  AssignCoolerVehicleDto,
   CreateVehicleCompartmentDto,
   ImportEyeAppCsvDto,
   IssueTelemetryCredentialDto,
@@ -27,6 +28,7 @@ import {
   RegisterVehicleTrackerDto,
   RevokeTelemetryCredentialDto,
   RotateTelemetryCredentialDto,
+  UnassignCoolerVehicleDto,
 } from '../dto/telemetry.dto';
 import {
   IssuedTelemetryCredentialResult,
@@ -50,25 +52,69 @@ export class TelemetryOperationsController {
     private readonly ingestionService: TelemetryIngestionService,
   ) {}
 
+  @Get('compartments')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
+  @ApiOperation({ summary: 'List registered vehicle compartments and portable coolers with assignment history' })
+  listCompartments() {
+    return this.opsService.listCompartments();
+  }
+
   @Post('compartments')
   @Roles(RoleName.ADMINISTRATOR)
-  @ApiOperation({ summary: 'Register a cold-chain cargo compartment on a fleet vehicle (admin only)' })
-  createCompartment(@Body() dto: CreateVehicleCompartmentDto) {
-    return this.opsService.createCompartment(dto);
+  @ApiOperation({ summary: 'Register a cold-chain cargo compartment or reusable portable cooler (admin only)' })
+  createCompartment(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: CreateVehicleCompartmentDto,
+  ) {
+    return this.opsService.createCompartment(dto, user.id);
+  }
+
+  @Post('compartments/:compartmentId/assign')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
+  @ApiOperation({ summary: 'Assign or transfer a portable cooler to a fleet motorbike or van, preserving history' })
+  assignCoolerToVehicle(
+    @Param('compartmentId') compartmentId: string,
+    @CurrentUser() user: RequestUser,
+    @Body() dto: AssignCoolerVehicleDto,
+  ) {
+    return this.opsService.assignCoolerToVehicle(compartmentId, dto, user);
+  }
+
+  @Post('compartments/:compartmentId/unassign')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
+  @ApiOperation({ summary: 'Detach a portable cooler from its current fleet vehicle while keeping history' })
+  unassignCoolerFromVehicle(
+    @Param('compartmentId') compartmentId: string,
+    @CurrentUser() user: RequestUser,
+    @Body() dto: UnassignCoolerVehicleDto,
+  ) {
+    return this.opsService.unassignCoolerFromVehicle(compartmentId, dto, user);
   }
 
   @Post('trackers')
   @Roles(RoleName.ADMINISTRATOR)
-  @ApiOperation({ summary: 'Enroll a Teltonika FMC130 tracker against a fleet vehicle (admin only)' })
+  @ApiOperation({ summary: 'Enroll a Teltonika FMC130 or FMC234 tracker against a fleet vehicle (admin only)' })
   registerTracker(@Body() dto: RegisterVehicleTrackerDto) {
     return this.opsService.registerTracker(dto);
   }
 
   @Post('sensors')
   @Roles(RoleName.ADMINISTRATOR)
-  @ApiOperation({ summary: 'Bind an EYE Sensor BTSMP1 probe to a vehicle compartment (admin only)' })
+  @ApiOperation({ summary: 'Bind an EYE Sensor BTSMP1 probe to a compartment or portable cooler (admin only)' })
   registerSensor(@Body() dto: RegisterCargoSensorDto) {
     return this.opsService.registerCargoSensor(dto);
+  }
+
+  @Get('deliveries/:deliveryId/loading-context')
+  @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF, RoleName.DRIVER)
+  @ApiOperation({
+    summary: 'Load driver delivery custody context: assigned vehicle, onboard coolers/sensors, and lot items',
+  })
+  getDriverLoadingContext(
+    @CurrentUser() user: RequestUser,
+    @Param('deliveryId') deliveryId: string,
+  ) {
+    return this.opsService.getDeliveryLoadingContext(user, deliveryId);
   }
 
   @Post('credentials')

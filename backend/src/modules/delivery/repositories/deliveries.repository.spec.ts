@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 
-import { Category, Role, RoleName, Vendor } from '@prisma/client';
+import { Category, Parish, Role, RoleName, Vendor } from '@prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
 import { UsersRepository } from '../../auth/repositories/users.repository';
@@ -27,12 +27,13 @@ describe('DeliveriesRepository', () => {
     vendor: Vendor,
     productId: string,
     deliveryZoneId?: string,
+    deliveryParish: Parish = 'KINGSTON',
   ): Promise<string> {
     const ordersRepository = new OrdersRepository(prisma);
     const order = await ordersRepository.create({
       customerId,
       deliveryAddressLine1: '1 Test Street',
-      deliveryParish: 'KINGSTON',
+      deliveryParish,
       deliveryPhone: '+18765551234',
       deliveryZoneId,
       currency: null,
@@ -270,5 +271,37 @@ describe('DeliveriesRepository', () => {
     const scheduled = await repository.findScheduledForZone(zone.id);
     expect(scheduled.some((delivery) => delivery.id === zoneDelivery.id)).toBe(true);
     expect(scheduled.every((delivery) => delivery.pickedUpAt === null)).toBe(true);
+  });
+
+  it('excludes cross-parish orders from findAvailableForPickup', async () => {
+    const vendorsRepository = new VendorsRepository(prisma);
+    const vendor = await vendorsRepository.findByUserId(vendorUserId);
+    const productsRepository = new ProductsRepository(prisma);
+    const product = await productsRepository.create({
+      vendorId: vendor!.id,
+      categoryId: category.id,
+      name: 'Deliveries Repo Cross-Parish Snapper',
+      description: 'Sold to verify same-parish pickup filtering.',
+      unit: 'PER_POUND',
+      price: 500,
+      quantityAvailable: 50,
+      imageUrl: 'https://cdn.example.com/snapper.jpg',
+    });
+    const stJamesVendorOrderId = await createReadyVendorOrder(
+      vendor!,
+      product.id,
+      undefined,
+      'ST_JAMES',
+    );
+    const kingstonVendorOrderId = await createReadyVendorOrder(
+      vendor!,
+      product.id,
+      undefined,
+      'KINGSTON',
+    );
+
+    const { items } = await repository.findAvailableForPickup({ skip: 0, take: 100 });
+    expect(items.some((item) => item.id === stJamesVendorOrderId)).toBe(false);
+    expect(items.some((item) => item.id === kingstonVendorOrderId)).toBe(true);
   });
 });

@@ -205,7 +205,16 @@ export function SensorTelemetryDialog({
                           </TableCell>
                           <TableCell className="text-xs">
                             {frame.linkedLotsCount === 0 ? (
-                              <span className="text-gray-500">Unmatched (no onboard lot)</span>
+                              <div className="flex flex-col gap-0.5">
+                                <Badge variant={frame.unmatchedLot ? 'warning' : 'neutral'} className="w-fit">
+                                  {frame.unmatchedLot ? 'Flagged: Unmatched Lot' : 'No temp / unmatched'}
+                                </Badge>
+                                {frame.unmatchedReason ? (
+                                  <span className="text-[11px] text-amber-800">
+                                    {formatEnumLabel(frame.unmatchedReason)}
+                                  </span>
+                                ) : null}
+                              </div>
                             ) : (
                               <>
                                 {frame.linkedLotsCount} lot(s) · {frame.alertsCount} alert(s)

@@ -14,6 +14,9 @@ import { useFleetAssets, useUpdateFleetAssetStatus } from '@/lib/hooks/use-fleet
 import { FleetAssetsSection } from './fleet-assets-section';
 
 jest.mock('@/lib/hooks/use-fleet');
+jest.mock('@/lib/hooks/use-telemetry', () => ({
+  useRegisterVehicleTracker: jest.fn(() => ({ mutateAsync: jest.fn(), isPending: false })),
+}));
 
 const push = jest.fn();
 let searchParams = new URLSearchParams();
@@ -113,5 +116,21 @@ describe('FleetAssetsSection', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Retire' }));
     expect(mutate).toHaveBeenCalledWith({ id: 'asset-1', status: FleetAssetStatus.RETIRED });
+  });
+
+  it('renders motorbike fleet assets cleanly', () => {
+    mockUseFleetAssets.mockReturnValue(
+      withData({
+        items: [asset({ id: 'bike-1', assetType: FleetAssetType.MOTORBIKE, licensePlate: 'MB-4021', capacityLbs: '120.00' })],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      }),
+    );
+
+    render(<FleetAssetsSection zones={zones} />);
+
+    expect(screen.getByText('MB-4021')).toBeInTheDocument();
+    expect(screen.getByText('Motorbike')).toBeInTheDocument();
   });
 });

@@ -676,6 +676,7 @@ export enum FleetAssetType {
   REFRIGERATED_TRUCK = 'REFRIGERATED_TRUCK',
   TRUCK = 'TRUCK',
   VAN = 'VAN',
+  MOTORBIKE = 'MOTORBIKE',
 }
 
 export enum FleetOwnership {
@@ -1408,6 +1409,10 @@ export interface DeliveryItemSummary {
   productName: string;
   unit: ProductUnit;
   quantity: number;
+  lotId?: string | null;
+  lotNumber?: string | null;
+  species?: string | null;
+  storageType?: string | null;
 }
 
 export interface AvailableDelivery {
@@ -1502,7 +1507,40 @@ export interface UpdateDeliveryStatusInput {
   failureReason?: string;
 }
 
+export interface DriverLocationSnapshot {
+  latitude: number;
+  longitude: number;
+  recordedAt: string;
+}
+
+export interface DeliveryTracking {
+  vendorOrderId: string;
+  stage: DeliveryStage;
+  driverFirstName: string;
+  driverPhone: string | null;
+  driverVehicleType: VehicleType;
+  driverLicensePlate: string;
+  latestLocation: DriverLocationSnapshot | null;
+  customerDeliveryWindowStart: string | null;
+  customerDeliveryWindowEnd: string | null;
+  assignedAt: string;
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
+}
+
 // --- Live Vehicle GPS & Cold-Chain Cargo-Air Telemetry (Teltonika FMC130 + EYE BTSMP1) ---
+
+export enum TrackerHardwareModel {
+  TELTONIKA_FMC130 = 'TELTONIKA_FMC130',
+  TELTONIKA_FMC234 = 'TELTONIKA_FMC234',
+  GENERIC_GNSS_LTE = 'GENERIC_GNSS_LTE',
+}
+
+export enum CompartmentKind {
+  FIXED_COMPARTMENT = 'FIXED_COMPARTMENT',
+  PORTABLE_COOLER = 'PORTABLE_COOLER',
+}
 
 export enum TelemetryProtocol {
   TELTONIKA_CODEC_8E = 'TELTONIKA_CODEC_8E',
@@ -1545,8 +1583,11 @@ export interface LiveVehicleSensorSnapshot {
 export interface LiveVehicleCompartmentSnapshot {
   id: string;
   compartmentCode: string;
+  coolerCode?: string | null;
+  compartmentKind?: CompartmentKind;
   label: string;
   storageType: string;
+  onboardLotsCount?: number;
   sensors: LiveVehicleSensorSnapshot[];
 }
 
@@ -1632,6 +1673,78 @@ export interface EnrolledTrackerSummary {
   activeCredentialCount: number;
 }
 
+export interface EnrolledSensorOnboardLot {
+  assignmentId: string;
+  lotId: string;
+  lotNumber: string;
+  species: string;
+  quantityUnits: number;
+  remainingUnits: number;
+  deliveryId: string;
+  loadedAt: string;
+}
+
+export type ColdChainGapClassification =
+  | 'NORMAL'
+  | 'SENSOR_SIGNAL_MISSING'
+  | 'VEHICLE_OFFLINE'
+  | 'LTE_BUFFERED_RECOVERY'
+  | 'STALE_SENSOR';
+
+export interface CoolerVehicleAssignmentRecord {
+  id: string;
+  compartmentId: string;
+  fleetAssetId: string;
+  licensePlate: string;
+  assetType: string;
+  sensorSlot: number | null;
+  assignedAt: string;
+  unassignedAt: string | null;
+  notes: string | null;
+}
+
+export interface PortableCoolerSummary {
+  id: string;
+  compartmentCode: string;
+  coolerCode: string | null;
+  compartmentKind: CompartmentKind;
+  label: string;
+  storageType: string;
+  targetMinC: number | null;
+  targetMaxC: number | null;
+  active: boolean;
+  fleetAssetId: string | null;
+  licensePlate: string | null;
+  assetType: string | null;
+  sensors: Array<{
+    id: string;
+    deviceCode: string;
+    hardwareModel: string;
+    bleMacAddress: string | null;
+    sensorSlot: number | null;
+    status: DeviceStatus;
+    lastTemperatureC: number | null;
+    lastCapturedAt: string | null;
+    reportingStatus: TelemetryReportingStatus;
+  }>;
+  assignmentHistory: CoolerVehicleAssignmentRecord[];
+}
+
+export interface UnmatchedTelemetryFrameAlert {
+  id: string;
+  capturedAt: string;
+  receivedAt: string;
+  cargoTempC: number | null;
+  reason: string | null;
+  sensorId: string | null;
+  sensorDeviceCode: string | null;
+  compartmentId: string | null;
+  compartmentCode: string | null;
+  coolerCode: string | null;
+  fleetAssetId: string | null;
+  licensePlate: string | null;
+}
+
 export interface EnrolledSensorSummary {
   id: string;
   deviceCode: string;
@@ -1644,10 +1757,15 @@ export interface EnrolledSensorSummary {
   vendorName: string | null;
   compartmentId: string | null;
   compartmentCode: string | null;
+  coolerCode?: string | null;
+  compartmentKind?: CompartmentKind;
   compartmentLabel: string | null;
   storageType: string | null;
   fleetAssetId: string | null;
   licensePlate: string | null;
+  vehicleAssetType?: string | null;
+  vehicleGpsStatus?: VehicleGpsStatus | null;
+  vehicleLastGpsCapturedAt?: string | null;
   lastTemperatureC: number | null;
   lastCapturedAt: string | null;
   lastReceivedAt: string | null;
@@ -1659,12 +1777,16 @@ export interface EnrolledSensorSummary {
   lastGapKind: TelemetryGapKind | null;
   lastSignalMissingAt: string | null;
   reportingStatus: TelemetryReportingStatus;
+  gapClassification?: ColdChainGapClassification;
+  onboardLots?: EnrolledSensorOnboardLot[];
 }
 
 export interface TelemetryDevicesOverview {
   generatedAt: string;
   trackers: EnrolledTrackerSummary[];
   sensors: EnrolledSensorSummary[];
+  compartments?: PortableCoolerSummary[];
+  unmatchedFrames?: UnmatchedTelemetryFrameAlert[];
 }
 
 export interface SensorTelemetryFrameRow {
@@ -1684,8 +1806,48 @@ export interface SensorTelemetryFrameRow {
   longitude: number | null;
   gnssValid: boolean;
   gapKind: TelemetryGapKind | null;
+  unmatchedLot?: boolean;
+  unmatchedReason?: string | null;
   linkedLotsCount: number;
   alertsCount: number;
+}
+
+export interface DriverDeliveryLoadingContext {
+  deliveryId: string;
+  vendorOrderId: string;
+  driverId: string;
+  fleetAssets: Array<{
+    id: string;
+    licensePlate: string;
+    assetType: FleetAssetType;
+    status: FleetAssetStatus;
+    trackers: Array<{ id: string; imei: string; hardwareModel: string }>;
+    compartments: Array<{
+      id: string;
+      compartmentCode: string;
+      coolerCode: string | null;
+      compartmentKind: CompartmentKind;
+      label: string;
+      storageType: string;
+      sensors: Array<{
+        id: string;
+        deviceCode: string;
+        sensorSlot: number | null;
+        reportingStatus: TelemetryReportingStatus;
+        lastTemperatureC: number | null;
+      }>;
+    }>;
+  }>;
+  items: Array<{
+    orderItemId: string;
+    productName: string;
+    quantity: number;
+    lotId: string | null;
+    lotNumber: string | null;
+    species: string | null;
+    storageType: string | null;
+  }>;
+  openAssignments: DeliveryCargoAssignmentView[];
 }
 
 export interface SensorTelemetryHistory {
