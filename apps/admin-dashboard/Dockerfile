@@ -9,8 +9,9 @@
 # node_modules, so the runtime stage needs NO npm install.
 #
 # admin HARD-REQUIRES NEXT_PUBLIC_API_URL at build time (lib/env.ts throws if
-# missing); the production build fails without it. There is no public/ dir for
-# this app, so none is copied (no fabricated directory).
+# missing); the production build fails without it. Bundled catalogue reference
+# thumbnails are copied into public/catalogue-photos/ in the runner stage from
+# apps/web/public/catalogue-photos so admin origin stays consistent without duplication.
 
 FROM node:20-bookworm-slim AS base
 WORKDIR /app
@@ -52,6 +53,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/.next/standa
 # Standalone does not include static or public assets.
 COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/.next/static ./apps/admin-dashboard/.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/apps/admin-dashboard/public ./apps/admin-dashboard/public
+# Serve the bundled species reference thumbnails cleanly if requested from the admin origin.
+COPY --chown=nextjs:nodejs apps/web/public/catalogue-photos ./apps/admin-dashboard/public/catalogue-photos
 USER nextjs
 EXPOSE 3002
 # Stable proven route for the probe: GET /login (see Phase 17B.1 runtime proof).
