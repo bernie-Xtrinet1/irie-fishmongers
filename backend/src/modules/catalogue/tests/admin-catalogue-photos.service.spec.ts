@@ -1,4 +1,4 @@
-import { ForbiddenException, BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import {
   CataloguePhotoApprovalStatus,
   CataloguePhotoAuditAction,
@@ -538,6 +538,105 @@ describe('AdminCataloguePhotosService & RBAC Guards', () => {
       });
       expect(retired.lifecycleStatus).toBe('RETIRED');
       expect(retired.usageCount).toBe(1);
+    });
+  });
+
+  describe('Protected Image Streaming', () => {
+    it('serves all nine bundled catalogue photos from apps/web/public and rejects missing or traversal paths', async () => {
+      const { CATALOGUE_PHOTO_DEFINITIONS } = await import('../../../../prisma/catalogue-photo-seed');
+      const prismaMock = {
+        cataloguePhoto: {
+          findUnique: jest.fn(),
+        },
+      };
+      const storageMock = {
+        downloadBlobBuffer: jest.fn(),
+      } as unknown as jest.Mocked<CataloguePhotoStorageService>;
+
+      const service = new AdminCataloguePhotosService(prismaMock as never, storageMock);
+
+      expect(CATALOGUE_PHOTO_DEFINITIONS).toHaveLength(9);
+      for (let i = 0; i < CATALOGUE_PHOTO_DEFINITIONS.length; i += 1) {
+        const entry = CATALOGUE_PHOTO_DEFINITIONS[i]!;
+        prismaMock.cataloguePhoto.findUnique.mockResolvedValueOnce({
+          id: `bundled-${i}`,
+          imageUrl: entry.imageUrl,
+          storageProvider: 'BUNDLED',
+          storageContainer: null,
+          storageKey: null,
+          mimeType: null,
+          approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+        });
+
+        const result = await service.getProtectedImageBuffer(`bundled-${i}`);
+        expect(result.mimeType).toBe('image/png');
+        expect(result.isPrivateDraft).toBe(false);
+        expect(result.buffer.subarray(0, 8)).toEqual(
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
+      }
+
+      // Rejects missing DB record and traversal paths safely
+      prismaMock.cataloguePhoto.findUnique.mockResolvedValueOnce(null);
+      await expect(service.getProtectedImageBuffer('missing-id')).rejects.toThrow(NotFoundException);
+
+      prismaMock.cataloguePhoto.findUnique.mockResolvedValueOnce({
+        id: 'traversal-id',
+        imageUrl: '/../../backend/package.json',
+        storageProvider: 'BUNDLED',
+        storageContainer: null,
+        storageKey: null,
+        mimeType: null,
+        approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+      });
+      await expect(service.getProtectedImageBuffer('traversal-id')).rejects.toThrow(NotFoundException);
+
+      prismaMock.cataloguePhoto.findUnique.mockResolvedValueOnce({
+        id: 'remote-unconfigured',
+        imageUrl: 'https://example.com/photo.png',
+        storageProvider: 'EXTERNAL',
+        storageContainer: null,
+        storageKey: null,
+        mimeType: null,
+        approvalStatus: CataloguePhotoApprovalStatus.APPROVED,
+      });
+      await expect(service.getProtectedImageBuffer('remote-unconfigured')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('preserves Azure Blob draft streaming for protected previews', async () => {
+      const draftBuffer = makePngBuffer(900, 600);
+      const prismaMock = {
+        cataloguePhoto: {
+          findUnique: jest.fn(),
+        },
+      };
+      const downloadBlobBuffer = jest.fn().mockResolvedValue(draftBuffer);
+      const storageMock = {
+        downloadBlobBuffer,
+      } as unknown as jest.Mocked<CataloguePhotoStorageService>;
+
+      const service = new AdminCataloguePhotosService(prismaMock as never, storageMock);
+
+      prismaMock.cataloguePhoto.findUnique.mockResolvedValueOnce({
+        id: 'blob-draft-1',
+        imageUrl: '/api/v1/admin/catalogue-photos/blob-draft-1/image',
+        storageProvider: 'AZURE_BLOB',
+        storageContainer: 'catalogue-photos-drafts',
+        storageKey: 'drafts/tilapia/blob-draft-1/v1.png',
+        mimeType: null,
+        approvalStatus: CataloguePhotoApprovalStatus.PENDING,
+      });
+
+      const draft = await service.getProtectedImageBuffer('blob-draft-1');
+      expect(downloadBlobBuffer).toHaveBeenCalledWith(
+        'catalogue-photos-drafts',
+        'drafts/tilapia/blob-draft-1/v1.png',
+      );
+      expect(draft.isPrivateDraft).toBe(true);
+      expect(draft.mimeType).toBe('image/png');
+      expect(draft.buffer).toBe(draftBuffer);
     });
   });
 });

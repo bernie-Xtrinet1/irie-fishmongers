@@ -85,6 +85,7 @@ COPY --from=pruned --chown=nestjs:nodejs /app/node_modules ./node_modules
 COPY --from=pruned --chown=nestjs:nodejs /app/backend/node_modules ./backend/node_modules
 COPY --from=pruned --chown=nestjs:nodejs /app/backend/dist ./backend/dist
 COPY --from=pruned --chown=nestjs:nodejs /app/backend/package.json ./backend/package.json
+COPY --chown=nestjs:nodejs apps/web/public/catalogue-photos ./apps/web/public/catalogue-photos
 USER nestjs
 WORKDIR /app/backend
 EXPOSE 3001
