@@ -104,6 +104,13 @@ jobs:
           rc=${PIPESTATUS[0]}; set -e
           bash "$GITHUB_WORKSPACE/assert.sh" build-backend "$rc"
 
+      - name: Build migrator image
+        run: |
+          set +e
+          docker build -f backend/Dockerfile --target migrator -t irie-migrator:val . 2>&1 | tee migrator-build.log
+          rc=${PIPESTATUS[0]}; set -e
+          bash "$GITHUB_WORKSPACE/assert.sh" build-migrator "$rc"
+
       - name: Build web image
         run: |
           set +e
@@ -203,9 +210,12 @@ jobs:
           done
 
       # ---- 8: backend starts + /api/v1/health passes ----
-      - name: Run backend + health check
+      - name: Migrate disposable Postgres + start backend + health check
         run: |
           set -euo pipefail
+          docker run --rm --network irie-val \
+            -e DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@pgval:5432/${PGDB}?schema=public" \
+            irie-migrator:val
           docker run -d --name backend --network irie-val -p 3001:3001 \
             -e NODE_ENV=production -e PORT=3001 -e API_PREFIX=api/v1 \
             -e DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@pgval:5432/${PGDB}?schema=public" \
@@ -240,6 +250,131 @@ jobs:
           set -e
           bash "$GITHUB_WORKSPACE/assert.sh" backend-health-200-pg-redis-up "$rc"
 
+      - name: Backend image — 9 bundled catalogue thumbnails 200 & anonymous 401
+        run: |
+          set -euo pipefail
+          seed_out=$(docker exec backend node -e '
+            const bcrypt = require("bcrypt");
+            const { PrismaClient } = require("@prisma/client");
+            const prisma = new PrismaClient();
+            const bundled = [
+              ["Lutjanus analis", "Snapper", "/catalogue-photos/lutjanus-analis.png"],
+              ["Oreochromis niloticus", "Tilapia", "/catalogue-photos/oreochromis-niloticus.png"],
+              ["Scomberomorus cavalla", "King Fish", "/catalogue-photos/scomberomorus-cavalla.png"],
+              ["Scomber scombrus", "Mackerel", "/catalogue-photos/scomber-scombrus.png"],
+              ["Panulirus argus", "Lobster", "/catalogue-photos/panulirus-argus.png"],
+              ["Penaeus spp.", "Shrimp", "/catalogue-photos/penaeus-spp.png"],
+              ["Epinephelus guttatus", "Grouper", "/catalogue-photos/epinephelus-guttatus.png"],
+              ["Sparisoma viride", "Parrotfish", "/catalogue-photos/sparisoma-viride.png"],
+              ["Acanthurus chirurgus", "Doctor Fish", "/catalogue-photos/acanthurus-chirurgus.png"]
+            ];
+            (async () => {
+              const role = await prisma.role.upsert({
+                where: { name: "ADMINISTRATOR" },
+                update: {},
+                create: { name: "ADMINISTRATOR" }
+              });
+              const hash = bcrypt.hashSync("ValAdmin!23", 10);
+              const user = await prisma.user.upsert({
+                where: { email: "val-admin@iriefishmongers.test" },
+                update: { passwordHash: hash, status: "ACTIVE", canManageCataloguePhotos: true, emailVerifiedAt: new Date() },
+                create: {
+                  email: "val-admin@iriefishmongers.test",
+                  passwordHash: hash,
+                  firstName: "Val",
+                  lastName: "Admin",
+                  status: "ACTIVE",
+                  canManageCataloguePhotos: true,
+                  emailVerifiedAt: new Date()
+                }
+              });
+              await prisma.userRole.upsert({
+                where: { userId_roleId: { userId: user.id, roleId: role.id } },
+                update: {},
+                create: { userId: user.id, roleId: role.id }
+              });
+              const ids = [];
+              let firstSpeciesId = null;
+              for (const [sci, comm, imageUrl] of bundled) {
+                const sp = await prisma.species.upsert({
+                  where: { scientificName: sci },
+                  update: { commercialName: comm },
+                  create: { scientificName: sci, commercialName: comm, regulatoryStatus: "UNRESTRICTED" }
+                });
+                if (!firstSpeciesId) firstSpeciesId = sp.id;
+                const photo = await prisma.cataloguePhoto.upsert({
+                  where: { speciesId_imageUrl: { speciesId: sp.id, imageUrl } },
+                  update: { storageProvider: "BUNDLED", approvalStatus: "APPROVED" },
+                  create: {
+                    speciesId: sp.id,
+                    title: comm,
+                    scientificName: sci,
+                    jamaicanAliases: [comm],
+                    imageUrl,
+                    storageProvider: "BUNDLED",
+                    sourceName: "Validation",
+                    sourceUrl: "https://iriefishmongers.test",
+                    photographer: "Validation",
+                    licenseName: "CC BY 4.0",
+                    licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
+                    modifications: "None",
+                    approvalStatus: "APPROVED"
+                  }
+                });
+                ids.push(photo.id);
+              }
+              const draft = await prisma.cataloguePhoto.create({
+                data: {
+                  speciesId: firstSpeciesId,
+                  title: "Validation Private Draft",
+                  scientificName: "Lutjanus analis",
+                  jamaicanAliases: ["Snapper"],
+                  imageUrl: "/api/v1/admin/catalogue-photos/val-draft/image",
+                  storageProvider: "AZURE_BLOB",
+                  storageContainer: "catalogue-photos-drafts",
+                  storageKey: "drafts/snapper/val-draft/v1.png",
+                  sourceName: "Validation",
+                  sourceUrl: "https://iriefishmongers.test",
+                  photographer: "Validation",
+                  licenseName: "CC BY 4.0",
+                  licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
+                  modifications: "None",
+                  approvalStatus: "PENDING"
+                }
+              });
+              console.log(JSON.stringify({ ids, draftId: draft.id }));
+              await prisma.$disconnect();
+            })();
+          ' | tail -1)
+          draft_id=$(node -e 'const d=JSON.parse(process.argv[1]); console.log(d.draftId)' "$seed_out")
+          bundled_ids=$(node -e 'const d=JSON.parse(process.argv[1]); console.log(d.ids.join(" "))' "$seed_out")
+          first_bundled=$(node -e 'const d=JSON.parse(process.argv[1]); console.log(d.ids[0])' "$seed_out")
+
+          anon_draft=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3001/api/v1/admin/catalogue-photos/${draft_id}/image")
+          anon_bundled=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3001/api/v1/admin/catalogue-photos/${first_bundled}/image")
+          echo "anon draft status=${anon_draft}, anon bundled status=${anon_bundled}"
+
+          login_json=$(curl -fsS -H 'Content-Type: application/json' \
+            -d '{"email":"val-admin@iriefishmongers.test","password":"ValAdmin!23"}' \
+            http://localhost:3001/api/v1/auth/login)
+          token=$(node -e 'const d=JSON.parse(process.argv[1]); console.log(d.data.accessToken)' "$login_json")
+
+          rc=0
+          if [ "$anon_draft" != "401" ] || [ "$anon_bundled" != "401" ]; then rc=1; fi
+          count=0
+          for id in $bundled_ids; do
+            meta=$(curl -s -H "Authorization: Bearer ${token}" -D /tmp/img.hdr -o /tmp/img.bin -w '%{http_code}' \
+              "http://localhost:3001/api/v1/admin/catalogue-photos/${id}/image")
+            sig=$(node -e 'const fs=require("fs"); const b=fs.readFileSync("/tmp/img.bin"); console.log(b.subarray(0,4).toString("hex"))')
+            ctype=$(grep -i '^content-type:' /tmp/img.hdr | tr -d '\r' | head -1)
+            echo "bundled ${id}: status=${meta} ${ctype} sig=${sig}"
+            if [ "$meta" != "200" ] || [ "$sig" != "89504e47" ]; then rc=1; fi
+            count=$((count + 1))
+          done
+          echo "verified bundled count=${count}"
+          [ "$count" -eq 9 ] || rc=1
+          bash "$GITHUB_WORKSPACE/assert.sh" backend-bundled-catalogue-photos "$rc"
+
       # ---- 9/11: web / = 200, public asset, /_next/static ----
       - name: Run web + asset checks
         run: |
@@ -255,7 +390,8 @@ jobs:
           bash "$GITHUB_WORKSPACE/assert.sh" web-root-200 "$rc"
           set +e
           pcode=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/demo-products/red-snapper.png)
-          [ "$pcode" = "200" ]; rc=$?; set -e
+          bcode=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/catalogue-photos/lutjanus-analis.png)
+          [ "$pcode" = "200" ] && [ "$bcode" = "200" ]; rc=$?; set -e
           bash "$GITHUB_WORKSPACE/assert.sh" web-public-asset-200 "$rc"
           set +e
           asset=$(grep -oE '/_next/static/[^"]+\.js' /tmp/web.html | head -1)
@@ -310,6 +446,7 @@ jobs:
           name: docker-validation-17b2v
           path: |
             backend-build.log
+            migrator-build.log
             web-build.log
             admin-build.log
             prisma-layout.log

@@ -75,14 +75,19 @@ describe('demo seed product placeholders', () => {
     expect(conchPhotos).toHaveLength(0);
   });
 
-  it('keeps public photo credit SOURCES.md files un-ignored in .dockerignore', () => {
+  it('keeps public photo credit SOURCES.md and backend Dockerfile bundled catalogue photos intact', () => {
     const dockerignore = fs.readFileSync(
       path.resolve(__dirname, '../../.dockerignore'),
+      'utf8',
+    );
+    const backendDockerfile = fs.readFileSync(
+      path.resolve(__dirname, '../Dockerfile'),
       'utf8',
     );
     expect(fs.existsSync(path.join(PUBLIC_DIR, '/demo-products/SOURCES.md'))).toBe(true);
     expect(fs.existsSync(path.join(PUBLIC_DIR, '/catalogue-photos/SOURCES.md'))).toBe(true);
     expect(dockerignore).toContain('!apps/web/public/demo-products/SOURCES.md');
     expect(dockerignore).toContain('!apps/web/public/catalogue-photos/SOURCES.md');
+    expect(backendDockerfile).toContain('apps/web/public/catalogue-photos');
   });
 });

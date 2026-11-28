@@ -316,20 +316,9 @@ export class AdminCataloguePhotosService {
       };
     }
 
-    if (photo.imageUrl.startsWith('/')) {
-      const candidates = [
-        path.resolve(process.cwd(), '../apps/web/public', photo.imageUrl.slice(1)),
-        path.resolve(process.cwd(), 'apps/web/public', photo.imageUrl.slice(1)),
-      ];
-      for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-          return {
-            buffer: fs.readFileSync(candidate),
-            mimeType: photo.mimeType || 'image/png',
-            isPrivateDraft: false,
-          };
-        }
-      }
+    const localAsset = this.readBundledPublicImage(photo);
+    if (localAsset) {
+      return localAsset;
     }
 
     throw new NotFoundException('Catalogue photo binary is unavailable');
@@ -1109,5 +1098,51 @@ export class AdminCataloguePhotosService {
       return Array.from(new Set(cleaned));
     }
     return [fallbackCommercialName];
+  }
+
+  private readBundledPublicImage(
+    photo: Pick<CataloguePhoto, 'imageUrl' | 'mimeType' | 'approvalStatus'>,
+  ): { buffer: Buffer; mimeType: string; isPrivateDraft: boolean } | null {
+    if (!photo.imageUrl.startsWith('/')) {
+      return null;
+    }
+
+    const relativePath = photo.imageUrl.replace(/^\/+/, '');
+    if (!relativePath) {
+      return null;
+    }
+
+    const publicRoots = Array.from(
+      new Set([
+        path.resolve(process.cwd(), '../apps/web/public'),
+        path.resolve(process.cwd(), 'apps/web/public'),
+        path.resolve(__dirname, '../../../../../apps/web/public'),
+        path.resolve(__dirname, '../../../../apps/web/public'),
+      ]),
+    );
+
+    const extMimeTypes: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.png': 'image/png',
+    };
+
+    for (const publicRoot of publicRoots) {
+      const candidate = path.resolve(publicRoot, relativePath);
+      if (!candidate.startsWith(`${publicRoot}${path.sep}`)) {
+        continue;
+      }
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        const ext = path.extname(candidate).toLowerCase();
+        return {
+          buffer: fs.readFileSync(candidate),
+          mimeType: photo.mimeType || extMimeTypes[ext] || 'image/png',
+          isPrivateDraft: photo.approvalStatus !== CataloguePhotoApprovalStatus.APPROVED,
+        };
+      }
+    }
+
+    return null;
   }
 }
