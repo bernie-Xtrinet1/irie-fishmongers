@@ -67,6 +67,17 @@ export function canAuthorizeVendorSettlements(
 }
 
 /**
+ * Only an active designated Primary Administrator (backed server-side by
+ * `User.canAuthorizeVendorSettlements = true` + ACTIVE + ADMINISTRATOR) may
+ * delegate `canManageCataloguePhotos` to Operations Staff.
+ */
+export function canDelegateCataloguePhotoAccess(
+  user?: { roles?: readonly string[]; status?: string; canAuthorizeVendorSettlements?: boolean } | null,
+): boolean {
+  return canAuthorizeVendorSettlements(user);
+}
+
+/**
  * Returns true when an active admin portal account holds explicit catalogue
  * photo upload and editing permission.
  */
@@ -103,7 +114,12 @@ export function canPublishOrRetireCataloguePhotos(
  */
 export function canAccessAdminPath(
   user:
-    | { roles?: readonly string[]; status?: string; canManageCataloguePhotos?: boolean }
+    | {
+        roles?: readonly string[];
+        status?: string;
+        canAuthorizeVendorSettlements?: boolean;
+        canManageCataloguePhotos?: boolean;
+      }
     | null
     | undefined,
   pathname: string,
@@ -111,10 +127,16 @@ export function canAccessAdminPath(
   if (!isActiveAdminPortalUser(user)) {
     return false;
   }
+  const normalized = pathname || '/';
+  if (
+    normalized === '/catalogue-photos/staff-access' ||
+    normalized.startsWith('/catalogue-photos/staff-access/')
+  ) {
+    return canDelegateCataloguePhotoAccess(user);
+  }
   if (isActiveAdminUser(user)) {
     return true;
   }
-  const normalized = pathname || '/';
   if (normalized === '/catalogue-photos' || normalized.startsWith('/catalogue-photos/')) {
     return canManageCataloguePhotos(user);
   }

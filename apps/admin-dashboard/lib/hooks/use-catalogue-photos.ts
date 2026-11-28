@@ -5,12 +5,14 @@ import {
   bulkSwitchCatalogueListings,
   fetchAdminCataloguePhotoHistory,
   fetchAdminCataloguePhotos,
+  fetchCataloguePhotoStaffAccess,
   rejectCataloguePhoto,
   replaceCataloguePhotoVersion,
   restoreCataloguePhoto,
   retireCataloguePhoto,
   setDefaultCataloguePhoto,
   updateCataloguePhotoMetadata,
+  updateCataloguePhotoStaffAccess,
   uploadCataloguePhotoDraft,
   type ListAdminCataloguePhotosParams,
 } from '@/lib/api/catalogue-photos';
@@ -89,4 +91,22 @@ export function useCataloguePhotoMutations() {
       onSuccess: invalidate,
     }),
   };
+}
+
+export function useCataloguePhotoStaffAccess(enabled = true) {
+  return useQuery({
+    queryKey: ['admin', 'catalogue-photos', 'staff-access'],
+    queryFn: fetchCataloguePhotoStaffAccess,
+    enabled,
+  });
+}
+
+export function useUpdateCataloguePhotoStaffAccess() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateCataloguePhotoStaffAccess,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'catalogue-photos', 'staff-access'] });
+    },
+  });
 }

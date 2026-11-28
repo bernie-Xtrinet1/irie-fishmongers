@@ -8,11 +8,12 @@ export interface VerifiedCatalogueActor {
   email: string;
   status: UserStatus;
   roles: RoleName[];
+  canAuthorizeVendorSettlements: boolean;
   canManageCataloguePhotos: boolean;
 }
 
 /**
- * Loads live user status, roles, and explicit catalogue permission from the database
+ * Loads live user status, roles, and explicit capabilities from the database
  * when PrismaService is wired; falls back gracefully in unit tests without Prisma.
  */
 export async function resolveCatalogueActor(
@@ -30,6 +31,7 @@ export async function resolveCatalogueActor(
         id: true,
         email: true,
         status: true,
+        canAuthorizeVendorSettlements: true,
         canManageCataloguePhotos: true,
         roles: {
           select: {
@@ -50,6 +52,7 @@ export async function resolveCatalogueActor(
       email: dbUser.email,
       status: dbUser.status,
       roles: dbUser.roles.map((entry) => entry.role.name),
+      canAuthorizeVendorSettlements: Boolean(dbUser.canAuthorizeVendorSettlements),
       canManageCataloguePhotos: Boolean(dbUser.canManageCataloguePhotos),
     };
   }
@@ -59,6 +62,7 @@ export async function resolveCatalogueActor(
     email: user.email,
     status: UserStatus.ACTIVE,
     roles: user.roles ?? [],
+    canAuthorizeVendorSettlements: Boolean(user.canAuthorizeVendorSettlements),
     canManageCataloguePhotos: Boolean(user.canManageCataloguePhotos),
   };
 }

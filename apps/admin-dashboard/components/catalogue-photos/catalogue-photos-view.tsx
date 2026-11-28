@@ -10,8 +10,10 @@ import {
   RotateCcw,
   Star,
   Trash2,
+  UserCheck,
   XCircle,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useState } from 'react';
 
 import {
@@ -37,6 +39,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  canDelegateCataloguePhotoAccess,
   canManageCataloguePhotos,
   canPublishOrRetireCataloguePhotos,
 } from '@/lib/auth/admin-access';
@@ -58,6 +61,7 @@ export function CataloguePhotosView(): React.ReactElement {
   const { user } = useAuth();
   const canEdit = canManageCataloguePhotos(user);
   const canPublish = canPublishOrRetireCataloguePhotos(user);
+  const canDelegate = canDelegateCataloguePhotoAccess(user);
 
   const [speciesFilter, setSpeciesFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
@@ -201,18 +205,31 @@ export function CataloguePhotosView(): React.ReactElement {
           </p>
         </div>
 
-        {canEdit ? (
-          <Button
-            size="sm"
-            onClick={() => setDialogState({ open: true, mode: 'create', target: null })}
-            data-testid="open-upload-catalogue-photo-btn"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Upload Photo
-          </Button>
-        ) : (
-          <Badge variant="neutral">Read-only (no upload permission)</Badge>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {canDelegate ? (
+            <Link
+              href="/catalogue-photos/staff-access"
+              className="inline-flex min-h-9 items-center gap-2 rounded-button border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50"
+              data-testid="open-manage-staff-access-btn"
+            >
+              <UserCheck className="h-4 w-4 text-irie-green" aria-hidden="true" />
+              Manage Staff Access
+            </Link>
+          ) : null}
+
+          {canEdit ? (
+            <Button
+              size="sm"
+              onClick={() => setDialogState({ open: true, mode: 'create', target: null })}
+              data-testid="open-upload-catalogue-photo-btn"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Upload Photo
+            </Button>
+          ) : (
+            <Badge variant="neutral">Read-only (no upload permission)</Badge>
+          )}
+        </div>
       </div>
 
       {!storageConfigured ? (

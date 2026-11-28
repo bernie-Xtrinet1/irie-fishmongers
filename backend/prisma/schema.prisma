@@ -106,6 +106,8 @@ model User {
   cataloguePhotoAuditLogs      CataloguePhotoAuditLog[]           @relation("CataloguePhotoAuditActor")
   assignedCoolerVehicles       CoolerVehicleAssignment[]          @relation("CoolerAssignmentCreatedBy")
   unassignedCoolerVehicles     CoolerVehicleAssignment[]          @relation("CoolerAssignmentClosedBy")
+  userPermissionAuditTargets   UserPermissionAuditLog[]           @relation("UserPermissionAuditTarget")
+  userPermissionAuditActors    UserPermissionAuditLog[]           @relation("UserPermissionAuditActor")
 
   @@map("users")
 }
@@ -399,6 +401,32 @@ model CataloguePhotoAuditLog {
   @@index([versionGroupId, createdAt])
   @@index([actorUserId])
   @@map("catalogue_photo_audit_logs")
+}
+
+enum UserPermissionAuditAction {
+  GRANT_CATALOGUE_PHOTO_ACCESS
+  REVOKE_CATALOGUE_PHOTO_ACCESS
+}
+
+model UserPermissionAuditLog {
+  id             String                    @id @default(uuid())
+  targetUserId   String
+  targetEmail    String
+  actorUserId    String
+  actorEmail     String
+  permissionName String
+  action         UserPermissionAuditAction
+  previousValue  Boolean
+  newValue       Boolean
+  createdAt      DateTime                  @default(now())
+
+  targetUser User @relation("UserPermissionAuditTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  actorUser  User @relation("UserPermissionAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([targetUserId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([permissionName, createdAt])
+  @@map("user_permission_audit_logs")
 }
 
 model CatalogueItemSpecies {

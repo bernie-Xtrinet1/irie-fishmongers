@@ -2,9 +2,11 @@ import type {
   AdminCataloguePhotoHistoryResponse,
   AdminCataloguePhotoItem,
   AdminCataloguePhotoListResponse,
+  CataloguePhotoStaffAccessResponse,
+  UpdateCataloguePhotoStaffAccessResponse,
 } from '@iriefishmongers/types';
 
-import { apiFetchBlob, apiGet, apiPatchForm, apiPost, apiPostForm } from '@/lib/api-client';
+import { apiFetchBlob, apiGet, apiPatch, apiPatchForm, apiPost, apiPostForm } from '@/lib/api-client';
 
 export interface ListAdminCataloguePhotosParams {
   speciesId?: string;
@@ -108,5 +110,19 @@ export async function bulkSwitchCatalogueListings(
     fromPhotoId,
     confirmBulkSwitch: true,
     ...(productIds && productIds.length > 0 ? { productIds } : {}),
+  });
+}
+
+export async function fetchCataloguePhotoStaffAccess(): Promise<CataloguePhotoStaffAccessResponse> {
+  return apiGet<CataloguePhotoStaffAccessResponse>('/admin/catalogue-photos/staff-access');
+}
+
+export async function updateCataloguePhotoStaffAccess(input: {
+  targetUserId: string;
+  canManageCataloguePhotos: boolean;
+}): Promise<UpdateCataloguePhotoStaffAccessResponse> {
+  return apiPatch<UpdateCataloguePhotoStaffAccessResponse>('/admin/catalogue-photos/staff-access', {
+    targetUserId: input.targetUserId,
+    canManageCataloguePhotos: input.canManageCataloguePhotos,
   });
 }

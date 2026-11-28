@@ -33,9 +33,12 @@ import {
   UploadCataloguePhotoDto,
 } from '../dto/admin-catalogue-photo.dto';
 import { CataloguePhotoAdminGuard } from '../guards/catalogue-photo-admin.guard';
+import { CataloguePhotoDelegationGuard } from '../guards/catalogue-photo-delegation.guard';
 import { CataloguePhotoManageGuard } from '../guards/catalogue-photo-manage.guard';
 import { CataloguePhotoViewGuard } from '../guards/catalogue-photo-view.guard';
+import { UpdateCataloguePhotoStaffAccessDto } from '../dto/catalogue-photo-staff-access.dto';
 import { AdminCataloguePhotosService } from '../services/admin-catalogue-photos.service';
+import { CataloguePhotoStaffAccessService } from '../services/catalogue-photo-staff-access.service';
 import { MAX_CATALOGUE_IMAGE_BYTES } from '../utils/image-validation.util';
 
 @ApiTags('Admin Catalogue Photos')
@@ -44,7 +47,10 @@ import { MAX_CATALOGUE_IMAGE_BYTES } from '../utils/image-validation.util';
 @Roles(RoleName.ADMINISTRATOR, RoleName.OPERATIONS_STAFF)
 @Controller('admin/catalogue-photos')
 export class AdminCataloguePhotosController {
-  constructor(private readonly service: AdminCataloguePhotosService) {}
+  constructor(
+    private readonly service: AdminCataloguePhotosService,
+    private readonly staffAccessService: CataloguePhotoStaffAccessService,
+  ) {}
 
   @Get()
   @UseGuards(CataloguePhotoViewGuard)
@@ -53,6 +59,31 @@ export class AdminCataloguePhotosController {
   })
   async list(@Query() query: QueryAdminCataloguePhotosDto) {
     return this.service.list(query);
+  }
+
+  @Get('staff-access')
+  @Roles(RoleName.ADMINISTRATOR)
+  @UseGuards(CataloguePhotoDelegationGuard)
+  @ApiOperation({
+    summary:
+      'List active Operations Staff accounts eligible for Catalogue Photos access delegation and recent permission audit logs',
+  })
+  async listStaffAccess() {
+    return this.staffAccessService.listEligibleStaffAndAuditLogs();
+  }
+
+  @Patch('staff-access')
+  @Roles(RoleName.ADMINISTRATOR)
+  @UseGuards(CataloguePhotoDelegationGuard)
+  @ApiOperation({
+    summary:
+      'Grant or revoke User.canManageCataloguePhotos for an active Operations Staff account (Primary Administrator only)',
+  })
+  async updateStaffAccess(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: UpdateCataloguePhotoStaffAccessDto,
+  ) {
+    return this.staffAccessService.updateStaffAccess(user, dto);
   }
 
   @Get(':id/history')

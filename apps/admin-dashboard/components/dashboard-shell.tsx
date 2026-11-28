@@ -157,7 +157,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }): Rea
             <div className="rounded-card border border-gray-200 bg-white p-6" role="alert">
               <h1 className="text-xl font-semibold text-gray-900">Access Denied</h1>
               <p className="mt-2 text-sm text-gray-600">
-                Your account does not have permission to view this financial page.
+                Your account does not have permission to view this page.
               </p>
               <Link
                 href="/"

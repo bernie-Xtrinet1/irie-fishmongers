@@ -7,6 +7,7 @@ import { AnalyticsController } from '../../modules/analytics/controllers/analyti
 import { AdminCataloguePhotosController } from '../../modules/catalogue/controllers/admin-catalogue-photos.controller';
 import { AdminSeafoodCatalogueController } from '../../modules/catalogue/controllers/admin-seafood-catalogue.controller';
 import { CataloguePhotoAdminGuard } from '../../modules/catalogue/guards/catalogue-photo-admin.guard';
+import { CataloguePhotoDelegationGuard } from '../../modules/catalogue/guards/catalogue-photo-delegation.guard';
 import { CataloguePhotoManageGuard } from '../../modules/catalogue/guards/catalogue-photo-manage.guard';
 import { CataloguePhotoViewGuard } from '../../modules/catalogue/guards/catalogue-photo-view.guard';
 import { CatchesController } from '../../modules/catches/controllers/catches.controller';
@@ -328,6 +329,18 @@ describe('Operations Staff & Primary Administrator RBAC Matrix', () => {
           Reflect.get(AdminCataloguePhotosController.prototype, adminOnlyMethod) as MethodFn,
         ) ?? [];
       expect(guards).toContain(CataloguePhotoAdminGuard);
+    }
+
+    for (const delegationMethod of ['listStaffAccess', 'updateStaffAccess']) {
+      expect(effectiveRolesFor(AdminCataloguePhotosController, delegationMethod)).toEqual([
+        RoleName.ADMINISTRATOR,
+      ]);
+      const guards =
+        reflector.get<unknown[]>(
+          GUARDS_METADATA,
+          Reflect.get(AdminCataloguePhotosController.prototype, delegationMethod) as MethodFn,
+        ) ?? [];
+      expect(guards).toContain(CataloguePhotoDelegationGuard);
     }
   });
 });

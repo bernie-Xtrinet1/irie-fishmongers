@@ -2,6 +2,7 @@ import {
   canAccessAdminPath,
   canAccessCataloguePhotos,
   canAuthorizeVendorSettlements,
+  canDelegateCataloguePhotoAccess,
   canManageCataloguePhotos,
   canPublishOrRetireCataloguePhotos,
   getAdminRoleLabel,
@@ -30,6 +31,12 @@ describe('admin-access helpers', () => {
     expect(canAuthorizeVendorSettlements(admin)).toBe(false);
     expect(canAuthorizeVendorSettlements(staff)).toBe(false);
     expect(canAuthorizeVendorSettlements(primaryAdmin)).toBe(true);
+    expect(canDelegateCataloguePhotoAccess(admin)).toBe(false);
+    expect(canDelegateCataloguePhotoAccess(staff)).toBe(false);
+    expect(canDelegateCataloguePhotoAccess(primaryAdmin)).toBe(true);
+    expect(canAccessAdminPath(admin, '/catalogue-photos/staff-access')).toBe(false);
+    expect(canAccessAdminPath(staff, '/catalogue-photos/staff-access')).toBe(false);
+    expect(canAccessAdminPath(primaryAdmin, '/catalogue-photos/staff-access')).toBe(true);
 
     expect(getAdminRoleLabel(primaryAdmin)).toBe('Primary Administrator');
     expect(getAdminRoleLabel(admin)).toBe('Administrator');

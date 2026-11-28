@@ -1085,6 +1085,7 @@ export interface AuthUser {
   status: UserStatus;
   roles: UserRole[];
   canAuthorizeVendorSettlements?: boolean;
+  canManageCataloguePhotos?: boolean;
   createdAt: string;
 }
 
@@ -2058,6 +2059,45 @@ export interface OrderDeliveryTracking {
   hasActiveTracking: boolean;
   deliveries: CustomerTrackedDeliveryPart[];
   checkedAt: string;
+}
+
+export type UserPermissionAuditAction =
+  | 'GRANT_CATALOGUE_PHOTO_ACCESS'
+  | 'REVOKE_CATALOGUE_PHOTO_ACCESS';
+
+export interface CataloguePhotoStaffAccessUser {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  status: UserStatus;
+  roles: UserRole[];
+  canManageCataloguePhotos: boolean;
+  updatedAt: string;
+}
+
+export interface UserPermissionAuditLogEntry {
+  id: string;
+  targetUserId: string;
+  targetEmail: string;
+  actorUserId: string;
+  actorEmail: string;
+  permissionName: string;
+  action: UserPermissionAuditAction;
+  previousValue: boolean;
+  newValue: boolean;
+  createdAt: string;
+}
+
+export interface CataloguePhotoStaffAccessResponse {
+  staff: CataloguePhotoStaffAccessUser[];
+  auditLogs: UserPermissionAuditLogEntry[];
+}
+
+export interface UpdateCataloguePhotoStaffAccessResponse {
+  changed: boolean;
+  staff: CataloguePhotoStaffAccessUser;
+  auditLog: UserPermissionAuditLogEntry | null;
 }
 
 

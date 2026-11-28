@@ -314,4 +314,53 @@ describe('CataloguePhotosView', () => {
       );
     });
   });
+
+  it('shows Manage Staff Access action exclusively to designated Primary Administrators', async () => {
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'admin-ordinary',
+        email: 'admin@demo.iriefishmongers.test',
+        firstName: 'Demo',
+        lastName: 'Admin',
+        status: 'ACTIVE',
+        roles: ['ADMINISTRATOR'],
+        canAuthorizeVendorSettlements: false,
+        canManageCataloguePhotos: true,
+      },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    const firstRender = renderView();
+    await waitFor(() => {
+      expect(screen.getByText('Nile Tilapia / Red Belly')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('open-manage-staff-access-btn')).not.toBeInTheDocument();
+    firstRender.unmount();
+
+    mockUseAuth.mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'admin-primary',
+        email: 'bernard.uat@iriefishmongers.test',
+        firstName: 'Bernard',
+        lastName: 'UAT',
+        status: 'ACTIVE',
+        roles: ['ADMINISTRATOR'],
+        canAuthorizeVendorSettlements: true,
+        canManageCataloguePhotos: true,
+      },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByTestId('open-manage-staff-access-btn')).toHaveAttribute(
+        'href',
+        '/catalogue-photos/staff-access',
+      );
+    });
+  });
 });

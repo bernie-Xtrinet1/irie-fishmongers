@@ -6,10 +6,12 @@ import { AdminCataloguePhotosController } from './controllers/admin-catalogue-ph
 import { AdminSeafoodCatalogueController } from './controllers/admin-seafood-catalogue.controller';
 import { SeafoodCatalogueController } from './controllers/seafood-catalogue.controller';
 import { CataloguePhotoAdminGuard } from './guards/catalogue-photo-admin.guard';
+import { CataloguePhotoDelegationGuard } from './guards/catalogue-photo-delegation.guard';
 import { CataloguePhotoManageGuard } from './guards/catalogue-photo-manage.guard';
 import { CataloguePhotoViewGuard } from './guards/catalogue-photo-view.guard';
 import { SeafoodCatalogueRepository } from './repositories/seafood-catalogue.repository';
 import { AdminCataloguePhotosService } from './services/admin-catalogue-photos.service';
+import { CataloguePhotoStaffAccessService } from './services/catalogue-photo-staff-access.service';
 import { CataloguePhotoStorageService } from './services/catalogue-photo-storage.service';
 import { RegulatoryEligibilityService } from './services/regulatory-eligibility.service';
 import { SeafoodCatalogueService } from './services/seafood-catalogue.service';
@@ -27,9 +29,11 @@ import { SeafoodCatalogueService } from './services/seafood-catalogue.service';
     RegulatoryEligibilityService,
     CataloguePhotoStorageService,
     AdminCataloguePhotosService,
+    CataloguePhotoStaffAccessService,
     CataloguePhotoManageGuard,
     CataloguePhotoAdminGuard,
     CataloguePhotoViewGuard,
+    CataloguePhotoDelegationGuard,
   ],
   exports: [
     SeafoodCatalogueService,
@@ -37,6 +41,7 @@ import { SeafoodCatalogueService } from './services/seafood-catalogue.service';
     SeafoodCatalogueRepository,
     CataloguePhotoStorageService,
     AdminCataloguePhotosService,
+    CataloguePhotoStaffAccessService,
   ],
 })
 export class CatalogueModule {}
